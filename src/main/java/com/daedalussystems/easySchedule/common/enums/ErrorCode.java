@@ -12,6 +12,7 @@ public enum ErrorCode {
     FORBIDDEN("FORBIDDEN", "You do not have permission to access this resource."),
     RESOURCE_NOT_FOUND("RESOURCE_NOT_FOUND", "Requested resource was not found."),
     OAUTH_EMAIL_MISSING("OAUTH_EMAIL_MISSING", "OAuth provider did not return an email."),
+    INVALID_TIMEZONE("INVALID_TIMEZONE", "Timezone is invalid."),
     TOKEN_EXPIRED("TOKEN_EXPIRED", "Token has expired."),
     TOKEN_INVALID("TOKEN_INVALID", "Token is invalid.");
 

@@ -18,10 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
-    private static final String DEFAULT_TIMEZONE = "UTC";
-
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
+    private final UserTimezoneService userTimezoneService;
 
     @Override
     @Transactional
@@ -36,12 +35,12 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     private User resolveByEmailOrCreate(AuthProvider provider, String providerUserId, String email, String name) {
         return userRepository.findByEmail(email)
-                .map(existingUser -> linkIdentityAndReturnUser(existingUser, provider, providerUserId, email))
+                .map(existingUser -> linkIdentityAndReturnUser(existingUser, provider, providerUserId))
                 .orElseGet(() -> createUserAndIdentity(provider, providerUserId, email, name));
     }
 
-    private User linkIdentityAndReturnUser(User user, AuthProvider provider, String providerUserId, String email) {
-        createIdentityIfAbsent(user, provider, providerUserId, email);
+    private User linkIdentityAndReturnUser(User user, AuthProvider provider, String providerUserId) {
+        createIdentityIfAbsent(user, provider, providerUserId);
         return user;
     }
 
@@ -50,19 +49,19 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
             User savedUser = userRepository.save(User.builder()
                     .email(email)
                     .name(name)
-                    .timezone(DEFAULT_TIMEZONE)
+                    .timezone(userTimezoneService.timezoneForCreate(null))
                     .status(UserStatus.ACTIVE)
                     .build());
-            createIdentityIfAbsent(savedUser, provider, providerUserId, email);
+            createIdentityIfAbsent(savedUser, provider, providerUserId);
             return savedUser;
         } catch (DataIntegrityViolationException ex) {
             User existingUser = userRepository.findByEmail(email).orElseThrow(() -> ex);
-            createIdentityIfAbsent(existingUser, provider, providerUserId, email);
+            createIdentityIfAbsent(existingUser, provider, providerUserId);
             return existingUser;
         }
     }
 
-    private void createIdentityIfAbsent(User user, AuthProvider provider, String providerUserId, String email) {
+    private void createIdentityIfAbsent(User user, AuthProvider provider, String providerUserId) {
         if (authIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId).isPresent()) {
             return;
         }
@@ -70,7 +69,6 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
                 .user(user)
                 .provider(provider)
                 .providerUserId(providerUserId)
-                .email(email)
                 .build();
         authIdentityRepository.save(identity);
     }

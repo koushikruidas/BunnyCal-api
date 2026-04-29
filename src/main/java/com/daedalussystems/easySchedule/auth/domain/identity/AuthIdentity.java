@@ -22,6 +22,8 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 @Getter
 @Setter
@@ -32,12 +34,11 @@ import lombok.Setter;
 @Table(
         name = "auth_identities",
         uniqueConstraints = {
-            @UniqueConstraint(name = "uk_auth_identity_provider_user_id", columnNames = {"provider", "provider_user_id"})
+            @UniqueConstraint(name = "uk_provider_user", columnNames = {"provider", "provider_user_id"})
         },
         indexes = {
             @Index(name = "idx_auth_identity_provider_user_id", columnList = "provider,provider_user_id"),
-            @Index(name = "idx_auth_identity_user_id", columnList = "user_id"),
-            @Index(name = "idx_auth_identity_email", columnList = "email")
+            @Index(name = "idx_auth_identity_user_id", columnList = "user_id")
         })
 public class AuthIdentity extends BaseEntity {
 
@@ -47,6 +48,7 @@ public class AuthIdentity extends BaseEntity {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "user_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE) // Ensures DB deletes it
     private User user;
 
     @Enumerated(EnumType.STRING)
@@ -55,7 +57,4 @@ public class AuthIdentity extends BaseEntity {
 
     @Column(name = "provider_user_id", nullable = false)
     private String providerUserId;
-
-    @Column(nullable = false)
-    private String email;
 }

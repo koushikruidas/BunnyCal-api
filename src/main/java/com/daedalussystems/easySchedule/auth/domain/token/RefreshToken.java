@@ -19,6 +19,8 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
 
 @Getter
 @Setter
@@ -29,7 +31,8 @@ import lombok.Setter;
 @Table(
         name = "refresh_tokens",
         indexes = {
-            @Index(name = "idx_refresh_token_user_id", columnList = "user_id"),
+            @Index(name = "idx_refresh_token_token", columnList = "token_hash", unique = true),
+            @Index(name = "idx_refresh_token_user", columnList = "user_id"),
             @Index(name = "idx_refresh_token_expiry_date", columnList = "expiry_date")
         })
 public class RefreshToken extends BaseEntity {
@@ -40,6 +43,7 @@ public class RefreshToken extends BaseEntity {
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "user_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE) // Ensures DB deletes it
     private User user;
 
     @Column(name = "token_hash", nullable = false, unique = true)

@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.auth.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -72,6 +73,45 @@ class RefreshTokenServiceImplTest {
 
         assertEquals(ErrorCode.TOKEN_EXPIRED, ex.getErrorCode());
         verify(refreshTokenRepository, times(1)).delete(refreshToken);
+    }
+
+    @Test
+    void rotateRefreshTokenDeletesOldAndCreatesNew() {
+        User user = User.builder().id(UUID.randomUUID()).email("a@b.com").name("A").timezone("UTC").build();
+        String oldRawToken = "z".repeat(64);
+        String hash = hash(oldRawToken);
+        RefreshToken existingToken = RefreshToken.builder()
+                .id(UUID.randomUUID())
+                .user(user)
+                .tokenHash(hash)
+                .expiryDate(Instant.now().plus(1, ChronoUnit.DAYS))
+                .build();
+        when(refreshTokenRepository.findById(existingToken.getId())).thenReturn(Optional.of(existingToken));
+        when(refreshTokenRepository.deleteByIdAndTokenHash(existingToken.getId(), hash)).thenReturn(1);
+        when(refreshTokenRepository.save(any(RefreshToken.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        String rotated = refreshTokenService.rotateRefreshToken(existingToken);
+
+        assertNotNull(rotated);
+        verify(refreshTokenRepository, times(1)).deleteByIdAndTokenHash(existingToken.getId(), hash);
+        verify(refreshTokenRepository, times(1)).save(any(RefreshToken.class));
+    }
+
+    @Test
+    void rotateRefreshTokenThrowsInvalidWhenAlreadyDeleted() {
+        User user = User.builder().id(UUID.randomUUID()).email("a@b.com").name("A").timezone("UTC").build();
+        RefreshToken existingToken = RefreshToken.builder()
+                .id(UUID.randomUUID())
+                .user(user)
+                .tokenHash(hash("t".repeat(64)))
+                .expiryDate(Instant.now().plus(1, ChronoUnit.DAYS))
+                .build();
+        when(refreshTokenRepository.findById(existingToken.getId())).thenReturn(Optional.of(existingToken));
+        when(refreshTokenRepository.deleteByIdAndTokenHash(existingToken.getId(), existingToken.getTokenHash())).thenReturn(0);
+
+        CustomException ex = assertThrows(CustomException.class, () -> refreshTokenService.rotateRefreshToken(existingToken));
+
+        assertEquals(ErrorCode.TOKEN_INVALID, ex.getErrorCode());
     }
 
     @Test

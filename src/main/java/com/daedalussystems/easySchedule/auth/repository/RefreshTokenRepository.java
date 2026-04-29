@@ -13,6 +13,11 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
 
     Optional<RefreshToken> findByTokenHash(String tokenHash);
 
+    @Transactional
+    @Modifying
+    @Query("delete from RefreshToken rt where rt.id = :id and rt.tokenHash = :tokenHash")
+    int deleteByIdAndTokenHash(@Param("id") UUID id, @Param("tokenHash") String tokenHash);
+
     void deleteByExpiryDateBefore(java.time.Instant now);
 
     @Transactional

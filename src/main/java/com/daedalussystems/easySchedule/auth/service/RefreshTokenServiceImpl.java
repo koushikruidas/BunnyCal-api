@@ -53,6 +53,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
                 .orElseThrow(() -> new CustomException(ErrorCode.TOKEN_INVALID));
 
         if (refreshToken.getExpiryDate().isBefore(Instant.now())) {
+            // Eager cleanup: expired tokens are removed as part of validation.
             refreshTokenRepository.delete(refreshToken);
             throw new CustomException(ErrorCode.TOKEN_EXPIRED);
         }
@@ -63,8 +64,25 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     @Override
     @Transactional
     public String rotateRefreshToken(RefreshToken existingToken) {
-        refreshTokenRepository.delete(existingToken);
-        return createRefreshToken(existingToken.getUser());
+        if (existingToken == null || existingToken.getId() == null || existingToken.getTokenHash() == null) {
+            throw new CustomException(ErrorCode.TOKEN_INVALID);
+        }
+        RefreshToken persistedToken = refreshTokenRepository.findById(existingToken.getId())
+                .orElseThrow(() -> new CustomException(ErrorCode.TOKEN_INVALID));
+
+        if (!persistedToken.getTokenHash().equals(existingToken.getTokenHash())) {
+            throw new CustomException(ErrorCode.TOKEN_INVALID);
+        }
+        if (persistedToken.getExpiryDate().isBefore(Instant.now())) {
+            refreshTokenRepository.delete(persistedToken);
+            throw new CustomException(ErrorCode.TOKEN_EXPIRED);
+        }
+
+        int deleted = refreshTokenRepository.deleteByIdAndTokenHash(existingToken.getId(), existingToken.getTokenHash());
+        if (deleted == 0) {
+            throw new CustomException(ErrorCode.TOKEN_INVALID);
+        }
+        return createRefreshToken(persistedToken.getUser());
     }
 
     @Override
