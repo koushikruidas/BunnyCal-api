@@ -1,0 +1,20 @@
+package com.daedalussystems.easySchedule.common.enums;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+
+@Getter
+@AllArgsConstructor
+public enum ErrorCode {
+    INTERNAL_SERVER_ERROR("INTERNAL_SERVER_ERROR", "An unexpected internal server error occurred."),
+    VALIDATION_ERROR("VALIDATION_ERROR", "Request validation failed."),
+    UNAUTHORIZED("UNAUTHORIZED", "Authentication is required."),
+    FORBIDDEN("FORBIDDEN", "You do not have permission to access this resource."),
+    RESOURCE_NOT_FOUND("RESOURCE_NOT_FOUND", "Requested resource was not found."),
+    OAUTH_EMAIL_MISSING("OAUTH_EMAIL_MISSING", "OAuth provider did not return an email."),
+    TOKEN_EXPIRED("TOKEN_EXPIRED", "Token has expired."),
+    TOKEN_INVALID("TOKEN_INVALID", "Token is invalid.");
+
+    private final String code;
+    private final String message;
+}
