@@ -10,7 +10,7 @@ public interface RefreshTokenService {
 
     RefreshToken validateRefreshToken(String rawToken);
 
-    String rotateRefreshToken(User user, String oldToken);
+    String rotateRefreshToken(RefreshToken existingToken);
 
     void deleteByUserId(UUID userId);
 }

@@ -29,7 +29,7 @@ public class AuthController {
         User user = refreshToken.getUser();
 
         String accessToken = jwtTokenProvider.generateAccessToken(user);
-        String rotatedRefreshToken = refreshTokenService.rotateRefreshToken(user, request.getRefreshToken());
+        String rotatedRefreshToken = refreshTokenService.rotateRefreshToken(refreshToken);
 
         AuthResponse response = AuthResponse.builder()
                 .accessToken(accessToken)

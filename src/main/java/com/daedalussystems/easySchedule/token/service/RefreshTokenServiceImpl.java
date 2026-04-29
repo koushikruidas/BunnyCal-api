@@ -62,11 +62,9 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
 
     @Override
     @Transactional
-    public String rotateRefreshToken(User user, String oldToken) {
-        String oldTokenHash = hashToken(oldToken);
-        refreshTokenRepository.findByTokenHash(oldTokenHash)
-                .ifPresent(refreshTokenRepository::delete);
-        return createRefreshToken(user);
+    public String rotateRefreshToken(RefreshToken existingToken) {
+        refreshTokenRepository.delete(existingToken);
+        return createRefreshToken(existingToken.getUser());
     }
 
     @Override
