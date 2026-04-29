@@ -1,9 +1,10 @@
 package com.daedalussystems.easySchedule.oauth.handler;
 
-import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.AuthProvider;
 import com.daedalussystems.easySchedule.identity.service.IdentityLinkingService;
 import com.daedalussystems.easySchedule.security.jwt.JwtTokenProvider;
+import com.daedalussystems.easySchedule.token.dto.AuthResponse;
+import com.daedalussystems.easySchedule.token.dto.UserDto;
 import com.daedalussystems.easySchedule.token.service.RefreshTokenService;
 import com.daedalussystems.easySchedule.user.domain.User;
 import jakarta.servlet.ServletException;
@@ -11,8 +12,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.user.OAuth2User;
@@ -65,20 +64,15 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         String accessToken = jwtTokenProvider.generateAccessToken(user);
         String refreshToken = refreshTokenService.createRefreshToken(user);
 
-        Map<String, Object> userPayload = new LinkedHashMap<>();
-        userPayload.put("id", user.getId());
-        userPayload.put("email", user.getEmail());
-        userPayload.put("name", user.getName());
-        userPayload.put("timezone", user.getTimezone());
-
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("accessToken", accessToken);
-        payload.put("refreshToken", refreshToken);
-        payload.put("user", userPayload);
+        AuthResponse authResponse = AuthResponse.builder()
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
+                .user(UserDto.from(user))
+                .build();
 
         response.setStatus(HttpServletResponse.SC_OK);
         response.setContentType("application/json;charset=UTF-8");
         response.setCharacterEncoding("UTF-8");
-        objectMapper.writeValue(response.getWriter(), ApiResponse.success(payload));
+        objectMapper.writeValue(response.getWriter(), authResponse);
     }
 }

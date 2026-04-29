@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.token.dto;
 
+import com.daedalussystems.easySchedule.user.domain.User;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -16,4 +17,13 @@ public class UserDto {
     private String email;
     private String name;
     private String timezone;
+
+    public static UserDto from(User user) {
+        return UserDto.builder()
+                .id(user.getId())
+                .email(user.getEmail())
+                .name(user.getName())
+                .timezone(user.getTimezone())
+                .build();
+    }
 }

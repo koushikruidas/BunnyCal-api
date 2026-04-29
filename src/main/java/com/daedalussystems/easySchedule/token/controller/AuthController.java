@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.token.domain.RefreshToken;
 import com.daedalussystems.easySchedule.token.dto.AuthResponse;
 import com.daedalussystems.easySchedule.token.dto.LogoutRequest;
 import com.daedalussystems.easySchedule.token.dto.RefreshRequest;
+import com.daedalussystems.easySchedule.token.dto.UserDto;
 import com.daedalussystems.easySchedule.token.service.RefreshTokenService;
 import com.daedalussystems.easySchedule.user.domain.User;
 import lombok.RequiredArgsConstructor;
@@ -33,7 +34,7 @@ public class AuthController {
         AuthResponse response = AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(rotatedRefreshToken)
-                .user(null)
+                .user(UserDto.from(user))
                 .build();
 
         return ApiResponse.success(response);
