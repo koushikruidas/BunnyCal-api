@@ -53,7 +53,7 @@ class AuthControllerTest {
                 .build();
 
         when(refreshTokenService.validateRefreshToken(oldRefresh)).thenReturn(refreshToken);
-        when(jwtTokenProvider.generateAccessToken(user)).thenReturn(accessToken);
+        when(jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail())).thenReturn(accessToken);
         when(refreshTokenService.rotateRefreshToken(refreshToken)).thenReturn(newRefresh);
 
         ApiResponse<AuthResponse> response = authController.refresh(RefreshRequest.builder().refreshToken(oldRefresh).build());
