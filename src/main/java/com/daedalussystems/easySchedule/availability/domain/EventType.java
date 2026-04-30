@@ -1,0 +1,58 @@
+package com.daedalussystems.easySchedule.availability.domain;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
+import java.time.Duration;
+import java.util.UUID;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Getter
+@Setter
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@Entity
+@Table(
+        name = "event_types",
+        indexes = {
+            @Index(name = "idx_event_types_user", columnList = "user_id")
+        })
+public class EventType {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(name = "user_id", nullable = false)
+    private UUID userId;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(nullable = false)
+    private Duration duration;
+
+    @Column(name = "buffer_before", nullable = false)
+    private Duration bufferBefore;
+
+    @Column(name = "buffer_after", nullable = false)
+    private Duration bufferAfter;
+
+    @Column(name = "slot_interval", nullable = false)
+    private Duration slotInterval;
+
+    @Column(name = "min_notice", nullable = false)
+    private Duration minNotice;
+
+    @Column(name = "max_advance", nullable = false)
+    private Duration maxAdvance;
+}
