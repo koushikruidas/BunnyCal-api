@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: easySchedule
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/mydatabase
+    username: myuser
+    password: secret
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: create
+    show-sql: true
+
+  docker:
+    compose:
+      enabled: true
+
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - email
+              - profile
+
+jwt:
+  secret: ${JWT_SECRET:my-super-long-secret-key-which-is-at-least-32-characters}
+  expiration: ${JWT_EXPIRATION:3600000}
+
+
