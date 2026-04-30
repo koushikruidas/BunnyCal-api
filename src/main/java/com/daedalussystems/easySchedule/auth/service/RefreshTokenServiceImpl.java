@@ -46,6 +46,16 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         }
     }
 
+    public RefreshTokenServiceImpl(
+            RefreshTokenRepository repo,
+            int bytes,
+            long ttlDays
+    ) {
+        this.refreshTokenRepository = repo;
+        this.refreshTokenBytes = bytes;
+        this.refreshTokenTtlDays = ttlDays;
+    }
+
     @Override
     @Transactional
     public String createRefreshToken(User user) {

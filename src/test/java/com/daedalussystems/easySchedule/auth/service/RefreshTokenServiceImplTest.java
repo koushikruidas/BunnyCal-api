@@ -33,7 +33,7 @@ class RefreshTokenServiceImplTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        refreshTokenService = new RefreshTokenServiceImpl(refreshTokenRepository);
+        refreshTokenService = new RefreshTokenServiceImpl(refreshTokenRepository, 48, 7);
     }
 
     @Test
