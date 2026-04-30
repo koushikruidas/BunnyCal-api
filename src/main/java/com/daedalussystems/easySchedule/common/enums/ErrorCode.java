@@ -14,7 +14,8 @@ public enum ErrorCode {
     OAUTH_EMAIL_MISSING("OAUTH_EMAIL_MISSING", "OAuth provider did not return an email."),
     INVALID_TIMEZONE("INVALID_TIMEZONE", "Timezone is invalid."),
     TOKEN_EXPIRED("TOKEN_EXPIRED", "Token has expired."),
-    TOKEN_INVALID("TOKEN_INVALID", "Token is invalid.");
+    TOKEN_INVALID("TOKEN_INVALID", "Token is invalid."),
+    OAUTH_INVALID_RESPONSE("OAUTH_INVALID_RESPONSE", "Oauth response is invalid");
 
     private final String code;
     private final String message;

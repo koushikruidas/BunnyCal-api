@@ -23,6 +23,9 @@ public class JwtTokenProvider {
             @Value("${jwt.secret}") String secret,
             @Value("${jwt.expiration}") long expirationMillis
     ) {
+        if (secret == null || secret.length() < 32) {
+            throw new IllegalStateException("JWT secret must be at least 32 characters long");
+        }
         this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expirationMillis = expirationMillis;
     }
@@ -34,6 +37,7 @@ public class JwtTokenProvider {
         return Jwts.builder()
                 .subject(user.getId().toString())
                 .claim("email", user.getEmail())
+                .claim("type", "access") //added
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .signWith(signingKey, Jwts.SIG.HS256)
@@ -49,8 +53,11 @@ public class JwtTokenProvider {
         }
     }
 
-    public UUID getUserIdFromToken(String token) {
-        Claims claims = parseClaims(token);
+    public Claims getClaims(String token) {
+        return parseClaims(token); //reuse instead of double parsing
+    }
+
+    public UUID getUserIdFromClaims(Claims claims) {
         String subject = claims.getSubject();
         if (subject == null || subject.trim().isEmpty()) {
             throw new IllegalArgumentException("Token subject is missing");

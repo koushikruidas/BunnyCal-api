@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.auth.security.filter;
 
 import com.daedalussystems.easySchedule.auth.security.jwt.JwtTokenProvider;
+import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,16 +31,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain
     ) throws ServletException, IOException {
-        String token = resolveToken(request);
 
-        if (token != null && jwtTokenProvider.validateToken(token)) {
-            UUID userId = jwtTokenProvider.getUserIdFromToken(token);
+        //Check context first (avoid unnecessary parsing)
+        if (SecurityContextHolder.getContext().getAuthentication() == null) {
 
-            UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(userId, null, Collections.emptyList());
-            authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+            String token = resolveToken(request);
 
-            if (SecurityContextHolder.getContext().getAuthentication() == null) {
+            if (token != null && jwtTokenProvider.validateToken(token)) {
+
+                Claims claims = jwtTokenProvider.getClaims(token); //single parse
+                UUID userId = jwtTokenProvider.getUserIdFromClaims(claims);
+
+                UsernamePasswordAuthenticationToken authentication =
+                        new UsernamePasswordAuthenticationToken(userId, null, Collections.emptyList());
+
+                authentication.setDetails(
+                        new WebAuthenticationDetailsSource().buildDetails(request)
+                );
+
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
         }
@@ -49,6 +58,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private String resolveToken(HttpServletRequest request) {
         String authorization = request.getHeader(AUTHORIZATION_HEADER);
+
         if (authorization == null || !authorization.startsWith(BEARER_PREFIX)) {
             return null;
         }

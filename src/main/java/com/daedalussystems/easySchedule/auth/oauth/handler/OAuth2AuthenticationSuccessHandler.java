@@ -1,6 +1,8 @@
 package com.daedalussystems.easySchedule.auth.oauth.handler;
 
 import com.daedalussystems.easySchedule.common.enums.AuthProvider;
+import com.daedalussystems.easySchedule.common.enums.ErrorCode;
+import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.auth.service.IdentityLinkingService;
 import com.daedalussystems.easySchedule.auth.security.jwt.JwtTokenProvider;
 import com.daedalussystems.easySchedule.auth.dto.AuthResponse;
@@ -34,6 +36,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
             HttpServletResponse response,
             Authentication authentication
     ) throws IOException, ServletException {
+
         OAuth2User oauth2User = (OAuth2User) authentication.getPrincipal();
 
         String providerStr = oauth2User.getAttribute("provider");
@@ -42,25 +45,26 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         String name = oauth2User.getAttribute("name");
 
         if (providerStr == null || providerStr.trim().isEmpty()) {
-            throw new RuntimeException("Provider missing from OAuth principal");
+            throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
         }
         if (providerUserId == null || providerUserId.trim().isEmpty()) {
-            throw new RuntimeException("Provider user id missing from OAuth principal");
+            throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
         }
         if (email == null || email.trim().isEmpty()) {
-            throw new RuntimeException("Email missing from OAuth provider");
+            throw new CustomException(ErrorCode.OAUTH_EMAIL_MISSING);
         }
 
         AuthProvider provider;
         try {
             provider = AuthProvider.valueOf(providerStr);
         } catch (IllegalArgumentException ex) {
-            throw new RuntimeException(
-                    "Unsupported provider value: " + providerStr + ". Expected one of " + Arrays.toString(AuthProvider.values()),
-                    ex);
+            throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
         }
 
-        User user = identityLinkingService.resolveOrCreateUser(provider, providerUserId, email, name);
+        User user = identityLinkingService.resolveOrCreateUser(
+                provider, providerUserId, email, name
+        );
+
         String accessToken = jwtTokenProvider.generateAccessToken(user);
         String refreshToken = refreshTokenService.createRefreshToken(user);
 
@@ -73,6 +77,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         response.setStatus(HttpServletResponse.SC_OK);
         response.setContentType("application/json;charset=UTF-8");
         response.setCharacterEncoding("UTF-8");
+
         objectMapper.writeValue(response.getWriter(), authResponse);
     }
 }

@@ -20,7 +20,7 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
-    private final UserTimezoneServiceImpl userTimezoneServiceImpl;
+    private final TimeZoneService userTimezoneServiceImpl;
 
     @Override
     @Transactional
@@ -70,7 +70,11 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
                 .provider(provider)
                 .providerUserId(providerUserId)
                 .build();
-        authIdentityRepository.save(identity);
+        try {
+            authIdentityRepository.save(identity);
+        }catch (DataIntegrityViolationException ex){
+            System.out.println("Identity already exists for provider = "+ provider + "providerUserId = "+ providerUserId);
+        }
     }
 
     private String normalizeAndValidateEmail(String email) {
