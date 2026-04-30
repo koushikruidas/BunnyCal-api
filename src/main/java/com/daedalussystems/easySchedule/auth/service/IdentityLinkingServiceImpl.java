@@ -20,7 +20,7 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
-    private final UserTimezoneService userTimezoneService;
+    private final UserTimezoneServiceImpl userTimezoneServiceImpl;
 
     @Override
     @Transactional
@@ -49,7 +49,7 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
             User savedUser = userRepository.save(User.builder()
                     .email(email)
                     .name(name)
-                    .timezone(userTimezoneService.timezoneForCreate(null))
+                    .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
                     .status(UserStatus.ACTIVE)
                     .build());
             createIdentityIfAbsent(savedUser, provider, providerUserId);

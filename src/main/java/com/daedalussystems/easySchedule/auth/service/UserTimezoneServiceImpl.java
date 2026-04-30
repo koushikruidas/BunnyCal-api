@@ -5,7 +5,7 @@ import com.daedalussystems.easySchedule.common.util.TimezoneUtil;
 import org.springframework.stereotype.Service;
 
 @Service
-public class UserTimezoneService {
+public class UserTimezoneServiceImpl implements TimeZoneService {
 
     public static final String DEFAULT_TIMEZONE = "UTC";
 

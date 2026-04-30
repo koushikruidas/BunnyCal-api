@@ -9,12 +9,16 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.UUID;
+
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,22 +26,40 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class RefreshTokenServiceImpl implements RefreshTokenService {
 
-    private static final int REFRESH_TOKEN_BYTES = 48;
-    private static final long REFRESH_TOKEN_TTL_DAYS = 7;
-
     private final RefreshTokenRepository refreshTokenRepository;
     private final SecureRandom secureRandom = new SecureRandom();
+
+    @Value("${auth.refresh-token.bytes}")
+    private int refreshTokenBytes;
+
+    @Value("${auth.refresh-token.ttl-days}")
+    private long refreshTokenTtlDays;
+
+    @PostConstruct
+    public void validateRefreshTokenConfig() {
+        if (refreshTokenBytes < 32) {
+            throw new IllegalStateException("Refresh token bytes must be >= 32");
+        }
+
+        if (refreshTokenTtlDays <= 0) {
+            throw new IllegalStateException("TTL must be > 0");
+        }
+    }
 
     @Override
     @Transactional
     public String createRefreshToken(User user) {
+        if (user == null) {
+            throw new CustomException(ErrorCode.TOKEN_INVALID);
+        }
+
         String rawToken = generateRawRefreshToken();
         String tokenHash = hashToken(rawToken);
 
         RefreshToken refreshToken = RefreshToken.builder()
                 .user(user)
                 .tokenHash(tokenHash)
-                .expiryDate(Instant.now().plus(REFRESH_TOKEN_TTL_DAYS, ChronoUnit.DAYS))
+                .expiryDate(Instant.now().plus(refreshTokenTtlDays, ChronoUnit.DAYS))
                 .build();
 
         refreshTokenRepository.save(refreshToken);
@@ -92,7 +114,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     }
 
     private String generateRawRefreshToken() {
-        byte[] randomBytes = new byte[REFRESH_TOKEN_BYTES];
+        byte[] randomBytes = new byte[refreshTokenBytes];
         secureRandom.nextBytes(randomBytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
     }

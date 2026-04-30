@@ -28,14 +28,14 @@ class IdentityLinkingServiceImplTest {
     @Mock
     private AuthIdentityRepository authIdentityRepository;
 
-    private UserTimezoneService userTimezoneService;
+    private UserTimezoneServiceImpl userTimezoneServiceImpl;
     private IdentityLinkingServiceImpl identityLinkingService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        userTimezoneService = new UserTimezoneService();
-        identityLinkingService = new IdentityLinkingServiceImpl(userRepository, authIdentityRepository, userTimezoneService);
+        userTimezoneServiceImpl = new UserTimezoneServiceImpl();
+        identityLinkingService = new IdentityLinkingServiceImpl(userRepository, authIdentityRepository, userTimezoneServiceImpl);
     }
 
     @Test

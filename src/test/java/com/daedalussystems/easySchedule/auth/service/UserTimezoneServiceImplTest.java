@@ -9,29 +9,29 @@ import com.daedalussystems.easySchedule.common.exception.CustomException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class UserTimezoneServiceTest {
+class UserTimezoneServiceImplTest {
 
-    private UserTimezoneService userTimezoneService;
+    private UserTimezoneServiceImpl userTimezoneServiceImpl;
 
     @BeforeEach
     void setUp() {
-        userTimezoneService = new UserTimezoneService();
+        userTimezoneServiceImpl = new UserTimezoneServiceImpl();
     }
 
     @Test
     void timezoneForCreateDefaultsToUtcWhenNull() {
-        assertEquals("UTC", userTimezoneService.timezoneForCreate(null));
+        assertEquals("UTC", userTimezoneServiceImpl.timezoneForCreate(null));
     }
 
     @Test
     void timezoneForCreateAcceptsValidTimezone() {
-        assertEquals("Asia/Kolkata", userTimezoneService.timezoneForCreate("Asia/Kolkata"));
+        assertEquals("Asia/Kolkata", userTimezoneServiceImpl.timezoneForCreate("Asia/Kolkata"));
     }
 
     @Test
     void timezoneForCreateRejectsInvalidTimezone() {
         CustomException ex = assertThrows(CustomException.class,
-                () -> userTimezoneService.timezoneForCreate("Invalid/Zone"));
+                () -> userTimezoneServiceImpl.timezoneForCreate("Invalid/Zone"));
         assertEquals(ErrorCode.INVALID_TIMEZONE, ex.getErrorCode());
     }
 
@@ -39,7 +39,7 @@ class UserTimezoneServiceTest {
     void applyTimezoneUpdateDoesNotOverwriteWhenNull() {
         User user = User.builder().timezone("UTC").build();
 
-        userTimezoneService.applyTimezoneUpdate(user, null);
+        userTimezoneServiceImpl.applyTimezoneUpdate(user, null);
 
         assertEquals("UTC", user.getTimezone());
     }
@@ -48,7 +48,7 @@ class UserTimezoneServiceTest {
     void applyTimezoneUpdateDoesNotOverwriteWhenBlank() {
         User user = User.builder().timezone("UTC").build();
 
-        userTimezoneService.applyTimezoneUpdate(user, "   ");
+        userTimezoneServiceImpl.applyTimezoneUpdate(user, "   ");
 
         assertEquals("UTC", user.getTimezone());
     }
@@ -58,7 +58,7 @@ class UserTimezoneServiceTest {
         User user = User.builder().timezone("UTC").build();
 
         CustomException ex = assertThrows(CustomException.class,
-                () -> userTimezoneService.applyTimezoneUpdate(user, "Invalid/Zone"));
+                () -> userTimezoneServiceImpl.applyTimezoneUpdate(user, "Invalid/Zone"));
 
         assertEquals(ErrorCode.INVALID_TIMEZONE, ex.getErrorCode());
     }
