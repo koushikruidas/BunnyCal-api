@@ -28,7 +28,7 @@ public class AuthController {
         RefreshToken refreshToken = refreshTokenService.validateRefreshToken(request.getRefreshToken());
         User user = refreshToken.getUser();
 
-        String accessToken = jwtTokenProvider.generateAccessToken(user);
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail());
         String rotatedRefreshToken = refreshTokenService.rotateRefreshToken(refreshToken);
 
         AuthResponse response = AuthResponse.builder()

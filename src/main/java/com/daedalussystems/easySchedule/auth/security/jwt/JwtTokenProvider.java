@@ -1,6 +1,5 @@
 package com.daedalussystems.easySchedule.auth.security.jwt;
 
-import com.daedalussystems.easySchedule.auth.domain.user.User;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
@@ -30,14 +29,15 @@ public class JwtTokenProvider {
         this.expirationMillis = expirationMillis;
     }
 
-    public String generateAccessToken(User user) {
+    // ✅ UPDATED: No User entity here
+    public String generateAccessToken(UUID userId, String email) {
         Instant now = Instant.now();
         Instant expiry = now.plusMillis(expirationMillis);
 
         return Jwts.builder()
-                .subject(user.getId().toString())
-                .claim("email", user.getEmail())
-                .claim("type", "access") //added
+                .subject(userId.toString())
+                .claim("email", email)
+                .claim("type", "access")
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(expiry))
                 .signWith(signingKey, Jwts.SIG.HS256)
@@ -54,7 +54,7 @@ public class JwtTokenProvider {
     }
 
     public Claims getClaims(String token) {
-        return parseClaims(token); //reuse instead of double parsing
+        return parseClaims(token);
     }
 
     public UUID getUserIdFromClaims(Claims claims) {

@@ -13,7 +13,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Arrays;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.user.OAuth2User;
@@ -65,13 +64,18 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
                 provider, providerUserId, email, name
         );
 
-        String accessToken = jwtTokenProvider.generateAccessToken(user);
+        // ✅ FIX: Pass primitives only
+        String accessToken = jwtTokenProvider.generateAccessToken(
+                user.getId(),
+                email
+        );
+
         String refreshToken = refreshTokenService.createRefreshToken(user);
 
         AuthResponse authResponse = AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .user(UserDto.from(user))
+                .user(UserDto.from(user)) // ⚠️ ensure safe mapping
                 .build();
 
         response.setStatus(HttpServletResponse.SC_OK);
