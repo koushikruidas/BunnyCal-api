@@ -15,7 +15,7 @@ spring:
 
   docker:
     compose:
-      enabled: true
+      enabled: false
 
   security:
     oauth2:
@@ -27,6 +27,27 @@ spring:
             scope:
               - email
               - profile
+
+management:
+  otlp:
+    metrics:
+      export:
+        url: http://localhost:4318/v1/metrics   # change to http://otel-collector:4318 if app runs in Docker
+        step: 10s
+        connect-timeout: 2s
+        read-timeout: 5s
+
+  metrics:
+    export:
+      otlp:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
 
 jwt:
   secret: ${JWT_SECRET:my-super-long-secret-key-which-is-at-least-32-characters}
