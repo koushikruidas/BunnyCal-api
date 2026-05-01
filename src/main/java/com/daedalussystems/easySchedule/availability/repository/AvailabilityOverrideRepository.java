@@ -14,4 +14,6 @@ public interface AvailabilityOverrideRepository extends JpaRepository<Availabili
     List<AvailabilityOverride> findByUserIdAndDateBetweenOrderByDateAsc(UUID userId, LocalDate from, LocalDate to);
 
     Optional<AvailabilityOverride> findByIdAndUserId(UUID id, UUID userId);
+
+    Optional<AvailabilityOverride> findByUserIdAndDate(UUID userId, LocalDate date);
 }
