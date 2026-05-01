@@ -161,6 +161,91 @@ class SlotGenerationEngineTest {
         assertTrue(slots.get(0).start().isBefore(slots.get(0).end()));
     }
 
+    @Test
+    void computeApi_matchesLegacyApi_forSameInputs() {
+        LocalDate date = LocalDate.of(2026, 4, 30);
+        ZoneId zone = ZoneId.of("UTC");
+        EventType eventType = eventType(Duration.ofMinutes(30), Duration.ofMinutes(30));
+        List<AvailabilityRule> rules = List.of(rule(DayOfWeek.THURSDAY, 9, 10, 11, 0));
+        Instant now = date.minusDays(1).atStartOfDay(zone).toInstant();
+        List<SlotGenerationEngine.BookingWindow> bookings =
+                List.of(new SlotGenerationEngine.BookingWindow(
+                        date.atTime(10, 0).atZone(zone).toInstant(),
+                        date.atTime(10, 30).atZone(zone).toInstant()));
+
+        List<SlotGenerationEngine.SlotUtc> legacy = SlotGenerationEngine.generateSlotsForDay(
+                date,
+                zone,
+                rules,
+                null,
+                eventType,
+                bookings,
+                List.of(),
+                now);
+
+        List<SlotGenerationEngine.SlotUtc> computed = SlotGenerationEngine.compute(
+                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), now));
+
+        assertEquals(legacy, computed);
+    }
+
+    @Test
+    void maxSlotsPerDay_enforcedAtTwoHundred() {
+        LocalDate date = LocalDate.of(2026, 4, 30);
+        ZoneId zone = ZoneId.of("UTC");
+        EventType eventType = eventType(Duration.ofMinutes(1), Duration.ofMinutes(1));
+        List<AvailabilityRule> rules = List.of(rule(DayOfWeek.THURSDAY, 0, 0, 23, 59));
+
+        List<SlotGenerationEngine.SlotUtc> slots = SlotGenerationEngine.compute(
+                new SlotGenerationEngine.SlotInput(
+                        date,
+                        zone,
+                        rules,
+                        null,
+                        eventType,
+                        List.of(),
+                        List.of(),
+                        date.minusDays(1).atStartOfDay(zone).toInstant()));
+
+        assertEquals(200, slots.size());
+        assertTrue(slots.get(0).start().isBefore(slots.get(slots.size() - 1).start()));
+    }
+
+    @Test
+    void bufferFilter_doesNotCreateGlobalBlockedZones() {
+        LocalDate date = LocalDate.of(2026, 4, 30);
+        ZoneId zone = ZoneId.of("UTC");
+        EventType eventType = EventType.builder()
+                .id(UUID.randomUUID())
+                .userId(UUID.randomUUID())
+                .name("meeting")
+                .duration(Duration.ofMinutes(30))
+                .slotInterval(Duration.ofMinutes(30))
+                .bufferBefore(Duration.ofMinutes(15))
+                .bufferAfter(Duration.ofMinutes(15))
+                .minNotice(Duration.ZERO)
+                .maxAdvance(Duration.ofDays(30))
+                .build();
+        List<AvailabilityRule> rules = List.of(rule(DayOfWeek.THURSDAY, 9, 0, 13, 0));
+        Instant now = date.minusDays(1).atStartOfDay(zone).toInstant();
+        List<SlotGenerationEngine.BookingWindow> bookings = List.of(
+                new SlotGenerationEngine.BookingWindow(
+                        date.atTime(10, 0).atZone(zone).toInstant(),
+                        date.atTime(10, 30).atZone(zone).toInstant()),
+                new SlotGenerationEngine.BookingWindow(
+                        date.atTime(12, 0).atZone(zone).toInstant(),
+                        date.atTime(12, 30).atZone(zone).toInstant()));
+
+        List<SlotGenerationEngine.SlotUtc> slots = SlotGenerationEngine.compute(
+                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), now));
+
+        assertEquals(2, slots.size());
+        assertEquals(date.atTime(9, 0).atZone(zone).toInstant(), slots.get(0).start());
+        assertEquals(date.atTime(9, 30).atZone(zone).toInstant(), slots.get(0).end());
+        assertEquals(date.atTime(11, 0).atZone(zone).toInstant(), slots.get(1).start());
+        assertEquals(date.atTime(11, 30).atZone(zone).toInstant(), slots.get(1).end());
+    }
+
     private static AvailabilityRule rule(DayOfWeek day, int sh, int sm, int eh, int em) {
         return AvailabilityRule.builder()
                 .id(UUID.randomUUID())

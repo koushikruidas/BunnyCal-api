@@ -15,7 +15,52 @@ import java.util.Objects;
 
 public final class SlotGenerationEngine {
 
+    private static final int MAX_SLOTS_PER_DAY = 200;
+
     private SlotGenerationEngine() {}
+
+    public static List<SlotUtc> compute(SlotInput input) {
+        Objects.requireNonNull(input, "input is required");
+        Objects.requireNonNull(input.date(), "date is required");
+        Objects.requireNonNull(input.zoneId(), "zoneId is required");
+        Objects.requireNonNull(input.eventType(), "eventType is required");
+        Objects.requireNonNull(input.now(), "now is required");
+
+        List<AvailabilityRule> safeRules = input.rules() == null ? List.of() : input.rules();
+        if (safeRules.isEmpty()) {
+            return List.of();
+        }
+
+        validateEventType(input.eventType());
+
+        ZonedDateTime dayStart = input.date().atStartOfDay(input.zoneId());
+        ZonedDateTime dayEnd = dayStart.plusDays(1);
+
+        List<TimeInterval> baseIntervals = buildBaseIntervals(dayStart, dayEnd, safeRules);
+        List<TimeInterval> effectiveIntervals = applyOverride(dayStart, dayEnd, input.override(), baseIntervals);
+        List<TimeInterval> normalizedAvailability = IntervalUtils.normalize(effectiveIntervals);
+
+        List<TimeInterval> candidateSlots = generateGridSlots(normalizedAvailability, input.eventType(), dayStart);
+
+        List<TimeInterval> dbBusy = toBusyIntervals(dayStart, dayEnd, input.bookings(), input.zoneId());
+        List<TimeInterval> withoutDbConflicts = removeOverlaps(candidateSlots, dbBusy);
+
+        List<TimeInterval> calendarBusy = clipToDay(dayStart, dayEnd, input.calendarBusy() == null ? List.of() : input.calendarBusy());
+        List<TimeInterval> withoutCalendarConflicts = removeOverlaps(withoutDbConflicts, calendarBusy);
+
+        List<TimeInterval> withoutBufferConflicts = applyBufferFilter(
+                withoutCalendarConflicts,
+                input.eventType(),
+                IntervalUtils.normalize(mergeLists(dbBusy, calendarBusy)));
+
+        List<TimeInterval> constrainedSlots = applyConstraints(withoutBufferConflicts, input.eventType(), input.now());
+
+        return constrainedSlots.stream()
+                .sorted(Comparator.comparing(TimeInterval::start).thenComparing(TimeInterval::end))
+                .limit(MAX_SLOTS_PER_DAY)
+                .map(slot -> new SlotUtc(slot.start().toInstant(), slot.end().toInstant()))
+                .toList();
+    }
 
     public static List<SlotUtc> generateSlotsForDay(
             LocalDate date,
@@ -26,63 +71,7 @@ public final class SlotGenerationEngine {
             List<BookingWindow> bookings,
             List<TimeInterval> calendarBusy,
             Instant now) {
-
-        Objects.requireNonNull(date, "date is required");
-        Objects.requireNonNull(zoneId, "zoneId is required");
-        Objects.requireNonNull(eventType, "eventType is required");
-        Objects.requireNonNull(now, "now is required");
-
-        // Step 1: Preconditions (no rules -> empty)
-        List<AvailabilityRule> safeRules = rules == null ? List.of() : rules;
-        if (safeRules.isEmpty()) {
-            return List.of();
-        }
-
-        validateEventType(eventType);
-
-        // Critical anchor requirement: day interval using startOfDay + plusDays(1)
-        ZonedDateTime dayStart = date.atStartOfDay(zoneId);
-        ZonedDateTime dayEnd = dayStart.plusDays(1);
-
-        // Step 2: Build base intervals
-        List<TimeInterval> baseIntervals = buildBaseIntervals(dayStart, dayEnd, safeRules);
-
-        // Step 3: Apply override (replace day)
-        List<TimeInterval> effectiveIntervals = applyOverride(dayStart, dayEnd, override, baseIntervals);
-
-        // Step 4: Normalize
-        List<TimeInterval> normalizedAvailability = IntervalUtils.normalize(effectiveIntervals);
-
-        // Step 5: Subtract busy time
-        List<TimeInterval> bookingBusyIntervals = toBusyIntervals(dayStart, dayEnd, bookings, eventType, zoneId);
-        List<TimeInterval> calendarBusyIntervals = clipToDay(dayStart, dayEnd, calendarBusy == null ? List.of() : calendarBusy);
-
-        List<TimeInterval> busy = new ArrayList<>(bookingBusyIntervals.size() + calendarBusyIntervals.size());
-        busy.addAll(bookingBusyIntervals);
-        busy.addAll(calendarBusyIntervals);
-
-        List<TimeInterval> availableAfterBusy = IntervalUtils.subtract(normalizedAvailability, busy);
-
-        // Step 6: Generate slots (grid-aligned)
-        List<TimeInterval> generatedSlots = generateGridSlots(availableAfterBusy, eventType, dayStart);
-
-        // Step 7: Apply minNotice / maxAdvance
-        List<TimeInterval> constrainedSlots = applyConstraints(generatedSlots, eventType, now);
-
-        // Step 8: Convert to UTC
-        List<SlotUtc> utcSlots = constrainedSlots.stream()
-                .sorted(Comparator.comparing(TimeInterval::start).thenComparing(TimeInterval::end))
-                .map(slot -> new SlotUtc(slot.start().toInstant(), slot.end().toInstant()))
-                .toList();
-
-        // Step 9: Sanity check
-        Duration totalSlotTime = sumDuration(constrainedSlots);
-        Duration totalAvailableTime = sumDuration(availableAfterBusy);
-        if (totalSlotTime.compareTo(totalAvailableTime) > 0) {
-            throw new IllegalStateException("Generated slot time exceeds available time.");
-        }
-
-        return utcSlots;
+        return compute(new SlotInput(date, zoneId, rules, override, eventType, bookings, calendarBusy, now));
     }
 
     private static void validateEventType(EventType eventType) {
@@ -174,7 +163,6 @@ public final class SlotGenerationEngine {
             ZonedDateTime dayStart,
             ZonedDateTime dayEnd,
             List<BookingWindow> bookings,
-            EventType eventType,
             ZoneId zoneId) {
         List<BookingWindow> safeBookings = bookings == null ? List.of() : bookings;
         List<TimeInterval> result = new ArrayList<>();
@@ -184,11 +172,8 @@ public final class SlotGenerationEngine {
                 continue;
             }
 
-            // Mandatory formula:
-            // busyStart = booking.start - bufferBefore
-            // busyEnd   = booking.end + bufferAfter
-            Instant busyStartInstant = booking.start().minus(eventType.getBufferBefore());
-            Instant busyEndInstant = booking.end().plus(eventType.getBufferAfter());
+            Instant busyStartInstant = booking.start();
+            Instant busyEndInstant = booking.end();
 
             ZonedDateTime busyStart = busyStartInstant.atZone(zoneId);
             ZonedDateTime busyEnd = busyEndInstant.atZone(zoneId);
@@ -216,6 +201,84 @@ public final class SlotGenerationEngine {
         }
 
         return clipped;
+    }
+
+    private static List<TimeInterval> mergeLists(List<TimeInterval> first, List<TimeInterval> second) {
+        List<TimeInterval> merged = new ArrayList<>(first.size() + second.size());
+        merged.addAll(first);
+        merged.addAll(second);
+        return merged;
+    }
+
+    private static List<TimeInterval> removeOverlaps(List<TimeInterval> slots, List<TimeInterval> blockers) {
+        if (slots.isEmpty() || blockers.isEmpty()) {
+            return slots;
+        }
+
+        List<TimeInterval> sortedSlots = slots.stream()
+                .sorted(Comparator.comparing(TimeInterval::start).thenComparing(TimeInterval::end))
+                .toList();
+        List<TimeInterval> sortedBlockers = IntervalUtils.normalize(blockers);
+
+        List<TimeInterval> kept = new ArrayList<>();
+        int j = 0;
+
+        for (TimeInterval slot : sortedSlots) {
+            while (j < sortedBlockers.size() && !sortedBlockers.get(j).end().isAfter(slot.start())) {
+                j++;
+            }
+
+            boolean overlaps = false;
+            if (j < sortedBlockers.size()) {
+                TimeInterval candidate = sortedBlockers.get(j);
+                overlaps = candidate.start().isBefore(slot.end()) && candidate.end().isAfter(slot.start());
+            }
+
+            if (!overlaps) {
+                kept.add(slot);
+            }
+        }
+
+        return List.copyOf(kept);
+    }
+
+    private static List<TimeInterval> applyBufferFilter(
+            List<TimeInterval> slots,
+            EventType eventType,
+            List<TimeInterval> blockers) {
+        if (slots.isEmpty() || blockers.isEmpty()) {
+            return slots;
+        }
+
+        Duration bufferBefore = eventType.getBufferBefore();
+        Duration bufferAfter = eventType.getBufferAfter();
+
+        List<TimeInterval> sortedSlots = slots.stream()
+                .sorted(Comparator.comparing(TimeInterval::start).thenComparing(TimeInterval::end))
+                .toList();
+        List<TimeInterval> sortedBlockers = IntervalUtils.normalize(blockers);
+
+        List<TimeInterval> kept = new ArrayList<>();
+        int j = 0;
+        for (TimeInterval slot : sortedSlots) {
+            TimeInterval bufferedSlot = new TimeInterval(slot.start().minus(bufferBefore), slot.end().plus(bufferAfter));
+
+            while (j < sortedBlockers.size() && !sortedBlockers.get(j).end().isAfter(bufferedSlot.start())) {
+                j++;
+            }
+
+            boolean overlaps = false;
+            if (j < sortedBlockers.size()) {
+                TimeInterval blocker = sortedBlockers.get(j);
+                overlaps = blocker.start().isBefore(bufferedSlot.end()) && blocker.end().isAfter(bufferedSlot.start());
+            }
+
+            if (!overlaps) {
+                kept.add(slot);
+            }
+        }
+
+        return List.copyOf(kept);
     }
 
     private static List<TimeInterval> generateGridSlots(
@@ -266,15 +329,17 @@ public final class SlotGenerationEngine {
                 .toList();
     }
 
-    private static Duration sumDuration(List<TimeInterval> intervals) {
-        Duration total = Duration.ZERO;
-        for (TimeInterval interval : intervals) {
-            total = total.plus(Duration.between(interval.start(), interval.end()));
-        }
-        return total;
-    }
-
     public record BookingWindow(Instant start, Instant end) {}
 
     public record SlotUtc(Instant start, Instant end) {}
+
+    public record SlotInput(
+            LocalDate date,
+            ZoneId zoneId,
+            List<AvailabilityRule> rules,
+            AvailabilityOverride override,
+            EventType eventType,
+            List<BookingWindow> bookings,
+            List<TimeInterval> calendarBusy,
+            Instant now) {}
 }
