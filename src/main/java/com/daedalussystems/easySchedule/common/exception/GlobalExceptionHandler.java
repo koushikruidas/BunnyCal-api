@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.common.exception;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import java.util.Optional;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -16,6 +17,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(CustomException.class)
     public ResponseEntity<ApiResponse<Void>> handleCustomException(CustomException ex) {
         HttpStatus status = mapStatus(ex.getErrorCode());
+        if (ex.getErrorCode() == ErrorCode.IDEMPOTENCY_IN_PROGRESS) {
+            return ResponseEntity.status(status)
+                    .header(HttpHeaders.RETRY_AFTER, "1")
+                    .body(ApiResponse.error(ex.getErrorCode(), ex.getMessage()));
+        }
         return ResponseEntity.status(status).body(ApiResponse.error(ex.getErrorCode(), ex.getMessage()));
     }
 
@@ -37,6 +43,14 @@ public class GlobalExceptionHandler {
 
     private HttpStatus mapStatus(ErrorCode errorCode) {
         switch (errorCode) {
+            case IDEMPOTENCY_KEY_REQUIRED:
+                return HttpStatus.BAD_REQUEST;
+            case IDEMPOTENCY_HASH_MISMATCH:
+                return HttpStatus.UNPROCESSABLE_ENTITY;
+            case IDEMPOTENCY_IN_PROGRESS:
+                return HttpStatus.CONFLICT;
+            case IDEMPOTENCY_RACE:
+                return HttpStatus.SERVICE_UNAVAILABLE;
             case UNAUTHORIZED:
             case TOKEN_EXPIRED:
             case TOKEN_INVALID:

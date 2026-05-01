@@ -124,7 +124,7 @@ class SlotServiceTest {
         verify(eventTypeRepository, never()).findByIdAndUserId(any(), any());
         verify(slotCacheVersionService, never()).getCurrentVersion(any());
         verify(slotCacheService, never()).getOrCompute(any(), any(), any(), any(Long.class), any());
-        verify(dbClockRepository, never()).dbNow();
+        verify(dbClockRepository, never()).now();
     }
 
     @Test
@@ -167,7 +167,7 @@ class SlotServiceTest {
         assertFalse(response.degraded());
 
         // Fix #2: DB clock must NOT be invoked on cache hit.
-        verify(dbClockRepository, never()).dbNow();
+        verify(dbClockRepository, never()).now();
         // Fix #1: with cache hit, supplier never runs, so no second version read.
         verify(slotCacheVersionService, times(1)).getCurrentVersion(userId);
         // No DB fetches on cache hit.
@@ -185,7 +185,7 @@ class SlotServiceTest {
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(7L);
 
         Instant dbNow = Instant.parse("2026-05-04T00:00:00Z");
-        when(dbClockRepository.dbNow()).thenReturn(dbNow);
+        when(dbClockRepository.now()).thenReturn(dbNow);
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date))
@@ -209,7 +209,7 @@ class SlotServiceTest {
         SlotResponse response = slotService.getSlots(new SlotRequest(userId, eventTypeId, date));
 
         // Fix #2: DB clock invoked exactly once, and only inside the supplier.
-        verify(dbClockRepository, times(1)).dbNow();
+        verify(dbClockRepository, times(1)).now();
         // Fix #1: version read at least twice — once before cache call (V1), once after data fetch (V2).
         verify(slotCacheVersionService, atLeastOnce()).getCurrentVersion(userId);
         // Engine output: rule MONDAY 09:00-10:00 + 30-min duration + 30-min interval → 2 slots.
@@ -241,7 +241,7 @@ class SlotServiceTest {
                 .thenReturn(7L)  // step 4: snapshot
                 .thenReturn(8L); // step 6.9: re-check after data fetch
 
-        when(dbClockRepository.dbNow()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
+        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date))
@@ -284,7 +284,7 @@ class SlotServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
-        when(dbClockRepository.dbNow()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
+        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
@@ -315,7 +315,7 @@ class SlotServiceTest {
                 bookingRepository);
         order.verify(slotCacheVersionService).getCurrentVersion(userId);
         order.verify(slotCacheService).getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any());
-        order.verify(dbClockRepository).dbNow();
+        order.verify(dbClockRepository).now();
         order.verify(availabilityRuleRepository).findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId);
         order.verify(availabilityOverrideRepository).findByUserIdAndDate(userId, date);
         order.verify(bookingRepository).findByUserIdAndStartTimeLessThanAndEndTimeGreaterThan(
@@ -329,7 +329,7 @@ class SlotServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
-        when(dbClockRepository.dbNow()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
+        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
 
         // Use a wider rule (09:00-12:00) so the engine produces 6 slots.
         AvailabilityRule wideRule = new AvailabilityRule();
@@ -375,7 +375,7 @@ class SlotServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
-        when(dbClockRepository.dbNow()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
+        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
@@ -427,7 +427,7 @@ class SlotServiceTest {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
-        when(dbClockRepository.dbNow()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
+        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
 
         // Invoke supplier on cache miss to surface the timezone parsing error.
         when(slotCacheService.getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any()))

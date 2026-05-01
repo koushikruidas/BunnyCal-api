@@ -116,7 +116,7 @@ public class SlotService {
 
     private ComputeOutcome compute(User host, EventType eventType, LocalDate date, long snapshotVersion) {
         // 6.1 DB clock — fetched only on cache miss.
-        Instant now = dbClockRepository.dbNow();
+        Instant now = dbClockRepository.now();
 
         // 6.2 Resolve host timezone.
         ZoneId zoneId;

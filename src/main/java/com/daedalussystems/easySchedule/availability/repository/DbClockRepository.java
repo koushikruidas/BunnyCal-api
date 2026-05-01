@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.availability.repository;
 
+import com.daedalussystems.easySchedule.common.time.TimeSource;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.sql.Timestamp;
@@ -10,12 +11,13 @@ import java.time.ZoneOffset;
 import org.springframework.stereotype.Repository;
 
 @Repository
-public class DbClockRepository {
+public class DbClockRepository implements TimeSource {
 
     @PersistenceContext
     private EntityManager entityManager;
 
-    public Instant dbNow() {
+    @Override
+    public Instant now() {
         Object result = entityManager.createNativeQuery("SELECT now()").getSingleResult();
 
         if (result instanceof Instant instant) {

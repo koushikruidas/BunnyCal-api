@@ -15,7 +15,16 @@ public enum ErrorCode {
     INVALID_TIMEZONE("INVALID_TIMEZONE", "Timezone is invalid."),
     TOKEN_EXPIRED("TOKEN_EXPIRED", "Token has expired."),
     TOKEN_INVALID("TOKEN_INVALID", "Token is invalid."),
-    OAUTH_INVALID_RESPONSE("OAUTH_INVALID_RESPONSE", "Oauth response is invalid");
+    OAUTH_INVALID_RESPONSE("OAUTH_INVALID_RESPONSE", "Oauth response is invalid"),
+    IDEMPOTENCY_KEY_REQUIRED("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required."),
+    IDEMPOTENCY_HASH_MISMATCH("IDEMPOTENCY_HASH_MISMATCH",
+            "Idempotency-Key was previously used with a different request payload."),
+    IDEMPOTENCY_IN_PROGRESS("IDEMPOTENCY_IN_PROGRESS",
+            "A request with this Idempotency-Key is still being processed. Retry shortly."),
+    IDEMPOTENCY_RACE("IDEMPOTENCY_RACE",
+            "Idempotency-Key was reaped during processing. Retry with a new key."),
+    IDEMPOTENCY_RESPONSE_TOO_LARGE("IDEMPOTENCY_RESPONSE_TOO_LARGE",
+            "Response too large to cache for idempotency replay.");
 
     private final String code;
     private final String message;
