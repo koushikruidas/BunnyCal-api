@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.availability.booking.domain;
+package com.daedalussystems.easySchedule.booking.domain;
 
 import com.daedalussystems.easySchedule.common.audit.BaseEntity;
 import jakarta.persistence.Column;

@@ -1,6 +1,6 @@
-package com.daedalussystems.easySchedule.availability.booking.repository;
+package com.daedalussystems.easySchedule.booking.repository;
 
-import com.daedalussystems.easySchedule.availability.booking.domain.Booking;
+import com.daedalussystems.easySchedule.booking.domain.Booking;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;

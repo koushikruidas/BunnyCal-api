@@ -1,8 +1,8 @@
-package com.daedalussystems.easySchedule.availability.booking.service;
+package com.daedalussystems.easySchedule.booking.service;
 
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
-import com.daedalussystems.easySchedule.availability.booking.domain.Booking;
-import com.daedalussystems.easySchedule.availability.booking.repository.BookingRepository;
+import com.daedalussystems.easySchedule.booking.domain.Booking;
+import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
