@@ -48,6 +48,7 @@ public class GlobalExceptionHandler {
             case IDEMPOTENCY_HASH_MISMATCH:
                 return HttpStatus.UNPROCESSABLE_ENTITY;
             case IDEMPOTENCY_IN_PROGRESS:
+            case SLOT_ALREADY_BOOKED:
                 return HttpStatus.CONFLICT;
             case IDEMPOTENCY_RACE:
                 return HttpStatus.SERVICE_UNAVAILABLE;

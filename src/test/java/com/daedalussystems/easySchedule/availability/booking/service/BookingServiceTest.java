@@ -15,9 +15,11 @@ import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.service.BookingService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.dao.DataIntegrityViolationException;
 
 class BookingServiceTest {
 
@@ -46,12 +49,15 @@ class BookingServiceTest {
     @Mock
     private SlotCacheService slotCacheService;
 
+    @Mock
+    private OutboxPublisher outboxPublisher;
+
     private BookingService bookingService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        bookingService = new BookingService(userRepository, bookingRepository, slotCacheService);
+        bookingService = new BookingService(userRepository, bookingRepository, slotCacheService, outboxPublisher);
     }
 
     @Test
@@ -62,7 +68,7 @@ class BookingServiceTest {
         Instant end = Instant.parse("2026-04-30T10:30:00Z");
 
         when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build()));
-        when(bookingRepository.findByUserIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start)).thenReturn(List.of());
+        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start)).thenReturn(List.of());
         when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> {
             Booking b = invocation.getArgument(0);
             b.setId(UUID.randomUUID());
@@ -73,7 +79,7 @@ class BookingServiceTest {
 
         assertNotNull(saved.getId());
         verify(userRepository, times(1)).findByIdForUpdate(userId);
-        verify(bookingRepository, times(1)).findByUserIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start);
+        verify(bookingRepository, times(1)).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start);
         verify(bookingRepository, times(1)).save(any(Booking.class));
         verify(slotCacheService, times(1)).invalidateUser(userId);
     }
@@ -86,14 +92,47 @@ class BookingServiceTest {
         Instant end = Instant.parse("2026-04-30T10:30:00Z");
 
         when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build()));
-        when(bookingRepository.findByUserIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start))
-                .thenReturn(List.of(Booking.builder().id(UUID.randomUUID()).userId(userId).eventTypeId(eventTypeId).startTime(start).endTime(end).build()));
+        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start))
+                .thenReturn(List.of(Booking.builder().id(UUID.randomUUID()).hostId(userId).eventTypeId(eventTypeId).startTime(start).endTime(end).build()));
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> bookingService.createBooking(userId, eventTypeId, start, end));
 
-        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
+        assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode());
         verify(bookingRepository, times(0)).save(any(Booking.class));
+    }
+
+    // Proves BookingService.isOverlapExclusionViolation walks the cause chain,
+    // finds SQLState 23P01 + constraint name, and maps to SLOT_ALREADY_BOOKED.
+    // The pre-check returns empty (no overlap seen), so save() is reached —
+    // simulating a racer that slipped past the application-level pre-check and
+    // was stopped by the EXCLUDE constraint.
+    @Test
+    void createBooking_dbExclusionConstraintFires_mapsToSlotAlreadyBooked() {
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-04-30T10:00:00Z");
+        Instant end   = Instant.parse("2026-04-30T10:30:00Z");
+
+        when(userRepository.findByIdForUpdate(hostId))
+                .thenReturn(Optional.of(User.builder().id(hostId).email("h@e.com").name("H").timezone("UTC").build()));
+        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(hostId, end, start))
+                .thenReturn(List.of()); // pre-check passes; constraint fires on save
+
+        // Wrap a 23P01 SQLException (PSQLException subclass in production) so
+        // the service's cause-chain walk can find it. Using plain SQLException
+        // here because PSQLException is only on the runtime classpath.
+        SQLException psqlCause = new SQLException(
+                "ERROR: conflicting key value violates exclusion constraint \"bookings_no_overlap\"",
+                "23P01");
+        when(bookingRepository.save(any(Booking.class)))
+                .thenThrow(new DataIntegrityViolationException("constraint violation", psqlCause));
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> bookingService.createBooking(hostId, eventTypeId, start, end));
+
+        assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode());
+        verify(bookingRepository, times(1)).save(any(Booking.class));
     }
 
     @Test
@@ -125,7 +164,7 @@ class BookingServiceTest {
                 simulatedDbUserRowLock.unlock();
             }
             return overlaps;
-        }).when(bookingRepository).findByUserIdAndStartTimeLessThanAndEndTimeGreaterThan(eq(userId), eq(end), eq(start));
+        }).when(bookingRepository).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(eq(userId), eq(end), eq(start));
 
         doAnswer(invocation -> {
             Booking booking = invocation.getArgument(0);

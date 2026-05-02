@@ -190,7 +190,11 @@ public class IdempotencyService {
         return switch (errorCode) {
             case IDEMPOTENCY_KEY_REQUIRED, VALIDATION_ERROR -> 400;
             case IDEMPOTENCY_HASH_MISMATCH -> 422;
-            case IDEMPOTENCY_IN_PROGRESS -> 409;
+            // SLOT_ALREADY_BOOKED must map to a < 500 status here so
+            // shouldCacheFailure() caches it. Otherwise a same-key
+            // retry would re-execute the booking work instead of
+            // replaying the cached 409.
+            case IDEMPOTENCY_IN_PROGRESS, SLOT_ALREADY_BOOKED -> 409;
             case UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_INVALID -> 401;
             case FORBIDDEN -> 403;
             case RESOURCE_NOT_FOUND -> 404;

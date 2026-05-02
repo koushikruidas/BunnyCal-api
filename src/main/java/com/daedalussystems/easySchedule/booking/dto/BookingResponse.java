@@ -6,7 +6,7 @@ import java.util.UUID;
 
 public record BookingResponse(
         UUID id,
-        UUID userId,
+        UUID hostId,
         UUID eventTypeId,
         Instant startTime,
         Instant endTime,
@@ -15,7 +15,7 @@ public record BookingResponse(
     public static BookingResponse from(Booking booking) {
         return new BookingResponse(
                 booking.getId(),
-                booking.getUserId(),
+                booking.getHostId(),
                 booking.getEventTypeId(),
                 booking.getStartTime(),
                 booking.getEndTime(),

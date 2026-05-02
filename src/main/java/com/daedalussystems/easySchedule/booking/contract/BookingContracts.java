@@ -91,6 +91,40 @@ public final class BookingContracts {
     public static final Duration IDEMPOTENCY_POLL_MAX = Duration.ofSeconds(1);
     public static final int MAX_CACHED_RESPONSE_BYTES = 16 * 1024;
 
+    // ──────────────────────────────────────────────────────────────────
+    // Outbox worker constants — govern reliable async event delivery.
+    // ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Total attempts (1 initial + retries) before an outbox event is
+     * permanently marked FAILED and routed to a dead-letter sink.
+     */
+    public static final int OUTBOX_MAX_ATTEMPTS = 10;
+
+    /**
+     * Delay before the first retry of a failed outbox dispatch.
+     * Subsequent retries grow exponentially up to {@link #OUTBOX_MAX_BACKOFF}.
+     * Formula: {@code min(OUTBOX_INITIAL_BACKOFF * 2^(attemptCount-1), OUTBOX_MAX_BACKOFF)}.
+     */
+    public static final Duration OUTBOX_INITIAL_BACKOFF = Duration.ofMillis(500);
+
+    /**
+     * Upper bound on the exponential-backoff delay between outbox retries.
+     */
+    public static final Duration OUTBOX_MAX_BACKOFF = Duration.ofSeconds(30);
+
+    /**
+     * How long a row may remain in PROCESSING status before the reaper
+     * considers the owning worker dead and reclaims the row.
+     */
+    public static final Duration OUTBOX_PROCESSING_TIMEOUT = Duration.ofSeconds(60);
+
+    /**
+     * Maximum rows claimed per worker poll cycle. Limits the amount of work
+     * done in a single poll so no single worker starves others.
+     */
+    public static final int OUTBOX_BATCH_SIZE = 50;
+
     static {
         if (IDEMPOTENCY_POLL_TOTAL.compareTo(IDEMPOTENCY_PROCESSING_TIMEOUT) >= 0) {
             throw new IllegalStateException("IDEMPOTENCY_POLL_TOTAL must be less than IDEMPOTENCY_PROCESSING_TIMEOUT");

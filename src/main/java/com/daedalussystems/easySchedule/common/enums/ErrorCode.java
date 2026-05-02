@@ -24,7 +24,9 @@ public enum ErrorCode {
     IDEMPOTENCY_RACE("IDEMPOTENCY_RACE",
             "Idempotency-Key was reaped during processing. Retry with a new key."),
     IDEMPOTENCY_RESPONSE_TOO_LARGE("IDEMPOTENCY_RESPONSE_TOO_LARGE",
-            "Response too large to cache for idempotency replay.");
+            "Response too large to cache for idempotency replay."),
+    SLOT_ALREADY_BOOKED("SLOT_ALREADY_BOOKED",
+            "Requested time overlaps an existing booking for this host.");
 
     private final String code;
     private final String message;

@@ -39,14 +39,17 @@ public class BookingController {
         }
 
         String requestHash = RequestHasher.hash(request, objectMapper);
+        // Known debt: idempotency scope is the auth principal, not the
+        // host. The current API uses request.hostId() for both — treat
+        // as a separate refactor (auth subject vs. booking target).
         IdempotencyOutcome outcome = idempotencyService.execute(
                 idempotencyKey,
-                request.userId(),
+                request.hostId(),
                 ROUTE,
                 requestHash,
                 () -> {
                     Booking saved = bookingService.createBooking(
-                            request.userId(),
+                            request.hostId(),
                             request.eventTypeId(),
                             request.startTime(),
                             request.endTime());

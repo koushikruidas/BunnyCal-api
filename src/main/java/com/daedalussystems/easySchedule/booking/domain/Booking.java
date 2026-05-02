@@ -6,6 +6,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.IdClass;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
@@ -22,10 +23,11 @@ import lombok.Setter;
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
+@IdClass(BookingId.class)
 @Table(
         name = "bookings",
         indexes = {
-            @Index(name = "idx_bookings_user_start_end", columnList = "user_id,start_time,end_time"),
+            @Index(name = "idx_bookings_host_start", columnList = "host_id,start_time"),
             @Index(name = "idx_bookings_event_type", columnList = "event_type_id")
         })
 public class Booking extends BaseEntity {
@@ -34,8 +36,9 @@ public class Booking extends BaseEntity {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(name = "user_id", nullable = false)
-    private UUID userId;
+    @Id
+    @Column(name = "host_id", nullable = false)
+    private UUID hostId;
 
     @Column(name = "event_type_id", nullable = false)
     private UUID eventTypeId;
