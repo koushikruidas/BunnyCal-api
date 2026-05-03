@@ -1,0 +1,45 @@
+spring:
+  profiles:
+    active: test
+
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+  task:
+    scheduling:
+      enabled: false   # 🔥 CRITICAL: disables @Scheduled (fixes your flakiness)
+
+  docker:
+    compose:
+      enabled: false
+
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: test
+            client-secret: test
+
+management:
+  metrics:
+    export:
+      otlp:
+        enabled: false   # avoid external calls in tests
+
+jwt:
+  secret: test-secret-key-which-is-long-enough-for-tests
+  expiration: 3600000
+
+auth:
+  refresh-token:
+    bytes: 48
+    ttl-days: 1

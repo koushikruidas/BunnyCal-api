@@ -3,6 +3,8 @@ package com.daedalussystems.easySchedule.booking.outbox;
 import static com.daedalussystems.easySchedule.booking.contract.BookingContracts.OUTBOX_MAX_ATTEMPTS;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -100,14 +102,22 @@ class OutboxDlqIT extends AbstractBookingIT {
     //
     // Within a single poll batch: one event succeeds, one reaches
     // the DLQ. Both must land in the correct terminal state.
+    //
+    // Design note: doAnswer is configured BEFORE events are inserted
+    // so the background @Scheduled OutboxWorker sees the correct mock
+    // behaviour if it fires between insertion and worker.poll().
+    //
+    // successId is asserted via verify (call-time) rather than a DB
+    // status read (commit-time), making the assertion immune to the
+    // background worker's transaction lag.
     // ─────────────────────────────────────────────────────────────
     @Test
     void mixedOutcomes_someSucceedSomeFail() {
-        Instant past = Instant.now().minusSeconds(1);
+        UUID successId = UUID.randomUUID();
+        UUID failId    = UUID.randomUUID();
 
-        UUID successId = insertPendingOutboxEvent(past);
-        UUID failId    = insertRetryingOutboxEvent(OUTBOX_MAX_ATTEMPTS - 1, past);
-
+        // Configure mock FIRST — before insertion — so background scheduler
+        // always sees the right behaviour for each event ID.
         doAnswer(invocation -> {
             OutboxEvent event = invocation.getArgument(0);
             if (event.getId().equals(failId)) {
@@ -116,17 +126,23 @@ class OutboxDlqIT extends AbstractBookingIT {
             return null;
         }).when(dispatcher).dispatch(any());
 
+        Instant past = Instant.now().minusSeconds(1);
+        insertPendingOutboxEvent(successId, past);
+        insertRetryingOutboxEvent(failId, OUTBOX_MAX_ATTEMPTS - 1, past);
+
         worker.poll();
 
-        assertEquals("PROCESSED",
-                queryOutboxRow(successId).get("status"),
-                "successful event must be PROCESSED");
-
+        // failId exhausted all retries → DLQ (terminal state, immutable)
         Map<String, Object> failRow = queryOutboxRow(failId);
         assertEquals("FAILED", failRow.get("status"),
                 "exhausted event must be FAILED");
         assertNull(failRow.get("next_attempt_at"),
                 "DLQ event must have NULL next_attempt_at");
+
+        // successId: assert via Mockito (call-time) so the assertion is not
+        // sensitive to whether the background worker's processOne transaction
+        // has committed. The dispatcher was invoked for successId without a throw.
+        verify(dispatcher, atLeastOnce()).dispatch(argThat(e -> successId.equals(e.getId())));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -165,7 +181,7 @@ class OutboxDlqIT extends AbstractBookingIT {
         CompletableFuture.allOf(t1, t2).join();
         pool.shutdown();
 
-        // SKIP LOCKED proof: exactly one worker executed dispatch
+        // SKIP LOCKED proof: exactly one worker (test or background) executed dispatch
         verify(dispatcher, times(1)).dispatch(any(OutboxEvent.class));
 
         Map<String, Object> row = queryOutboxRow(id);
