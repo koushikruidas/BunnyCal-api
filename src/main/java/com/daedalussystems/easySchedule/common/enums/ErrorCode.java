@@ -26,7 +26,9 @@ public enum ErrorCode {
     IDEMPOTENCY_RESPONSE_TOO_LARGE("IDEMPOTENCY_RESPONSE_TOO_LARGE",
             "Response too large to cache for idempotency replay."),
     SLOT_ALREADY_BOOKED("SLOT_ALREADY_BOOKED",
-            "Requested time overlaps an existing booking for this host.");
+            "Requested time overlaps an existing booking for this host."),
+    TOO_MANY_PENDING_BOOKINGS("TOO_MANY_PENDING_BOOKINGS",
+            "Too many pending bookings overlap this time window. Try again later.");
 
     private final String code;
     private final String message;

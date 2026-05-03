@@ -50,6 +50,8 @@ public class GlobalExceptionHandler {
             case IDEMPOTENCY_IN_PROGRESS:
             case SLOT_ALREADY_BOOKED:
                 return HttpStatus.CONFLICT;
+            case TOO_MANY_PENDING_BOOKINGS:
+                return HttpStatus.TOO_MANY_REQUESTS;
             case IDEMPOTENCY_RACE:
                 return HttpStatus.SERVICE_UNAVAILABLE;
             case UNAUTHORIZED:

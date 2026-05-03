@@ -23,6 +23,7 @@ public class BookingService {
     // bookings collide on the same host's time range.
     private static final String SQLSTATE_EXCLUSION_VIOLATION = "23P01";
     private static final String OVERLAP_CONSTRAINT = "bookings_no_overlap";
+    static final int MAX_PENDING_PER_HOST_PER_WINDOW = 3;
 
     private final UserRepository userRepository;
     private final BookingRepository bookingRepository;
@@ -53,6 +54,14 @@ public class BookingService {
         // reflects the auth domain — "host" is modeled as a User here.
         userRepository.findByIdForUpdate(hostId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));
+
+        // Phantom-pending guard. SELECT FOR UPDATE above serialises concurrent
+        // requests, so this count is stable within the transaction.
+        long pendingCount = bookingRepository.countOverlappingPending(
+                hostId, requestedStart, requestedEnd);
+        if (pendingCount >= MAX_PENDING_PER_HOST_PER_WINDOW) {
+            throw new CustomException(ErrorCode.TOO_MANY_PENDING_BOOKINGS);
+        }
 
         // Application-level overlap pre-check. SAFETY NET only — the
         // authoritative enforcer is the bookings_no_overlap EXCLUDE
