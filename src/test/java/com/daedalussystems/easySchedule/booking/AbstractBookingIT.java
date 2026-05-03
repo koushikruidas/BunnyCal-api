@@ -101,6 +101,26 @@ public abstract class AbstractBookingIT {
         return id;
     }
 
+    protected UUID insertRetryingOutboxEvent(int attemptCount, Instant nextAttemptAt) {
+        UUID id = UUID.randomUUID();
+        Instant now = Instant.now();
+        jdbc.update("""
+                INSERT INTO outbox_events
+                    (id, aggregate_type, aggregate_id, event_type, payload,
+                     status, attempt_count, next_attempt_at, created_at, updated_at)
+                VALUES (?, 'Booking', ?, 'BOOKING_CREATED', '{}',
+                        'RETRYING', ?, ?, ?, ?)
+                """,
+                id, UUID.randomUUID(), attemptCount,
+                Timestamp.from(nextAttemptAt), Timestamp.from(now), Timestamp.from(now));
+        return id;
+    }
+
+    protected Map<String, Object> queryOutboxRow(UUID id) {
+        return jdbc.queryForMap(
+                "SELECT status, attempt_count, next_attempt_at FROM outbox_events WHERE id = ?", id);
+    }
+
     protected UUID insertProcessingOutboxEvent(int attemptCount, Instant at) {
         UUID id = UUID.randomUUID();
         jdbc.update("""

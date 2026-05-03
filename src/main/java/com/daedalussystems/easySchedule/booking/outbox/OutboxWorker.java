@@ -106,7 +106,8 @@ public class OutboxWorker {
 
                 if (nextAttempt >= OUTBOX_MAX_ATTEMPTS) {
                     event.setStatus(OutboxEventStatus.FAILED);
-                    log.error("outbox.event.failed.permanently id={} attempts={}", id, nextAttempt);
+                    event.setNextAttemptAt(null);
+                    log.error("outbox.event.dlq id={} attempts={}", id, nextAttempt);
                 } else {
                     // RETRYING (not PENDING) — distinguishes "has failed at least once"
                     // from "fresh event". Enables observability queries like
