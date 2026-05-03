@@ -7,7 +7,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- =====================================================
 -- USERS
 -- =====================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL UNIQUE,
     name VARCHAR(120) NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE users (
 -- =====================================================
 -- BOOKINGS
 -- =====================================================
-CREATE TABLE bookings (
+CREATE TABLE IF NOT EXISTS bookings (
     id UUID PRIMARY KEY,
     host_id UUID NOT NULL,
     event_type_id UUID NOT NULL,
@@ -41,7 +41,9 @@ CREATE TABLE bookings (
 
 -- Immediate (non-deferrable) so that EXCLUDE violations surface from
 -- bookingRepository.save(...) and BookingService can translate them to
--- SLOT_ALREADY_BOOKED. Matches production.
+-- SLOT_ALREADY_BOOKED. DROP+ADD is idempotent: safe on second-context
+-- startup because bookings is always empty at that point (TRUNCATE in @BeforeEach).
+ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_no_overlap;
 ALTER TABLE bookings ADD CONSTRAINT bookings_no_overlap
 EXCLUDE USING gist (
     (host_id::text) WITH =,
@@ -49,13 +51,13 @@ EXCLUDE USING gist (
 )
 WHERE (status IN ('PENDING','CONFIRMED'));
 
-CREATE INDEX idx_bookings_host_start
+CREATE INDEX IF NOT EXISTS idx_bookings_host_start
 ON bookings (host_id, start_time);
 
 -- =====================================================
 -- IDEMPOTENCY KEYS
 -- =====================================================
-CREATE TABLE idempotency_keys (
+CREATE TABLE IF NOT EXISTS idempotency_keys (
     id              UUID         PRIMARY KEY,
     key             VARCHAR(255) NOT NULL,
     user_id         UUID         NOT NULL,
@@ -74,7 +76,7 @@ CREATE TABLE idempotency_keys (
 -- =====================================================
 -- OUTBOX EVENTS
 -- =====================================================
-CREATE TABLE outbox_events (
+CREATE TABLE IF NOT EXISTS outbox_events (
     id              UUID         PRIMARY KEY,
     aggregate_type  VARCHAR(50)  NOT NULL,
     aggregate_id    UUID         NOT NULL,
@@ -88,13 +90,13 @@ CREATE TABLE outbox_events (
     updated_at      TIMESTAMPTZ  NOT NULL
 );
 
-CREATE INDEX idx_outbox_status_next_attempt
+CREATE INDEX IF NOT EXISTS idx_outbox_status_next_attempt
 ON outbox_events (status, next_attempt_at);
 
 -- =====================================================
 -- PROCESSED EVENTS
 -- =====================================================
-CREATE TABLE processed_events (
+CREATE TABLE IF NOT EXISTS processed_events (
     event_id UUID PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

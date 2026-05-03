@@ -26,7 +26,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
             updated_at = :now
         WHERE id IN (
             SELECT id FROM outbox_events
-            WHERE status = 'PENDING'
+            WHERE status IN ('PENDING', 'RETRYING')
               AND next_attempt_at <= :now
             ORDER BY created_at
             LIMIT :batchSize

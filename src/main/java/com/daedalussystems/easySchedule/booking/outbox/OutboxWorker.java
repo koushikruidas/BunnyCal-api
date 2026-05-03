@@ -68,8 +68,15 @@ public class OutboxWorker {
                 OutboxEvent event = outboxRepo.findById(id).orElse(null);
                 if (event == null || event.getStatus().isTerminal()) return null;
 
+                // Two-guard contract:
+                //   Guard 1 — SKIP LOCKED in claimBatch: prevents two live workers
+                //             from racing to claim the same row at the same moment.
+                //   Guard 2 — processed_events (ON CONFLICT DO NOTHING): the true
+                //             safety net. Even after a crash+recovery, if another
+                //             worker already committed the processed_events row the
+                //             dispatch is skipped here. SKIP LOCKED is an optimisation;
+                //             processed_events is the correctness guarantee.
                 int inserted = processedEventRepo.tryInsert(id, timeSource.now());
-
                 if (inserted > 0) {
                     dispatcher.dispatch(event);
                 }
@@ -101,7 +108,10 @@ public class OutboxWorker {
                     event.setStatus(OutboxEventStatus.FAILED);
                     log.error("outbox.event.failed.permanently id={} attempts={}", id, nextAttempt);
                 } else {
-                    event.setStatus(OutboxEventStatus.PENDING);
+                    // RETRYING (not PENDING) — distinguishes "has failed at least once"
+                    // from "fresh event". Enables observability queries like
+                    // "how many events are in backoff?" without a timestamp scan.
+                    event.setStatus(OutboxEventStatus.RETRYING);
 
                     long delay = computeBackoffMillis(nextAttempt);
                     event.setNextAttemptAt(timeSource.now().plusMillis(delay));
