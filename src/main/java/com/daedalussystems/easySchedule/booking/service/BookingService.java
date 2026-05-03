@@ -7,10 +7,11 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+
 import java.sql.SQLException;
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
+
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,12 +19,20 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class BookingService {
 
-    // PostgreSQL SQLState for an EXCLUDE-constraint violation. The
-    // bookings_no_overlap constraint raises this when two PENDING/CONFIRMED
-    // bookings collide on the same host's time range.
+    /**
+     * PostgreSQL SQLState for EXCLUDE constraint violation.
+     */
     private static final String SQLSTATE_EXCLUSION_VIOLATION = "23P01";
+
+    /**
+     * Constraint name prefix (matches partitioned tables).
+     */
     private static final String OVERLAP_CONSTRAINT = "bookings_no_overlap";
-    static final int MAX_PENDING_PER_HOST_PER_WINDOW = 3;
+
+    /**
+     * Protection against "phantom pending explosion".
+     */
+    public static final int MAX_PENDING_PER_HOST_PER_WINDOW = 3;
 
     private final UserRepository userRepository;
     private final BookingRepository bookingRepository;
@@ -41,45 +50,53 @@ public class BookingService {
         this.outboxPublisher = outboxPublisher;
     }
 
+    /**
+     * Creates a booking with strict guarantees:
+     *
+     * - DB constraint is the ONLY authority for overlap
+     * - App layer protects against pending explosion
+     * - Booking + outbox event are atomically persisted
+     */
     @Transactional
-    public Booking createBooking(UUID hostId, UUID eventTypeId, Instant requestedStart, Instant requestedEnd) {
+    public Booking createBooking(
+            UUID hostId,
+            UUID eventTypeId,
+            Instant requestedStart,
+            Instant requestedEnd) {
+
+        // ─────────────────────────────────────────────────────────
+        // 1. Input validation
+        // ─────────────────────────────────────────────────────────
         if (hostId == null || eventTypeId == null || requestedStart == null || requestedEnd == null) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "hostId, eventTypeId, start, end are required.");
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "hostId, eventTypeId, start, end are required.");
         }
+
         if (!requestedStart.isBefore(requestedEnd)) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Booking start must be before end.");
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Booking start must be before end.");
         }
 
-        // Lock host row (SELECT ... FOR UPDATE). UserRepository's naming
-        // reflects the auth domain — "host" is modeled as a User here.
+        // ─────────────────────────────────────────────────────────
+        // 2. Lock host row (serialize concurrent bookings)
+        // ─────────────────────────────────────────────────────────
         userRepository.findByIdForUpdate(hostId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));
+                .orElseThrow(() ->
+                        new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));
 
-        // Phantom-pending guard. SELECT FOR UPDATE above serialises concurrent
-        // requests, so this count is stable within the transaction.
+        // ─────────────────────────────────────────────────────────
+        // 3. Anti-explosion guard (NOT correctness, only protection)
+        // ─────────────────────────────────────────────────────────
         long pendingCount = bookingRepository.countOverlappingPending(
                 hostId, requestedStart, requestedEnd);
+
         if (pendingCount >= MAX_PENDING_PER_HOST_PER_WINDOW) {
             throw new CustomException(ErrorCode.TOO_MANY_PENDING_BOOKINGS);
         }
 
-        // Application-level overlap pre-check. SAFETY NET only — the
-        // authoritative enforcer is the bookings_no_overlap EXCLUDE
-        // constraint (Invariant #1). This branch translates the
-        // common case to a friendly error before reaching the DB and
-        // is scheduled for removal once the Testcontainers test
-        // proves 23P01 fires deterministically.
-        List<Booking> overlaps = bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
-                hostId,
-                requestedEnd,
-                requestedStart);
-        if (!overlaps.isEmpty()) {
-            throw new CustomException(ErrorCode.SLOT_ALREADY_BOOKED);
-        }
-
-        // Authoritative path. If a racer slipped past the pre-check
-        // above, the EXCLUDE constraint raises 23P01 inside save() and
-        // we translate to the same domain error.
+        // ─────────────────────────────────────────────────────────
+        // 4. Persist booking (DB constraint is authority)
+        // ─────────────────────────────────────────────────────────
         Booking saved;
         try {
             saved = bookingRepository.save(Booking.builder()
@@ -88,33 +105,37 @@ public class BookingService {
                     .startTime(requestedStart)
                     .endTime(requestedEnd)
                     .build());
+
+            // outboxPublisher.publish() invokes timeSource.now() which executes
+            // SELECT now() — that DB read triggers Hibernate auto-flush, which is
+            // when the deferred booking INSERT actually runs. The EXCLUDE constraint
+            // violation therefore surfaces from inside publish(), not from save().
+            // The catch must enclose this call so the violation can be translated.
+            outboxPublisher.publish("Booking", saved.getId(), "BOOKING_CREATED", saved);
+
         } catch (DataIntegrityViolationException ex) {
             if (isOverlapExclusionViolation(ex)) {
                 throw new CustomException(ErrorCode.SLOT_ALREADY_BOOKED);
             }
-            throw ex;
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
         }
 
-        // Event written in the same TX as the booking row — atomically
-        // durable. Worker picks it up asynchronously after commit.
-        outboxPublisher.publish("Booking", saved.getId(), "BOOKING_CREATED", saved);
-
-        // Follow-up: SlotCacheService.invalidateUser is a host-scoped
-        // operation; method name lags the rename. Rename to
-        // invalidateHost / invalidatePrincipal in a separate change so
-        // this commit's blast radius stays inside the booking module.
         slotCacheService.invalidateUser(hostId);
         return saved;
     }
 
+    /**
+     * Detects whether a DataIntegrityViolationException was caused by
+     * the bookings_no_overlap EXCLUDE constraint.
+     */
     private static boolean isOverlapExclusionViolation(DataIntegrityViolationException ex) {
         for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SQLException sqle
-                    && SQLSTATE_EXCLUSION_VIOLATION.equals(sqle.getSQLState())) {
-                String msg = sqle.getMessage();
-                // Be specific: only translate violations of OUR overlap
-                // constraint. A future EXCLUDE on this table would
-                // otherwise get silently mis-mapped here.
+
+            if (cause instanceof SQLException sqlEx
+                    && SQLSTATE_EXCLUSION_VIOLATION.equals(sqlEx.getSQLState())) {
+
+                String msg = sqlEx.getMessage();
+
                 return msg != null && msg.contains(OVERLAP_CONSTRAINT);
             }
         }

@@ -1,0 +1,27 @@
+> Task :compileJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :classes UP-TO-DATE
+> Task :compileTestJava UP-TO-DATE
+> Task :processTestResources UP-TO-DATE
+> Task :testClasses UP-TO-DATE
+
+> Task :test
+
+BookingConstraintIT > initializationError FAILED
+    java.lang.IllegalStateException at DefaultCacheAwareContextLoaderDelegate.java:195
+        Caused by: org.springframework.beans.factory.BeanDefinitionStoreException at ConfigurationClassParser.java:644
+            Caused by: java.lang.IllegalStateException at SpringBootCondition.java:60
+                Caused by: java.lang.IllegalStateException at Preconditions.java:513
+
+IdempotencyIT > initializationError FAILED
+    java.lang.IllegalStateException at DefaultCacheAwareContextLoaderDelegate.java:157
+
+OutboxWorkerIT > initializationError FAILED
+    java.lang.IllegalStateException at DefaultCacheAwareContextLoaderDelegate.java:157
+
+PendingBookingLimitIT > initializationError FAILED
+    java.lang.IllegalStateException at DefaultCacheAwareContextLoaderDelegate.java:157
+
+
+> Task :test FAILED
+5 actionable tasks: 1 executed, 4 up-to-date

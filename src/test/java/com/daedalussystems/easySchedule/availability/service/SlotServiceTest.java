@@ -174,7 +174,7 @@ class SlotServiceTest {
         verify(availabilityRuleRepository, never()).findByUserIdOrderByDayOfWeekAscStartTimeAsc(any());
         verify(availabilityOverrideRepository, never()).findByUserIdAndDate(any(), any());
         verify(bookingRepository, never())
-                .findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(any(), any(), any());
+                .findActiveOverlappingBookings(any(), any(), any());
     }
 
     @Test
@@ -190,7 +190,7 @@ class SlotServiceTest {
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date))
                 .thenReturn(Optional.empty());
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        when(bookingRepository.findActiveOverlappingBookings(
                 eq(userId), any(Instant.class), any(Instant.class)))
                 .thenReturn(List.of());
 
@@ -246,7 +246,7 @@ class SlotServiceTest {
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date))
                 .thenReturn(Optional.empty());
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        when(bookingRepository.findActiveOverlappingBookings(
                 eq(userId), any(Instant.class), any(Instant.class)))
                 .thenReturn(List.of());
 
@@ -288,7 +288,7 @@ class SlotServiceTest {
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        when(bookingRepository.findActiveOverlappingBookings(
                 eq(userId), any(Instant.class), any(Instant.class)))
                 .thenReturn(List.of());
 
@@ -318,7 +318,7 @@ class SlotServiceTest {
         order.verify(dbClockRepository).now();
         order.verify(availabilityRuleRepository).findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId);
         order.verify(availabilityOverrideRepository).findByUserIdAndDate(userId, date);
-        order.verify(bookingRepository).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        order.verify(bookingRepository).findActiveOverlappingBookings(
                 eq(userId), any(Instant.class), any(Instant.class));
         // After data fetch, version is read again.
         order.verify(slotCacheVersionService).getCurrentVersion(userId);
@@ -342,7 +342,7 @@ class SlotServiceTest {
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
                 .thenReturn(List.of(wideRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        when(bookingRepository.findActiveOverlappingBookings(
                 eq(userId), any(Instant.class), any(Instant.class)))
                 .thenReturn(List.of());
 
@@ -393,7 +393,7 @@ class SlotServiceTest {
         // Host timezone is UTC, date is 2026-05-04 → query bounds are [00:00Z, +1day 00:00Z).
         Instant expectedDayStart = Instant.parse("2026-05-04T00:00:00Z");
         Instant expectedDayEnd = Instant.parse("2026-05-05T00:00:00Z");
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        when(bookingRepository.findActiveOverlappingBookings(
                 eq(userId), eq(expectedDayEnd), eq(expectedDayStart)))
                 .thenReturn(List.of(existing));
 
@@ -415,7 +415,7 @@ class SlotServiceTest {
         // Verify the booking query was actually invoked with the right UTC bounds.
         ArgumentCaptor<Instant> endCaptor = ArgumentCaptor.forClass(Instant.class);
         ArgumentCaptor<Instant> startCaptor = ArgumentCaptor.forClass(Instant.class);
-        verify(bookingRepository).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(
+        verify(bookingRepository).findActiveOverlappingBookings(
                 eq(userId), endCaptor.capture(), startCaptor.capture());
         assertEquals(expectedDayEnd, endCaptor.getValue());
         assertEquals(expectedDayStart, startCaptor.getValue());

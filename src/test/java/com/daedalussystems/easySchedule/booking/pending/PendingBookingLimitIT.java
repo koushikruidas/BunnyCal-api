@@ -22,11 +22,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 // Integration tests for the phantom-pending-explosion guard.
@@ -42,23 +37,6 @@ class PendingBookingLimitIT extends AbstractBookingIT {
 
     // Must match BookingService.MAX_PENDING_PER_HOST_PER_WINDOW.
     private static final int MAX_PENDING = BookingService.MAX_PENDING_PER_HOST_PER_WINDOW;
-
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @SuppressWarnings("resource")
-    @Container
-    static GenericContainer<?> redis =
-            new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
-
-    @DynamicPropertySource
-    static void registerProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url",      postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("spring.data.redis.host",     redis::getHost);
-        registry.add("spring.data.redis.port",     () -> redis.getMappedPort(6379));
-    }
 
     @Autowired
     private BookingService bookingService;
@@ -153,13 +131,11 @@ class PendingBookingLimitIT extends AbstractBookingIT {
 
     // ── Test 3 ───────────────────────────────────────────────────────────────
 
-    // CANCELLED bookings do not count toward the PENDING limit. Pre-seeding
-    // MAX_PENDING + 1 CANCELLED bookings leaves the PENDING count at zero.
-    //
-    // The request for the full window hits the application-level overlap pre-check
-    // (known issue: pre-check has no status filter) and receives SLOT_ALREADY_BOOKED
-    // — NOT TOO_MANY_PENDING_BOOKINGS. This proves countOverlappingPending()
-    // correctly ignores CANCELLED rows even when they exceed MAX_PENDING.
+    // CANCELLED bookings do not count toward the PENDING limit, and the EXCLUDE
+    // constraint ignores them (WHERE status IN ('PENDING','CONFIRMED')).
+    // Pre-seeding MAX_PENDING + 1 CANCELLED bookings leaves both the pending
+    // count and the EXCLUDE scope at zero, so a new booking for the same window
+    // must succeed.
     @Test
     void cancelledBookings_doNotCount() {
         UUID hostId      = createHost().getId();
@@ -170,13 +146,16 @@ class PendingBookingLimitIT extends AbstractBookingIT {
         insertBooking(hostId, "2026-07-01T10:40:00Z", "2026-07-01T11:00:00Z", "CANCELLED");
         insertBooking(hostId, "2026-07-01T11:00:00Z", "2026-07-01T11:20:00Z", "CANCELLED");
 
-        CustomException ex = assertThrows(CustomException.class, () ->
+        assertDoesNotThrow(() ->
                 bookingService.createBooking(hostId, eventTypeId,
                         Instant.parse("2026-07-01T10:00:00Z"),
                         Instant.parse("2026-07-01T11:20:00Z")));
 
-        assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode(),
-                "CANCELLED bookings must not trigger the pending limit");
+        assertEquals(1,
+                jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM bookings WHERE host_id = ? AND status = 'PENDING'",
+                        Integer.class, hostId),
+                "exactly one new PENDING booking must exist");
     }
 
     // ── Test 4 ───────────────────────────────────────────────────────────────

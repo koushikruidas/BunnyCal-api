@@ -92,31 +92,41 @@ public class IdempotencyService {
             String route,
             Supplier<ResponseEnvelope<T>> work) {
         try {
-            ResponseEnvelope<T> response = work.get();
-            String body = serializeBody(response.body());
+            // Steps 5-7 commit atomically: booking insert + outbox event +
+            // idempotency finalization. bookingService.createBooking() is
+            // @Transactional(REQUIRED) and joins this outer transaction.
+            TransactionTemplate tx = new TransactionTemplate(transactionManager);
+            tx.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRED);
 
-            if (body.getBytes().length > BookingContracts.MAX_CACHED_RESPONSE_BYTES) {
-                body = IdempotencyOutcome.oversizedReplayBody();
-            }
+            IdempotencyOutcome outcome = tx.execute(status -> {
+                ResponseEnvelope<T> response = work.get();
+                String body = serializeBody(response.body());
 
-            int updated = repository.finalizeByScope(
-                    userId,
-                    route,
-                    key,
-                    IdempotencyStatus.COMPLETED,
-                    response.httpStatus(),
-                    body,
-                    timeSource.now());
+                if (body.getBytes().length > BookingContracts.MAX_CACHED_RESPONSE_BYTES) {
+                    body = IdempotencyOutcome.oversizedReplayBody();
+                }
 
-            if (updated == 0) {
-                outcomeCounter("race").increment();
-                finalizeRaceCounter().increment();
-                log.warn("Idempotency finalize race detected for userId={}, route={}, key={}", userId, route, key);
-                throw new CustomException(ErrorCode.IDEMPOTENCY_RACE);
-            }
+                int updated = repository.finalizeByScope(
+                        userId,
+                        route,
+                        key,
+                        IdempotencyStatus.COMPLETED,
+                        response.httpStatus(),
+                        body,
+                        timeSource.now());
+
+                if (updated == 0) {
+                    outcomeCounter("race").increment();
+                    finalizeRaceCounter().increment();
+                    log.warn("Idempotency finalize race detected for userId={}, route={}, key={}", userId, route, key);
+                    throw new CustomException(ErrorCode.IDEMPOTENCY_RACE);
+                }
+
+                return new IdempotencyOutcome.Fresh<>(response.httpStatus(), response.body());
+            });
 
             outcomeCounter("fresh").increment();
-            return new IdempotencyOutcome.Fresh<>(response.httpStatus(), response.body());
+            return outcome;
         } catch (CustomException ex) {
             if (shouldCacheFailure(ex)) {
                 phase3StoreFailure(userId, route, key, ex);
@@ -190,11 +200,12 @@ public class IdempotencyService {
         return switch (errorCode) {
             case IDEMPOTENCY_KEY_REQUIRED, VALIDATION_ERROR -> 400;
             case IDEMPOTENCY_HASH_MISMATCH -> 422;
-            // SLOT_ALREADY_BOOKED must map to a < 500 status here so
-            // shouldCacheFailure() caches it. Otherwise a same-key
-            // retry would re-execute the booking work instead of
-            // replaying the cached 409.
+            // SLOT_ALREADY_BOOKED and TOO_MANY_PENDING_BOOKINGS must map to
+            // < 500 so shouldCacheFailure() caches them. Otherwise a same-key
+            // retry would re-execute the booking work instead of replaying
+            // the cached error response.
             case IDEMPOTENCY_IN_PROGRESS, SLOT_ALREADY_BOOKED -> 409;
+            case TOO_MANY_PENDING_BOOKINGS -> 429;
             case UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_INVALID -> 401;
             case FORBIDDEN -> 403;
             case RESOURCE_NOT_FOUND -> 404;

@@ -138,7 +138,7 @@ public class SlotService {
         Instant dayStartUtc = date.atStartOfDay(zoneId).toInstant();
         Instant dayEndUtc = date.atStartOfDay(zoneId).plusDays(1).toInstant();
         List<Booking> dayBookings = bookingRepository
-                .findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(host.getId(), dayEndUtc, dayStartUtc);
+                .findActiveOverlappingBookings(host.getId(), dayEndUtc, dayStartUtc);
         List<BookingWindow> bookingWindows = new ArrayList<>(dayBookings.size());
         for (Booking booking : dayBookings) {
             bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));

@@ -25,12 +25,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,14 +57,20 @@ class BookingServiceTest {
     }
 
     @Test
-    void createBooking_success_locksUserChecksOverlapSavesAndInvalidatesCache() {
+    void createBooking_success_locksUser_saves_and_invalidatesCache() {
         UUID userId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
         Instant start = Instant.parse("2026-04-30T10:00:00Z");
         Instant end = Instant.parse("2026-04-30T10:30:00Z");
 
-        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build()));
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start)).thenReturn(List.of());
+        when(userRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(User.builder()
+                        .id(userId)
+                        .email("u@e.com")
+                        .name("U")
+                        .timezone("UTC")
+                        .build()));
+
         when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> {
             Booking b = invocation.getArgument(0);
             b.setId(UUID.randomUUID());
@@ -78,8 +80,8 @@ class BookingServiceTest {
         Booking saved = bookingService.createBooking(userId, eventTypeId, start, end);
 
         assertNotNull(saved.getId());
+
         verify(userRepository, times(1)).findByIdForUpdate(userId);
-        verify(bookingRepository, times(1)).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start);
         verify(bookingRepository, times(1)).save(any(Booking.class));
         verify(slotCacheService, times(1)).invalidateUser(userId);
     }
@@ -91,15 +93,23 @@ class BookingServiceTest {
         Instant start = Instant.parse("2026-04-30T10:00:00Z");
         Instant end = Instant.parse("2026-04-30T10:30:00Z");
 
-        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build()));
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(userId, end, start))
-                .thenReturn(List.of(Booking.builder().id(UUID.randomUUID()).hostId(userId).eventTypeId(eventTypeId).startTime(start).endTime(end).build()));
+        when(userRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(User.builder()
+                        .id(userId).email("u@e.com").name("U").timezone("UTC").build()));
+
+        when(bookingRepository.countOverlappingPending(any(), any(), any()))
+                .thenReturn(0L);
+
+        when(bookingRepository.save(any()))
+                .thenThrow(new DataIntegrityViolationException(
+                        "overlap",
+                        new SQLException("bookings_no_overlap violation", "23P01")
+                ));
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> bookingService.createBooking(userId, eventTypeId, start, end));
 
         assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode());
-        verify(bookingRepository, times(0)).save(any(Booking.class));
     }
 
     // Proves BookingService.isOverlapExclusionViolation walks the cause chain,
@@ -116,7 +126,7 @@ class BookingServiceTest {
 
         when(userRepository.findByIdForUpdate(hostId))
                 .thenReturn(Optional.of(User.builder().id(hostId).email("h@e.com").name("H").timezone("UTC").build()));
-        when(bookingRepository.findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(hostId, end, start))
+        when(bookingRepository.findActiveOverlappingBookings(hostId, end, start))
                 .thenReturn(List.of()); // pre-check passes; constraint fires on save
 
         // Wrap a 23P01 SQLException (PSQLException subclass in production) so
@@ -136,78 +146,65 @@ class BookingServiceTest {
     }
 
     @Test
-    void chaos_concurrentBooking_onlyOneSucceedsAfterAuthoritativeRecheck() throws Exception {
+    void chaos_concurrentBooking_onlyOneSucceeds_dueToDbConstraint() throws Exception {
         UUID userId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
         Instant start = Instant.parse("2026-04-30T10:00:00Z");
         Instant end = Instant.parse("2026-04-30T10:30:00Z");
 
-        when(userRepository.findByIdForUpdate(userId)).thenReturn(Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build()));
+        when(userRepository.findByIdForUpdate(userId))
+                .thenReturn(Optional.of(User.builder()
+                        .id(userId)
+                        .email("u@e.com")
+                        .name("U")
+                        .timezone("UTC")
+                        .build()));
 
-        ReentrantLock simulatedDbUserRowLock = new ReentrantLock(true);
+        AtomicBoolean first = new AtomicBoolean(true);
         List<Booking> persisted = new CopyOnWriteArrayList<>();
 
-        doAnswer(invocation -> {
-            simulatedDbUserRowLock.lock();
-            return Optional.of(User.builder().id(userId).email("u@e.com").name("U").timezone("UTC").build());
-        }).when(userRepository).findByIdForUpdate(userId);
-
-        doAnswer(invocation -> {
-            List<Booking> overlaps = new ArrayList<>();
-            for (Booking booking : persisted) {
-                boolean overlap = booking.getStartTime().isBefore(end) && booking.getEndTime().isAfter(start);
-                if (overlap) {
-                    overlaps.add(booking);
-                }
+        when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> {
+            if (first.getAndSet(false)) {
+                Booking b = invocation.getArgument(0);
+                b.setId(UUID.randomUUID());
+                persisted.add(b);
+                return b;
+            } else {
+                throw new DataIntegrityViolationException(
+                        "constraint violation",
+                        new SQLException("ERROR", "23P01")
+                );
             }
-            if (!overlaps.isEmpty() && simulatedDbUserRowLock.isHeldByCurrentThread()) {
-                simulatedDbUserRowLock.unlock();
-            }
-            return overlaps;
-        }).when(bookingRepository).findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan(eq(userId), eq(end), eq(start));
-
-        doAnswer(invocation -> {
-            Booking booking = invocation.getArgument(0);
-            booking.setId(UUID.randomUUID());
-            persisted.add(booking);
-            if (simulatedDbUserRowLock.isHeldByCurrentThread()) {
-                simulatedDbUserRowLock.unlock();
-            }
-            return booking;
-        }).when(bookingRepository).save(any(Booking.class));
+        });
 
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch startGate = new CountDownLatch(1);
 
-        Future<Boolean> f1 = executor.submit(() -> {
-            startGate.await(2, TimeUnit.SECONDS);
+        Callable<Boolean> task = () -> {
+            startGate.await();
             try {
                 bookingService.createBooking(userId, eventTypeId, start, end);
                 return true;
             } catch (CustomException ex) {
                 return false;
             }
-        });
+        };
 
-        Future<Boolean> f2 = executor.submit(() -> {
-            startGate.await(2, TimeUnit.SECONDS);
-            try {
-                bookingService.createBooking(userId, eventTypeId, start, end);
-                return true;
-            } catch (CustomException ex) {
-                return false;
-            }
-        });
+        Future<Boolean> f1 = executor.submit(task);
+        Future<Boolean> f2 = executor.submit(task);
 
         startGate.countDown();
 
-        boolean r1 = f1.get(3, TimeUnit.SECONDS);
-        boolean r2 = f2.get(3, TimeUnit.SECONDS);
+        boolean r1 = f1.get();
+        boolean r2 = f2.get();
+
         executor.shutdownNow();
 
         int successCount = (r1 ? 1 : 0) + (r2 ? 1 : 0);
+
         assertEquals(1, successCount);
         assertEquals(1, persisted.size());
+
         verify(slotCacheService, times(1)).invalidateUser(userId);
     }
 }

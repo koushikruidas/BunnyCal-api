@@ -1,0 +1,115 @@
+> Task :clean
+
+> Task :compileJava
+
+> Task :processResources
+> Task :classes
+
+> Task :compileTestJava
+
+> Task :processTestResources
+> Task :testClasses
+
+> Task :test
+
+BookingConstraintIT > cancelledBooking_allowsRebooking() FAILED
+    org.springframework.dao.DataIntegrityViolationException at BookingConstraintIT.java:184
+        Caused by: org.hibernate.exception.ConstraintViolationException at BookingConstraintIT.java:184
+            Caused by: org.postgresql.util.PSQLException at BookingConstraintIT.java:184
+
+BookingConstraintIT > concurrent20OverlappingBookings_exactlyOneSucceeds() FAILED
+    org.springframework.dao.DataIntegrityViolationException at BookingConstraintIT.java:49
+        Caused by: org.hibernate.exception.ConstraintViolationException at BookingConstraintIT.java:49
+            Caused by: org.postgresql.util.PSQLException at BookingConstraintIT.java:49
+
+BookingConstraintIT > nonOverlappingBookings_allSucceed() FAILED
+    org.springframework.dao.DataIntegrityViolationException at BookingConstraintIT.java:102
+        Caused by: org.hibernate.exception.ConstraintViolationException at BookingConstraintIT.java:102
+            Caused by: org.postgresql.util.PSQLException at BookingConstraintIT.java:102
+
+BookingConstraintIT > concurrent20DifferentHosts_allSucceed() FAILED
+    org.springframework.dao.DataIntegrityViolationException at BookingConstraintIT.java:129
+        Caused by: org.hibernate.exception.ConstraintViolationException at BookingConstraintIT.java:129
+            Caused by: org.postgresql.util.PSQLException at BookingConstraintIT.java:129
+
+IdempotencyIT > concurrent50SameKey_workRunsOnce_allGetSameBookingId() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:131
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:131
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:131
+
+IdempotencyIT > reaper_activeInProgress_notTouched() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:259
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:259
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:259
+
+IdempotencyIT > inProgressStub_pollExhausts_throwsAfterPollTotalMs() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:193
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:193
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:193
+
+IdempotencyIT > failedBooking_cachedAndReplayedOnSameKeyRetry() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:281
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:281
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:281
+
+IdempotencyIT > freshBooking_firstCall_returnsFreshAndPersistsRow() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:67
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:67
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:67
+
+IdempotencyIT > reaper_stuckInProgress_markedFailedAndReplayed() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:225
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:225
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:225
+
+IdempotencyIT > differentKey_sameConflictingSlot_freshErrorNotCrossKeyReplay() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:324
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:324
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:324
+
+IdempotencyIT > sameKey_secondCall_returnsReplayedWithSameBookingId() FAILED
+    org.springframework.dao.DataIntegrityViolationException at IdempotencyIT.java:94
+        Caused by: org.hibernate.exception.ConstraintViolationException at IdempotencyIT.java:94
+            Caused by: org.postgresql.util.PSQLException at IdempotencyIT.java:94
+
+OutboxWorkerIT > crashAfterClaim_thenRecovered_processedExactlyOnce() FAILED
+    org.opentest4j.AssertionFailedError at OutboxWorkerIT.java:88
+
+OutboxWorkerIT > processingFailure_schedulesRetry() FAILED
+    org.springframework.dao.DataIntegrityViolationException at OutboxWorkerIT.java:109
+        Caused by: org.postgresql.util.PSQLException at OutboxWorkerIT.java:109
+
+OutboxWorkerIT > duplicateProcessing_preventedByProcessedEvents() FAILED
+    org.opentest4j.AssertionFailedError at OutboxWorkerIT.java:172
+
+OutboxWorkerIT > fullFlow_pendingToProcessed_success() FAILED
+    org.opentest4j.AssertionFailedError at OutboxWorkerIT.java:36
+
+PendingBookingLimitIT > differentHosts_notAffected() FAILED
+    org.springframework.dao.DataIntegrityViolationException at PendingBookingLimitIT.java:167
+        Caused by: org.hibernate.exception.ConstraintViolationException at PendingBookingLimitIT.java:167
+            Caused by: org.postgresql.util.PSQLException at PendingBookingLimitIT.java:167
+
+PendingBookingLimitIT > cancelledBookings_doNotCount() FAILED
+    org.springframework.dao.DataIntegrityViolationException at PendingBookingLimitIT.java:141
+        Caused by: org.hibernate.exception.ConstraintViolationException at PendingBookingLimitIT.java:141
+            Caused by: org.postgresql.util.PSQLException at PendingBookingLimitIT.java:141
+
+PendingBookingLimitIT > pendingLimit_doesNotBlockConfirmed() FAILED
+    org.springframework.dao.DataIntegrityViolationException at PendingBookingLimitIT.java:113
+        Caused by: org.hibernate.exception.ConstraintViolationException at PendingBookingLimitIT.java:113
+            Caused by: org.postgresql.util.PSQLException at PendingBookingLimitIT.java:113
+
+PendingBookingLimitIT > concurrentPendingLimit_enforced() FAILED
+    org.springframework.dao.DataIntegrityViolationException at PendingBookingLimitIT.java:56
+        Caused by: org.hibernate.exception.ConstraintViolationException at PendingBookingLimitIT.java:56
+            Caused by: org.postgresql.util.PSQLException at PendingBookingLimitIT.java:56
+
+2026-05-03T14:12:21.564+05:30  INFO 62929 --- [easySchedule] [ionShutdownHook] [                                                 ] j.LocalContainerEntityManagerFactoryBean : Closing JPA EntityManagerFactory for persistence unit 'default'
+2026-05-03T14:12:21.565+05:30  INFO 62929 --- [easySchedule] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown initiated...
+2026-05-03T14:12:21.566+05:30  INFO 62929 --- [easySchedule] [ionShutdownHook] [                                                 ] com.zaxxer.hikari.HikariDataSource       : HikariPool-1 - Shutdown completed.
+
+> Task :test FAILED
+
+[Incubating] Problems report is available at: file:///Users/koushikruidas/Documents/projects/scheduling/easySchedule/build/reports/problems/problems-report.html
+6 actionable tasks: 6 executed

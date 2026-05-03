@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.auth.oauth.service.CustomOAuth2UserServi
 import com.daedalussystems.easySchedule.auth.security.filter.JwtAuthenticationFilter;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -15,6 +16,11 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 @Configuration
 @RequiredArgsConstructor
+@ConditionalOnProperty(
+        name = "security.enabled",
+        havingValue = "true",
+        matchIfMissing = true // ENABLED by default (production-safe)
+)
 public class SecurityConfig {
 
     private final CustomOAuth2UserService customOAuth2UserService;

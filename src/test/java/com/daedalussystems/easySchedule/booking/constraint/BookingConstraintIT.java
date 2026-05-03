@@ -1,7 +1,7 @@
 package com.daedalussystems.easySchedule.booking.constraint;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import com.daedalussystems.easySchedule.booking.AbstractBookingIT;
@@ -19,44 +19,21 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 // Service-layer integration tests for booking overlap invariants.
 //
 // These tests operate through the real BookingService against a real PostgreSQL
-// instance; no mocks. They validate the full enforcement chain:
+// instance; no mocks. They validate:
 //
 //   1. SELECT FOR UPDATE on the host user row  — serialises concurrent requests
-//   2. Application-level overlap pre-check     — fast path (scheduled for removal)
-//   3. EXCLUDE USING gist on each partition    — authoritative DB-level enforcer
+//   2. EXCLUDE USING gist on each partition    — authoritative overlap enforcer
 //
 // The DB-level contract is proven independently in BookingOverlapConstraintIT
 // (pure JDBC, no Spring context). These tests prove end-to-end service behaviour
 // under real concurrency.
 @Testcontainers(disabledWithoutDocker = true)
 class BookingConstraintIT extends AbstractBookingIT {
-
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @SuppressWarnings("resource")
-    @Container
-    static GenericContainer<?> redis =
-            new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
-
-    @DynamicPropertySource
-    static void registerProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url",      postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("spring.data.redis.host",     redis::getHost);
-        registry.add("spring.data.redis.port",     () -> redis.getMappedPort(6379));
-    }
 
     @Autowired
     private BookingService bookingService;
@@ -199,19 +176,11 @@ class BookingConstraintIT extends AbstractBookingIT {
 
     // ── Scenario 4 ────────────────────────────────────────────────────────────
 
-    // DOCUMENTS A KNOWN ISSUE in the application-level pre-check:
-    // findByHostIdAndStartTimeLessThanAndEndTimeGreaterThan() does not filter by
-    // status, so a CANCELLED booking incorrectly blocks rebooking of the same
-    // slot at the service layer.
-    //
-    // At the DB level, the EXCLUDE constraint correctly allows it because its
-    // WHERE clause excludes CANCELLED rows. This is proven by
-    // BookingOverlapConstraintIT.cancelledThenPending_samSlot_succeed().
-    //
-    // Remediation: once the pre-check is removed (marked "scheduled for removal"
-    // in BookingService), update this test to assert success instead.
+    // A CANCELLED booking must not block rebooking of the same slot.
+    // The EXCLUDE constraint's WHERE clause excludes CANCELLED rows, so the
+    // insert succeeds and two rows exist: one CANCELLED + one new PENDING.
     @Test
-    void cancelledBooking_applicationPreCheckBlocksRebooking_knownIssue() {
+    void cancelledBooking_allowsRebooking() {
         UUID hostId      = createHost().getId();
         UUID eventTypeId = UUID.randomUUID();
         Instant start    = Instant.parse("2026-06-01T11:00:00Z");
@@ -221,12 +190,11 @@ class BookingConstraintIT extends AbstractBookingIT {
         // Cancel directly — status is not in the Booking entity so we use JDBC.
         jdbc.update("UPDATE bookings SET status = 'CANCELLED' WHERE host_id = ?", hostId);
 
-        // Pre-check returns the cancelled booking (no status filter) → wrong rejection.
-        // Correct behaviour (DB-level) would allow this. See BookingOverlapConstraintIT.
-        CustomException ex = assertThrows(CustomException.class,
-                () -> bookingService.createBooking(hostId, eventTypeId, start, end));
-        assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode(),
-                "Known pre-check bug: CANCELLED booking should not block rebooking; "
-                        + "DB EXCLUDE constraint allows it — see BookingOverlapConstraintIT");
+        assertDoesNotThrow(() -> bookingService.createBooking(hostId, eventTypeId, start, end));
+        assertEquals(2,
+                jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM bookings WHERE host_id = ?",
+                        Integer.class, hostId),
+                "one CANCELLED + one new PENDING must exist");
     }
 }
