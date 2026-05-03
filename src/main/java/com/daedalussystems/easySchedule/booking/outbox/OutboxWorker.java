@@ -4,6 +4,7 @@ import static com.daedalussystems.easySchedule.booking.contract.BookingContracts
 import static com.daedalussystems.easySchedule.booking.contract.BookingContracts.OUTBOX_INITIAL_BACKOFF;
 import static com.daedalussystems.easySchedule.booking.contract.BookingContracts.OUTBOX_MAX_ATTEMPTS;
 import static com.daedalussystems.easySchedule.booking.contract.BookingContracts.OUTBOX_MAX_BACKOFF;
+import static org.apache.commons.lang3.StringUtils.truncate;
 
 import com.daedalussystems.easySchedule.common.time.TimeSource;
 import java.time.Instant;
@@ -115,26 +116,28 @@ public class OutboxWorker {
         }
     }
 
-    /**
-     * ✅ FIXED: exponential + jitter
-     */
     static long computeBackoffMillis(int attemptCount) {
+        if (attemptCount <= 0) {
+            throw new IllegalArgumentException("attemptCount must be >= 1");
+        }
+
         long initial = OUTBOX_INITIAL_BACKOFF.toMillis();
         long max = OUTBOX_MAX_BACKOFF.toMillis();
 
-        int shift = Math.min(attemptCount - 1, 62);
-        long base = initial << shift;
+        long base = initial;
+
+        for (int i = 1; i < attemptCount; i++) {
+            if (base >= max / 2) {
+                base = max;
+                break;
+            }
+            base *= 2;
+        }
 
         long capped = Math.min(base, max);
 
-        // jitter: 0 → 50%
         long jitter = ThreadLocalRandom.current().nextLong(0, capped / 2 + 1);
 
         return capped + jitter;
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return null;
-        return s.length() <= maxLen ? s : s.substring(0, maxLen);
     }
 }
