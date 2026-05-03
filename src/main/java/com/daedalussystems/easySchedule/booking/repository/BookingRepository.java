@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -43,4 +44,22 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             UUID hostId,
             Instant start,
             Instant end);
+
+    // CAS transition: returns 1 on success, 0 if state/version mismatch.
+    // Native query required — status and version are not mapped in the Booking entity.
+    // clearAutomatically = true prevents stale reads within the same transaction.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET status  = :newStatus,
+                   version = version + 1
+             WHERE id      = :id
+               AND status  = :expectedStatus
+               AND version = :version
+            """, nativeQuery = true)
+    int updateStatus(
+            @Param("id")             UUID id,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("newStatus")      String newStatus,
+            @Param("version")        long version);
 }

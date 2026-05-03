@@ -28,7 +28,9 @@ public enum ErrorCode {
     SLOT_ALREADY_BOOKED("SLOT_ALREADY_BOOKED",
             "Requested time overlaps an existing booking for this host."),
     TOO_MANY_PENDING_BOOKINGS("TOO_MANY_PENDING_BOOKINGS",
-            "Too many pending bookings overlap this time window. Try again later.");
+            "Too many pending bookings overlap this time window. Try again later."),
+    INVALID_STATE_TRANSITION("INVALID_STATE_TRANSITION",
+            "Booking is not in the expected state or version — concurrent update may have occurred.");
 
     private final String code;
     private final String message;

@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,5 +121,25 @@ public abstract class AbstractBookingIT {
 
     protected void inTx(Runnable work) {
         new TransactionTemplate(txManager).executeWithoutResult(status -> work.run());
+    }
+
+    protected UUID insertBooking(UUID hostId, UUID eventTypeId,
+                                 Instant start, Instant end,
+                                 String status, long version) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO bookings
+                    (id, host_id, event_type_id, start_time, end_time,
+                     status, version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                """,
+                id, hostId, eventTypeId,
+                Timestamp.from(start), Timestamp.from(end),
+                status, version);
+        return id;
+    }
+
+    protected Map<String, Object> queryBookingRow(UUID id) {
+        return jdbc.queryForMap("SELECT status, version FROM bookings WHERE id = ?", id);
     }
 }

@@ -1,6 +1,8 @@
 package com.daedalussystems.easySchedule.booking.service;
 
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
+import com.daedalussystems.easySchedule.booking.contract.BookingState;
+import com.daedalussystems.easySchedule.booking.contract.BookingStateTransitions;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
@@ -122,6 +124,46 @@ public class BookingService {
 
         slotCacheService.invalidateUser(hostId);
         return saved;
+    }
+
+    // ── State Transitions ────────────────────────────────────────────────────
+
+    // DB result is the sole authority. Static check is a guardrail only
+    // (fast-fail for provably illegal edges; throws VALIDATION_ERROR).
+    // CAS miss (0 rows) → INVALID_STATE_TRANSITION.
+    private void transitionFromExpectedState(UUID id, BookingState expectedStatus,
+                                             long version, BookingState newStatus) {
+        BookingStateTransitions.requireAllowed(expectedStatus, newStatus);
+        int updated = bookingRepository.updateStatus(
+                id, expectedStatus.name(), newStatus.name(), version);
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+    }
+
+    @Transactional
+    public void confirmBooking(UUID id, long version) {
+        transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.CONFIRMED);
+    }
+
+    @Transactional
+    public void cancelPendingBooking(UUID id, long version) {
+        transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.CANCELLED);
+    }
+
+    @Transactional
+    public void cancelConfirmedBooking(UUID id, long version) {
+        transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.CANCELLED);
+    }
+
+    @Transactional
+    public void expireBooking(UUID id, long version) {
+        transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.EXPIRED);
+    }
+
+    @Transactional
+    public void completeBooking(UUID id, long version) {
+        transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.COMPLETED);
     }
 
     /**
