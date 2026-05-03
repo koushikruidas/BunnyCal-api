@@ -158,7 +158,12 @@ public class BookingService {
 
     @Transactional
     public void expireBooking(UUID id, long version) {
-        transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.EXPIRED);
+        // Specialized CAS: same pattern as transitionFromExpectedState but the WHERE clause
+        // also asserts expires_at < NOW(), preventing premature or double-expiry atomically.
+        int updated = bookingRepository.expireIfPendingAndExpired(id, version);
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
     }
 
     @Transactional

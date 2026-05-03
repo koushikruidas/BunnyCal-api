@@ -62,4 +62,21 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             @Param("expectedStatus") String expectedStatus,
             @Param("newStatus")      String newStatus,
             @Param("version")        long version);
+
+    // CAS expiry: succeeds only when booking is PENDING, has the expected version,
+    // AND expires_at is in the past. The expires_at guard prevents premature expiry
+    // and means expiry competes safely with confirmBooking / cancelPendingBooking.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET status  = 'EXPIRED',
+                   version = version + 1
+             WHERE id         = :id
+               AND status     = 'PENDING'
+               AND expires_at < NOW()
+               AND version    = :version
+            """, nativeQuery = true)
+    int expireIfPendingAndExpired(
+            @Param("id")      UUID id,
+            @Param("version") long version);
 }

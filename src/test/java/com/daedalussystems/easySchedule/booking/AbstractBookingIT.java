@@ -126,16 +126,23 @@ public abstract class AbstractBookingIT {
     protected UUID insertBooking(UUID hostId, UUID eventTypeId,
                                  Instant start, Instant end,
                                  String status, long version) {
+        return insertBooking(hostId, eventTypeId, start, end, status, version, null);
+    }
+
+    protected UUID insertBooking(UUID hostId, UUID eventTypeId,
+                                 Instant start, Instant end,
+                                 String status, long version, Instant expiresAt) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO bookings
                     (id, host_id, event_type_id, start_time, end_time,
-                     status, version, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                     status, version, expires_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
                 """,
                 id, hostId, eventTypeId,
                 Timestamp.from(start), Timestamp.from(end),
-                status, version);
+                status, version,
+                expiresAt != null ? Timestamp.from(expiresAt) : null);
         return id;
     }
 

@@ -28,6 +28,7 @@ CREATE TABLE bookings (
     end_time TIMESTAMPTZ NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
     version     BIGINT       NOT NULL DEFAULT 0,
+    expires_at  TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
