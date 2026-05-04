@@ -1,0 +1,70 @@
+package com.daedalussystems.easySchedule.sync.orchestration;
+
+import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxEventRepository;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxEventStatus;
+import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.transaction.Transactional;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+@Service
+public class OutboxProcessor {
+    private static final Logger log = LoggerFactory.getLogger(OutboxProcessor.class);
+
+    private final OutboxEventRepository outboxEventRepository;
+    private final CalendarSyncJobRepository calendarSyncJobRepository;
+    private final BookingOutboxEventRouter eventRouter;
+    private final Counter outboxProcessedCounter;
+    private final Counter outboxFailedCounter;
+
+    public OutboxProcessor(OutboxEventRepository outboxEventRepository,
+                           CalendarSyncJobRepository calendarSyncJobRepository,
+                           BookingOutboxEventRouter eventRouter,
+                           MeterRegistry meterRegistry) {
+        this.outboxEventRepository = outboxEventRepository;
+        this.calendarSyncJobRepository = calendarSyncJobRepository;
+        this.eventRouter = eventRouter;
+        this.outboxProcessedCounter = meterRegistry.counter("sync.outbox.processed.total");
+        this.outboxFailedCounter = meterRegistry.counter("sync.outbox.failed.total");
+    }
+
+    @Transactional
+    public int processBatch(int batchSize, String provider) {
+        List<UUID> claimed = outboxEventRepository.claimBookingSyncEvents(Instant.now(), batchSize);
+        for (UUID id : claimed) {
+            OutboxEvent evt = outboxEventRepository.findById(id).orElse(null);
+            if (evt == null) {
+                continue;
+            }
+            try {
+                SyncJobPlan plan = eventRouter.toPlan(evt, provider);
+                calendarSyncJobRepository.upsertPendingJob(
+                        UUID.randomUUID(),
+                        plan.internalRefType().name(),
+                        plan.internalRefId(),
+                        plan.provider(),
+                        plan.desiredAction().name(),
+                        null
+                );
+                evt.setStatus(OutboxEventStatus.PROCESSED);
+                evt.setLastError(null);
+                outboxProcessedCounter.increment();
+            } catch (RuntimeException ex) {
+                evt.setStatus(OutboxEventStatus.RETRYING);
+                evt.setAttemptCount(evt.getAttemptCount() + 1);
+                evt.setLastError("SYNC_OUTBOX_PROCESS_ERROR");
+                outboxFailedCounter.increment();
+                log.warn("sync outbox processing failed outboxId={}", id, ex);
+            }
+            outboxEventRepository.save(evt);
+        }
+        return claimed.size();
+    }
+}

@@ -9,6 +9,8 @@ public interface CalendarService {
 
     void deleteEvent(DeleteCalendarEventCommand command);
 
+    ObserveEventResult observeEvent(ObserveEventCommand command);
+
     record CreateCalendarEventCommand(UUID internalId,
                                       String provider,
                                       String idempotencyKey) {
@@ -23,6 +25,11 @@ public interface CalendarService {
     record DeleteCalendarEventCommand(UUID internalId,
                                       String provider,
                                       String externalEventId) {
+    }
+
+    record ObserveEventCommand(UUID internalId,
+                               String provider,
+                               String externalEventId) {
     }
 
     enum CreateEventStatus {
@@ -44,6 +51,31 @@ public interface CalendarService {
 
         public static CreateEventResult permanent(String errorCode) {
             return new CreateEventResult(CreateEventStatus.PERMANENT_FAILURE, null, errorCode);
+        }
+    }
+
+    enum ObserveEventStatus {
+        EXISTS,
+        MISSING,
+        RETRYABLE_FAILURE,
+        PERMANENT_FAILURE
+    }
+
+    record ObserveEventResult(ObserveEventStatus status, String errorCode) {
+        public static ObserveEventResult exists() {
+            return new ObserveEventResult(ObserveEventStatus.EXISTS, null);
+        }
+
+        public static ObserveEventResult missing() {
+            return new ObserveEventResult(ObserveEventStatus.MISSING, null);
+        }
+
+        public static ObserveEventResult retryable(String errorCode) {
+            return new ObserveEventResult(ObserveEventStatus.RETRYABLE_FAILURE, errorCode);
+        }
+
+        public static ObserveEventResult permanent(String errorCode) {
+            return new ObserveEventResult(ObserveEventStatus.PERMANENT_FAILURE, errorCode);
         }
     }
 }

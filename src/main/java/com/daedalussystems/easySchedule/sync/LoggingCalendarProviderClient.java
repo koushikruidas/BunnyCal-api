@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.calendar.client;
+package com.daedalussystems.easySchedule.sync;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;

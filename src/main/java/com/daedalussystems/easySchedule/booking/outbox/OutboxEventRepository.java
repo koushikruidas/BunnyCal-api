@@ -72,4 +72,22 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
             @Param("processing") OutboxEventStatus processing,
             @Param("cutoff") Instant cutoff,
             @Param("maxAttempts") int maxAttempts);
+
+    @Query(value = """
+        UPDATE outbox_events
+        SET status = 'PROCESSING',
+            updated_at = :now
+        WHERE id IN (
+            SELECT id FROM outbox_events
+            WHERE status = 'PENDING'
+              AND aggregate_type = 'Booking'
+              AND event_type IN ('BOOKING_CREATED', 'BOOKING_UPDATED', 'BOOKING_CANCELLED')
+            ORDER BY created_at
+            LIMIT :batchSize
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id
+        """, nativeQuery = true)
+    List<UUID> claimBookingSyncEvents(@Param("now") Instant now,
+                                      @Param("batchSize") int batchSize);
 }

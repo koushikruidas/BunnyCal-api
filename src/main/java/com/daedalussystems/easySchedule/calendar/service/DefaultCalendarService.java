@@ -70,12 +70,35 @@ public class DefaultCalendarService implements CalendarService {
 
     @Override
     public String updateEvent(UpdateCalendarEventCommand command) {
-        return providerClient.createEvent(command.internalId(), command.provider(), command.idempotencyKey());
+        return providerClient.updateEvent(
+                command.internalId(),
+                command.provider(),
+                command.externalEventId(),
+                command.idempotencyKey());
     }
 
     @Override
     public void deleteEvent(DeleteCalendarEventCommand command) {
-        // no-op for current stub provider client
+        providerClient.deleteEvent(command.internalId(), command.provider(), command.externalEventId());
+    }
+
+    @Override
+    public ObserveEventResult observeEvent(ObserveEventCommand command) {
+        try {
+            boolean exists = providerClient.eventExists(
+                    command.internalId(),
+                    command.provider(),
+                    command.externalEventId());
+            return exists ? ObserveEventResult.exists() : ObserveEventResult.missing();
+        } catch (CalendarClientException ex) {
+            String code = classifyProviderError(ex);
+            if (isRetryableError(code)) {
+                return ObserveEventResult.retryable(code);
+            }
+            return ObserveEventResult.permanent(code);
+        } catch (RuntimeException ex) {
+            return ObserveEventResult.retryable("PROVIDER_DOWN");
+        }
     }
 
     private CalendarProviderOperation insertCreating(CalendarProviderType provider,
