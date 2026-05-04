@@ -10,4 +10,6 @@ public interface CalendarProviderClient {
     void deleteEvent(UUID internalId, String provider, String externalEventId);
 
     boolean eventExists(UUID internalId, String provider, String externalEventId);
+
+    boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey);
 }

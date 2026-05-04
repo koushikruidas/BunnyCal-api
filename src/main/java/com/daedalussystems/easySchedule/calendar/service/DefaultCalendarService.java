@@ -89,7 +89,20 @@ public class DefaultCalendarService implements CalendarService {
                     command.internalId(),
                     command.provider(),
                     command.externalEventId());
-            return exists ? ObserveEventResult.exists() : ObserveEventResult.missing();
+            if (!exists) {
+                return ObserveEventResult.missing();
+            }
+            if (command.idempotencyKey() != null && !command.idempotencyKey().isBlank()) {
+                boolean matches = providerClient.eventMatches(
+                        command.internalId(),
+                        command.provider(),
+                        command.externalEventId(),
+                        command.idempotencyKey());
+                if (!matches) {
+                    return ObserveEventResult.mismatch();
+                }
+            }
+            return ObserveEventResult.exists();
         } catch (CalendarClientException ex) {
             String code = classifyProviderError(ex);
             if (isRetryableError(code)) {

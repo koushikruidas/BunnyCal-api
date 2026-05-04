@@ -29,7 +29,8 @@ public interface CalendarService {
 
     record ObserveEventCommand(UUID internalId,
                                String provider,
-                               String externalEventId) {
+                               String externalEventId,
+                               String idempotencyKey) {
     }
 
     enum CreateEventStatus {
@@ -57,6 +58,7 @@ public interface CalendarService {
     enum ObserveEventStatus {
         EXISTS,
         MISSING,
+        MISMATCH,
         RETRYABLE_FAILURE,
         PERMANENT_FAILURE
     }
@@ -68,6 +70,10 @@ public interface CalendarService {
 
         public static ObserveEventResult missing() {
             return new ObserveEventResult(ObserveEventStatus.MISSING, null);
+        }
+
+        public static ObserveEventResult mismatch() {
+            return new ObserveEventResult(ObserveEventStatus.MISMATCH, null);
         }
 
         public static ObserveEventResult retryable(String errorCode) {
