@@ -117,29 +117,78 @@ public class CalendarEventMappingRepository {
 
     @Transactional
     public TransitionOutcome markFailed(UUID bookingId, String provider, String claimedBy, String lastError,
-                                        long newSyncToken) {
+                                        long newSyncToken, Instant nextRetryAt) {
         int rows = entityManager.createNativeQuery("""
                 UPDATE calendar_event_mappings
                    SET status = 'FAILED',
                        last_error = :lastError,
-                       sync_token = :newSyncToken
+                       sync_token = :newSyncToken,
+                       attempt_count = attempt_count + 1,
+                       next_retry_at = :nextRetryAt
                  WHERE booking_id = :bookingId
                    AND provider = :provider
                    AND status = 'CLAIMED'
                    AND claimed_by = :claimedBy
-                   AND sync_token <= :newSyncToken
+                   AND sync_token = :newSyncToken
                 """)
                 .setParameter("bookingId", bookingId)
                 .setParameter("provider", provider)
                 .setParameter("claimedBy", claimedBy)
                 .setParameter("lastError", lastError)
                 .setParameter("newSyncToken", newSyncToken)
+                .setParameter("nextRetryAt", nextRetryAt)
                 .executeUpdate();
 
         if (rows == 1) {
             return TransitionOutcome.UPDATED;
         }
         return diagnoseTransitionMiss(bookingId, provider, claimedBy, newSyncToken);
+    }
+
+    @Transactional
+    public TransitionOutcome markFailedPermanent(UUID bookingId, String provider, String claimedBy, String lastError,
+                                                 long syncToken) {
+        int rows = entityManager.createNativeQuery("""
+                UPDATE calendar_event_mappings
+                   SET status = 'FAILED_PERMANENT',
+                       last_error = :lastError,
+                       sync_token = :syncToken
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                   AND status = 'CLAIMED'
+                   AND claimed_by = :claimedBy
+                   AND sync_token = :syncToken
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .setParameter("claimedBy", claimedBy)
+                .setParameter("lastError", lastError)
+                .setParameter("syncToken", syncToken)
+                .executeUpdate();
+
+        if (rows == 1) {
+            return TransitionOutcome.UPDATED;
+        }
+        return diagnoseTransitionMiss(bookingId, provider, claimedBy, syncToken);
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<MappingKey> findFailedCandidates(int limit, Instant now) {
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                SELECT booking_id, provider
+                  FROM calendar_event_mappings
+                 WHERE status = 'FAILED'
+                   AND next_retry_at <= :now
+                 ORDER BY updated_at
+                 LIMIT :limit
+                """)
+                .setParameter("now", now)
+                .setParameter("limit", limit)
+                .getResultList();
+
+        return rows.stream()
+                .map(row -> new MappingKey((UUID) row[0], (String) row[1]))
+                .toList();
     }
 
     @Transactional
@@ -297,6 +346,32 @@ public class CalendarEventMappingRepository {
         return "CREATED".equals(rows.get(0)) ? ClaimOutcome.ALREADY_DONE : ClaimOutcome.REJECTED;
     }
 
+    @SuppressWarnings("unchecked")
+    public Optional<MappingState> findMappingState(UUID bookingId, String provider) {
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                SELECT status, external_event_id, sync_token, claimed_by, attempt_count
+                       , claimed_at
+                  FROM calendar_event_mappings
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .getResultList();
+        if (rows.isEmpty()) {
+            return Optional.empty();
+        }
+        Object[] row = rows.get(0);
+        return Optional.of(new MappingState(
+                (String) row[0],
+                (String) row[1],
+                ((Number) row[2]).longValue(),
+                (String) row[3],
+                row.length > 4 && row[4] != null ? ((Number) row[4]).intValue() : 0,
+                row.length > 5 ? (Instant) row[5] : null
+        ));
+    }
+
     public enum ClaimOutcome {
         CLAIMED,
         REJECTED,
@@ -318,5 +393,18 @@ public class CalendarEventMappingRepository {
         ALREADY_COMPLETED,
         STALE_OR_NOT_OWNER,
         SPLIT_BRAIN_DETECTED
+    }
+
+    public record MappingState(
+            String status,
+            String externalEventId,
+            long syncToken,
+            String claimedBy,
+            int attemptCount,
+            Instant claimedAt
+    ) {
+    }
+
+    public record MappingKey(UUID bookingId, String provider) {
     }
 }
