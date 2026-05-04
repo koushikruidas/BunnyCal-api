@@ -7,6 +7,11 @@ import static com.daedalussystems.easySchedule.booking.contract.BookingContracts
 import static org.apache.commons.lang3.StringUtils.truncate;
 
 import com.daedalussystems.easySchedule.common.time.TimeSource;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -30,12 +35,20 @@ public class OutboxWorker {
     private final TimeSource timeSource;
     private final TransactionTemplate requiresNew;
 
+    // ── Metrics ──────────────────────────────────────────────────────────────
+    private final MeterRegistry meterRegistry;
+    private final DistributionSummary outboxLag;
+    private final Counter retryCounter;
+    private final Counter bookingFailedTotal;
+    private final Timer processingLatency;
+
     public OutboxWorker(
             OutboxEventRepository outboxRepo,
             ProcessedEventRepository processedEventRepo,
             OutboxEventDispatcher dispatcher,
             TimeSource timeSource,
-            PlatformTransactionManager txManager) {
+            PlatformTransactionManager txManager,
+            MeterRegistry meterRegistry) {
 
         this.outboxRepo = outboxRepo;
         this.processedEventRepo = processedEventRepo;
@@ -44,6 +57,29 @@ public class OutboxWorker {
 
         this.requiresNew = new TransactionTemplate(txManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        this.meterRegistry = meterRegistry;
+
+        this.outboxLag = DistributionSummary.builder("outbox.lag.milliseconds")
+                .description("Time between outbox event creation and processing, in milliseconds")
+                .baseUnit("milliseconds")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+
+        this.retryCounter = Counter.builder("outbox.retries.total")
+                .description("Number of outbox events that entered RETRYING state after a dispatch failure")
+                .register(meterRegistry);
+
+        // Counts booking outbox events that exhausted all retries and entered DLQ (FAILED).
+        // Lets operators correlate SLO violations against outright delivery failures.
+        this.bookingFailedTotal = Counter.builder("booking.failed.total")
+                .description("Booking outbox events that reached DLQ after exhausting max retry attempts")
+                .register(meterRegistry);
+
+        this.processingLatency = Timer.builder("outbox.processing.latency.seconds")
+                .description("End-to-end time to process one outbox event, including failure recording")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
     }
 
     @Scheduled(fixedDelay = 1000)
@@ -63,10 +99,15 @@ public class OutboxWorker {
     }
 
     private void processOne(UUID id) {
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             requiresNew.execute(status -> {
                 OutboxEvent event = outboxRepo.findById(id).orElse(null);
                 if (event == null || event.getStatus().isTerminal()) return null;
+
+                // Single DB clock call — used for both lag recording and tryInsert.
+                Instant now = timeSource.now();
+                outboxLag.record(Duration.between(event.getCreatedAt(), now).toMillis());
 
                 // Two-guard contract:
                 //   Guard 1 — SKIP LOCKED in claimBatch: prevents two live workers
@@ -76,7 +117,7 @@ public class OutboxWorker {
                 //             worker already committed the processed_events row the
                 //             dispatch is skipped here. SKIP LOCKED is an optimisation;
                 //             processed_events is the correctness guarantee.
-                int inserted = processedEventRepo.tryInsert(id, timeSource.now());
+                int inserted = processedEventRepo.tryInsert(id, now);
                 if (inserted > 0) {
                     dispatcher.dispatch(event);
                 }
@@ -91,6 +132,8 @@ public class OutboxWorker {
         } catch (Exception ex) {
             log.warn("outbox.dispatch.failed id={}", id, ex);
             recordFailure(id, ex);
+        } finally {
+            sample.stop(processingLatency);
         }
     }
 
@@ -108,11 +151,15 @@ public class OutboxWorker {
                     event.setStatus(OutboxEventStatus.FAILED);
                     event.setNextAttemptAt(null);
                     log.error("outbox.event.dlq id={} attempts={}", id, nextAttempt);
+                    if ("Booking".equals(event.getAggregateType())) {
+                        bookingFailedTotal.increment();
+                    }
                 } else {
                     // RETRYING (not PENDING) — distinguishes "has failed at least once"
                     // from "fresh event". Enables observability queries like
                     // "how many events are in backoff?" without a timestamp scan.
                     event.setStatus(OutboxEventStatus.RETRYING);
+                    retryCounter.increment();
 
                     long delay = computeBackoffMillis(nextAttempt);
                     event.setNextAttemptAt(timeSource.now().plusMillis(delay));

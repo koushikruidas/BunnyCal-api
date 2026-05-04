@@ -9,17 +9,27 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeSource;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class BookingService {
+
+    private static final Logger log = LoggerFactory.getLogger(BookingService.class);
 
     /**
      * PostgreSQL SQLState for EXCLUDE constraint violation.
@@ -36,20 +46,59 @@ public class BookingService {
      */
     public static final int MAX_PENDING_PER_HOST_PER_WINDOW = 3;
 
+    /**
+     * SLO: bookings must reach a terminal state within this many seconds.
+     */
+    static final long SLO_THRESHOLD_SECONDS = 5L;
+
     private final UserRepository userRepository;
     private final BookingRepository bookingRepository;
     private final SlotCacheService slotCacheService;
     private final OutboxPublisher outboxPublisher;
+    private final TimeSource timeSource;
+
+    // ── Metrics ──────────────────────────────────────────────────────────────
+    private final Counter conflictCounter;
+    private final Timer completionTimer;
+    private final Counter bookingCompletedTotal;
+    private final Counter bookingCompletedWithinSloTotal;
 
     public BookingService(
             UserRepository userRepository,
             BookingRepository bookingRepository,
             SlotCacheService slotCacheService,
-            OutboxPublisher outboxPublisher) {
+            OutboxPublisher outboxPublisher,
+            TimeSource timeSource,
+            MeterRegistry meterRegistry) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.slotCacheService = slotCacheService;
         this.outboxPublisher = outboxPublisher;
+        this.timeSource = timeSource;
+
+        this.conflictCounter = Counter.builder("booking.conflicts.total")
+                .description("Number of booking attempts rejected due to slot overlap")
+                .register(meterRegistry);
+
+        // Gauge is pull-based: supplier is called at scrape time, not on every request.
+        Gauge.builder("booking.pending.count", bookingRepository,
+                        repo -> (double) repo.countByStatus("PENDING"))
+                .description("Number of bookings currently in PENDING state")
+                .register(meterRegistry);
+
+        // publishPercentileHistogram() emits _bucket series required by histogram_quantile.
+        this.completionTimer = Timer.builder("booking.completion.latency.seconds")
+                .description("End-to-end booking lifecycle latency from creation to terminal state")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+
+        this.bookingCompletedTotal = Counter.builder("booking.completed.total")
+                .description("Total bookings that reached a terminal state")
+                .register(meterRegistry);
+
+        this.bookingCompletedWithinSloTotal = Counter.builder("booking.completed.within_slo.total")
+                .description("Bookings that reached terminal state within the " + SLO_THRESHOLD_SECONDS + "-second SLO")
+                .register(meterRegistry);
     }
 
     /**
@@ -117,6 +166,7 @@ public class BookingService {
 
         } catch (DataIntegrityViolationException ex) {
             if (isOverlapExclusionViolation(ex)) {
+                conflictCounter.increment();
                 throw new CustomException(ErrorCode.SLOT_ALREADY_BOOKED);
             }
             throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
@@ -131,6 +181,7 @@ public class BookingService {
     // DB result is the sole authority. Static check is a guardrail only
     // (fast-fail for provably illegal edges; throws VALIDATION_ERROR).
     // CAS miss (0 rows) → INVALID_STATE_TRANSITION.
+    // Records completion latency when newStatus is terminal.
     private void transitionFromExpectedState(UUID id, BookingState expectedStatus,
                                              long version, BookingState newStatus) {
         BookingStateTransitions.requireAllowed(expectedStatus, newStatus);
@@ -138,6 +189,9 @@ public class BookingService {
                 id, expectedStatus.name(), newStatus.name(), version);
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+        if (newStatus.isTerminal()) {
+            recordCompletionLatency(id);
         }
     }
 
@@ -164,11 +218,35 @@ public class BookingService {
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        recordCompletionLatency(id);
     }
 
     @Transactional
     public void completeBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.COMPLETED);
+    }
+
+    // ── SLO instrumentation ──────────────────────────────────────────────────
+
+    // Called after every successful terminal-state CAS. Fetches created_at from DB
+    // to compute true end-to-end duration (includes outbox lag and retries).
+    // Uses timeSource.now() for clock consistency with the rest of the system.
+    // Negative duration guard defends against DB/app clock skew.
+    // Wrapped in try-catch: metric failure must never abort the business transaction.
+    private void recordCompletionLatency(UUID id) {
+        try {
+            Instant createdAt = bookingRepository.findCreatedAtById(id).orElse(null);
+            if (createdAt == null) return;
+            Duration duration = Duration.between(createdAt, timeSource.now());
+            if (duration.isNegative()) return;
+            completionTimer.record(duration);
+            bookingCompletedTotal.increment();
+            if (duration.compareTo(Duration.ofSeconds(SLO_THRESHOLD_SECONDS)) <= 0) {
+                bookingCompletedWithinSloTotal.increment();
+            }
+        } catch (Exception ex) {
+            log.warn("booking.completion.latency.record.failed id={}", id, ex);
+        }
     }
 
     /**

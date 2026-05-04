@@ -1,0 +1,155 @@
+groups:
+  - name: easyschedule.booking
+    rules:
+
+      # ── 1. High booking conflict rate ────────────────────────────────────────
+      # Fires when the slot-overlap rejection rate exceeds 5 req/s sustained for
+      # 5 minutes. A brief spike (single burst of retries) is ignored; a sustained
+      # rate means genuine hot-slot contention or a traffic anomaly.
+      - alert: HighBookingConflictRate
+        expr: rate(booking_conflicts_total[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High booking conflict rate"
+          description: >
+            Booking conflict rate is {{ $value | printf "%.2f" }} req/s over the
+            last 5 minutes (threshold: 5 req/s).
+            High booking conflict rate detected. Possible slot contention or traffic spike.
+            Check: hot event-type slots, unusual traffic patterns, load balancer upstream.
+
+      # ── 2. Pending booking backlog build-up ──────────────────────────────────
+      # Fires when more than 50 bookings sit in PENDING state for 3+ minutes.
+      # The pending gauge is pull-based (DB COUNT(*)), so a sustained reading above
+      # the threshold means requests are arriving faster than they are confirmed or
+      # expired — not a transient read.
+      - alert: BookingPendingBacklog
+        expr: booking_pending_count > 50
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Booking backlog growing"
+          description: >
+            {{ $value }} bookings currently in PENDING state (threshold: 50).
+            Booking backlog growing. System may be under load or slow.
+            Check: confirmation worker health, DB connection pool, expiry reaper.
+
+  - name: easyschedule.outbox
+    rules:
+
+      # ── 3. Outbox processing lag high ────────────────────────────────────────
+      # Fires when the p95 event age at pick-up time exceeds 2 000 ms for 5 minutes.
+      # Normal lag is < 1 s (scheduler fires every 1 s). 2 s p95 means the worker
+      # is failing to keep up; 5 m window rules out a single slow GC pause.
+      # NOTE: outbox_lag_milliseconds uses publishPercentileHistogram(), which emits
+      # real _bucket series to Prometheus. publishPercentiles() alone does NOT produce
+      # _bucket — it only emits pre-aggregated gauge series, breaking histogram_quantile.
+      - alert: OutboxProcessingLagHigh
+        expr: >
+          histogram_quantile(
+            0.95,
+            rate(outbox_lag_milliseconds_bucket[5m])
+          ) > 2000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox processing lag is high"
+          description: >
+            p95 outbox lag is {{ $value | printf "%.0f" }} ms (threshold: 2 000 ms).
+            Outbox processing lag is high. Worker may be stalled or overloaded.
+            Check: OutboxWorker thread, DB SKIP LOCKED contention, claimBatch query plan.
+
+      # ── 4. High outbox retry rate ─────────────────────────────────────────────
+      # Fires when dispatch failures causing RETRYING exceed 2 events/s for 5 minutes.
+      # A single transient failure (network blip) will not sustain this rate;
+      # a persistent downstream outage will. Does NOT count DLQ (FAILED) events —
+      # those are terminal and covered separately by lag / backlog alerts.
+      - alert: OutboxRetrySpike
+        expr: rate(outbox_retries_total[5m]) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox retry rate spike"
+          description: >
+            Outbox retry rate is {{ $value | printf "%.2f" }} events/s over the
+            last 5 minutes (threshold: 2 events/s).
+            Outbox retry rate increased. Possible downstream failure.
+            Check: OutboxEventDispatcher target, external broker/HTTP endpoint,
+            error logs for recurring exception type.
+
+      # ── 5. High outbox processing latency ────────────────────────────────────
+      # Fires when the p99 end-to-end time for a single processOne() call exceeds
+      # 1 second for 5 minutes. This covers DB I/O, lock wait, and dispatch time
+      # together. 1 s is generous relative to the 1 s poll interval; sustained
+      # breach means the worker is starving its own next poll cycle.
+      - alert: OutboxProcessingLatencyHigh
+        expr: >
+          histogram_quantile(
+            0.99,
+            rate(outbox_processing_latency_seconds_bucket[5m])
+          ) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Outbox processing latency is high"
+          description: >
+            p99 processing latency is {{ $value | printf "%.3f" }} s (threshold: 1 s).
+            Outbox processing latency is high. System performance degraded.
+            Check: DB slow-query log, connection pool saturation, dispatcher I/O.
+
+  - name: easyschedule.slo
+    rules:
+
+      # ── 6. Booking completion SLO violation (histogram) ──────────────────────
+      # Primary SLO signal. Fires when p99.9 of end-to-end booking lifecycle time
+      # (creation → terminal state, including outbox lag and retries) exceeds 5 s.
+      # 10-minute FOR window is intentionally wide: the p99.9 bucket is sparse at
+      # low traffic, so a shorter window would produce noisy false positives.
+      # booking.completion.latency.seconds uses publishPercentileHistogram(), which
+      # emits real _bucket series — histogram_quantile is valid here.
+      - alert: BookingSLOViolation
+        expr: >
+          histogram_quantile(
+            0.999,
+            rate(booking_completion_latency_seconds_bucket[5m])
+          ) > 5
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Booking completion SLO violated"
+          description: >
+            p99.9 booking completion latency is {{ $value | printf "%.3f" }} s (SLO: 5 s).
+            Booking completion SLO violated: p99.9 latency exceeded 5 seconds.
+            Check: outbox worker health, retry storm (outbox.retries.total),
+            downstream dispatcher errors, DB slow-query log.
+
+      # ── 7. Booking SLI success-rate violation ────────────────────────────────
+      # Complementary SLI alert using the two counters instrumented in BookingService.
+      # booking.completed.within_slo.total counts bookings that hit a terminal state
+      # in < 5 s; booking.completed.total counts all terminal transitions (DLQ/FAILED
+      # bookings are excluded from both — they never reach a booking terminal state).
+      # When booking_completed_total rate is 0 the expression returns NaN → no alert.
+      - alert: BookingSLIViolation
+        expr: >
+          (
+            rate(booking_completed_within_slo_total[5m])
+            /
+            rate(booking_completed_total[5m])
+          ) < 0.999
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Booking SLI success rate below 99.9%"
+          description: >
+            Only {{ $value | humanizePercentage }} of bookings completed within the
+            5-second SLO window (target: 99.9%).
+            Booking completion SLI violated: success rate below 99.9%.
+            Check: same as BookingSLOViolation — both alerts fire together under
+            sustained degradation; SLI alert may lag due to counter accumulation.

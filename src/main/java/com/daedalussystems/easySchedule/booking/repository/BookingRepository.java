@@ -45,6 +45,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             Instant start,
             Instant end);
 
+    // Global count of bookings in a given status. Used by the pending-density gauge.
+    // Called by the Micrometer scrape thread (Prometheus pull), not on any request path.
+    @Query(value = "SELECT COUNT(*) FROM bookings WHERE status = :status", nativeQuery = true)
+    long countByStatus(@Param("status") String status);
+
     // CAS transition: returns 1 on success, 0 if state/version mismatch.
     // Native query required — status and version are not mapped in the Booking entity.
     // clearAutomatically = true prevents stale reads within the same transaction.
@@ -79,4 +84,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     int expireIfPendingAndExpired(
             @Param("id")      UUID id,
             @Param("version") long version);
+
+    // Metrics-only: returns created_at for end-to-end SLO latency recording.
+    // Queries by id alone (no host_id), intentionally matching the same scan
+    // pattern as updateStatus and expireIfPendingAndExpired above. Called only
+    // after a successful terminal-state CAS, so the row is guaranteed to exist.
+    @Query(value = "SELECT created_at FROM bookings WHERE id = :id LIMIT 1", nativeQuery = true)
+    java.util.Optional<java.time.Instant> findCreatedAtById(@Param("id") UUID id);
 }

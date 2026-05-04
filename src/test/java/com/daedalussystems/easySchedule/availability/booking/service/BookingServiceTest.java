@@ -19,6 +19,7 @@ import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.service.BookingService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeSource;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -48,12 +50,18 @@ class BookingServiceTest {
     @Mock
     private OutboxPublisher outboxPublisher;
 
+    @Mock
+    private TimeSource timeSource;
+
     private BookingService bookingService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        bookingService = new BookingService(userRepository, bookingRepository, slotCacheService, outboxPublisher);
+        when(timeSource.now()).thenReturn(java.time.Instant.now());
+        bookingService = new BookingService(
+                userRepository, bookingRepository, slotCacheService, outboxPublisher,
+                timeSource, new SimpleMeterRegistry());
     }
 
     @Test
