@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingR
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.MappingKey;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.MappingState;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.TransitionOutcome;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -106,7 +107,7 @@ public class SyncWorker {
 
         String externalEventId;
         try {
-            externalEventId = providerClient.createEvent(bookingId, provider);
+            externalEventId = providerClient.createEvent(bookingId, provider, idempotencyKey(bookingId, provider));
         } catch (Exception ex) {
             log.warn("calendar sync provider failure bookingId={} provider={} token={} workerId={}",
                     bookingId, provider, token, workerId, ex);
@@ -152,7 +153,13 @@ public class SyncWorker {
     }
 
     @Scheduled(fixedDelay = 5000)
+    @SchedulerLock(
+            name = "calendar-sync-reconcile",
+            lockAtMostFor = "PT2M",
+            lockAtLeastFor = "PT3S"
+    )
     public void reconcileFailedMappings() {
+        log.debug("reconcile lock acquired workerId={}", workerId);
         long reclaimToken = tokenGenerator.nextToken();
         mappingRepository.reclaimStuckClaimed(
                 workerId,
@@ -193,6 +200,10 @@ public class SyncWorker {
         long half = Math.max(1L, delay / 2);
         long jitter = ThreadLocalRandom.current().nextLong(half);
         return Duration.ofMillis(half + jitter);
+    }
+
+    private static String idempotencyKey(UUID bookingId, String provider) {
+        return provider + ":" + bookingId;
     }
 
     private void countClaim(ClaimOutcome outcome, String provider) {
