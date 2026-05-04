@@ -11,7 +11,6 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
-import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.time.TimeSource;
@@ -44,7 +43,6 @@ class BookingCompletionSloTest {
         service = new BookingService(
                 mock(UserRepository.class),
                 bookingRepo,
-                mock(SlotCacheService.class),
                 mock(OutboxPublisher.class),
                 timeSource,
                 registry);

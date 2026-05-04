@@ -41,20 +41,35 @@ public class OutboxPublisher {
      * @param eventType     domain event name (e.g. "BOOKING_CREATED")
      * @param payload       serializable payload; will be stored as JSON
      */
+    @Deprecated(forRemoval = false)
     public void publish(String aggregateType, UUID aggregateId, String eventType, Object payload) {
+        publish(aggregateType, aggregateId, new OutboxPayloadEnvelope(
+                UUID.randomUUID().toString(), eventType, 1, payload));
+    }
+
+    /**
+     * Publishes an event with explicit envelope versioning.
+     */
+    @Deprecated(forRemoval = false)
+    public void publish(String aggregateType, UUID aggregateId, String eventType, int version, Object payload) {
+        publish(aggregateType, aggregateId, new OutboxPayloadEnvelope(
+                UUID.randomUUID().toString(), eventType, version, payload));
+    }
+
+    public void publish(String aggregateType, UUID aggregateId, OutboxPayloadEnvelope envelope) {
         String payloadJson;
         try {
-            payloadJson = objectMapper.writeValueAsString(payload);
+            payloadJson = objectMapper.writeValueAsString(envelope);
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException(
-                    "Outbox payload for event " + eventType + " is not serializable", e);
+                    "Outbox payload for event " + envelope.type() + " is not serializable", e);
         }
 
         outboxEventRepository.save(OutboxEvent.builder()
                 .id(UUID.randomUUID())
                 .aggregateType(aggregateType)
                 .aggregateId(aggregateId)
-                .eventType(eventType)
+                .eventType(envelope.type())
                 .payload(payloadJson)
                 .status(OutboxEventStatus.PENDING)
                 .attemptCount(0)

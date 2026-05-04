@@ -13,8 +13,8 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxPayloadEnvelope;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
-import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.service.BookingService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -26,6 +26,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.lang.reflect.Field;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -45,9 +47,6 @@ class BookingServiceTest {
     private BookingRepository bookingRepository;
 
     @Mock
-    private SlotCacheService slotCacheService;
-
-    @Mock
     private OutboxPublisher outboxPublisher;
 
     @Mock
@@ -60,12 +59,12 @@ class BookingServiceTest {
         MockitoAnnotations.openMocks(this);
         when(timeSource.now()).thenReturn(java.time.Instant.now());
         bookingService = new BookingService(
-                userRepository, bookingRepository, slotCacheService, outboxPublisher,
+                userRepository, bookingRepository, outboxPublisher,
                 timeSource, new SimpleMeterRegistry());
     }
 
     @Test
-    void createBooking_success_locksUser_saves_and_invalidatesCache() {
+    void createBooking_success_locksUser_saves_and_publishesOutbox() {
         UUID userId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
         Instant start = Instant.parse("2026-04-30T10:00:00Z");
@@ -91,7 +90,57 @@ class BookingServiceTest {
 
         verify(userRepository, times(1)).findByIdForUpdate(userId);
         verify(bookingRepository, times(1)).save(any(Booking.class));
-        verify(slotCacheService, times(1)).invalidateUser(userId);
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(saved.getId()), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void updateBooking_success_persistsAndPublishesOutbox() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-01T10:00:00Z");
+        Instant end = Instant.parse("2026-05-01T11:00:00Z");
+
+        when(bookingRepository.updateWindow(bookingId, hostId, start, end, 3L)).thenReturn(1);
+
+        bookingService.updateBooking(bookingId, hostId, start, end, 3L);
+
+        verify(bookingRepository, times(1)).updateWindow(bookingId, hostId, start, end, 3L);
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void cancelBooking_success_publishesOutbox() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+
+        when(bookingRepository.updateStatus(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(1);
+
+        bookingService.cancelBooking(bookingId, hostId, 4L);
+
+        verify(bookingRepository, times(1)).updateStatus(bookingId, "PENDING", "CANCELLED", 4L);
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void bookingService_onlyUsesAllowedDependencyNamespaces() {
+        Set<String> allowedPrefixes = Set.of(
+                "com.daedalussystems.easySchedule.booking.",
+                "com.daedalussystems.easySchedule.auth.",
+                "com.daedalussystems.easySchedule.common.",
+                "io.micrometer.",
+                "org.slf4j.",
+                "java."
+        );
+        for (Field field : BookingService.class.getDeclaredFields()) {
+            if (field.isSynthetic() || field.getType().isPrimitive()) {
+                continue;
+            }
+            String typeName = field.getType().getName();
+            boolean allowed = allowedPrefixes.stream().anyMatch(typeName::startsWith);
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    allowed,
+                    "BookingService dependency outside allowlist: " + typeName);
+        }
     }
 
     @Test
@@ -213,6 +262,5 @@ class BookingServiceTest {
         assertEquals(1, successCount);
         assertEquals(1, persisted.size());
 
-        verify(slotCacheService, times(1)).invalidateUser(userId);
     }
 }

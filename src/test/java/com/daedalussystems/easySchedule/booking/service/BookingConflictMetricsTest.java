@@ -10,7 +10,6 @@ import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
-import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
@@ -32,7 +31,6 @@ class BookingConflictMetricsTest {
 
     private UserRepository userRepo;
     private BookingRepository bookingRepo;
-    private SlotCacheService slotCache;
     private OutboxPublisher publisher;
     private TimeSource timeSource;
 
@@ -41,12 +39,11 @@ class BookingConflictMetricsTest {
         registry    = new SimpleMeterRegistry();
         userRepo    = mock(UserRepository.class);
         bookingRepo = mock(BookingRepository.class);
-        slotCache   = mock(SlotCacheService.class);
         publisher   = mock(OutboxPublisher.class);
         timeSource  = mock(TimeSource.class);
         when(timeSource.now()).thenReturn(Instant.now());
 
-        service = new BookingService(userRepo, bookingRepo, slotCache, publisher, timeSource, registry);
+        service = new BookingService(userRepo, bookingRepo, publisher, timeSource, registry);
 
         when(userRepo.findByIdForUpdate(any())).thenReturn(Optional.of(mock(User.class)));
         when(bookingRepo.countOverlappingPending(any(), any(), any())).thenReturn(0L);
@@ -63,7 +60,7 @@ class BookingConflictMetricsTest {
                 "23P01");
         DataIntegrityViolationException dive =
                 new DataIntegrityViolationException("constraint violation", sqlCause);
-        doThrow(dive).when(publisher).publish(any(), any(), any(), any());
+        doThrow(dive).when(publisher).publish(any(), any(), any());
 
         UUID hostId      = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
@@ -89,7 +86,7 @@ class BookingConflictMetricsTest {
         SQLException sqlCause = new SQLException("unique_violation", "23505");
         DataIntegrityViolationException dive =
                 new DataIntegrityViolationException("other constraint", sqlCause);
-        doThrow(dive).when(publisher).publish(any(), any(), any(), any());
+        doThrow(dive).when(publisher).publish(any(), any(), any());
 
         try {
             service.createBooking(

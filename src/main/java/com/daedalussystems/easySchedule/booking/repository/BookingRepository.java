@@ -85,6 +85,25 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             @Param("id")      UUID id,
             @Param("version") long version);
 
+    // CAS update for mutable booking window fields.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET start_time = :startTime,
+                   end_time   = :endTime,
+                   version    = version + 1
+             WHERE id      = :id
+               AND host_id = :hostId
+               AND version = :version
+               AND status IN ('PENDING', 'CONFIRMED')
+            """, nativeQuery = true)
+    int updateWindow(
+            @Param("id") UUID id,
+            @Param("hostId") UUID hostId,
+            @Param("startTime") Instant startTime,
+            @Param("endTime") Instant endTime,
+            @Param("version") long version);
+
     // Metrics-only: returns created_at for end-to-end SLO latency recording.
     // Queries by id alone (no host_id), intentionally matching the same scan
     // pattern as updateStatus and expireIfPendingAndExpired above. Called only

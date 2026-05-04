@@ -4,9 +4,13 @@ import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.contract.BookingState;
 import com.daedalussystems.easySchedule.booking.contract.BookingStateTransitions;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
+import com.daedalussystems.easySchedule.booking.domain.BookingRules;
+import com.daedalussystems.easySchedule.booking.domain.events.BookingCancelledEvent;
+import com.daedalussystems.easySchedule.booking.domain.events.BookingCreatedEvent;
+import com.daedalussystems.easySchedule.booking.domain.events.BookingUpdatedEvent;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxPayloadEnvelope;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
-import com.daedalussystems.easySchedule.availability.cache.SlotCacheService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.time.TimeSource;
@@ -53,7 +57,6 @@ public class BookingService {
 
     private final UserRepository userRepository;
     private final BookingRepository bookingRepository;
-    private final SlotCacheService slotCacheService;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
 
@@ -66,13 +69,11 @@ public class BookingService {
     public BookingService(
             UserRepository userRepository,
             BookingRepository bookingRepository,
-            SlotCacheService slotCacheService,
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
-        this.slotCacheService = slotCacheService;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
 
@@ -162,7 +163,11 @@ public class BookingService {
             // when the deferred booking INSERT actually runs. The EXCLUDE constraint
             // violation therefore surfaces from inside publish(), not from save().
             // The catch must enclose this call so the violation can be translated.
-            outboxPublisher.publish("Booking", saved.getId(), "BOOKING_CREATED", saved);
+            outboxPublisher.publish("Booking", saved.getId(), new OutboxPayloadEnvelope(
+                    UUID.randomUUID().toString(),
+                    "BOOKING_CREATED",
+                    1,
+                    new BookingCreatedEvent(saved.getId(), hostId, eventTypeId, requestedStart, requestedEnd)));
 
         } catch (DataIntegrityViolationException ex) {
             if (isOverlapExclusionViolation(ex)) {
@@ -172,7 +177,6 @@ public class BookingService {
             throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
         }
 
-        slotCacheService.invalidateUser(hostId);
         return saved;
     }
 
@@ -226,6 +230,43 @@ public class BookingService {
         transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.COMPLETED);
     }
 
+    @Transactional
+    public void updateBooking(UUID id, UUID hostId, Instant startTime, Instant endTime, long version) {
+        BookingRules.validateReschedule(id, hostId, startTime, endTime);
+
+        int updated = bookingRepository.updateWindow(id, hostId, startTime, endTime, version);
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+
+        outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+                UUID.randomUUID().toString(),
+                "BOOKING_UPDATED",
+                1,
+                new BookingUpdatedEvent(id, hostId, startTime, endTime)));
+    }
+
+    @Transactional
+    public void cancelBooking(UUID id, UUID hostId, long version) {
+        if (id == null || hostId == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "id and hostId are required.");
+        }
+
+        int updated = bookingRepository.updateStatus(id, BookingState.PENDING.name(), BookingState.CANCELLED.name(), version);
+        if (updated == 0) {
+            updated = bookingRepository.updateStatus(id, BookingState.CONFIRMED.name(), BookingState.CANCELLED.name(), version);
+        }
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+
+        outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+                UUID.randomUUID().toString(),
+                "BOOKING_CANCELLED",
+                1,
+                new BookingCancelledEvent(id, hostId)));
+    }
+
     // ── SLO instrumentation ──────────────────────────────────────────────────
 
     // Called after every successful terminal-state CAS. Fetches created_at from DB
@@ -266,4 +307,5 @@ public class BookingService {
         }
         return false;
     }
+
 }
