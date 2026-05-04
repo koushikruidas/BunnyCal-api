@@ -6,7 +6,6 @@ import static org.mockito.Mockito.doThrow;
 
 import com.daedalussystems.easySchedule.booking.AbstractBookingIT;
 import com.daedalussystems.easySchedule.booking.contract.BookingContracts;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -80,32 +79,25 @@ class OutboxWorkerIT extends AbstractBookingIT {
             return null;
         });
 
-        // STEP 2: simulate "stuck" event
-        Instant old = Instant.now()
-                .minus(BookingContracts.OUTBOX_PROCESSING_TIMEOUT)
-                .minusSeconds(1);
-
-        jdbc.update(
-                "UPDATE outbox_events SET updated_at = ? WHERE id = ?",
-                Timestamp.from(old), id
-        );
-
-        // STEP 3: recovery
+        // STEP 2: force recovery path deterministically.
+        // We use a cutoff in the future so the row is treated as "stuck"
+        // without mutating updated_at (DB trigger owns updated_at).
         inTx(() -> {
+            Instant forceReady = Instant.now().minusSeconds(1);
             outboxRepo.recoverStuck(
                     OutboxEventStatus.PENDING,
                     OutboxEventStatus.PROCESSING,
-                    Instant.now(),
-                    Instant.now().minus(BookingContracts.OUTBOX_PROCESSING_TIMEOUT),
+                    forceReady,
+                    Instant.now().plusSeconds(1),
                     BookingContracts.OUTBOX_MAX_ATTEMPTS
             );
             return null;
         });
 
-        // STEP 4: worker runs again
+        // STEP 3: worker runs again
         worker.poll();
 
-        // STEP 5: exactly-once verification
+        // STEP 4: exactly-once verification
         assertEquals(1,
                 jdbc.queryForObject(
                         "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",

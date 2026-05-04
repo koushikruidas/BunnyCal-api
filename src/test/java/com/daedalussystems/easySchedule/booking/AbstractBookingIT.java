@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -25,7 +26,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
-        "spring.sql.init.mode=always",
+        "spring.sql.init.mode=never",
+        "spring.flyway.enabled=true",
         "spring.otel.sdk.disabled=true",
         "spring.docker.compose.enabled=false",
         "security.enabled=false",
@@ -47,6 +49,11 @@ public abstract class AbstractBookingIT {
         // 🔥 FORCE START BEFORE SPRING
         postgres.start();
         redis.start();
+        Flyway.configure()
+                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
+                .locations("classpath:db/migration")
+                .load()
+                .migrate();
     }
 
     @DynamicPropertySource
@@ -66,7 +73,7 @@ public abstract class AbstractBookingIT {
     @BeforeEach
     void setUp() {
         jdbc.execute(
-                "TRUNCATE TABLE users, bookings, idempotency_keys, outbox_events, processed_events CASCADE"
+                "TRUNCATE TABLE users, bookings, idempotency_keys, outbox_events, processed_events, calendar_event_mappings CASCADE"
         );
     }
     // ── Helpers ──────────────────────────────────────────────────────────────

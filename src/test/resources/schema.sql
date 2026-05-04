@@ -94,6 +94,52 @@ CREATE INDEX IF NOT EXISTS idx_outbox_status_next_attempt
 ON outbox_events (status, next_attempt_at);
 
 -- =====================================================
+-- CALENDAR EVENT MAPPINGS
+-- =====================================================
+CREATE TABLE IF NOT EXISTS calendar_event_mappings (
+    booking_id UUID NOT NULL,
+    external_event_id VARCHAR(255),
+    provider VARCHAR(50) NOT NULL,
+    sync_token BIGINT NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    last_error TEXT,
+    claimed_at TIMESTAMPTZ,
+    claimed_by VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (booking_id, provider),
+    CHECK (status IN ('CLAIMED', 'CREATED', 'FAILED')),
+    CHECK (
+        (status = 'CLAIMED' AND external_event_id IS NULL) OR
+        (status = 'CREATED' AND external_event_id IS NOT NULL) OR
+        (status = 'FAILED' AND last_error IS NOT NULL)
+    ),
+    CHECK (
+        status <> 'CLAIMED'
+        OR (claimed_by IS NOT NULL AND claimed_at IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_provider
+ON calendar_event_mappings (provider);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_updated_at
+ON calendar_event_mappings (updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_status
+ON calendar_event_mappings (status);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_status_updated_at
+ON calendar_event_mappings (status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_provider_status
+ON calendar_event_mappings (provider, status);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_event_mappings_failed_retry
+ON calendar_event_mappings (updated_at)
+WHERE status = 'FAILED';
+
+-- =====================================================
 -- PROCESSED EVENTS
 -- =====================================================
 CREATE TABLE IF NOT EXISTS processed_events (

@@ -5,26 +5,52 @@
 -- join users u on u.id = ai.user_id
 -- where ai.email is distinct from u.email;
 do $$
+declare
+    mismatch_exists boolean := false;
 begin
-    if exists (
-        select 1
-        from auth_identities ai
-        join users u on u.id = ai.user_id
-        where ai.email is distinct from u.email
-    ) then
-        raise exception 'Mismatch detected between auth_identities.email and users.email';
+    if to_regclass('public.auth_identities') is not null
+       and to_regclass('public.users') is not null then
+        execute $sql$
+            select exists (
+                select 1
+                from auth_identities ai
+                join users u on u.id = ai.user_id
+                where ai.email is distinct from u.email
+            )
+        $sql$ into mismatch_exists;
+        if mismatch_exists then
+            raise exception 'Mismatch detected between auth_identities.email and users.email';
+        end if;
     end if;
 end
 $$;
 
 -- 2) Drop duplicate email column after discrepancies are resolved.
-alter table auth_identities drop column if exists email;
+do $$
+begin
+    if to_regclass('public.auth_identities') is not null then
+        alter table auth_identities drop column if exists email;
+    end if;
+end
+$$;
 
 -- 3) Align refresh token indexes with active-token lookup and rotation.
-drop index if exists idx_refresh_token_user_id;
-create unique index if not exists idx_refresh_token_token on refresh_tokens (token_hash);
-create index if not exists idx_refresh_token_user on refresh_tokens (user_id);
+do $$
+begin
+    if to_regclass('public.refresh_tokens') is not null then
+        drop index if exists idx_refresh_token_user_id;
+        create unique index if not exists idx_refresh_token_token on refresh_tokens (token_hash);
+        create index if not exists idx_refresh_token_user on refresh_tokens (user_id);
+    end if;
+end
+$$;
 
 -- 4) Align provider+provider_user uniqueness naming.
-alter table auth_identities drop constraint if exists uk_auth_identity_provider_user_id;
-alter table auth_identities add constraint uk_provider_user unique (provider, provider_user_id);
+do $$
+begin
+    if to_regclass('public.auth_identities') is not null then
+        alter table auth_identities drop constraint if exists uk_auth_identity_provider_user_id;
+        alter table auth_identities add constraint uk_provider_user unique (provider, provider_user_id);
+    end if;
+end
+$$;
