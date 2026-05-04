@@ -10,8 +10,13 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: create
+      ddl-auto: none
     show-sql: true
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    validate-on-migrate: true
 
   docker:
     compose:
@@ -57,3 +62,7 @@ auth:
   refresh-token:
     bytes: ${REFRESH_TOKEN_BYTES:48}
     ttl-days: ${REFRESH_TOKEN_TTL_DAYS:1}
+
+logging:
+  level:
+    org.flywaydb: DEBUG

@@ -9,7 +9,14 @@ declare
     mismatch_exists boolean := false;
 begin
     if to_regclass('public.auth_identities') is not null
-       and to_regclass('public.users') is not null then
+       and to_regclass('public.users') is not null
+       and exists (
+           select 1
+           from information_schema.columns
+           where table_schema = 'public'
+             and table_name = 'auth_identities'
+             and column_name = 'email'
+       ) then
         execute $sql$
             select exists (
                 select 1
@@ -50,7 +57,14 @@ do $$
 begin
     if to_regclass('public.auth_identities') is not null then
         alter table auth_identities drop constraint if exists uk_auth_identity_provider_user_id;
-        alter table auth_identities add constraint uk_provider_user unique (provider, provider_user_id);
+        if not exists (
+            select 1
+            from pg_constraint
+            where conname = 'uk_provider_user'
+              and conrelid = 'public.auth_identities'::regclass
+        ) then
+            alter table auth_identities add constraint uk_provider_user unique (provider, provider_user_id);
+        end if;
     end if;
 end
 $$;
