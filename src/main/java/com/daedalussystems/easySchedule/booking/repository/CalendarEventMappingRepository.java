@@ -20,21 +20,44 @@ public class CalendarEventMappingRepository {
     private EntityManager entityManager;
 
     @Transactional
-    public ClaimOutcome claim(UUID bookingId, String provider, long syncToken, String claimedBy) {
+    public ClaimOutcome claimBookingForSync(UUID bookingId, String provider, long newToken, String workerId) {
         int rows = entityManager.createNativeQuery("""
                 INSERT INTO calendar_event_mappings
-                    (booking_id, provider, sync_token, status, claimed_by, claimed_at, created_at, updated_at)
+                    (booking_id, provider, sync_token, status, claimed_by, claimed_at)
                 VALUES
-                    (:bookingId, :provider, :syncToken, 'CLAIMED', :claimedBy, NOW(), NOW(), NOW())
-                ON CONFLICT (booking_id, provider) DO NOTHING
+                    (:bookingId, :provider, :newToken, 'CLAIMED', :workerId, NOW())
+                ON CONFLICT (booking_id, provider)
+                DO UPDATE
+                   SET status = 'CLAIMED',
+                       sync_token = EXCLUDED.sync_token,
+                       claimed_by = EXCLUDED.claimed_by,
+                       claimed_at = NOW(),
+                       updated_at = NOW(),
+                       last_error = NULL,
+                       external_event_id = NULL
+                 WHERE calendar_event_mappings.status IN ('FAILED', 'CLAIMED')
+                   AND calendar_event_mappings.sync_token < EXCLUDED.sync_token
                 """)
                 .setParameter("bookingId", bookingId)
                 .setParameter("provider", provider)
-                .setParameter("syncToken", syncToken)
-                .setParameter("claimedBy", claimedBy)
+                .setParameter("newToken", newToken)
+                .setParameter("workerId", workerId)
                 .executeUpdate();
 
-        return rows == 1 ? ClaimOutcome.CLAIMED : ClaimOutcome.CONFLICT;
+        if (rows == 1) {
+            return ClaimOutcome.CLAIMED;
+        }
+        return classifyClaimRejection(bookingId, provider);
+    }
+
+    /**
+     * @deprecated Use {@link #claimBookingForSync(UUID, String, long, String)}
+     * which enforces fencing and ownership semantics.
+     */
+    @Deprecated(forRemoval = false)
+    @Transactional
+    public ClaimOutcome claim(UUID bookingId, String provider, long syncToken, String claimedBy) {
+        return claimBookingForSync(bookingId, provider, syncToken, claimedBy);
     }
 
     @Transactional
@@ -199,9 +222,28 @@ public class CalendarEventMappingRepository {
     private record RowState(String status, String claimedBy, long syncToken) {
     }
 
+    @SuppressWarnings("unchecked")
+    private ClaimOutcome classifyClaimRejection(UUID bookingId, String provider) {
+        List<String> rows = entityManager.createNativeQuery("""
+                SELECT status
+                  FROM calendar_event_mappings
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                 LIMIT 1
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .getResultList();
+        if (rows.isEmpty()) {
+            return ClaimOutcome.REJECTED;
+        }
+        return "CREATED".equals(rows.get(0)) ? ClaimOutcome.ALREADY_DONE : ClaimOutcome.REJECTED;
+    }
+
     public enum ClaimOutcome {
         CLAIMED,
-        CONFLICT
+        REJECTED,
+        ALREADY_DONE
     }
 
     public enum TransitionOutcome {
