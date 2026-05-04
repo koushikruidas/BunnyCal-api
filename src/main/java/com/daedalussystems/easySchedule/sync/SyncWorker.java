@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.booking.sync;
+package com.daedalussystems.easySchedule.sync;
 
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.ClaimOutcome;

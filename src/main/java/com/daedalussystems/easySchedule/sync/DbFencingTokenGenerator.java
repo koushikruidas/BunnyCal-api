@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.booking.sync;
+package com.daedalussystems.easySchedule.sync;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;

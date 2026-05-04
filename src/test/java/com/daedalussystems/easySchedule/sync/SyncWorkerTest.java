@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.booking.sync;
+package com.daedalussystems.easySchedule.sync;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -14,6 +14,9 @@ import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingR
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.FinalizeOutcome;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.MappingState;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.TransitionOutcome;
+import com.daedalussystems.easySchedule.sync.CalendarProviderClient;
+import com.daedalussystems.easySchedule.sync.FencingTokenGenerator;
+import com.daedalussystems.easySchedule.sync.SyncWorker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.Optional;

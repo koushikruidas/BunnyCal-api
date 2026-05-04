@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.booking.sync;
+package com.daedalussystems.easySchedule.sync;
 
 public interface FencingTokenGenerator {
     long nextToken();

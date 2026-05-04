@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 @EnableJpaAuditing
 @ComponentScan(basePackages = {
         "com.daedalussystems.easySchedule.booking",
+        "com.daedalussystems.easySchedule.sync",
+        "com.daedalussystems.easySchedule.calendar",
         "com.daedalussystems.easySchedule.availability",
         "com.daedalussystems.easySchedule.common"
 })
