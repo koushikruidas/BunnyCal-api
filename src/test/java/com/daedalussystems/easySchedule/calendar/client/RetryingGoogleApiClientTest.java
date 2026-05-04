@@ -48,4 +48,19 @@ class RetryingGoogleApiClientTest {
         assertThrows(CalendarClientException.class, () -> client.createEvent("tok", req));
         verify(delegate, times(1)).createEvent("tok", req);
     }
+
+    @Test
+    void retriesUserInfoFetchOnRetryableError() {
+        RetryingGoogleApiClient client = new RetryingGoogleApiClient(delegate);
+        AtomicInteger calls = new AtomicInteger();
+        when(delegate.fetchProviderUserId("tok")).thenAnswer(inv -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new CalendarClientException(503, "down");
+            }
+            return "sub-1";
+        });
+
+        assertEquals("sub-1", client.fetchProviderUserId("tok"));
+        verify(delegate, times(2)).fetchProviderUserId("tok");
+    }
 }

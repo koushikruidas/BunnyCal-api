@@ -16,6 +16,7 @@ import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRe
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,7 +37,7 @@ class TokenRefresherTest {
 
     @BeforeEach
     void setUp() {
-        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient);
+        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, new SimpleMeterRegistry());
     }
 
     @Test

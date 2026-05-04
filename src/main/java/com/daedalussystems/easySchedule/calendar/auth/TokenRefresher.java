@@ -6,28 +6,38 @@ import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.transaction.Transactional;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.function.Function;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TokenRefresher {
+    private static final Logger log = LoggerFactory.getLogger(TokenRefresher.class);
     private static final Duration REFRESH_SKEW = Duration.ofMinutes(5);
 
     private final CalendarConnectionRepository connectionRepository;
     private final TokenCipher tokenCipher;
     private final GoogleApiClient googleApiClient;
+    private final Counter tokenRefreshFailureCount;
+    private final Counter tokenRefreshSuccessCount;
 
     public TokenRefresher(CalendarConnectionRepository connectionRepository,
                           TokenCipher tokenCipher,
-                          GoogleApiClient googleApiClient) {
+                          GoogleApiClient googleApiClient,
+                          MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.tokenCipher = tokenCipher;
         this.googleApiClient = googleApiClient;
+        this.tokenRefreshFailureCount = meterRegistry.counter("token_refresh_failures_count");
+        this.tokenRefreshSuccessCount = meterRegistry.counter("token_refresh_success_count");
     }
 
     @Transactional
@@ -73,8 +83,13 @@ public class TokenRefresher {
             TokenRefreshResult refresh = googleApiClient.refreshAccessToken(refreshToken);
             connection.setAccessToken(refresh.accessToken());
             connection.setExpiresAt(refresh.expiresAt());
-            return saveRefreshedTokenWithRetry(connection, refresh.accessToken(), refresh.expiresAt());
+            String token = saveRefreshedTokenWithRetry(connection, refresh.accessToken(), refresh.expiresAt());
+            tokenRefreshSuccessCount.increment();
+            log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\"}}", connection.getId());
+            return token;
         } catch (RuntimeException ex) {
+            tokenRefreshFailureCount.increment();
+            log.warn("{{\"event\":\"token_refresh_failure\",\"connectionId\":\"{}\"}}", connection.getId(), ex);
             markRevoked(connection);
             throw ex;
         }

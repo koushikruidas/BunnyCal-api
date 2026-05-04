@@ -8,12 +8,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.retry.SyncRetryPolicy;
 import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
 import com.daedalussystems.easySchedule.sync.state.InternalRefType;
 import com.daedalussystems.easySchedule.sync.state.SyncDesiredAction;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -31,13 +33,17 @@ class BookingSyncWorkerTest {
     private CalendarService calendarService;
     @Mock
     private SyncRetryPolicy retryPolicy;
+    @Mock
+    private IdempotencyKeyFactory idempotencyKeyFactory;
 
     private BookingSyncWorker worker;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        worker = new BookingSyncWorker(repository, calendarService, retryPolicy);
+        worker = new BookingSyncWorker(
+                repository, calendarService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
+        when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
     }
 
     @Test

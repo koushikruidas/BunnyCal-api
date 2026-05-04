@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -53,9 +54,14 @@ public class BookingSyncReconciler {
     public int reconcile(int batchSize) {
         List<CalendarSyncJob> jobs = repository.findSyncedCandidates(batchSize);
         for (CalendarSyncJob job : jobs) {
+            MDC.put("correlationId", job.getId().toString());
+            MDC.put("provider", job.getProvider());
+            MDC.put("internalRefId", job.getInternalRefId().toString());
+            MDC.put("bookingId", job.getInternalRefId().toString());
             checkedCounter.increment();
             if (job.getExternalEventId() == null) {
                 noopCounter.increment();
+                clearMdc();
                 continue;
             }
             CalendarService.ObserveEventResult observed = calendarService.observeEvent(
@@ -94,6 +100,7 @@ public class BookingSyncReconciler {
                     repairFailureCount.increment();
                 }
             }
+            clearMdc();
         }
         return jobs.size();
     }
@@ -113,8 +120,8 @@ public class BookingSyncReconciler {
         if (updated == 1) {
             requeuedCounter.increment();
             repairSuccessCount.increment();
-            log.info("sync_repair_enqueued jobId={} action={} reason={}",
-                    job.getId(), action, reason);
+            log.info("{{\"event\":\"sync_repair_enqueued\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\",\"reason\":\"{}\"}}",
+                    job.getInternalRefId(), job.getProvider(), job.getId(), action, reason);
         } else {
             noopCounter.increment();
             repairFailureCount.increment();
@@ -130,5 +137,12 @@ public class BookingSyncReconciler {
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private static void clearMdc() {
+        MDC.remove("bookingId");
+        MDC.remove("internalRefId");
+        MDC.remove("provider");
+        MDC.remove("correlationId");
     }
 }

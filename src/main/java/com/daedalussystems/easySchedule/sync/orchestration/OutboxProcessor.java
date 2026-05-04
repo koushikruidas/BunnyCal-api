@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -43,6 +44,10 @@ public class OutboxProcessor {
             if (evt == null) {
                 continue;
             }
+            MDC.put("correlationId", id.toString());
+            MDC.put("provider", provider);
+            MDC.put("internalRefId", evt.getAggregateId().toString());
+            MDC.put("bookingId", evt.getAggregateId().toString());
             try {
                 SyncJobPlan plan = eventRouter.toPlan(evt, provider);
                 calendarSyncJobRepository.upsertPendingJob(
@@ -56,12 +61,19 @@ public class OutboxProcessor {
                 evt.setStatus(OutboxEventStatus.PROCESSED);
                 evt.setLastError(null);
                 outboxProcessedCounter.increment();
+                log.info("{{\"event\":\"outbox_sync_job_created\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
+                        plan.internalRefId(), plan.provider(), id, plan.desiredAction());
             } catch (RuntimeException ex) {
                 evt.setStatus(OutboxEventStatus.RETRYING);
                 evt.setAttemptCount(evt.getAttemptCount() + 1);
                 evt.setLastError("SYNC_OUTBOX_PROCESS_ERROR");
                 outboxFailedCounter.increment();
                 log.warn("sync outbox processing failed outboxId={}", id, ex);
+            } finally {
+                MDC.remove("bookingId");
+                MDC.remove("internalRefId");
+                MDC.remove("provider");
+                MDC.remove("correlationId");
             }
             outboxEventRepository.save(evt);
         }

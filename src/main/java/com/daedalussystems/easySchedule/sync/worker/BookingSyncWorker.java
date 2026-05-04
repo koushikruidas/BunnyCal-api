@@ -2,15 +2,22 @@ package com.daedalussystems.easySchedule.sync.worker;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.retry.SyncRetryPolicy;
 import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
 import com.daedalussystems.easySchedule.sync.state.SyncDesiredAction;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,13 +28,30 @@ public class BookingSyncWorker {
     private final CalendarSyncJobRepository syncJobRepository;
     private final CalendarService calendarService;
     private final SyncRetryPolicy retryPolicy;
+    private final IdempotencyKeyFactory idempotencyKeyFactory;
+    private final MeterRegistry meterRegistry;
+    private final Counter syncSuccessCount;
+    private final Counter syncFailureCount;
+    private final Counter retryCount;
+    private final Timer syncLatency;
+    private final ConcurrentMap<String, Timer> providerLatencyTimers = new ConcurrentHashMap<>();
 
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
                              CalendarService calendarService,
-                             SyncRetryPolicy retryPolicy) {
+                             SyncRetryPolicy retryPolicy,
+                             IdempotencyKeyFactory idempotencyKeyFactory,
+                             MeterRegistry meterRegistry) {
         this.syncJobRepository = syncJobRepository;
         this.calendarService = calendarService;
         this.retryPolicy = retryPolicy;
+        this.idempotencyKeyFactory = idempotencyKeyFactory;
+        this.meterRegistry = meterRegistry;
+        this.syncSuccessCount = meterRegistry.counter("sync_success_count");
+        this.syncFailureCount = meterRegistry.counter("sync_failure_count");
+        this.retryCount = meterRegistry.counter("retry_count");
+        this.syncLatency = Timer.builder("sync_latency")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
     }
 
     @Transactional
@@ -40,16 +64,33 @@ public class BookingSyncWorker {
     }
 
     private void processOne(CalendarSyncJob job) {
+        Instant startedAt = Instant.now();
+        String correlationId = job.getId().toString();
+        MDC.put("correlationId", correlationId);
+        MDC.put("provider", job.getProvider());
+        MDC.put("internalRefId", job.getInternalRefId().toString());
+        if ("BOOKING".equalsIgnoreCase(job.getInternalRefType().name())) {
+            MDC.put("bookingId", job.getInternalRefId().toString());
+        }
         try {
+            log.info("{{\"event\":\"sync_job_processing\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
+                    job.getInternalRefId(), job.getProvider(), correlationId, job.getDesiredAction());
             switch (job.getDesiredAction()) {
                 case CREATE -> processCreate(job);
                 case UPDATE -> processUpdate(job);
                 case DELETE -> processDelete(job);
             }
+            syncSuccessCount.increment();
         } catch (CalendarClientException ex) {
             handleFailure(job, classify(ex));
         } catch (RuntimeException ex) {
             handleFailure(job, "PROVIDER_DOWN");
+        } finally {
+            syncLatency.record(java.time.Duration.between(startedAt, Instant.now()));
+            MDC.remove("bookingId");
+            MDC.remove("internalRefId");
+            MDC.remove("provider");
+            MDC.remove("correlationId");
         }
     }
 
@@ -59,12 +100,15 @@ public class BookingSyncWorker {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
         }
+        Instant startedAt = Instant.now();
         CalendarService.CreateEventResult result = calendarService.createEvent(
                 new CalendarService.CreateCalendarEventCommand(
                         job.getInternalRefId(),
                         job.getProvider(),
-                        job.getProvider() + ":" + job.getInternalRefId()
+                        idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())
                 ));
+        providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
+        // provider latency is recorded around external provider interactions
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), result.externalEventId());
             return;
@@ -78,23 +122,27 @@ public class BookingSyncWorker {
             processCreate(job);
             return;
         }
+        Instant startedAt = Instant.now();
         String externalId = calendarService.updateEvent(
                 new CalendarService.UpdateCalendarEventCommand(
                         job.getInternalRefId(),
                         job.getProvider(),
                         job.getExternalEventId(),
-                        job.getProvider() + ":" + job.getInternalRefId()
+                        idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())
                 ));
+        providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         syncJobRepository.markSynced(job.getId(), job.getVersion(), externalId);
     }
 
     private void processDelete(CalendarSyncJob job) {
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
+            Instant startedAt = Instant.now();
             calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
                     job.getInternalRefId(),
                     job.getProvider(),
                     job.getExternalEventId()
             ));
+            providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         }
         syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
     }
@@ -102,6 +150,10 @@ public class BookingSyncWorker {
     private void handleFailure(CalendarSyncJob job, String errorCode) {
         String code = errorCode == null ? "PROVIDER_ERROR" : errorCode;
         boolean permanent = isPermanent(code) || retryPolicy.isRetryExhausted(job.getAttemptCount() + 1);
+        syncFailureCount.increment();
+        if (!permanent) {
+            retryCount.increment();
+        }
         syncJobRepository.markFailure(
                 job.getId(),
                 job.getVersion(),
@@ -109,9 +161,18 @@ public class BookingSyncWorker {
                 code,
                 permanent
         );
+        log.warn("{{\"event\":\"sync_job_failure\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"errorCode\":\"{}\",\"permanent\":{}}}",
+                job.getInternalRefId(), job.getProvider(), job.getId(), code, permanent);
         if (permanent) {
             log.warn("sync job permanently failed jobId={} code={}", job.getId(), code);
         }
+    }
+
+    private Timer providerLatency(String provider) {
+        return providerLatencyTimers.computeIfAbsent(provider, p -> Timer.builder("provider_latency")
+                .tag("provider", p)
+                .publishPercentileHistogram()
+                .register(meterRegistry));
     }
 
     private static boolean isPermanent(String errorCode) {

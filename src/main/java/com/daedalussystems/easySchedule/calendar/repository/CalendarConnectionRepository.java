@@ -8,6 +8,8 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface CalendarConnectionRepository extends JpaRepository<CalendarConnection, UUID> {
+    Optional<CalendarConnection> findByUserIdAndProvider(UUID userId, CalendarProviderType provider);
+
     Optional<CalendarConnection> findByUserIdAndProviderAndStatus(UUID userId,
                                                                   CalendarProviderType provider,
                                                                   CalendarConnectionStatus status);

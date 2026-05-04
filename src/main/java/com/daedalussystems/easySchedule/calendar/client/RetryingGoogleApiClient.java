@@ -42,6 +42,19 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
         return delegate.refreshAccessToken(refreshToken);
     }
 
+    @Override
+    public OAuthTokenExchangeResult exchangeCodeForToken(String code,
+                                                         String redirectUri,
+                                                         String clientId,
+                                                         String clientSecret) {
+        return delegate.exchangeCodeForToken(code, redirectUri, clientId, clientSecret);
+    }
+
+    @Override
+    public String fetchProviderUserId(String accessToken) {
+        return withRetry(() -> delegate.fetchProviderUserId(accessToken));
+    }
+
     private interface Call<T> { T invoke(); }
 
     private <T> T withRetry(Call<T> call) {

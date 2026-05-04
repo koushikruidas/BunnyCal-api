@@ -8,6 +8,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
@@ -94,6 +96,48 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         }
     }
 
+    @Override
+    public OAuthTokenExchangeResult exchangeCodeForToken(String code,
+                                                         String redirectUri,
+                                                         String clientId,
+                                                         String clientSecret) {
+        try {
+            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+            form.add("code", code);
+            form.add("client_id", clientId);
+            form.add("client_secret", clientSecret);
+            form.add("redirect_uri", redirectUri);
+            form.add("grant_type", "authorization_code");
+
+            ResponseEntity<Map> response = restClient.post()
+                    .uri("https://oauth2.googleapis.com/token")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(form)
+                    .retrieve()
+                    .toEntity(Map.class);
+            String accessToken = (String) response.getBody().get("access_token");
+            String refreshToken = (String) response.getBody().get("refresh_token");
+            Number expiresIn = (Number) response.getBody().getOrDefault("expires_in", 3600);
+            return new OAuthTokenExchangeResult(accessToken, refreshToken, Instant.now().plusSeconds(expiresIn.longValue()));
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
+    public String fetchProviderUserId(String accessToken) {
+        try {
+            ResponseEntity<Map> response = restClient.get()
+                    .uri("https://www.googleapis.com/oauth2/v3/userinfo")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            return (String) response.getBody().get("sub");
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
     private static CalendarClientException classify(RestClientException ex) {
         String message = ex.getMessage() == null ? "calendar api error" : ex.getMessage();
         int status = extractStatus(message);
@@ -112,4 +156,5 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (msg.contains("404")) return 404;
         return 500;
     }
+
 }

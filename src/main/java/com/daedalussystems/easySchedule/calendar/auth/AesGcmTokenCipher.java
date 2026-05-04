@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 public class AesGcmTokenCipher implements TokenCipher {
     private static final int GCM_TAG_BITS = 128;
     private static final int IV_BYTES = 12;
+    private static final String KEY_VERSION_PREFIX = "v1:";
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final SecretKey secretKey;
@@ -37,7 +38,7 @@ public class AesGcmTokenCipher implements TokenCipher {
                     .put(iv)
                     .put(encrypted)
                     .array();
-            return Base64.getEncoder().encodeToString(payload);
+            return KEY_VERSION_PREFIX + Base64.getEncoder().encodeToString(payload);
         } catch (GeneralSecurityException ex) {
             throw new IllegalStateException("Token encryption failed", ex);
         }
@@ -46,7 +47,11 @@ public class AesGcmTokenCipher implements TokenCipher {
     @Override
     public String decrypt(String ciphertext) {
         try {
-            byte[] payload = Base64.getDecoder().decode(ciphertext);
+            String encoded = ciphertext;
+            if (ciphertext != null && ciphertext.startsWith(KEY_VERSION_PREFIX)) {
+                encoded = ciphertext.substring(KEY_VERSION_PREFIX.length());
+            }
+            byte[] payload = Base64.getDecoder().decode(encoded);
             ByteBuffer bb = ByteBuffer.wrap(payload);
             byte[] iv = new byte[IV_BYTES];
             bb.get(iv);
