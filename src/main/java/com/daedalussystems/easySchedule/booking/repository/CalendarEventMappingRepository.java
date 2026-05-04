@@ -88,6 +88,34 @@ public class CalendarEventMappingRepository {
     }
 
     @Transactional
+    public FinalizeOutcome updateMappingWithEventId(UUID bookingId, String provider, String externalEventId,
+                                                    long token, String workerId) {
+        int rows = entityManager.createNativeQuery("""
+                UPDATE calendar_event_mappings
+                   SET status = 'CREATED',
+                       external_event_id = :externalEventId,
+                       updated_at = NOW()
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                   AND status = 'CLAIMED'
+                   AND claimed_by = :workerId
+                   AND sync_token = :token
+                   AND (external_event_id IS NULL OR external_event_id = :externalEventId)
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .setParameter("externalEventId", externalEventId)
+                .setParameter("token", token)
+                .setParameter("workerId", workerId)
+                .executeUpdate();
+
+        if (rows == 1) {
+            return FinalizeOutcome.SUCCESS;
+        }
+        return classifyFinalizeMiss(bookingId, provider, externalEventId);
+    }
+
+    @Transactional
     public TransitionOutcome markFailed(UUID bookingId, String provider, String claimedBy, String lastError,
                                         long newSyncToken) {
         int rows = entityManager.createNativeQuery("""
@@ -223,6 +251,35 @@ public class CalendarEventMappingRepository {
     }
 
     @SuppressWarnings("unchecked")
+    private FinalizeOutcome classifyFinalizeMiss(UUID bookingId, String provider, String externalEventId) {
+        List<Object[]> rows = entityManager.createNativeQuery("""
+                SELECT status, external_event_id, claimed_by, sync_token
+                  FROM calendar_event_mappings
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .getResultList();
+        if (rows.isEmpty()) {
+            return FinalizeOutcome.STALE_OR_NOT_OWNER;
+        }
+        String status = (String) rows.get(0)[0];
+        String persistedExternalEventId = (String) rows.get(0)[1];
+        String claimedBy = (String) rows.get(0)[2];
+        long syncToken = ((Number) rows.get(0)[3]).longValue();
+        if ("CREATED".equals(status)) {
+            if (Objects.equals(persistedExternalEventId, externalEventId)) {
+                return FinalizeOutcome.ALREADY_COMPLETED;
+            }
+            log.error("Split-brain detected bookingId={} provider={} stored={} incoming={} owner={} token={}",
+                    bookingId, provider, persistedExternalEventId, externalEventId, claimedBy, syncToken);
+            return FinalizeOutcome.SPLIT_BRAIN_DETECTED;
+        }
+        return FinalizeOutcome.STALE_OR_NOT_OWNER;
+    }
+
+    @SuppressWarnings("unchecked")
     private ClaimOutcome classifyClaimRejection(UUID bookingId, String provider) {
         List<String> rows = entityManager.createNativeQuery("""
                 SELECT status
@@ -254,5 +311,12 @@ public class CalendarEventMappingRepository {
         INVALID_STATE,
         NOT_FOUND,
         UNKNOWN_NOOP
+    }
+
+    public enum FinalizeOutcome {
+        SUCCESS,
+        ALREADY_COMPLETED,
+        STALE_OR_NOT_OWNER,
+        SPLIT_BRAIN_DETECTED
     }
 }
