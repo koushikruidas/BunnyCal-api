@@ -28,7 +28,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         "spring.sql.init.mode=always",
         "spring.otel.sdk.disabled=true",
         "spring.docker.compose.enabled=false",
-        "security.enabled=false"
+        "security.enabled=false",
+        // Disable all @Scheduled background tasks so worker processing only happens
+        // through explicit worker.poll() calls in tests, preventing races between
+        // background scheduler threads and test assertions.
+        "scheduling.enabled=false"
 })
 public abstract class AbstractBookingIT {
 

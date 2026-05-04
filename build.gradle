@@ -57,6 +57,7 @@ dependencies {
     testImplementation 'org.testcontainers:postgresql'
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.mockito:mockito-core'
+    testImplementation 'org.awaitility:awaitility'
 }
 
 dependencyManagement {
@@ -66,5 +67,19 @@ dependencyManagement {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+    useJUnitPlatform()
+
+    testLogging {
+        events "passed", "failed", "skipped"
+    }
+
+    afterSuite { desc, result ->
+        if (!desc.parent) { // will match the outermost suite
+            println "\nTest Summary:"
+            println "Total: ${result.testCount}"
+            println "Passed: ${result.successfulTestCount}"
+            println "Failed: ${result.failedTestCount}"
+            println "Skipped: ${result.skippedTestCount}"
+        }
+    }
 }

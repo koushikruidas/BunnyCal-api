@@ -1,6 +1,8 @@
 package com.daedalussystems.easySchedule.booking.outbox;
 
 import static com.daedalussystems.easySchedule.booking.contract.BookingContracts.OUTBOX_MAX_ATTEMPTS;
+import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -18,7 +20,6 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -56,23 +57,34 @@ class OutboxStressIT extends AbstractBookingIT {
 
         doNothing().when(dispatcher).dispatch(any());
 
+        // startGate holds all threads until they are all queued, maximising
+        // the chance they race into claimBatch() at the same time.
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threads);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch latch = new CountDownLatch(threads);
 
         for (int i = 0; i < threads; i++) {
             pool.submit(() -> {
                 try {
+                    startGate.await();
                     worker.poll();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 } finally {
-                    latch.countDown();
+                    doneLatch.countDown();
                 }
             });
         }
 
-        latch.await(30, TimeUnit.SECONDS);
+        startGate.countDown(); // release all threads simultaneously
+        assertTrue(doneLatch.await(30, SECONDS), "Workers did not complete within 30 s");
         pool.shutdown();
+        pool.awaitTermination(5, SECONDS);
 
-        verify(dispatcher, times(eventCount)).dispatch(any());
+        // All processing is synchronous inside worker.poll(), so by the time
+        // doneLatch reaches zero every dispatch call has been recorded.
+        await().atMost(2, SECONDS)
+                .untilAsserted(() -> verify(dispatcher, times(eventCount)).dispatch(any()));
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -155,23 +167,31 @@ class OutboxStressIT extends AbstractBookingIT {
             return null;
         }).when(dispatcher).dispatch(any());
 
+        CountDownLatch startGate = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threads);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
-        CountDownLatch latch = new CountDownLatch(threads);
 
         for (int i = 0; i < threads; i++) {
             pool.submit(() -> {
                 try {
+                    startGate.await();
                     worker.poll();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 } finally {
-                    latch.countDown();
+                    doneLatch.countDown();
                 }
             });
         }
 
-        latch.await(30, TimeUnit.SECONDS);
+        startGate.countDown();
+        // 30 events × 100 ms each = ~3 s; give a generous window.
+        assertTrue(doneLatch.await(30, SECONDS), "Workers did not complete within 30 s");
         pool.shutdown();
+        pool.awaitTermination(5, SECONDS);
 
-        verify(dispatcher, times(eventCount)).dispatch(any());
+        await().atMost(5, SECONDS)
+                .untilAsserted(() -> verify(dispatcher, times(eventCount)).dispatch(any()));
     }
 
     // ─────────────────────────────────────────────────────────────

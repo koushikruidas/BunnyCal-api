@@ -48,7 +48,9 @@ class OutboxWorkerIT extends AbstractBookingIT {
     // ─────────────────────────────────────────────────────────────
     @Test
     void fullFlow_pendingToProcessed_success() {
-        UUID id = insertPendingOutboxEvent(Instant.now());
+        // Use a past timestamp so next_attempt_at is always <= DB's now(),
+        // avoiding clock-skew failures when DB clock lags JVM by a few ms.
+        UUID id = insertPendingOutboxEvent(Instant.now().minusSeconds(1));
 
         worker.poll(); // triggers claim + process
 
@@ -69,7 +71,7 @@ class OutboxWorkerIT extends AbstractBookingIT {
     @Test
     void crashAfterClaim_thenRecovered_processedExactlyOnce() {
 
-        UUID id = insertPendingOutboxEvent(Instant.now());
+        UUID id = insertPendingOutboxEvent(Instant.now().minusSeconds(1));
 
         // STEP 1: simulate claim (worker crash before processing)
         inTx(() -> {
@@ -124,7 +126,7 @@ class OutboxWorkerIT extends AbstractBookingIT {
         doThrow(new RuntimeException("simulated dispatch failure"))
                 .when(dispatcher).dispatch(any());
 
-        UUID id = insertPendingOutboxEvent(Instant.now());
+        UUID id = insertPendingOutboxEvent(Instant.now().minusSeconds(1));
 
         worker.poll(); // dispatch throws → recordFailure schedules retry
 
@@ -175,7 +177,7 @@ class OutboxWorkerIT extends AbstractBookingIT {
     @Test
     void duplicateProcessing_preventedByProcessedEvents() {
 
-        UUID id = insertPendingOutboxEvent(Instant.now());
+        UUID id = insertPendingOutboxEvent(Instant.now().minusSeconds(1));
 
         // First run
         worker.poll();
@@ -205,7 +207,7 @@ class OutboxWorkerIT extends AbstractBookingIT {
     // ─────────────────────────────────────────────────────────────
     @Test
     void concurrentWorkers_oneEvent_handlerExecutesExactlyOnce() throws Exception {
-        UUID id = insertPendingOutboxEvent(Instant.now());
+        UUID id = insertPendingOutboxEvent(Instant.now().minusSeconds(1));
 
         CountDownLatch latch = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(2);
