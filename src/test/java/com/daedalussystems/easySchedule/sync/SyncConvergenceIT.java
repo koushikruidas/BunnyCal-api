@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.booking.AbstractBookingIT;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.ClaimOutcome;
+import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -41,7 +42,7 @@ class SyncConvergenceIT extends AbstractBookingIT {
     private FencingTokenGenerator tokenGenerator;
 
     @MockitoBean
-    private CalendarProviderClient providerClient;
+    private CalendarService calendarService;
 
     @Test
     void highContention_convergesToSingleCreatedMapping_noStuckClaimed() throws Exception {
@@ -49,12 +50,14 @@ class SyncConvergenceIT extends AbstractBookingIT {
         String provider = "google";
         var eventsByKey = new ConcurrentHashMap<String, String>();
 
-        when(providerClient.createEvent(any(UUID.class), anyString(), anyString()))
+        when(calendarService.createEvent(any(CalendarService.CreateCalendarEventCommand.class)))
                 .thenAnswer(invocation -> {
-                    UUID b = invocation.getArgument(0);
-                    String p = invocation.getArgument(1);
-                    String key = invocation.getArgument(2);
-                    return eventsByKey.computeIfAbsent(key, ignored -> p + "-event-" + b);
+                    CalendarService.CreateCalendarEventCommand cmd = invocation.getArgument(0);
+                    UUID b = cmd.internalId();
+                    String p = cmd.provider();
+                    String key = cmd.idempotencyKey();
+                    return CalendarService.CreateEventResult.success(
+                            eventsByKey.computeIfAbsent(key, ignored -> p + "-event-" + b));
                 });
 
         int workers = 10;
@@ -97,17 +100,20 @@ class SyncConvergenceIT extends AbstractBookingIT {
         String idempotencyKey = provider + ":" + bookingId;
         var eventsByKey = new ConcurrentHashMap<String, String>();
 
-        when(providerClient.createEvent(any(UUID.class), anyString(), anyString()))
+        when(calendarService.createEvent(any(CalendarService.CreateCalendarEventCommand.class)))
                 .thenAnswer(invocation -> {
-                    UUID b = invocation.getArgument(0);
-                    String p = invocation.getArgument(1);
-                    String key = invocation.getArgument(2);
-                    return eventsByKey.computeIfAbsent(key, ignored -> p + "-event-" + b);
+                    CalendarService.CreateCalendarEventCommand cmd = invocation.getArgument(0);
+                    UUID b = cmd.internalId();
+                    String p = cmd.provider();
+                    String key = cmd.idempotencyKey();
+                    return CalendarService.CreateEventResult.success(
+                            eventsByKey.computeIfAbsent(key, ignored -> p + "-event-" + b));
                 });
 
         long token = tokenGenerator.nextToken();
         assertEquals(ClaimOutcome.CLAIMED, repository.claimBookingForSync(bookingId, provider, token, "crashed-worker"));
-        String firstExternal = providerClient.createEvent(bookingId, provider, idempotencyKey);
+        String firstExternal = calendarService.createEvent(
+                new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey)).externalEventId();
         assertNotNull(firstExternal);
 
         syncWorker.processBookingSync(bookingId, provider);
@@ -127,16 +133,17 @@ class SyncConvergenceIT extends AbstractBookingIT {
         var eventsByKey = new ConcurrentHashMap<String, String>();
         AtomicInteger calls = new AtomicInteger(0);
 
-        when(providerClient.createEvent(any(UUID.class), anyString(), anyString()))
+        when(calendarService.createEvent(any(CalendarService.CreateCalendarEventCommand.class)))
                 .thenAnswer(invocation -> {
-                    UUID b = invocation.getArgument(0);
-                    String p = invocation.getArgument(1);
-                    String key = invocation.getArgument(2);
+                    CalendarService.CreateCalendarEventCommand cmd = invocation.getArgument(0);
+                    UUID b = cmd.internalId();
+                    String p = cmd.provider();
+                    String key = cmd.idempotencyKey();
                     String eventId = eventsByKey.computeIfAbsent(key, ignored -> p + "-event-" + b);
                     if (calls.incrementAndGet() == 1) {
-                        throw new RuntimeException("timeout");
+                        return CalendarService.CreateEventResult.retryable("HTTP_429");
                     }
-                    return eventId;
+                    return CalendarService.CreateEventResult.success(eventId);
                 });
 
         syncWorker.processBookingSync(bookingId, provider);
@@ -152,6 +159,6 @@ class SyncConvergenceIT extends AbstractBookingIT {
         assertNotNull(jdbc.queryForObject(
                 "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
                 String.class, bookingId, provider));
-        verify(providerClient, atLeast(2)).createEvent(Mockito.eq(bookingId), Mockito.eq(provider), Mockito.eq(provider + ":" + bookingId));
+        verify(calendarService, atLeast(2)).createEvent(any());
     }
 }

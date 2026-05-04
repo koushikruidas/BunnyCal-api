@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.sync;
 
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.ClaimOutcome;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.FinalizeOutcome;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.MappingKey;
@@ -14,9 +15,12 @@ import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,7 +33,7 @@ public class SyncWorker {
 
     private final CalendarEventMappingRepository mappingRepository;
     private final FencingTokenGenerator tokenGenerator;
-    private final CalendarProviderClient providerClient;
+    private final CalendarService calendarService;
     private final MeterRegistry meterRegistry;
     private final String workerId = "sync-worker-" + UUID.randomUUID();
     private static final int RECONCILE_BATCH_SIZE = 50;
@@ -37,6 +41,22 @@ public class SyncWorker {
     private static final int MAX_SYNC_RETRIES = 10;
     private static final Duration RETRY_INITIAL_BACKOFF = Duration.ofSeconds(1);
     private static final Duration RETRY_MAX_BACKOFF = Duration.ofMinutes(5);
+    private static final Duration IN_PROGRESS_MIN_BACKOFF = Duration.ofSeconds(2);
+    private static final Duration IN_PROGRESS_MAX_BACKOFF = Duration.ofSeconds(4);
+    private static final String IN_PROGRESS_ERROR_CODE = "IN_PROGRESS";
+    private static final String NONE_ERROR_CODE = "NONE";
+    private static final String UNKNOWN_ERROR_CODE = "UNKNOWN";
+    private static final Set<String> ALLOWED_ERROR_CODES = Set.of(
+            "RATE_LIMIT",
+            "AUTH_EXPIRED",
+            "AUTH_REVOKED",
+            "INVALID_REQUEST",
+            "PROVIDER_DOWN",
+            "PROVIDER_ERROR",
+            IN_PROGRESS_ERROR_CODE,
+            NONE_ERROR_CODE,
+            UNKNOWN_ERROR_CODE
+    );
 
     private final Counter claimClaimedCounter;
     private final Counter claimRejectedCounter;
@@ -49,14 +69,15 @@ public class SyncWorker {
     private final DistributionSummary retryDelayMsSummary;
     private final DistributionSummary retryAttemptSummary;
     private final Timer timeToSuccessTimer;
+    private final Map<String, Timer> latencyTimers = new ConcurrentHashMap<>();
 
     public SyncWorker(CalendarEventMappingRepository mappingRepository,
                       FencingTokenGenerator tokenGenerator,
-                      CalendarProviderClient providerClient,
+                      CalendarService calendarService,
                       MeterRegistry meterRegistry) {
         this.mappingRepository = mappingRepository;
         this.tokenGenerator = tokenGenerator;
-        this.providerClient = providerClient;
+        this.calendarService = calendarService;
         this.meterRegistry = meterRegistry;
         this.claimClaimedCounter = meterRegistry.counter("sync.claim.claimed");
         this.claimRejectedCounter = meterRegistry.counter("sync.claim.rejected");
@@ -106,8 +127,52 @@ public class SyncWorker {
         }
 
         String externalEventId;
+        Instant providerCallStartedAt = Instant.now();
         try {
-            externalEventId = providerClient.createEvent(bookingId, provider, idempotencyKey(bookingId, provider));
+            CalendarService.CreateEventResult createResult = calendarService.createEvent(
+                    new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey(bookingId, provider)));
+            long latencyMs = Duration.between(providerCallStartedAt, Instant.now()).toMillis();
+            if (createResult.status() == CalendarService.CreateEventStatus.PERMANENT_FAILURE) {
+                log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                        bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
+                        createResult.status(), createResult.errorCode(), latencyMs);
+                recordCalendarSyncMetrics(provider, createResult, latencyMs);
+                mappingRepository.markFailedPermanent(
+                        bookingId, provider, workerId, createResult.errorCode(), token);
+                failedPermanentCounter.increment();
+                return;
+            }
+            if (createResult.status() == CalendarService.CreateEventStatus.RETRYABLE_FAILURE) {
+                log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                        bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
+                        createResult.status(), createResult.errorCode(), latencyMs);
+                recordCalendarSyncMetrics(provider, createResult, latencyMs);
+                int nextAttempt = state.attemptCount() + 1;
+                String normalizedErrorCode = safeErrorCode(createResult.errorCode());
+                Duration backoff = IN_PROGRESS_ERROR_CODE.equals(normalizedErrorCode)
+                        ? computeInProgressBackoff()
+                        : computeBackoff(nextAttempt);
+                retryDelayMsSummary.record(backoff.toMillis());
+                if (IN_PROGRESS_ERROR_CODE.equals(normalizedErrorCode)) {
+                    meterRegistry.counter("calendar_sync_in_progress_total",
+                            List.of(Tag.of("provider", provider))).increment();
+                } else {
+                    meterRegistry.counter("calendar_sync_retries_total",
+                            List.of(
+                                    Tag.of("provider", provider),
+                                    Tag.of("error_code", normalizedErrorCode)
+                            )).increment();
+                }
+                Instant nextRetryAt = Instant.now().plus(backoff);
+                mappingRepository.markFailed(
+                        bookingId, provider, workerId, createResult.errorCode(), token, nextRetryAt);
+                return;
+            }
+            externalEventId = createResult.externalEventId();
+            log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                    bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
+                    createResult.status(), "NONE", latencyMs);
+            recordCalendarSyncMetrics(provider, createResult, latencyMs);
         } catch (Exception ex) {
             log.warn("calendar sync provider failure bookingId={} provider={} token={} workerId={}",
                     bookingId, provider, token, workerId, ex);
@@ -202,8 +267,44 @@ public class SyncWorker {
         return Duration.ofMillis(half + jitter);
     }
 
+    private static Duration computeInProgressBackoff() {
+        long min = IN_PROGRESS_MIN_BACKOFF.toMillis();
+        long max = IN_PROGRESS_MAX_BACKOFF.toMillis();
+        long jittered = ThreadLocalRandom.current().nextLong(min, max + 1);
+        return Duration.ofMillis(jittered);
+    }
+
     private static String idempotencyKey(UUID bookingId, String provider) {
         return provider + ":" + bookingId;
+    }
+
+    private void recordCalendarSyncMetrics(String provider,
+                                           CalendarService.CreateEventResult createResult,
+                                           long latencyMs) {
+        String errorCode = safeErrorCode(createResult.errorCode());
+        meterRegistry.counter("calendar_sync_attempts_total",
+                List.of(
+                        Tag.of("provider", provider),
+                        Tag.of("result", createResult.status().name()),
+                        Tag.of("error_code", errorCode)
+                )).increment();
+
+        latencyTimer(provider, createResult.status()).record(Duration.ofMillis(Math.max(0, latencyMs)));
+    }
+
+    private static String safeErrorCode(String errorCode) {
+        if (errorCode == null || errorCode.isBlank()) {
+            return NONE_ERROR_CODE;
+        }
+        return ALLOWED_ERROR_CODES.contains(errorCode) ? errorCode : UNKNOWN_ERROR_CODE;
+    }
+
+    private Timer latencyTimer(String provider, CalendarService.CreateEventStatus result) {
+        String key = provider + "|" + result.name();
+        return latencyTimers.computeIfAbsent(key, ignored -> Timer.builder("calendar_sync_latency_ms")
+                .tag("provider", provider)
+                .tag("result", result.name())
+                .register(meterRegistry));
     }
 
     private void countClaim(ClaimOutcome outcome, String provider) {

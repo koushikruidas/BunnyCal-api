@@ -14,7 +14,7 @@ import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingR
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.FinalizeOutcome;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.MappingState;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.TransitionOutcome;
-import com.daedalussystems.easySchedule.sync.CalendarProviderClient;
+import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.sync.FencingTokenGenerator;
 import com.daedalussystems.easySchedule.sync.SyncWorker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -37,7 +37,7 @@ class SyncWorkerTest {
     @Mock
     private FencingTokenGenerator tokenGenerator;
     @Mock
-    private CalendarProviderClient providerClient;
+    private CalendarService calendarService;
 
     private SyncWorker worker;
     private SimpleMeterRegistry meterRegistry;
@@ -45,7 +45,7 @@ class SyncWorkerTest {
     @BeforeEach
     void setUp() {
         meterRegistry = new SimpleMeterRegistry();
-        worker = new SyncWorker(repository, tokenGenerator, providerClient, meterRegistry);
+        worker = new SyncWorker(repository, tokenGenerator, calendarService, meterRegistry);
     }
 
     @Test
@@ -57,7 +57,7 @@ class SyncWorkerTest {
 
         worker.processBookingSync(bookingId, "google");
 
-        verify(providerClient, never()).createEvent(any(), anyString(), anyString());
+        verify(calendarService, never()).createEvent(any());
         verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
     }
 
@@ -72,7 +72,7 @@ class SyncWorkerTest {
 
         worker.processBookingSync(bookingId, "google");
 
-        verify(providerClient, never()).createEvent(any(), anyString(), anyString());
+        verify(calendarService, never()).createEvent(any());
     }
 
     @Test
@@ -86,7 +86,7 @@ class SyncWorkerTest {
 
         worker.processBookingSync(bookingId, "google");
 
-        verify(providerClient, never()).createEvent(any(), anyString(), anyString());
+        verify(calendarService, never()).createEvent(any());
     }
 
     @Test
@@ -101,7 +101,7 @@ class SyncWorkerTest {
                 });
         when(repository.findMappingState(bookingId, "google"))
                 .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 13L, workerRef.get(), 0, Instant.now())));
-        when(providerClient.createEvent(eq(bookingId), eq("google"), anyString())).thenReturn("ext-13");
+        when(calendarService.createEvent(any())).thenReturn(CalendarService.CreateEventResult.success("ext-13"));
         when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), eq(13L), anyString()))
                 .thenReturn(FinalizeOutcome.SUCCESS);
 
@@ -112,7 +112,7 @@ class SyncWorkerTest {
         verify(repository).claimBookingForSync(eq(bookingId), eq("google"), eq(13L), claimWorker.capture());
         verify(repository).updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), eq(13L),
                 finalizeWorker.capture());
-        verify(providerClient).createEvent(eq(bookingId), eq("google"), eq("google:" + bookingId));
+        verify(calendarService).createEvent(any(CalendarService.CreateCalendarEventCommand.class));
         org.junit.jupiter.api.Assertions.assertEquals(claimWorker.getValue(), finalizeWorker.getValue());
     }
 
@@ -128,7 +128,7 @@ class SyncWorkerTest {
                 });
         when(repository.findMappingState(bookingId, "google"))
                 .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 14L, workerRef.get(), 0, Instant.now())));
-        when(providerClient.createEvent(eq(bookingId), eq("google"), anyString())).thenReturn("ext-14");
+        when(calendarService.createEvent(any())).thenReturn(CalendarService.CreateEventResult.success("ext-14"));
         when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-14"), eq(14L), anyString()))
                 .thenReturn(FinalizeOutcome.SPLIT_BRAIN_DETECTED);
 
@@ -147,14 +147,14 @@ class SyncWorkerTest {
                 });
         when(repository.findMappingState(bookingId, "google"))
                 .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 15L, workerRef.get(), 0, Instant.now())));
-        when(providerClient.createEvent(eq(bookingId), eq("google"), anyString()))
-                .thenThrow(new RuntimeException("provider timeout"));
-        when(repository.markFailed(eq(bookingId), eq("google"), anyString(), eq("provider timeout"), eq(15L), any()))
+        when(calendarService.createEvent(any()))
+                .thenReturn(CalendarService.CreateEventResult.retryable("HTTP_429"));
+        when(repository.markFailed(eq(bookingId), eq("google"), anyString(), eq("HTTP_429"), eq(15L), any()))
                 .thenReturn(TransitionOutcome.UPDATED);
 
         worker.processBookingSync(bookingId, "google");
 
-        verify(repository).markFailed(eq(bookingId), eq("google"), eq(workerRef.get()), eq("provider timeout"), eq(15L), any());
+        verify(repository).markFailed(eq(bookingId), eq("google"), eq(workerRef.get()), eq("HTTP_429"), eq(15L), any());
         verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
     }
 
@@ -169,7 +169,7 @@ class SyncWorkerTest {
 
         worker.processBookingSync(bookingId, "google");
 
-        verify(providerClient, never()).createEvent(any(), anyString(), anyString());
+        verify(calendarService, never()).createEvent(any());
         verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
     }
 }

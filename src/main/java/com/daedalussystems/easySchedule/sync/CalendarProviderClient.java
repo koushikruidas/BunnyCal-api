@@ -1,4 +1,4 @@
-package com.daedalussystems.easySchedule.sync;
+package com.daedalussystems.easySchedule.calendar.client;
 
 import java.util.UUID;
 

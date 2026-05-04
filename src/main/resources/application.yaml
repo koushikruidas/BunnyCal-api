@@ -66,3 +66,7 @@ auth:
 logging:
   level:
     org.flywaydb: DEBUG
+
+calendar:
+  security:
+    encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY=}
