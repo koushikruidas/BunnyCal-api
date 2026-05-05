@@ -33,6 +33,7 @@ import com.daedalussystems.easySchedule.availability.repository.DbClockRepositor
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import java.time.DayOfWeek;
@@ -62,6 +63,7 @@ class SlotServiceTest {
     @Mock private DbClockRepository dbClockRepository;
     @Mock private SlotCacheService slotCacheService;
     @Mock private SlotCacheVersionService slotCacheVersionService;
+    @Mock private CalendarBusyTimeService calendarBusyTimeService;
 
     private SlotService slotService;
 
@@ -84,7 +86,8 @@ class SlotServiceTest {
                 bookingRepository,
                 dbClockRepository,
                 slotCacheService,
-                slotCacheVersionService);
+                slotCacheVersionService,
+                calendarBusyTimeService);
 
         host = User.builder()
                 .id(userId)
@@ -111,6 +114,7 @@ class SlotServiceTest {
         mondayRule.setDayOfWeek(DayOfWeek.MONDAY);
         mondayRule.setStartTime(LocalTime.of(9, 0));
         mondayRule.setEndTime(LocalTime.of(10, 0));
+        when(calendarBusyTimeService.busyIntervalsForDate(any(), any(), any())).thenReturn(List.of());
     }
 
     @Test

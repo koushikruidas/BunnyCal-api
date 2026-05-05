@@ -15,6 +15,8 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     Optional<CalendarConnection> findByUserIdAndProviderAndStatus(UUID userId,
                                                                   CalendarProviderType provider,
                                                                   CalendarConnectionStatus status);
+    java.util.List<CalendarConnection> findByUserIdAndStatus(UUID userId, CalendarConnectionStatus status);
+    java.util.List<CalendarConnection> findByStatus(CalendarConnectionStatus status);
 
     @Query(value = """
             SELECT *

@@ -180,6 +180,37 @@ public class BookingService {
         return saved;
     }
 
+    @Transactional
+    public Booking createHeldBooking(UUID hostId,
+                                     UUID eventTypeId,
+                                     Instant requestedStart,
+                                     Instant requestedEnd,
+                                     Duration holdDuration) {
+        if (holdDuration == null || holdDuration.isZero() || holdDuration.isNegative()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "holdDuration must be positive.");
+        }
+        Booking booking = createBooking(hostId, eventTypeId, requestedStart, requestedEnd);
+        Instant expiresAt = timeSource.now().plus(holdDuration);
+        int updated = bookingRepository.setPendingExpiry(booking.getId(), expiresAt);
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+        return booking;
+    }
+
+    @Transactional
+    public void confirmHeldBooking(UUID bookingId) {
+        var row = bookingRepository.findStateById(bookingId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        if (!BookingState.PENDING.name().equals(row.getStatus())) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+        if (row.getExpiresAt() != null && row.getExpiresAt().isBefore(timeSource.now())) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION, "Booking hold has expired.");
+        }
+        confirmBooking(bookingId, row.getVersion());
+    }
+
     // ── State Transitions ────────────────────────────────────────────────────
 
     // DB result is the sole authority. Static check is a guardrail only

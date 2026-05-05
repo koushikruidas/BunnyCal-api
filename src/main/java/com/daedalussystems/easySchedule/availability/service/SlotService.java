@@ -22,6 +22,7 @@ import com.daedalussystems.easySchedule.availability.repository.AvailabilityOver
 import com.daedalussystems.easySchedule.availability.repository.AvailabilityRuleRepository;
 import com.daedalussystems.easySchedule.availability.repository.DbClockRepository;
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -45,6 +46,7 @@ public class SlotService {
     private final DbClockRepository dbClockRepository;
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
+    private final CalendarBusyTimeService calendarBusyTimeService;
 
     public SlotService(
             UserRepository userRepository,
@@ -54,7 +56,8 @@ public class SlotService {
             BookingRepository bookingRepository,
             DbClockRepository dbClockRepository,
             SlotCacheService slotCacheService,
-            SlotCacheVersionService slotCacheVersionService) {
+            SlotCacheVersionService slotCacheVersionService,
+            CalendarBusyTimeService calendarBusyTimeService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -63,6 +66,7 @@ public class SlotService {
         this.dbClockRepository = dbClockRepository;
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
+        this.calendarBusyTimeService = calendarBusyTimeService;
     }
 
     public SlotResponse getSlots(SlotRequest request) {
@@ -144,8 +148,8 @@ public class SlotService {
             bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));
         }
 
-        // 6.6 Calendar busy: empty until calendar integration ships.
-        List<TimeInterval> calendarBusy = List.of();
+        // 6.6 Calendar busy from normalized calendar_events aggregated across all active connections.
+        List<TimeInterval> calendarBusy = calendarBusyTimeService.busyIntervalsForDate(host.getId(), date, zoneId);
 
         // 6.7 Build engine input. Service performs ZERO filtering — engine is the
         //     single source of truth for slot semantics.

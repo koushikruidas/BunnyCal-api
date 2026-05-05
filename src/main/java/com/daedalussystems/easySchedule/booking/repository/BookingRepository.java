@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.domain.BookingId;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -17,6 +18,18 @@ import org.springframework.data.repository.query.Param;
 // Rule: NEVER add a `findById(UUID)`-style lookup here. Every read must
 // carry host_id so partition pruning fires and we hit exactly one child.
 public interface BookingRepository extends JpaRepository<Booking, BookingId> {
+    interface BookingStateRow {
+        UUID getId();
+        UUID getHostId();
+        String getStatus();
+        Long getVersion();
+        Instant getExpiresAt();
+    }
+
+    interface BookingExpiryRow {
+        UUID getId();
+        Long getVersion();
+    }
 
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
     // Used by the phantom-pending-explosion guard in BookingService. Native query
@@ -110,4 +123,32 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     // after a successful terminal-state CAS, so the row is guaranteed to exist.
     @Query(value = "SELECT created_at FROM bookings WHERE id = :id LIMIT 1", nativeQuery = true)
     java.util.Optional<java.time.Instant> findCreatedAtById(@Param("id") UUID id);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET expires_at = :expiresAt
+             WHERE id = :id
+               AND status = 'PENDING'
+            """, nativeQuery = true)
+    int setPendingExpiry(@Param("id") UUID id, @Param("expiresAt") Instant expiresAt);
+
+    @Query(value = """
+            SELECT id, host_id, status, version, expires_at
+            FROM bookings
+            WHERE id = :id
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingStateRow> findStateById(@Param("id") UUID id);
+
+    @Query(value = """
+            SELECT id, version
+            FROM bookings
+            WHERE status = 'PENDING'
+              AND expires_at IS NOT NULL
+              AND expires_at < :now
+            ORDER BY expires_at
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<BookingExpiryRow> findPendingExpired(@Param("now") Instant now, @Param("limit") int limit);
 }

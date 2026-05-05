@@ -15,6 +15,7 @@ public class UserDto {
 
     private UUID id;
     private String email;
+    private String username;
     private String name;
     private String timezone;
 
@@ -22,6 +23,7 @@ public class UserDto {
         return UserDto.builder()
                 .id(user.getId())
                 .email(user.getEmail())
+                .username(user.getUsername())
                 .name(user.getName())
                 .timezone(user.getTimezone())
                 .build();

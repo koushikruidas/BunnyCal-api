@@ -10,6 +10,7 @@ import com.daedalussystems.easySchedule.auth.repository.AuthIdentityRepository;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import java.util.Locale;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -50,6 +51,7 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
         try {
             User savedUser = userRepository.save(User.builder()
                     .email(email)
+                    .username(buildUsername(email))
                     .name(name)
                     .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
                     .status(UserStatus.ACTIVE)
@@ -91,5 +93,13 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
             return fallbackEmail;
         }
         return name.trim();
+    }
+
+    private static String buildUsername(String email) {
+        String local = email.split("@")[0].toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "");
+        if (local.isBlank()) {
+            local = "user";
+        }
+        return local + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 }

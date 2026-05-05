@@ -38,6 +38,9 @@ public class EventType {
     @Column(nullable = false)
     private String name;
 
+    @Column(nullable = false, length = 120)
+    private String slug;
+
     @Column(nullable = false)
     private Duration duration;
 
@@ -55,4 +58,7 @@ public class EventType {
 
     @Column(name = "max_advance", nullable = false)
     private Duration maxAdvance;
+
+    @Column(name = "hold_duration", nullable = false)
+    private Duration holdDuration;
 }
