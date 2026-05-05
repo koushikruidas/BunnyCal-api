@@ -38,6 +38,8 @@ public class EventTypeService {
         EventType eventType = EventType.builder()
                 .userId(userId)
                 .name(request.name().trim())
+                .description(trimToNull(request.description()))
+                .location(trimToNull(request.location()))
                 .slug(slug)
                 .duration(Duration.ofMinutes(request.durationMinutes()))
                 .bufferBefore(Duration.ofMinutes(request.bufferBeforeMinutes()))
@@ -126,5 +128,11 @@ public class EventTypeService {
                 eventType.getSlug(),
                 "/public/" + username + "/" + eventType.getSlug()
         );
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }

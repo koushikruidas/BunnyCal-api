@@ -1,8 +1,10 @@
 package com.daedalussystems.easySchedule.booking.controller;
 
 import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
-import com.daedalussystems.easySchedule.booking.dto.BookingResponse;
+import com.daedalussystems.easySchedule.booking.dto.PublicConfirmResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
+import com.daedalussystems.easySchedule.booking.dto.PublicEventInfoResponse;
+import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyOutcome;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyService;
 import com.daedalussystems.easySchedule.booking.idempotency.ResponseEnvelope;
@@ -52,6 +54,12 @@ public class PublicBookingController {
         return ResponseEntity.ok(ApiResponse.success(publicBookingService.availability(username, eventTypeSlug, date)));
     }
 
+    @GetMapping("/{username}/{eventTypeSlug}")
+    public ResponseEntity<ApiResponse<PublicEventInfoResponse>> eventInfo(@PathVariable String username,
+                                                                          @PathVariable String eventTypeSlug) {
+        return ResponseEntity.ok(ApiResponse.success(publicBookingService.eventInfo(username, eventTypeSlug)));
+    }
+
     @PostMapping("/{username}/{eventTypeSlug}/book")
     public ResponseEntity<?> hold(@PathVariable String username,
                                   @PathVariable String eventTypeSlug,
@@ -79,11 +87,67 @@ public class PublicBookingController {
     }
 
     @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/confirm")
-    public ResponseEntity<ApiResponse<Void>> confirm(@PathVariable String username,
-                                                     @PathVariable String eventTypeSlug,
-                                                     @PathVariable String bookingId) {
-        publicBookingService.confirm(username, eventTypeSlug, java.util.UUID.fromString(bookingId));
-        return ResponseEntity.ok(ApiResponse.success(null));
+    public ResponseEntity<ApiResponse<PublicConfirmResponse>> confirm(@PathVariable String username,
+                                                                      @PathVariable String eventTypeSlug,
+                                                                      @PathVariable String bookingId) {
+        PublicConfirmResponse response = publicBookingService.confirm(username, eventTypeSlug, java.util.UUID.fromString(bookingId));
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/cancel")
+    public ResponseEntity<?> cancel(@PathVariable String username,
+                                    @PathVariable String eventTypeSlug,
+                                    @PathVariable String bookingId,
+                                    @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+        String route = "POST /public/" + username + "/" + eventTypeSlug + "/book/" + bookingId + "/cancel";
+        String requestHash = RequestHasher.hash(Map.of(
+                "username", username,
+                "eventTypeSlug", eventTypeSlug,
+                "bookingId", bookingId
+        ), objectMapper);
+        IdempotencyOutcome outcome = idempotencyService.execute(
+                idempotencyKey,
+                routeScopeUser(username, eventTypeSlug),
+                route,
+                requestHash,
+                () -> new ResponseEnvelope<>(200, publicBookingService.cancel(
+                        username, eventTypeSlug, java.util.UUID.fromString(bookingId)))
+        );
+        return outcome.toResponseEntity(objectMapper);
+    }
+
+    @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/reschedule")
+    public ResponseEntity<?> reschedule(@PathVariable String username,
+                                        @PathVariable String eventTypeSlug,
+                                        @PathVariable String bookingId,
+                                        @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                        @RequestBody PublicRescheduleRequest request) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+        if (request == null || request.startTime() == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
+        }
+        String route = "POST /public/" + username + "/" + eventTypeSlug + "/book/" + bookingId + "/reschedule";
+        String requestHash = RequestHasher.hash(Map.of(
+                "username", username,
+                "eventTypeSlug", eventTypeSlug,
+                "bookingId", bookingId,
+                "startTime", request.startTime()
+        ), objectMapper);
+
+        IdempotencyOutcome outcome = idempotencyService.execute(
+                idempotencyKey,
+                routeScopeUser(username, eventTypeSlug),
+                route,
+                requestHash,
+                () -> new ResponseEnvelope<>(200, publicBookingService.reschedule(
+                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), request))
+        );
+        return outcome.toResponseEntity(objectMapper);
     }
 
     private static java.util.UUID routeScopeUser(String username, String eventTypeSlug) {

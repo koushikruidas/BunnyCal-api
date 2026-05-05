@@ -15,6 +15,7 @@ import com.daedalussystems.easySchedule.availability.repository.EventTypeReposit
 import com.daedalussystems.easySchedule.availability.service.SlotService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.domain.BookingId;
+import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
@@ -111,5 +112,66 @@ class PublicBookingServiceTest {
                 () -> service.confirm("koushik", "30min", bookingId));
         assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
         verify(bookingService, never()).confirmHeldBooking(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void cancel_usesBookingVersionAndReturnsCancelledStatus() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z")).build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 7L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+
+        var response = service.cancel("koushik", "30min", bookingId);
+        assertEquals("CANCELLED", response.status());
+        verify(bookingService).cancelBooking(bookingId, userId, 7L);
+    }
+
+    @Test
+    void reschedule_rejectsWhenGoogleBusyOverlaps() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Instant start = Instant.parse("2026-05-10T11:00:00Z");
+        Instant end = Instant.parse("2026-05-10T11:30:00Z");
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 3L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, start, end))
+                .thenReturn(List.of(new GoogleFreeBusyService.BusyInterval(
+                        Instant.parse("2026-05-10T11:10:00Z"),
+                        Instant.parse("2026-05-10T11:40:00Z")
+                )));
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.reschedule("koushik", "30min", bookingId, new PublicRescheduleRequest(start)));
+        assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
+        verify(bookingService, never()).updateBooking(
+                org.mockito.ArgumentMatchers.eq(bookingId),
+                org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.eq(start),
+                org.mockito.ArgumentMatchers.eq(end),
+                org.mockito.ArgumentMatchers.eq(3L));
     }
 }

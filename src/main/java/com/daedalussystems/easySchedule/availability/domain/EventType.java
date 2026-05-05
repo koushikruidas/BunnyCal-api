@@ -38,6 +38,12 @@ public class EventType {
     @Column(nullable = false)
     private String name;
 
+    @Column(length = 2000)
+    private String description;
+
+    @Column(length = 255)
+    private String location;
+
     @Column(nullable = false, length = 120)
     private String slug;
 
