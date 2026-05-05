@@ -8,7 +8,6 @@ import com.daedalussystems.easySchedule.auth.security.jwt.JwtTokenProvider;
 import com.daedalussystems.easySchedule.auth.dto.AuthResponse;
 import com.daedalussystems.easySchedule.auth.dto.UserDto;
 import com.daedalussystems.easySchedule.auth.service.RefreshTokenService;
-import com.daedalussystems.easySchedule.auth.domain.user.User;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -60,22 +59,21 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
             throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
         }
 
-        User user = identityLinkingService.resolveOrCreateUser(
+        UserDto user = identityLinkingService.resolveOrCreateUser(
                 provider, providerUserId, email, name
         );
 
-        // ✅ FIX: Pass primitives only
         String accessToken = jwtTokenProvider.generateAccessToken(
                 user.getId(),
-                email
+                user.getEmail()
         );
 
-        String refreshToken = refreshTokenService.createRefreshToken(user);
+        String refreshToken = refreshTokenService.createRefreshToken(user.getId());
 
         AuthResponse authResponse = AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .user(UserDto.from(user)) // ⚠️ ensure safe mapping
+                .user(user)
                 .build();
 
         response.setStatus(HttpServletResponse.SC_OK);

@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.enums.UserStatus;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.auth.domain.identity.AuthIdentity;
+import com.daedalussystems.easySchedule.auth.dto.UserDto;
 import com.daedalussystems.easySchedule.auth.repository.AuthIdentityRepository;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
@@ -24,13 +25,14 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     @Override
     @Transactional
-    public User resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name) {
+    public UserDto resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name) {
         String normalizedEmail = normalizeAndValidateEmail(email);
         String normalizedName = normalizeName(name, normalizedEmail);
 
-        return authIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
+        User user = authIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
                 .map(AuthIdentity::getUser)
                 .orElseGet(() -> resolveByEmailOrCreate(provider, providerUserId, normalizedEmail, normalizedName));
+        return UserDto.from(user);
     }
 
     private User resolveByEmailOrCreate(AuthProvider provider, String providerUserId, String email, String name) {

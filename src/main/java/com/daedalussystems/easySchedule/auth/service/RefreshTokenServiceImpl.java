@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.auth.domain.token.RefreshToken;
 import com.daedalussystems.easySchedule.auth.repository.RefreshTokenRepository;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
+import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class RefreshTokenServiceImpl implements RefreshTokenService {
 
     private final RefreshTokenRepository refreshTokenRepository;
+    private final UserRepository userRepository;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Value("${auth.refresh-token.bytes}")
@@ -47,27 +49,29 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
 
     // Constructor for Spring
     @Autowired
-    public RefreshTokenServiceImpl(RefreshTokenRepository refreshTokenRepository) {
+    public RefreshTokenServiceImpl(RefreshTokenRepository refreshTokenRepository, UserRepository userRepository) {
         this.refreshTokenRepository = refreshTokenRepository;
+        this.userRepository = userRepository;
     }
 
     // Constructor for tests
     public RefreshTokenServiceImpl(
             RefreshTokenRepository repo,
+            UserRepository userRepository,
             int bytes,
             long ttlDays
     ) {
         this.refreshTokenRepository = repo;
+        this.userRepository = userRepository;
         this.refreshTokenBytes = bytes;
         this.refreshTokenTtlDays = ttlDays;
     }
 
     @Override
     @Transactional
-    public String createRefreshToken(User user) {
-        if (user == null) {
-            throw new CustomException(ErrorCode.TOKEN_INVALID);
-        }
+    public String createRefreshToken(UUID userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new CustomException(ErrorCode.TOKEN_INVALID));
 
         String rawToken = generateRawRefreshToken();
         String tokenHash = hashToken(rawToken);
@@ -120,7 +124,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         if (deleted == 0) {
             throw new CustomException(ErrorCode.TOKEN_INVALID);
         }
-        return createRefreshToken(persistedToken.getUser());
+        return createRefreshToken(persistedToken.getUser().getId());
     }
 
     @Override

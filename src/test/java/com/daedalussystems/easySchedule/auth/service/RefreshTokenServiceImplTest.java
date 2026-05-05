@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.domain.token.RefreshToken;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.RefreshTokenRepository;
+import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import java.lang.reflect.Method;
@@ -27,20 +28,23 @@ class RefreshTokenServiceImplTest {
 
     @Mock
     private RefreshTokenRepository refreshTokenRepository;
+    @Mock
+    private UserRepository userRepository;
 
     private RefreshTokenServiceImpl refreshTokenService;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        refreshTokenService = new RefreshTokenServiceImpl(refreshTokenRepository, 48, 7);
+        refreshTokenService = new RefreshTokenServiceImpl(refreshTokenRepository, userRepository, 48, 7);
     }
 
     @Test
     void createRefreshTokenGeneratesLongTokenAndStoresHash() {
         User user = User.builder().id(UUID.randomUUID()).email("a@b.com").name("A").timezone("UTC").build();
+        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
 
-        String rawToken = refreshTokenService.createRefreshToken(user);
+        String rawToken = refreshTokenService.createRefreshToken(user.getId());
 
         assertNotNull(rawToken);
         assertEquals(64, rawToken.length());
@@ -88,6 +92,7 @@ class RefreshTokenServiceImplTest {
                 .build();
         when(refreshTokenRepository.findById(existingToken.getId())).thenReturn(Optional.of(existingToken));
         when(refreshTokenRepository.deleteByIdAndTokenHash(existingToken.getId(), hash)).thenReturn(1);
+        when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
         when(refreshTokenRepository.save(any(RefreshToken.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         String rotated = refreshTokenService.rotateRefreshToken(existingToken);

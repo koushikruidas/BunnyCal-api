@@ -1,12 +1,11 @@
 package com.daedalussystems.easySchedule.auth.service;
 
 import com.daedalussystems.easySchedule.auth.domain.token.RefreshToken;
-import com.daedalussystems.easySchedule.auth.domain.user.User;
 import java.util.UUID;
 
 public interface RefreshTokenService {
 
-    String createRefreshToken(User user);
+    String createRefreshToken(UUID userId);
 
     RefreshToken validateRefreshToken(String rawToken);
 
