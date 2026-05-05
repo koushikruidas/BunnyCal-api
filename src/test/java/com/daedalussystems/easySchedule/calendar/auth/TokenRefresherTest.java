@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,7 +60,6 @@ class TokenRefresherTest {
     void unauthorized_refreshesAndRetriesOnce() {
         UUID id = UUID.randomUUID();
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.ACTIVE);
-        conn.setAccessToken("old");
 
         when(repository.findById(id)).thenReturn(Optional.of(conn));
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
@@ -76,7 +76,7 @@ class TokenRefresherTest {
         });
 
         assertEquals("new-token", result);
-        verify(repository).saveAndFlush(conn);
+        verify(repository, times(2)).saveAndFlush(conn);
     }
 
     @Test
@@ -92,7 +92,7 @@ class TokenRefresherTest {
         assertThrows(RuntimeException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> "never"));
 
-        assertEquals(CalendarConnectionStatus.REVOKED, conn.getStatus());
+        assertEquals(CalendarConnectionStatus.ERROR, conn.getStatus());
         verify(repository).saveAndFlush(conn);
     }
 
@@ -110,8 +110,7 @@ class TokenRefresherTest {
 
     private static CalendarConnection connection(UUID id, Instant expiresAt, CalendarConnectionStatus status) {
         CalendarConnection conn = new CalendarConnection();
-        conn.setAccessToken(null);
-        conn.setExpiresAt(expiresAt);
+        conn.setLastTokenExpiresAt(expiresAt);
         conn.setStatus(status);
         conn.setRefreshTokenCiphertext("cipher");
         try {

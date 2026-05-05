@@ -22,6 +22,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -91,9 +92,13 @@ class CalendarOAuthServiceTest {
         CalendarConnection saved = captor.getValue();
         assertEquals(userId, saved.getUserId());
         assertEquals(CalendarProviderType.GOOGLE, saved.getProvider());
-        assertNull(saved.getAccessToken());
         assertEquals("enc-refresh", saved.getRefreshTokenCiphertext());
+        assertEquals(List.of(
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/calendar.readonly"), saved.getScopes());
         assertEquals(CalendarConnectionStatus.ACTIVE, saved.getStatus());
+        assertNull(saved.getLastErrorCode());
+        assertNull(saved.getLastErrorAt());
     }
 
     @Test

@@ -11,8 +11,12 @@ import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UuidGenerator;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "calendar_connections", uniqueConstraints = {
@@ -38,18 +42,25 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "refresh_token_ciphertext", nullable = false, length = 4096)
     private String refreshTokenCiphertext;
 
-    @Column(name = "access_token", length = 4096)
-    private String accessToken;
+    @Column(name = "last_token_expires_at", nullable = false)
+    private Instant lastTokenExpiresAt;
 
-    @Column(name = "expires_at", nullable = false)
-    private Instant expiresAt;
-
-    @Column(name = "scopes", nullable = false, length = 1024)
-    private String scopes;
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(name = "scopes", nullable = false, columnDefinition = "text[]")
+    private List<String> scopes = new ArrayList<>();
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 32)
     private CalendarConnectionStatus status = CalendarConnectionStatus.ACTIVE;
+
+    @Column(name = "last_error_code", length = 255)
+    private String lastErrorCode;
+
+    @Column(name = "last_error_at")
+    private Instant lastErrorAt;
+
+    @Column(name = "last_synced_at")
+    private Instant lastSyncedAt;
 
     @Version
     @Column(nullable = false)
@@ -64,14 +75,18 @@ public class CalendarConnection extends BaseEntity {
     public void setProviderUserId(String providerUserId) { this.providerUserId = providerUserId; }
     public String getRefreshTokenCiphertext() { return refreshTokenCiphertext; }
     public void setRefreshTokenCiphertext(String refreshTokenCiphertext) { this.refreshTokenCiphertext = refreshTokenCiphertext; }
-    public String getAccessToken() { return accessToken; }
-    public void setAccessToken(String accessToken) { this.accessToken = accessToken; }
-    public Instant getExpiresAt() { return expiresAt; }
-    public void setExpiresAt(Instant expiresAt) { this.expiresAt = expiresAt; }
-    public String getScopes() { return scopes; }
-    public void setScopes(String scopes) { this.scopes = scopes; }
+    public Instant getLastTokenExpiresAt() { return lastTokenExpiresAt; }
+    public void setLastTokenExpiresAt(Instant lastTokenExpiresAt) { this.lastTokenExpiresAt = lastTokenExpiresAt; }
+    public List<String> getScopes() { return scopes; }
+    public void setScopes(List<String> scopes) { this.scopes = scopes; }
     public CalendarConnectionStatus getStatus() { return status; }
     public void setStatus(CalendarConnectionStatus status) { this.status = status; }
+    public String getLastErrorCode() { return lastErrorCode; }
+    public void setLastErrorCode(String lastErrorCode) { this.lastErrorCode = lastErrorCode; }
+    public Instant getLastErrorAt() { return lastErrorAt; }
+    public void setLastErrorAt(Instant lastErrorAt) { this.lastErrorAt = lastErrorAt; }
+    public Instant getLastSyncedAt() { return lastSyncedAt; }
+    public void setLastSyncedAt(Instant lastSyncedAt) { this.lastSyncedAt = lastSyncedAt; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }

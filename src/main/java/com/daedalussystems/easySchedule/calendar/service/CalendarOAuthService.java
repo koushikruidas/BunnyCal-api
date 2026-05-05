@@ -89,11 +89,12 @@ public class CalendarOAuthService {
         connection.setUserId(userId);
         connection.setProvider(GOOGLE_PROVIDER);
         connection.setProviderUserId(providerUserId);
-        connection.setAccessToken(null);
         connection.setRefreshTokenCiphertext(refreshTokenCiphertext);
-        connection.setExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
-        connection.setScopes(String.join(" ", properties.getScopes()));
+        connection.setLastTokenExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
+        connection.setScopes(properties.getScopes());
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
+        connection.setLastErrorCode(null);
+        connection.setLastErrorAt(null);
         repository.save(connection);
         log.info("{{\"event\":\"calendar_connected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
     }
