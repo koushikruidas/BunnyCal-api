@@ -3,6 +3,8 @@ package com.daedalussystems.easySchedule.calendar.client;
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -133,6 +135,54 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .retrieve()
                     .toEntity(Map.class);
             return (String) response.getBody().get("sub");
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
+    public List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end) {
+        try {
+            ResponseEntity<Map> response = restClient.post()
+                    .uri("/calendar/v3/freeBusy")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "timeMin", start.toString(),
+                            "timeMax", end.toString(),
+                            "items", List.of(Map.of("id", "primary"))
+                    ))
+                    .retrieve()
+                    .toEntity(Map.class);
+
+            Object calendarsObj = response.getBody().get("calendars");
+            if (!(calendarsObj instanceof Map<?, ?> calendars)) {
+                return List.of();
+            }
+            Object primaryObj = calendars.get("primary");
+            if (!(primaryObj instanceof Map<?, ?> primary)) {
+                return List.of();
+            }
+            Object busyObj = primary.get("busy");
+            if (!(busyObj instanceof List<?> busyList)) {
+                return List.of();
+            }
+            List<BusyInterval> intervals = new ArrayList<>();
+            for (Object item : busyList) {
+                if (!(item instanceof Map<?, ?> busyMap)) {
+                    continue;
+                }
+                Object s = busyMap.get("start");
+                Object e = busyMap.get("end");
+                if (s instanceof String ss && e instanceof String ee) {
+                    Instant si = Instant.parse(ss);
+                    Instant ei = Instant.parse(ee);
+                    if (si.isBefore(ei)) {
+                        intervals.add(new BusyInterval(si, ei));
+                    }
+                }
+            }
+            return List.copyOf(intervals);
         } catch (RestClientException ex) {
             throw classify(ex);
         }

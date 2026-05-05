@@ -27,6 +27,8 @@ public enum ErrorCode {
             "Response too large to cache for idempotency replay."),
     SLOT_ALREADY_BOOKED("SLOT_ALREADY_BOOKED",
             "Requested time overlaps an existing booking for this host."),
+    SLOT_UNAVAILABLE("SLOT_UNAVAILABLE",
+            "This time slot is no longer available."),
     TOO_MANY_PENDING_BOOKINGS("TOO_MANY_PENDING_BOOKINGS",
             "Too many pending bookings overlap this time window. Try again later."),
     INVALID_STATE_TRANSITION("INVALID_STATE_TRANSITION",

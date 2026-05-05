@@ -2,7 +2,9 @@ package com.daedalussystems.easySchedule.calendar.client;
 
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
+import java.time.Instant;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Primary;
@@ -53,6 +55,11 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
     @Override
     public String fetchProviderUserId(String accessToken) {
         return withRetry(() -> delegate.fetchProviderUserId(accessToken));
+    }
+
+    @Override
+    public List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end) {
+        return withRetry(() -> delegate.fetchBusyIntervals(accessToken, start, end));
     }
 
     private interface Call<T> { T invoke(); }

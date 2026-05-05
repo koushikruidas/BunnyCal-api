@@ -151,4 +151,30 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LIMIT :limit
             """, nativeQuery = true)
     List<BookingExpiryRow> findPendingExpired(@Param("now") Instant now, @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE host_id = :hostId
+              AND id <> :bookingId
+              AND status IN ('PENDING','CONFIRMED')
+              AND start_time < :end
+              AND end_time > :start
+            """, nativeQuery = true)
+    long countConflictsExcludingBooking(@Param("hostId") UUID hostId,
+                                        @Param("bookingId") UUID bookingId,
+                                        @Param("start") Instant start,
+                                        @Param("end") Instant end);
+
+    @Query(value = """
+            SELECT id, host_id, status, version, expires_at
+            FROM bookings
+            WHERE id = :id
+              AND host_id = :hostId
+              AND event_type_id = :eventTypeId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingStateRow> findStateByIdAndHostAndEventType(@Param("id") UUID id,
+                                                                @Param("hostId") UUID hostId,
+                                                                @Param("eventTypeId") UUID eventTypeId);
 }
