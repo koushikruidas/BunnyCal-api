@@ -17,6 +17,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.util.Assert;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -43,9 +44,12 @@ public class CalendarOAuthService {
 
     public String buildGoogleConnectUrl(UUID userId) {
         String state = stateService.generate(userId);
+        String clientId = properties.getClientId();
+        log.info("DEBUG Google clientId='{}'", clientId);
+        Assert.hasText(clientId, "Google clientId must not be empty");
         String scope = String.join(" ", properties.getScopes());
         return "https://accounts.google.com/o/oauth2/v2/auth"
-                + "?client_id=" + enc(properties.getClientId())
+                + "?client_id=" + enc(clientId)
                 + "&redirect_uri=" + enc(properties.getRedirectUri())
                 + "&response_type=code"
                 + "&access_type=offline"

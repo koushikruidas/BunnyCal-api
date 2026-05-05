@@ -39,19 +39,44 @@ public class CalendarIntegrationController {
     }
 
     @GetMapping("/google/callback")
-    public ResponseEntity<Void> callbackGoogle(@RequestParam("code") String code,
-                                               @RequestParam("state") String state) {
+    public ResponseEntity<Void> callbackGoogle(
+            @RequestParam("code") String code,
+            @RequestParam("state") String state) {
+
+        log.info("OAuth callback received: codePresent={}, statePresent={}",
+                code != null && !code.isBlank(),
+                state != null && !state.isBlank());
+
         if (code == null || code.isBlank() || state == null || state.isBlank()) {
-            return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
+            log.warn("OAuth callback validation failed: missing code/state");
+            return ResponseEntity.status(302)
+                    .location(errorRedirect("VALIDATION_ERROR"))
+                    .build();
         }
+
         try {
+            log.info("Processing Google OAuth callback...");
+
             oauthService.handleGoogleCallback(code, state);
-            return ResponseEntity.status(302).location(URI.create(googleOAuthProperties.getFrontendSuccessRedirect())).build();
+
+            log.info("OAuth callback SUCCESS");
+
+            return ResponseEntity.status(302)
+                    .location(URI.create(googleOAuthProperties.getFrontendSuccessRedirect()))
+                    .build();
+
         } catch (RuntimeException ex) {
             String errorCode = mapErrorCode(ex);
-            log.warn("{{\"event\":\"calendar_callback_failed\",\"provider\":\"GOOGLE\",\"errorCode\":\"{}\",\"error\":\"{}\"}}",
-                    errorCode, ex.getClass().getSimpleName());
-            return ResponseEntity.status(302).location(errorRedirect(errorCode)).build();
+
+            // 🔥 THIS is the critical part
+            log.error("OAuth callback FAILED: errorCode={}, message={}",
+                    errorCode,
+                    ex.getMessage(),
+                    ex); // <-- prints full stacktrace
+
+            return ResponseEntity.status(302)
+                    .location(errorRedirect(errorCode))
+                    .build();
         }
     }
 

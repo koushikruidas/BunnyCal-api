@@ -40,11 +40,12 @@ jwt:
   expiration: 3600000
 
 google:
-  client-id: test-client-id
-  client-secret: test-client-secret
-  redirect-uri: http://localhost:8080/integrations/calendar/google/callback
-  frontend-success-redirect: http://localhost:3000/calendar-connected
-  frontend-error-redirect: http://localhost:3000/calendar-error
+  oauth:
+    client-id: test-client-id
+    client-secret: test-client-secret
+    redirect-uri: http://localhost:8080/integrations/calendar/google/callback
+    frontend-success-redirect: http://localhost:3000/calendar-connected
+    frontend-error-redirect: http://localhost:3000/calendar-error
 
 auth:
   refresh-token:

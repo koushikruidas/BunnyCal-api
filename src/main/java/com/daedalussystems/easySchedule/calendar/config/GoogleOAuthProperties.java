@@ -3,7 +3,7 @@ package com.daedalussystems.easySchedule.calendar.config;
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-@ConfigurationProperties(prefix = "google")
+@ConfigurationProperties(prefix = "google.oauth")
 public class GoogleOAuthProperties {
     private String clientId;
     private String clientSecret;
