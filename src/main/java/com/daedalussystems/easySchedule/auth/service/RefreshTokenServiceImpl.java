@@ -17,6 +17,8 @@ import java.util.HexFormat;
 import java.util.UUID;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -151,5 +153,13 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 algorithm is not available", ex);
         }
+    }
+
+    public void deleteCookie(HttpServletResponse response, String name, String path) {
+        Cookie cookie = new Cookie(name, null);
+        cookie.setPath(path);
+        cookie.setHttpOnly(true);
+        cookie.setMaxAge(0); // 🔥 THIS deletes it
+        response.addCookie(cookie);
     }
 }

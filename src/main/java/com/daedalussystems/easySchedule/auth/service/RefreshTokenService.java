@@ -1,6 +1,8 @@
 package com.daedalussystems.easySchedule.auth.service;
 
 import com.daedalussystems.easySchedule.auth.domain.token.RefreshToken;
+import jakarta.servlet.http.HttpServletResponse;
+
 import java.util.UUID;
 
 public interface RefreshTokenService {
@@ -12,4 +14,6 @@ public interface RefreshTokenService {
     String rotateRefreshToken(RefreshToken existingToken);
 
     void deleteByUserId(UUID userId);
+
+    void deleteCookie(HttpServletResponse response, String name, String path);
 }

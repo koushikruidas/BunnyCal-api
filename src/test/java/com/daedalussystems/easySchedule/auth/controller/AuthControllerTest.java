@@ -16,6 +16,8 @@ import com.daedalussystems.easySchedule.auth.service.RefreshTokenService;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import java.time.Instant;
 import java.util.UUID;
+
+import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -67,12 +69,27 @@ class AuthControllerTest {
     }
 
     @Test
-    void logoutRevokesTokensByUserId() {
+    void logoutRevokesTokensAndDeletesCookies() {
         UUID userId = UUID.randomUUID();
 
-        ApiResponse<Void> response = authController.logout(LogoutRequest.builder().userId(userId).build());
+        // 🔥 mock response
+        HttpServletResponse responseMock = org.mockito.Mockito.mock(HttpServletResponse.class);
+
+        ApiResponse<Void> response = authController.logout(
+                responseMock,
+                LogoutRequest.builder().userId(userId).build()
+        );
 
         assertEquals(true, response.isSuccess());
+
+        // ✅ verify DB cleanup
         verify(refreshTokenService, times(1)).deleteByUserId(userId);
+
+        // ✅ verify cookie deletion
+        verify(refreshTokenService, times(1))
+                .deleteCookie(responseMock, "refreshToken", "/");
+
+        verify(refreshTokenService, times(1))
+                .deleteCookie(responseMock, "accessToken", "/");
     }
 }

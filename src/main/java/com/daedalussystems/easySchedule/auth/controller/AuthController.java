@@ -9,6 +9,7 @@ import com.daedalussystems.easySchedule.auth.dto.RefreshRequest;
 import com.daedalussystems.easySchedule.auth.dto.UserDto;
 import com.daedalussystems.easySchedule.auth.service.RefreshTokenService;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -41,8 +42,16 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ApiResponse<Void> logout(@RequestBody LogoutRequest request) {
-        refreshTokenService.deleteByUserId(request.getUserId());
+    public ApiResponse<Void> logout(HttpServletResponse response,
+                                    @RequestBody(required = false) LogoutRequest request) {
+
+        if (request != null) {
+            refreshTokenService.deleteByUserId(request.getUserId());
+        }
+
+        refreshTokenService.deleteCookie(response, "refreshToken", "/");
+        refreshTokenService.deleteCookie(response, "accessToken", "/");
+
         return ApiResponse.success(null);
     }
 }
