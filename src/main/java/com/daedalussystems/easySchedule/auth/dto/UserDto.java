@@ -17,6 +17,7 @@ public class UserDto {
     private String email;
     private String username;
     private String name;
+    private String profileImage;
     private String timezone;
 
     public static UserDto from(User user) {
@@ -25,6 +26,7 @@ public class UserDto {
                 .email(user.getEmail())
                 .username(user.getUsername())
                 .name(user.getName())
+                .profileImage(user.getProfileImageUrl())
                 .timezone(user.getTimezone())
                 .build();
     }

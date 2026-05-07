@@ -5,5 +5,5 @@ import com.daedalussystems.easySchedule.auth.dto.UserDto;
 
 public interface IdentityLinkingService {
 
-    UserDto resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name);
+    UserDto resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name, String imageUrl);
 }

@@ -62,7 +62,8 @@ class IdentityLinkingServiceImplTest {
                 AuthProvider.GOOGLE,
                 "provider-123",
                 "existing@example.com",
-                "Existing User"
+                "Existing User",
+                "https://cdn.example.com/new.png"
         );
 
         // then
@@ -70,7 +71,8 @@ class IdentityLinkingServiceImplTest {
         assertEquals("existing@example.com", result.getEmail());
         assertEquals("Existing User", result.getName());
         assertEquals("Asia/Kolkata", result.getTimezone());
-        verify(userRepository, never()).save(any(User.class));
+        assertEquals("https://cdn.example.com/new.png", result.getProfileImage());
+        verify(userRepository).save(linkedUser);
     }
 
     @Test
@@ -87,7 +89,8 @@ class IdentityLinkingServiceImplTest {
                 AuthProvider.GOOGLE,
                 "provider-456",
                 "user@example.com",
-                "Reused User"
+                "Reused User",
+                "https://img.example.com/reused.png"
         );
 
         // then
@@ -95,7 +98,8 @@ class IdentityLinkingServiceImplTest {
         assertEquals("user@example.com", result.getEmail());
         assertEquals("Reused User", result.getName());
         assertEquals("UTC", result.getTimezone());
-        verify(userRepository, never()).save(any(User.class));
+        assertEquals("https://img.example.com/reused.png", result.getProfileImage());
+        verify(userRepository).save(existingUser);
 
         ArgumentCaptor<AuthIdentity> identityCaptor = ArgumentCaptor.forClass(AuthIdentity.class);
         verify(authIdentityRepository).save(identityCaptor.capture());
@@ -122,13 +126,15 @@ class IdentityLinkingServiceImplTest {
                 AuthProvider.MICROSOFT,
                 "provider-789",
                 "new.user@example.com",
-                "New User"
+                "New User",
+                "https://images.example.com/new-user.png"
         );
 
         // then
         assertNotNull(result.getId());
         assertEquals("new.user@example.com", result.getEmail());
         assertEquals("New User", result.getName());
+        assertEquals("https://images.example.com/new-user.png", result.getProfileImage());
         assertEquals("UTC", result.getTimezone());
 
         ArgumentCaptor<AuthIdentity> identityCaptor = ArgumentCaptor.forClass(AuthIdentity.class);
@@ -156,11 +162,13 @@ class IdentityLinkingServiceImplTest {
                 AuthProvider.GOOGLE,
                 "provider-normalize",
                 "  MiXeD.Case@Example.com  ",
-                "Name"
+                "Name",
+                "https://images.example.com/mixed.png"
         );
 
         // then
         assertEquals("mixed.case@example.com", result.getEmail());
+        assertEquals("https://images.example.com/mixed.png", result.getProfileImage());
 
         ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).save(userCaptor.capture());
@@ -175,7 +183,8 @@ class IdentityLinkingServiceImplTest {
                         AuthProvider.GOOGLE,
                         "provider-null-email",
                         null,
-                        "Name"
+                        "Name",
+                        "https://img.example.com/ignored.png"
                 )
         );
 
@@ -184,6 +193,64 @@ class IdentityLinkingServiceImplTest {
         verify(userRepository, never()).findByEmail(any());
         verify(userRepository, never()).save(any(User.class));
         verify(authIdentityRepository, never()).save(any(AuthIdentity.class));
+    }
+
+    @Test
+    void shouldNotOverwriteExistingImage_whenIncomingImageIsBlankOrInvalid() {
+        User linkedUser = user("existing@example.com", "Existing User", "UTC");
+        linkedUser.setProfileImageUrl("https://cdn.example.com/existing.png");
+        AuthIdentity identity = AuthIdentity.builder()
+                .user(linkedUser)
+                .provider(AuthProvider.GOOGLE)
+                .providerUserId("provider-image-1")
+                .build();
+        when(authIdentityRepository.findByProviderAndProviderUserId(AuthProvider.GOOGLE, "provider-image-1"))
+                .thenReturn(Optional.of(identity), Optional.of(identity));
+
+        UserDto blankResult = identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE,
+                "provider-image-1",
+                "existing@example.com",
+                "Existing User",
+                "   "
+        );
+
+        UserDto invalidResult = identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE,
+                "provider-image-1",
+                "existing@example.com",
+                "Existing User",
+                "ftp://img.example.com/avatar.png"
+        );
+
+        assertEquals("https://cdn.example.com/existing.png", blankResult.getProfileImage());
+        assertEquals("https://cdn.example.com/existing.png", invalidResult.getProfileImage());
+        verify(userRepository, never()).save(linkedUser);
+    }
+
+    @Test
+    void shouldTrimAndPersistImage_whenIncomingImageHasWhitespace() {
+        when(authIdentityRepository.findByProviderAndProviderUserId(AuthProvider.GOOGLE, "provider-trim-image"))
+                .thenReturn(Optional.empty(), Optional.empty());
+        when(userRepository.findByEmail("trim.image@example.com")).thenReturn(Optional.empty());
+        when(userRepository.save(any(User.class))).thenAnswer(invocation -> {
+            User userToSave = invocation.getArgument(0);
+            if (userToSave.getId() == null) {
+                userToSave.setId(UUID.randomUUID());
+            }
+            return userToSave;
+        });
+        when(authIdentityRepository.save(any(AuthIdentity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UserDto result = identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE,
+                "provider-trim-image",
+                "trim.image@example.com",
+                "Trim Image",
+                "  https://cdn.example.com/trimmed.png  "
+        );
+
+        assertEquals("https://cdn.example.com/trimmed.png", result.getProfileImage());
     }
 
     private User user(String email, String name, String timezone) {

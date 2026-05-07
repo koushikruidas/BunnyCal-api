@@ -16,4 +16,5 @@ public class NormalizedOAuthUser {
     private String providerUserId;
     private String email;
     private String name;
+    private String imageUrl;
 }

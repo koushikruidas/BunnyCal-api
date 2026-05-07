@@ -44,6 +44,9 @@ public class User extends BaseEntity {
     @Column(nullable = false, length = 120)
     private String name;
 
+    @Column(name = "profile_image_url", length = 1024)
+    private String profileImageUrl;
+
     @Column(nullable = false, length = 50)
     private String timezone;
 

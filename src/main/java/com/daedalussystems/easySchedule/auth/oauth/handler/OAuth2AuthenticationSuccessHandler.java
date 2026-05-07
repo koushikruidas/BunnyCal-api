@@ -49,6 +49,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         String providerUserId = oauth2User.getAttribute("providerUserId");
         String email = oauth2User.getAttribute("email");
         String name = oauth2User.getAttribute("name");
+        String imageUrl = oauth2User.getAttribute("imageUrl");
 
         if (providerStr == null || providerStr.trim().isEmpty()) {
             throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
@@ -68,7 +69,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         }
 
         UserDto user = identityLinkingService.resolveOrCreateUser(
-                provider, providerUserId, email, name
+                provider, providerUserId, email, name, imageUrl
         );
 
         String accessToken = jwtTokenProvider.generateAccessToken(

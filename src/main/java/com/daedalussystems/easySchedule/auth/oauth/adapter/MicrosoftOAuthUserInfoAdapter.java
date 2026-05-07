@@ -36,6 +36,7 @@ public class MicrosoftOAuthUserInfoAdapter implements OAuthUserInfoAdapter {
                 .providerUserId(providerUserId)
                 .email(email)
                 .name(asString(attributes.get("name")))
+                .imageUrl(asString(attributes.get("avatar_url")))
                 .build();
     }
 

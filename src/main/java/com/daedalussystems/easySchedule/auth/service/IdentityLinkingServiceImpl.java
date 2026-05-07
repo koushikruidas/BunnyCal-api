@@ -26,20 +26,22 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     @Override
     @Transactional
-    public UserDto resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name) {
+    public UserDto resolveOrCreateUser(AuthProvider provider, String providerUserId, String email, String name, String imageUrl) {
         String normalizedEmail = normalizeAndValidateEmail(email);
         String normalizedName = normalizeName(name, normalizedEmail);
+        String normalizedImageUrl = normalizeImageUrl(imageUrl);
 
         User user = authIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
                 .map(AuthIdentity::getUser)
-                .orElseGet(() -> resolveByEmailOrCreate(provider, providerUserId, normalizedEmail, normalizedName));
+                .orElseGet(() -> resolveByEmailOrCreate(provider, providerUserId, normalizedEmail, normalizedName, normalizedImageUrl));
+        maybeUpdateProfileImage(user, normalizedImageUrl);
         return UserDto.from(user);
     }
 
-    private User resolveByEmailOrCreate(AuthProvider provider, String providerUserId, String email, String name) {
+    private User resolveByEmailOrCreate(AuthProvider provider, String providerUserId, String email, String name, String imageUrl) {
         return userRepository.findByEmail(email)
                 .map(existingUser -> linkIdentityAndReturnUser(existingUser, provider, providerUserId))
-                .orElseGet(() -> createUserAndIdentity(provider, providerUserId, email, name));
+                .orElseGet(() -> createUserAndIdentity(provider, providerUserId, email, name, imageUrl));
     }
 
     private User linkIdentityAndReturnUser(User user, AuthProvider provider, String providerUserId) {
@@ -47,12 +49,13 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
         return user;
     }
 
-    private User createUserAndIdentity(AuthProvider provider, String providerUserId, String email, String name) {
+    private User createUserAndIdentity(AuthProvider provider, String providerUserId, String email, String name, String imageUrl) {
         try {
             User savedUser = userRepository.save(User.builder()
                     .email(email)
                     .username(buildUsername(email))
                     .name(name)
+                    .profileImageUrl(imageUrl)
                     .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
                     .status(UserStatus.ACTIVE)
                     .build());
@@ -101,5 +104,28 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
             local = "user";
         }
         return local + "-" + UUID.randomUUID().toString().substring(0, 8);
+    }
+
+    private void maybeUpdateProfileImage(User user, String imageUrl) {
+        if (imageUrl == null || imageUrl.equals(user.getProfileImageUrl())) {
+            return;
+        }
+        user.setProfileImageUrl(imageUrl);
+        userRepository.save(user);
+    }
+
+    private String normalizeImageUrl(String imageUrl) {
+        if (imageUrl == null) {
+            return null;
+        }
+        String normalized = imageUrl.trim();
+        if (normalized.isBlank()) {
+            return null;
+        }
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (!(lower.startsWith("http://") || lower.startsWith("https://"))) {
+            return null;
+        }
+        return normalized;
     }
 }

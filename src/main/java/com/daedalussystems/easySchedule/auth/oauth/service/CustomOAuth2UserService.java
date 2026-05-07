@@ -50,6 +50,7 @@ public class CustomOAuth2UserService implements OAuth2UserService<OAuth2UserRequ
         attributes.put("providerUserId", normalized.getProviderUserId());
         attributes.put("email", normalized.getEmail());
         attributes.put("name", normalized.getName());
+        attributes.put("imageUrl", normalized.getImageUrl());
 
         return new DefaultOAuth2User(oauth2User.getAuthorities(), attributes, NAME_ATTRIBUTE_KEY);
     }

@@ -31,6 +31,7 @@ public class GoogleOAuthUserInfoAdapter implements OAuthUserInfoAdapter {
                 .providerUserId(providerUserId)
                 .email(asString(attributes.get("email")))
                 .name(asString(attributes.get("name")))
+                .imageUrl(asString(attributes.get("picture")))
                 .build();
     }
 
