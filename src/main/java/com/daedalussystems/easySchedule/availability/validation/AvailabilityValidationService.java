@@ -5,13 +5,12 @@ import com.daedalussystems.easySchedule.availability.dto.AvailabilityRuleRequest
 import com.daedalussystems.easySchedule.availability.dto.BulkAvailabilityRulesUpsertRequest;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimezoneService;
 import java.time.DayOfWeek;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
 
@@ -19,13 +18,18 @@ import org.springframework.stereotype.Component;
 public class AvailabilityValidationService {
 
     private static final int MAX_RULES_PER_DAY = 5;
+    private final TimezoneService timezoneService;
+
+    public AvailabilityValidationService(TimezoneService timezoneService) {
+        this.timezoneService = timezoneService;
+    }
 
     public void validateTimezone(String timezone) {
         if (timezone == null || timezone.isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "User timezone is required.");
         }
         try {
-            ZoneId.of(timezone);
+            timezoneService.resolveZone(timezone);
         } catch (Exception ex) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "User timezone must be a valid ZoneId.");
         }

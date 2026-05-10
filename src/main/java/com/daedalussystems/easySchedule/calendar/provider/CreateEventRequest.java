@@ -8,5 +8,8 @@ public record CreateEventRequest(UUID connectionId,
                                  String description,
                                  Instant startsAt,
                                  Instant endsAt,
+                                 String organizerEmail,
+                                 String attendeeEmail,
+                                 String attendeeName,
                                  String idempotencyKey) {
 }

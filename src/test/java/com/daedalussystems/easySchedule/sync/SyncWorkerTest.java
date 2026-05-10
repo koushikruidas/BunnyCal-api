@@ -58,7 +58,7 @@ class SyncWorkerTest {
         worker.processBookingSync(bookingId, "google");
 
         verify(calendarService, never()).createEvent(any());
-        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
+        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), any(), any(), anyLong(), anyString());
     }
 
     @Test
@@ -68,7 +68,7 @@ class SyncWorkerTest {
         when(repository.claimBookingForSync(eq(bookingId), eq("google"), eq(11L), anyString()))
                 .thenReturn(ClaimOutcome.CLAIMED);
         when(repository.findMappingState(bookingId, "google"))
-                .thenReturn(Optional.of(new MappingState("CREATED", "ext-1", 11L, "w", 0, Instant.now())));
+                .thenReturn(Optional.of(new MappingState("CREATED", "ext-1", null, null, 11L, "w", 0, Instant.now())));
 
         worker.processBookingSync(bookingId, "google");
 
@@ -82,7 +82,7 @@ class SyncWorkerTest {
         when(repository.claimBookingForSync(eq(bookingId), eq("google"), eq(12L), anyString()))
                 .thenReturn(ClaimOutcome.CLAIMED);
         when(repository.findMappingState(bookingId, "google"))
-                .thenReturn(Optional.of(new MappingState("CLAIMED", "ext-1", 12L, "w", 0, Instant.now())));
+                .thenReturn(Optional.of(new MappingState("CLAIMED", "ext-1", null, null, 12L, "w", 0, Instant.now())));
 
         worker.processBookingSync(bookingId, "google");
 
@@ -100,9 +100,9 @@ class SyncWorkerTest {
                     return ClaimOutcome.CLAIMED;
                 });
         when(repository.findMappingState(bookingId, "google"))
-                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 13L, workerRef.get(), 0, Instant.now())));
+                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, null, null, 13L, workerRef.get(), 0, Instant.now())));
         when(calendarService.createEvent(any())).thenReturn(CalendarService.CreateEventResult.success("ext-13"));
-        when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), eq(13L), anyString()))
+        when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), any(), any(), eq(13L), anyString()))
                 .thenReturn(FinalizeOutcome.SUCCESS);
 
         worker.processBookingSync(bookingId, "google");
@@ -110,7 +110,7 @@ class SyncWorkerTest {
         ArgumentCaptor<String> claimWorker = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> finalizeWorker = ArgumentCaptor.forClass(String.class);
         verify(repository).claimBookingForSync(eq(bookingId), eq("google"), eq(13L), claimWorker.capture());
-        verify(repository).updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), eq(13L),
+        verify(repository).updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-13"), any(), any(), eq(13L),
                 finalizeWorker.capture());
         verify(calendarService).createEvent(any(CalendarService.CreateCalendarEventCommand.class));
         org.junit.jupiter.api.Assertions.assertEquals(claimWorker.getValue(), finalizeWorker.getValue());
@@ -127,9 +127,9 @@ class SyncWorkerTest {
                     return ClaimOutcome.CLAIMED;
                 });
         when(repository.findMappingState(bookingId, "google"))
-                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 14L, workerRef.get(), 0, Instant.now())));
+                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, null, null, 14L, workerRef.get(), 0, Instant.now())));
         when(calendarService.createEvent(any())).thenReturn(CalendarService.CreateEventResult.success("ext-14"));
-        when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-14"), eq(14L), anyString()))
+        when(repository.updateMappingWithEventId(eq(bookingId), eq("google"), eq("ext-14"), any(), any(), eq(14L), anyString()))
                 .thenReturn(FinalizeOutcome.SPLIT_BRAIN_DETECTED);
 
         assertThrows(IllegalStateException.class, () -> worker.processBookingSync(bookingId, "google"));
@@ -146,7 +146,7 @@ class SyncWorkerTest {
                     return ClaimOutcome.CLAIMED;
                 });
         when(repository.findMappingState(bookingId, "google"))
-                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, 15L, workerRef.get(), 0, Instant.now())));
+                .thenAnswer(invocation -> Optional.of(new MappingState("CLAIMED", null, null, null, 15L, workerRef.get(), 0, Instant.now())));
         when(calendarService.createEvent(any()))
                 .thenReturn(CalendarService.CreateEventResult.retryable("HTTP_429"));
         when(repository.markFailed(eq(bookingId), eq("google"), anyString(), eq("HTTP_429"), eq(15L), any()))
@@ -155,7 +155,7 @@ class SyncWorkerTest {
         worker.processBookingSync(bookingId, "google");
 
         verify(repository).markFailed(eq(bookingId), eq("google"), eq(workerRef.get()), eq("HTTP_429"), eq(15L), any());
-        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
+        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), any(), any(), anyLong(), anyString());
     }
 
     @Test
@@ -165,11 +165,11 @@ class SyncWorkerTest {
         when(repository.claimBookingForSync(eq(bookingId), eq("google"), eq(16L), anyString()))
                 .thenReturn(ClaimOutcome.CLAIMED);
         when(repository.findMappingState(bookingId, "google"))
-                .thenReturn(Optional.of(new MappingState("CLAIMED", null, 17L, "another-worker", 0, Instant.now())));
+                .thenReturn(Optional.of(new MappingState("CLAIMED", null, null, null, 17L, "another-worker", 0, Instant.now())));
 
         worker.processBookingSync(bookingId, "google");
 
         verify(calendarService, never()).createEvent(any());
-        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), anyLong(), anyString());
+        verify(repository, never()).updateMappingWithEventId(any(), anyString(), anyString(), any(), any(), anyLong(), anyString());
     }
 }

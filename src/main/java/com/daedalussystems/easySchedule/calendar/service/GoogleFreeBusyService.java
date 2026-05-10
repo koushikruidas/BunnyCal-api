@@ -12,7 +12,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class GoogleFreeBusyService {
@@ -28,7 +27,6 @@ public class GoogleFreeBusyService {
         this.googleApiClient = googleApiClient;
     }
 
-    @Transactional
     public List<BusyInterval> busyIntervals(UUID userId, Instant start, Instant end) {
         List<CalendarConnection> active = connectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE);
         if (active.isEmpty()) {
@@ -47,22 +45,12 @@ public class GoogleFreeBusyService {
                     }
                 }
             } catch (CalendarClientException ex) {
-                markConnectionError(connection, ex.getStatusCode() == 401 ? "AUTH_REVOKED" : "FREEBUSY_FAILED");
+                // Keep availability path read-only and degrade gracefully upstream.
+                // Connection state updates are handled in TokenRefresher's own transaction.
                 throw ex;
             }
         }
         return merge(all);
-    }
-
-    private void markConnectionError(CalendarConnection connection, String code) {
-        if ("AUTH_REVOKED".equals(code)) {
-            connection.setStatus(CalendarConnectionStatus.REVOKED);
-        } else {
-            connection.setStatus(CalendarConnectionStatus.ERROR);
-        }
-        connection.setLastErrorCode(code);
-        connection.setLastErrorAt(Instant.now());
-        connectionRepository.save(connection);
     }
 
     private static List<BusyInterval> merge(List<BusyInterval> intervals) {

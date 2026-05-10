@@ -6,7 +6,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.eq;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
@@ -14,6 +17,7 @@ import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarConnectionWriteService;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,12 +37,16 @@ class TokenRefresherTest {
     private TokenCipher tokenCipher;
     @Mock
     private GoogleApiClient googleApiClient;
+    @Mock
+    private CalendarConnectionWriteService connectionWriteService;
 
     private TokenRefresher tokenRefresher;
 
     @BeforeEach
     void setUp() {
-        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, new SimpleMeterRegistry());
+        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, connectionWriteService, new SimpleMeterRegistry());
+        lenient().when(connectionWriteService.markActive(any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
+        lenient().when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
     }
 
     @Test
@@ -53,7 +61,26 @@ class TokenRefresherTest {
         String result = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
 
         assertEquals("ok:new-token", result);
-        verify(repository).saveAndFlush(conn);
+        verify(connectionWriteService).markActive(any(), any(), any(), any());
+    }
+
+    @Test
+    void nonExpiredToken_usesCachedTokenWithoutRefreshingAgain() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.ACTIVE);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleApiClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+
+        String first = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
+        String second = tokenRefresher.executeWithValidToken(id, token -> "ok2:" + token);
+
+        assertEquals("ok:new-token", first);
+        assertEquals("ok2:new-token", second);
+        verify(googleApiClient, times(1)).refreshAccessToken("refresh");
+        verify(connectionWriteService, times(1)).markActive(any(), any(), any(), any());
+        verifyNoMoreInteractions(googleApiClient);
     }
 
     @Test
@@ -76,7 +103,7 @@ class TokenRefresherTest {
         });
 
         assertEquals("new-token", result);
-        verify(repository, times(2)).saveAndFlush(conn);
+        verify(connectionWriteService, times(2)).markActive(any(), any(), any(), any());
     }
 
     @Test
@@ -92,14 +119,26 @@ class TokenRefresherTest {
         assertThrows(RuntimeException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> "never"));
 
-        assertEquals(CalendarConnectionStatus.ERROR, conn.getStatus());
-        verify(repository).saveAndFlush(conn);
+        verify(connectionWriteService).markFailure(eq(id), eq(CalendarConnectionStatus.ERROR), any(), any(), any());
     }
 
     @Test
     void revokedConnection_rejectedWithoutCall() {
         UUID id = UUID.randomUUID();
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.REVOKED);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+
+        assertThrows(IllegalStateException.class,
+                () -> tokenRefresher.executeWithValidToken(id, token -> token));
+
+        verify(googleApiClient, never()).refreshAccessToken(any());
+    }
+
+    @Test
+    void errorConnection_withRecentFailure_skipsRefreshDuringCooldown() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.ERROR);
+        conn.setLastErrorAt(Instant.now().minusSeconds(10));
         when(repository.findById(id)).thenReturn(Optional.of(conn));
 
         assertThrows(IllegalStateException.class,

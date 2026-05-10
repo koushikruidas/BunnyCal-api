@@ -3,22 +3,22 @@ package com.daedalussystems.easySchedule.calendar.client;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.context.annotation.Primary;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@Primary
+@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "in-memory")
 public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     private final Map<String, String> eventsByIdempotency = new ConcurrentHashMap<>();
     private final Map<String, String> eventsByExternalId = new ConcurrentHashMap<>();
 
     @Override
-    public String createEvent(UUID internalId, String provider, String idempotencyKey) {
+    public CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey) {
         String externalId = eventsByIdempotency.computeIfAbsent(
                 provider + ":" + idempotencyKey,
                 ignored -> provider + "-" + internalId);
         eventsByExternalId.put(externalId, externalId);
-        return externalId;
+        return new CreateEventDetails(externalId, null, null);
     }
 
     @Override

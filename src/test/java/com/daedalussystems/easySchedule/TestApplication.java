@@ -16,6 +16,7 @@ import org.springframework.web.client.RestClient;
         "com.daedalussystems.easySchedule.sync",
         "com.daedalussystems.easySchedule.calendar.service",
         "com.daedalussystems.easySchedule.calendar.client",
+        "com.daedalussystems.easySchedule.calendar.provider",
         "com.daedalussystems.easySchedule.calendar.auth",
         "com.daedalussystems.easySchedule.calendar.config",
         "com.daedalussystems.easySchedule.calendar.repository",

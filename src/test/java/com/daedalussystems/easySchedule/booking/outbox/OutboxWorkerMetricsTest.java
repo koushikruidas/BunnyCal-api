@@ -150,7 +150,7 @@ class OutboxWorkerMetricsTest {
         e.setStatus(status);
         e.setAttemptCount(attemptCount);
         e.setCreatedAt(Instant.now().minusSeconds(5));
-        e.setEventType("BOOKING_CREATED");
+        e.setEventType("BOOKING_CONFIRMED");
         e.setAggregateType("Booking");
         e.setAggregateId(UUID.randomUUID());
         e.setPayload("{}");

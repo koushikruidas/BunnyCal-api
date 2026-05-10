@@ -50,7 +50,10 @@ public class GlobalExceptionHandler {
             case IDEMPOTENCY_IN_PROGRESS:
             case SLOT_ALREADY_BOOKED:
             case SLOT_UNAVAILABLE:
+            case CALENDAR_SYNC_IN_PROGRESS:
                 return HttpStatus.CONFLICT;
+            case GOOGLE_EVENT_CREATION_FAILED:
+                return HttpStatus.BAD_GATEWAY;
             case TOO_MANY_PENDING_BOOKINGS:
                 return HttpStatus.TOO_MANY_REQUESTS;
             case IDEMPOTENCY_RACE:

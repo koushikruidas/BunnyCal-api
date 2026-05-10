@@ -9,12 +9,14 @@ import com.daedalussystems.easySchedule.calendar.repository.CalendarProviderOper
 import jakarta.transaction.Transactional;
 import java.time.Duration;
 import java.time.Instant;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class DefaultCalendarService implements CalendarService {
-    private static final Duration CREATING_STALE_TIMEOUT = Duration.ofMinutes(2);
+    private static final Duration CREATING_STALE_TIMEOUT = Duration.ofSeconds(30);
+    private static final Logger log = LoggerFactory.getLogger(DefaultCalendarService.class);
 
     private final CalendarProviderClient providerClient;
     private final CalendarProviderOperationRepository operationRepository;
@@ -30,26 +32,32 @@ public class DefaultCalendarService implements CalendarService {
     public CreateEventResult createEvent(CreateCalendarEventCommand command) {
         CalendarProviderType provider = CalendarProviderType.valueOf(command.provider().toUpperCase());
 
-        CalendarProviderOperation op = operationRepository
-                .findByProviderAndIdempotencyKey(provider, command.idempotencyKey())
-                .orElseGet(() -> insertCreating(provider, command));
+        java.util.Optional<CalendarProviderOperation> existing =
+                operationRepository.findByProviderAndIdempotencyKey(provider, command.idempotencyKey());
+        boolean newlyCreated = existing.isEmpty();
+        CalendarProviderOperation op = existing.orElseGet(() -> insertCreating(provider, command));
 
         if (op.getStatus() == CalendarOperationStatus.COMPLETED && op.getExternalEventId() != null) {
             return CreateEventResult.success(op.getExternalEventId());
         }
-        if (op.getStatus() == CalendarOperationStatus.CREATING && !isStaleCreating(op)) {
-            return CreateEventResult.retryable("IN_PROGRESS");
-        }
-
-        try {
-            String externalId = providerClient.createEvent(command.internalId(), command.provider(), command.idempotencyKey());
-            op.setStatus(CalendarOperationStatus.COMPLETED);
-            op.setExternalEventId(externalId);
-            op.setLastError(null);
+        if (!newlyCreated && op.getStatus() == CalendarOperationStatus.CREATING) {
+            if (!isStaleCreating(op)) {
+                return CreateEventResult.retryable("IN_PROGRESS");
+            }
+            // Stale CREATING rows can happen after crash/interruption; take over.
             op.setLastAttemptAt(Instant.now());
             operationRepository.save(op);
-            return CreateEventResult.success(externalId);
+        }
+
+        op.setLastAttemptAt(Instant.now());
+        operationRepository.save(op);
+
+        CalendarProviderClient.CreateEventDetails created;
+        try {
+            created = providerClient.createEvent(command.internalId(), command.provider(), command.idempotencyKey());
         } catch (CalendarClientException ex) {
+            log.warn("calendar_create_provider_failure internalId={} provider={} idempotencyKey={} statusCode={}",
+                    command.internalId(), command.provider(), command.idempotencyKey(), ex.getStatusCode(), ex);
             op.setStatus(CalendarOperationStatus.FAILED);
             String errorCode = classifyProviderError(ex);
             op.setLastError(errorCode);
@@ -60,12 +68,22 @@ public class DefaultCalendarService implements CalendarService {
             }
             return CreateEventResult.permanent(errorCode);
         } catch (RuntimeException ex) {
+            log.warn("calendar_create_provider_runtime_failure internalId={} provider={} idempotencyKey={}",
+                    command.internalId(), command.provider(), command.idempotencyKey(), ex);
             op.setStatus(CalendarOperationStatus.FAILED);
             op.setLastError("PROVIDER_DOWN");
             op.setLastAttemptAt(Instant.now());
             operationRepository.save(op);
             return CreateEventResult.retryable("PROVIDER_DOWN");
         }
+
+        String externalId = created.externalEventId();
+        op.setStatus(CalendarOperationStatus.COMPLETED);
+        op.setExternalEventId(externalId);
+        op.setLastError(null);
+        op.setLastAttemptAt(Instant.now());
+        operationRepository.save(op);
+        return CreateEventResult.success(externalId, created.providerEventUrl(), created.conferenceUrl());
     }
 
     @Override
@@ -116,27 +134,29 @@ public class DefaultCalendarService implements CalendarService {
 
     private CalendarProviderOperation insertCreating(CalendarProviderType provider,
                                                      CreateCalendarEventCommand command) {
-        CalendarProviderOperation op = new CalendarProviderOperation();
-        op.setProvider(provider);
-        op.setConnectionId(command.internalId());
-        op.setIdempotencyKey(command.idempotencyKey());
-        op.setStatus(CalendarOperationStatus.CREATING);
-        op.setLastAttemptAt(Instant.now());
-        try {
-            return operationRepository.save(op);
-        } catch (DataIntegrityViolationException duplicate) {
-            return operationRepository
-                    .findByProviderAndIdempotencyKey(provider, command.idempotencyKey())
-                    .orElseThrow(() -> duplicate);
-        }
+        Instant now = Instant.now();
+        operationRepository.insertCreatingIfAbsent(
+                java.util.UUID.randomUUID(),
+                provider.name(),
+                command.internalId(),
+                command.idempotencyKey(),
+                CalendarOperationStatus.CREATING.name(),
+                now
+        );
+        return operationRepository
+                .findByProviderAndIdempotencyKey(provider, command.idempotencyKey())
+                .orElseThrow(() -> new IllegalStateException("calendar provider operation row missing after upsert"));
     }
 
     private static boolean isStaleCreating(CalendarProviderOperation operation) {
-        Instant createdAt = operation.getCreatedAt();
-        if (createdAt == null) {
+        Instant heartbeat = operation.getLastAttemptAt();
+        if (heartbeat == null) {
+            heartbeat = operation.getCreatedAt();
+        }
+        if (heartbeat == null) {
             return true;
         }
-        return createdAt.isBefore(Instant.now().minus(CREATING_STALE_TIMEOUT));
+        return heartbeat.isBefore(Instant.now().minus(CREATING_STALE_TIMEOUT));
     }
 
     private static String classifyProviderError(CalendarClientException ex) {

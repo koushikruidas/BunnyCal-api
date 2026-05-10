@@ -1,0 +1,3 @@
+ALTER TABLE bookings
+    ADD COLUMN IF NOT EXISTS guest_email VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS guest_name VARCHAR(120);

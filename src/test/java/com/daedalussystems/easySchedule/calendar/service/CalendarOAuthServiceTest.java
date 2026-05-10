@@ -7,9 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.atLeastOnce;
 
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
+import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.OAuthTokenExchangeResult;
 import com.daedalussystems.easySchedule.calendar.config.CalendarSecurityProperties;
@@ -18,6 +20,7 @@ import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -31,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.dao.OptimisticLockingFailureException;
 
 class CalendarOAuthServiceTest {
     @Mock
@@ -39,6 +43,14 @@ class CalendarOAuthServiceTest {
     private GoogleApiClient googleApiClient;
     @Mock
     private TokenCipher tokenCipher;
+    @Mock
+    private CalendarEventIngestionService ingestionService;
+    @Mock
+    private ExternalCalendarSyncClient syncClient;
+    @Mock
+    private SlotCacheVersionService slotCacheVersionService;
+    @Mock
+    private CalendarConnectionWriteService connectionWriteService;
 
     private CalendarOAuthService service;
     private OAuthStateService stateService;
@@ -52,10 +64,18 @@ class CalendarOAuthServiceTest {
         properties.setClientId("cid");
         properties.setClientSecret("csecret");
         properties.setRedirectUri("http://localhost/callback");
+        properties.setScopes(List.of(
+                "https://www.googleapis.com/auth/calendar.events",
+                "https://www.googleapis.com/auth/calendar.readonly"));
         securityProperties = new CalendarSecurityProperties();
         securityProperties.setOauthStateSecret("state-secret");
-        stateService = new OAuthStateService(securityProperties);
-        service = new CalendarOAuthService(repository, googleApiClient, properties, stateService, tokenCipher);
+        stateService = new OAuthStateService(securityProperties, new ObjectMapper());
+        service = new CalendarOAuthService(
+                repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClient, slotCacheVersionService, connectionWriteService);
+        when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any())).thenAnswer(inv -> inv.getArgument(0));
+        when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
     }
 
     @Test
@@ -88,8 +108,8 @@ class CalendarOAuthServiceTest {
         service.handleGoogleCallback("code", state);
 
         ArgumentCaptor<CalendarConnection> captor = ArgumentCaptor.forClass(CalendarConnection.class);
-        verify(repository).save(captor.capture());
-        CalendarConnection saved = captor.getValue();
+        verify(connectionWriteService, atLeastOnce()).saveSnapshot(captor.capture(), any());
+        CalendarConnection saved = captor.getAllValues().get(captor.getAllValues().size() - 1);
         assertEquals(userId, saved.getUserId());
         assertEquals(CalendarProviderType.GOOGLE, saved.getProvider());
         assertEquals("enc-refresh", saved.getRefreshTokenCiphertext());
@@ -120,8 +140,9 @@ class CalendarOAuthServiceTest {
         service.handleGoogleCallback("code", state);
 
         ArgumentCaptor<CalendarConnection> captor = ArgumentCaptor.forClass(CalendarConnection.class);
-        verify(repository).save(captor.capture());
-        assertEquals("existing-cipher", captor.getValue().getRefreshTokenCiphertext());
+        verify(connectionWriteService, atLeastOnce()).saveSnapshot(captor.capture(), any());
+        CalendarConnection saved = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        assertEquals("existing-cipher", saved.getRefreshTokenCiphertext());
     }
 
     @Test
@@ -134,6 +155,28 @@ class CalendarOAuthServiceTest {
         conn.setStatus(CalendarConnectionStatus.ACTIVE);
         when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
         assertEquals("CONNECTED", service.googleConnectionStatus(userId));
+    }
+
+    @Test
+    void callback_whenWriterFails_propagatesException() {
+        UUID userId = UUID.randomUUID();
+        String state = stateService.generate(userId);
+        CalendarConnection existing = new CalendarConnection();
+        existing.setUserId(userId);
+        existing.setProvider(CalendarProviderType.GOOGLE);
+        existing.setRefreshTokenCiphertext("existing-cipher");
+
+        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(Optional.of(existing));
+        when(googleApiClient.exchangeCodeForToken("code", "http://localhost/callback", "cid", "csecret"))
+                .thenReturn(new OAuthTokenExchangeResult("access-2", "refresh-2", Instant.now().plusSeconds(1800)));
+        when(googleApiClient.fetchProviderUserId("access-2")).thenReturn("sub-2");
+        when(tokenCipher.encrypt("refresh-2")).thenReturn("enc-refresh-2");
+        when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any()))
+                .thenThrow(new OptimisticLockingFailureException("conflict"))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        assertThrows(OptimisticLockingFailureException.class, () -> service.handleGoogleCallback("code", state));
     }
 
     private static Map<String, String> parseQuery(String query) {

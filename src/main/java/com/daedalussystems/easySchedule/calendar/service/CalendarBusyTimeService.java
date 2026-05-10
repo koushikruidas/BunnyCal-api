@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus
 import com.daedalussystems.easySchedule.calendar.domain.CalendarEvent;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarEventRepository;
+import com.daedalussystems.easySchedule.common.time.DateTimeUtils;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -42,8 +43,8 @@ public class CalendarBusyTimeService {
         ZonedDateTime dayStart = date.atStartOfDay(zoneId);
         ZonedDateTime dayEnd = dayStart.plusDays(1);
         for (CalendarEvent event : events) {
-            ZonedDateTime start = event.getStartsAt().atZone(zoneId);
-            ZonedDateTime end = event.getEndsAt().atZone(zoneId);
+            ZonedDateTime start = DateTimeUtils.toZone(event.getStartsAt(), zoneId);
+            ZonedDateTime end = DateTimeUtils.toZone(event.getEndsAt(), zoneId);
             if (start.isBefore(dayStart)) {
                 start = dayStart;
             }

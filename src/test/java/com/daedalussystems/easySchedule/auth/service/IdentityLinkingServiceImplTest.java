@@ -16,6 +16,7 @@ import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.common.enums.AuthProvider;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimezoneService;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,7 +42,7 @@ class IdentityLinkingServiceImplTest {
         identityLinkingService = new IdentityLinkingServiceImpl(
                 userRepository,
                 authIdentityRepository,
-                new UserTimezoneServiceImpl()
+                new UserTimezoneServiceImpl(new TimezoneService())
         );
     }
 

@@ -17,7 +17,12 @@ public class SlotCacheVersionService {
 
     public long getCurrentVersion(UUID userId) {
         String key = versionKey(userId);
-        String value = redisTemplate.opsForValue().get(key);
+        String value;
+        try {
+            value = redisTemplate.opsForValue().get(key);
+        } catch (Exception ex) {
+            return 1L;
+        }
         if (value == null) {
             return 1L;
         }
@@ -29,8 +34,16 @@ public class SlotCacheVersionService {
     }
 
     public long incrementVersion(UUID userId) {
-        Long incremented = redisTemplate.opsForValue().increment(versionKey(userId));
-        return incremented == null || incremented <= 0 ? 1L : incremented;
+        try {
+            Long incremented = redisTemplate.opsForValue().increment(versionKey(userId));
+            return incremented == null || incremented <= 0 ? 1L : incremented;
+        } catch (Exception ex) {
+            return 1L;
+        }
+    }
+
+    public long bumpVersion(UUID userId) {
+        return incrementVersion(userId);
     }
 
     private String versionKey(UUID userId) {

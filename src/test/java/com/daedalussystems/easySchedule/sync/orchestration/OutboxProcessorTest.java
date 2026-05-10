@@ -38,15 +38,15 @@ class OutboxProcessorTest {
     }
 
     @Test
-    void bookingCreatedEvent_createsSyncJobAndMarksOutboxProcessed() {
+    void bookingConfirmedEvent_createsSyncJobAndMarksOutboxProcessed() {
         UUID outboxId = UUID.randomUUID();
         UUID bookingId = UUID.randomUUID();
         OutboxEvent event = new OutboxEvent();
         event.setId(outboxId);
         event.setAggregateType("Booking");
         event.setAggregateId(bookingId);
-        event.setEventType("BOOKING_CREATED");
-        event.setPayload("{\"type\":\"BOOKING_CREATED\",\"version\":1,\"payload\":{\"bookingId\":\"" + bookingId + "\"}}");
+        event.setEventType("BOOKING_CONFIRMED");
+        event.setPayload("{\"type\":\"BOOKING_CONFIRMED\",\"version\":1,\"payload\":{\"bookingId\":\"" + bookingId + "\"}}");
         event.setStatus(OutboxEventStatus.PROCESSING);
         event.setAttemptCount(0);
         event.setNextAttemptAt(Instant.now());

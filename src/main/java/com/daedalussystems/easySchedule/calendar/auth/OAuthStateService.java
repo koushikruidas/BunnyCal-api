@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.auth;
 
 import com.daedalussystems.easySchedule.calendar.config.CalendarSecurityProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
@@ -13,40 +14,66 @@ import org.springframework.stereotype.Component;
 public class OAuthStateService {
     private static final long TTL_SECONDS = 600;
     private static final String HMAC = "HmacSHA256";
+    public static final String SOURCE_DASHBOARD = "dashboard";
+    public static final String SOURCE_PUBLIC_BOOKING = "public-booking";
 
     private final CalendarSecurityProperties properties;
+    private final ObjectMapper objectMapper;
 
-    public OAuthStateService(CalendarSecurityProperties properties) {
+    public OAuthStateService(CalendarSecurityProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
+        this.objectMapper = objectMapper;
     }
 
     public String generate(UUID userId) {
-        long expiresAt = Instant.now().plusSeconds(TTL_SECONDS).getEpochSecond();
-        String payload = userId + ":" + expiresAt;
-        String signature = sign(payload);
-        return Base64.getUrlEncoder().withoutPadding()
-                .encodeToString((payload + ":" + signature).getBytes(StandardCharsets.UTF_8));
+        return generate(userId, SOURCE_DASHBOARD, null, null);
+    }
+
+    public String generate(UUID userId, String source, String returnTo, String bookingSessionId) {
+        try {
+            long expiresAt = Instant.now().plusSeconds(TTL_SECONDS).getEpochSecond();
+            OAuthStatePayload payload = new OAuthStatePayload(userId, source, returnTo, bookingSessionId, expiresAt);
+            String payloadBase64 = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(objectMapper.writeValueAsBytes(payload));
+            String signature = sign(payloadBase64);
+            return payloadBase64 + "." + signature;
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to generate state", ex);
+        }
+    }
+
+    public OAuthStatePayload validateAndExtract(String state) {
+        try {
+            String[] parts = state.split("\\.", 2);
+            if (parts.length != 2) {
+                throw new IllegalArgumentException("Invalid state format");
+            }
+            String payloadBase64 = parts[0];
+            if (!sign(payloadBase64).equals(parts[1])) {
+                throw new IllegalArgumentException("Invalid state signature");
+            }
+            OAuthStatePayload payload = objectMapper.readValue(
+                    Base64.getUrlDecoder().decode(payloadBase64),
+                    OAuthStatePayload.class);
+            if (payload.expiresAtEpochSeconds() <= 0) {
+                throw new IllegalArgumentException("Invalid state expiration");
+            }
+            if (Instant.now().getEpochSecond() > payload.expiresAtEpochSeconds()) {
+                throw new IllegalArgumentException("State expired");
+            }
+            if (payload.userId() == null) {
+                throw new IllegalArgumentException("State userId missing");
+            }
+            return payload;
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("Invalid state", ex);
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid state", ex);
+        }
     }
 
     public UUID validateAndExtractUserId(String state) {
-        try {
-            String decoded = new String(Base64.getUrlDecoder().decode(state), StandardCharsets.UTF_8);
-            String[] parts = decoded.split(":");
-            if (parts.length != 3) {
-                throw new IllegalArgumentException("Invalid state format");
-            }
-            String payload = parts[0] + ":" + parts[1];
-            if (!sign(payload).equals(parts[2])) {
-                throw new IllegalArgumentException("Invalid state signature");
-            }
-            long expiresAt = Long.parseLong(parts[1]);
-            if (Instant.now().getEpochSecond() > expiresAt) {
-                throw new IllegalArgumentException("State expired");
-            }
-            return UUID.fromString(parts[0]);
-        } catch (RuntimeException ex) {
-            throw new IllegalArgumentException("Invalid state", ex);
-        }
+        return validateAndExtract(state).userId();
     }
 
     private String sign(String payload) {

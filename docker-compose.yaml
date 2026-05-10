@@ -7,6 +7,10 @@ services:
       POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
     command: [ "--config=/etc/otel-collector-config.yaml" ]

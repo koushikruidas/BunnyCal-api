@@ -22,12 +22,12 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
-    public String createEvent(String accessToken, CreateEventRequest request) {
+    public GoogleEventDetails createEvent(String accessToken, CreateEventRequest request) {
         return withRetry(() -> delegate.createEvent(accessToken, request));
     }
 
     @Override
-    public String updateEvent(String accessToken, UpdateEventRequest request) {
+    public GoogleEventDetails updateEvent(String accessToken, UpdateEventRequest request) {
         return withRetry(() -> delegate.updateEvent(accessToken, request));
     }
 

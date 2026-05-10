@@ -48,4 +48,10 @@ public class Booking extends BaseEntity {
 
     @Column(name = "end_time", nullable = false)
     private Instant endTime;
+
+    @Column(name = "guest_email", length = 255)
+    private String guestEmail;
+
+    @Column(name = "guest_name", length = 120)
+    private String guestName;
 }

@@ -19,7 +19,7 @@ public class BookingOutboxEventRouter {
 
     private static SyncDesiredAction toDesiredAction(String eventType) {
         return switch (eventType) {
-            case "BOOKING_CREATED" -> SyncDesiredAction.CREATE;
+            case "BOOKING_CONFIRMED" -> SyncDesiredAction.CREATE;
             case "BOOKING_UPDATED" -> SyncDesiredAction.UPDATE;
             case "BOOKING_CANCELLED" -> SyncDesiredAction.DELETE;
             default -> throw new IllegalArgumentException("Unsupported event type: " + eventType);

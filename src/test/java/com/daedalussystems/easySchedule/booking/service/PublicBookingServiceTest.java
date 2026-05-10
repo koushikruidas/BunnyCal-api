@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.availability.domain.EventType;
+import com.daedalussystems.easySchedule.availability.dto.AvailabilityStatus;
 import com.daedalussystems.easySchedule.availability.dto.SlotDto;
 import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
@@ -16,10 +17,20 @@ import com.daedalussystems.easySchedule.availability.service.SlotService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.domain.BookingId;
 import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
+import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.calendar.service.GoogleFreeBusyService;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
+import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
+import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.FencingTokenGenerator;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
+import com.daedalussystems.easySchedule.common.time.TimezoneService;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -41,21 +52,32 @@ class PublicBookingServiceTest {
     @Mock BookingService bookingService;
     @Mock BookingRepository bookingRepository;
     @Mock GoogleFreeBusyService freeBusyService;
+    @Mock CalendarConnectionRepository calendarConnectionRepository;
+    @Mock CalendarService calendarService;
+    @Mock CalendarEventMappingRepository calendarEventMappingRepository;
+    @Mock FencingTokenGenerator fencingTokenGenerator;
 
     private PublicBookingService service;
+    private TimeConversionService timeConversionService;
 
     private final UUID userId = UUID.randomUUID();
     private final UUID eventTypeId = UUID.randomUUID();
 
     @BeforeEach
     void setUp() {
+        timeConversionService = new TimeConversionService(new TimezoneService());
         service = new PublicBookingService(
                 userRepository,
                 eventTypeRepository,
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService
+                freeBusyService,
+                calendarConnectionRepository,
+                calendarService,
+                calendarEventMappingRepository,
+                fencingTokenGenerator,
+                timeConversionService
         );
     }
 
@@ -70,6 +92,10 @@ class PublicBookingServiceTest {
 
         when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
         when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1), new SlotDto("b", s2, e2))
@@ -84,6 +110,83 @@ class PublicBookingServiceTest {
 
         SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(0, response.slots().size());
+        assertEquals(AvailabilityStatus.NO_SLOTS_AVAILABLE, response.status());
+    }
+
+    @Test
+    void availability_returnsBaseSlotsWhenFreeBusyFails() {
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+        when(freeBusyService.busyIntervals(userId,
+                Instant.parse("2026-05-10T00:00:00Z"),
+                Instant.parse("2026-05-11T00:00:00Z")))
+                .thenThrow(new CalendarClientException(500, "downstream"));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        assertEquals(1, response.slots().size());
+        assertEquals("a", response.slots().get(0).slotId());
+        assertEquals(AvailabilityStatus.AVAILABLE, response.status());
+    }
+
+    @Test
+    void availability_failedConnectionComputesDegradedSlots() {
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.FAILED);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 3L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+        when(freeBusyService.busyIntervals(userId,
+                Instant.parse("2026-05-10T00:00:00Z"),
+                Instant.parse("2026-05-11T00:00:00Z")))
+                .thenReturn(List.of());
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        assertEquals(1, response.slots().size());
+        assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
+        assertEquals(true, response.degraded());
+        assertEquals(3L, response.version());
+    }
+
+    @Test
+    void availability_syncingConnectionStillReturnsSyncInProgress() {
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.SYNCING);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        assertEquals(AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS, response.status());
+        assertEquals(true, response.degraded());
+        assertEquals(0L, response.version());
+        verify(slotService, never()).getSlots(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -92,7 +195,9 @@ class PublicBookingServiceTest {
         User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
         EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
-                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z")).build();
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
 
         when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
         when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
@@ -120,7 +225,9 @@ class PublicBookingServiceTest {
         User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
         EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
-                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z")).build();
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
 
         when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
         when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
@@ -173,5 +280,154 @@ class PublicBookingServiceTest {
                 org.mockito.ArgumentMatchers.eq(start),
                 org.mockito.ArgumentMatchers.eq(end),
                 org.mockito.ArgumentMatchers.eq(3L));
+    }
+
+    @Test
+    void confirm_succeedsOnlyAfterCalendarEventCreation() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
+        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
+                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
+        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
+                bookingId, "google", "google:" + bookingId)))
+                .thenReturn(CalendarService.CreateEventResult.success("ext-1"));
+        when(calendarEventMappingRepository.updateMappingWithEventId(bookingId, "google", "ext-1", null, null, 10L, "public-confirm"))
+                .thenReturn(CalendarEventMappingRepository.FinalizeOutcome.SUCCESS);
+
+        var response = service.confirm("koushik", "30min", bookingId);
+
+        assertEquals("CONFIRMED", response.status());
+        verify(bookingService).confirmHeldBooking(bookingId);
+    }
+
+    @Test
+    void confirm_failsWhenGuestEmailMissingBeforeCalendarCreate() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z"))
+                .endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail(" ")
+                .build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.confirm("koushik", "30min", bookingId));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
+        verify(bookingService, never()).confirmHeldBooking(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void confirm_failsWhenCalendarEventCreationFails() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
+        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
+                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
+        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
+                bookingId, "google", "google:" + bookingId)))
+                .thenReturn(CalendarService.CreateEventResult.retryable("PROVIDER_DOWN"));
+
+        CustomException ex = assertThrows(CustomException.class, () -> service.confirm("koushik", "30min", bookingId));
+        assertEquals(ErrorCode.GOOGLE_EVENT_CREATION_FAILED, ex.getErrorCode());
+        verify(bookingService, never()).confirmHeldBooking(bookingId);
+    }
+
+    @Test
+    void confirm_inProgressMapsToCalendarSyncInProgress() {
+        UUID bookingId = UUID.randomUUID();
+        User user = User.builder().id(userId).username("koushik").timezone("UTC").email("a@b.com").name("n").build();
+        EventType et = EventType.builder().id(eventTypeId).userId(userId).slug("30min").duration(Duration.ofMinutes(30)).build();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+
+        when(userRepository.findByUsername("koushik")).thenReturn(Optional.of(user));
+        when(eventTypeRepository.findByUserIdAndSlug(userId, "30min")).thenReturn(Optional.of(et));
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
+        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
+                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
+        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
+                bookingId, "google", "google:" + bookingId)))
+                .thenReturn(CalendarService.CreateEventResult.retryable("IN_PROGRESS"));
+        when(calendarEventMappingRepository.findMappingState(bookingId, "google")).thenReturn(Optional.empty());
+
+        CustomException ex = assertThrows(CustomException.class, () -> service.confirm("koushik", "30min", bookingId));
+        assertEquals(ErrorCode.CALENDAR_SYNC_IN_PROGRESS, ex.getErrorCode());
+        verify(bookingService, never()).confirmHeldBooking(bookingId);
     }
 }

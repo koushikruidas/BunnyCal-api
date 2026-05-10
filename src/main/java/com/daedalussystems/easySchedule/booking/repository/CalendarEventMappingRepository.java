@@ -34,7 +34,9 @@ public class CalendarEventMappingRepository {
                        claimed_at = NOW(),
                        updated_at = NOW(),
                        last_error = NULL,
-                       external_event_id = NULL
+                       external_event_id = NULL,
+                       provider_event_url = NULL,
+                       conference_url = NULL
                  WHERE calendar_event_mappings.status IN ('FAILED', 'CLAIMED')
                    AND calendar_event_mappings.sync_token < EXCLUDED.sync_token
                 """)
@@ -89,11 +91,14 @@ public class CalendarEventMappingRepository {
 
     @Transactional
     public FinalizeOutcome updateMappingWithEventId(UUID bookingId, String provider, String externalEventId,
+                                                    String providerEventUrl, String conferenceUrl,
                                                     long token, String workerId) {
         int rows = entityManager.createNativeQuery("""
                 UPDATE calendar_event_mappings
                    SET status = 'CREATED',
                        external_event_id = :externalEventId,
+                       provider_event_url = :providerEventUrl,
+                       conference_url = :conferenceUrl,
                        updated_at = NOW()
                  WHERE booking_id = :bookingId
                    AND provider = :provider
@@ -105,6 +110,8 @@ public class CalendarEventMappingRepository {
                 .setParameter("bookingId", bookingId)
                 .setParameter("provider", provider)
                 .setParameter("externalEventId", externalEventId)
+                .setParameter("providerEventUrl", providerEventUrl)
+                .setParameter("conferenceUrl", conferenceUrl)
                 .setParameter("token", token)
                 .setParameter("workerId", workerId)
                 .executeUpdate();
@@ -113,6 +120,12 @@ public class CalendarEventMappingRepository {
             return FinalizeOutcome.SUCCESS;
         }
         return classifyFinalizeMiss(bookingId, provider, externalEventId);
+    }
+
+    @Transactional
+    public FinalizeOutcome updateMappingWithEventId(UUID bookingId, String provider, String externalEventId,
+                                                    long token, String workerId) {
+        return updateMappingWithEventId(bookingId, provider, externalEventId, null, null, token, workerId);
     }
 
     @Transactional
@@ -349,7 +362,7 @@ public class CalendarEventMappingRepository {
     @SuppressWarnings("unchecked")
     public Optional<MappingState> findMappingState(UUID bookingId, String provider) {
         List<Object[]> rows = entityManager.createNativeQuery("""
-                SELECT status, external_event_id, sync_token, claimed_by, attempt_count
+                SELECT status, external_event_id, provider_event_url, conference_url, sync_token, claimed_by, attempt_count
                        , claimed_at
                   FROM calendar_event_mappings
                  WHERE booking_id = :bookingId
@@ -365,10 +378,12 @@ public class CalendarEventMappingRepository {
         return Optional.of(new MappingState(
                 (String) row[0],
                 (String) row[1],
-                ((Number) row[2]).longValue(),
+                (String) row[2],
                 (String) row[3],
-                row.length > 4 && row[4] != null ? ((Number) row[4]).intValue() : 0,
-                row.length > 5 ? (Instant) row[5] : null
+                ((Number) row[4]).longValue(),
+                (String) row[5],
+                row.length > 6 && row[6] != null ? ((Number) row[6]).intValue() : 0,
+                row.length > 7 ? (Instant) row[7] : null
         ));
     }
 
@@ -398,6 +413,8 @@ public class CalendarEventMappingRepository {
     public record MappingState(
             String status,
             String externalEventId,
+            String providerEventUrl,
+            String conferenceUrl,
             long syncToken,
             String claimedBy,
             int attemptCount,

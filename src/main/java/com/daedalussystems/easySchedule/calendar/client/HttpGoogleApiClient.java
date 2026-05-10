@@ -1,11 +1,16 @@
 package com.daedalussystems.easySchedule.calendar.client;
 
+import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -14,55 +19,70 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 @Component("rawGoogleApiClient")
 public class HttpGoogleApiClient implements GoogleApiClient {
-    private final RestClient restClient;
+    private static final Logger log = LoggerFactory.getLogger(HttpGoogleApiClient.class);
+    private static final String CALENDAR_ID = "primary";
+    static final String CREATE_EVENT_URI = "/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1";
+    static final String UPDATE_EVENT_URI = "/calendar/v3/calendars/primary/events/{id}?sendUpdates=all&conferenceDataVersion=1";
 
-    public HttpGoogleApiClient(RestClient.Builder restClientBuilder) {
+    private final RestClient restClient;
+    private final GoogleOAuthProperties googleOAuthProperties;
+    private final boolean diagnosticsEnabled;
+
+    public HttpGoogleApiClient(RestClient.Builder restClientBuilder,
+                               GoogleOAuthProperties googleOAuthProperties,
+                               @Value("${calendar.google.diagnostics.enabled:false}") boolean diagnosticsEnabled) {
         this.restClient = restClientBuilder
                 .baseUrl("https://www.googleapis.com")
                 .build();
+        this.googleOAuthProperties = googleOAuthProperties;
+        this.diagnosticsEnabled = diagnosticsEnabled;
     }
 
     @Override
-    public String createEvent(String accessToken, CreateEventRequest request) {
+    public GoogleEventDetails createEvent(String accessToken, CreateEventRequest request) {
         try {
+            Map<String, Object> body = buildCreateEventBody(request);
             ResponseEntity<Map> response = restClient.post()
-                    .uri("/calendar/v3/calendars/primary/events")
+                    .uri(CREATE_EVENT_URI)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of(
-                            "summary", request.title(),
-                            "description", request.description(),
-                            "start", Map.of("dateTime", request.startsAt().toString()),
-                            "end", Map.of("dateTime", request.endsAt().toString()),
-                            "extendedProperties", Map.of("private", Map.of("idempotencyKey", request.idempotencyKey()))
-                    ))
+                    .body(body)
                     .retrieve()
                     .toEntity(Map.class);
-            return (String) response.getBody().get("id");
+            if (diagnosticsEnabled) {
+                emitDiagnostics("create", accessToken, request.idempotencyKey(), CALENDAR_ID, "all", 1,
+                        request.organizerEmail(), request.attendeeEmail(), body, response.getBody());
+            }
+            log.info("google_calendar_event_create_response requestId={} externalEventId={} conferenceLinkPresent={}",
+                    request.idempotencyKey(), extractId(response.getBody()), extractConferenceLink(response.getBody()) != null);
+            return toDetails(response.getBody());
         } catch (RestClientException ex) {
             throw classify(ex);
         }
     }
 
     @Override
-    public String updateEvent(String accessToken, UpdateEventRequest request) {
+    public GoogleEventDetails updateEvent(String accessToken, UpdateEventRequest request) {
         try {
+            Map<String, Object> body = buildUpdateEventBody(request);
             ResponseEntity<Map> response = restClient.put()
-                    .uri("/calendar/v3/calendars/primary/events/{id}", request.externalEventId())
+                    .uri(UPDATE_EVENT_URI, request.externalEventId())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(Map.of(
-                            "summary", request.title(),
-                            "description", request.description(),
-                            "start", Map.of("dateTime", request.startsAt().toString()),
-                            "end", Map.of("dateTime", request.endsAt().toString())
-                    ))
+                    .body(body)
                     .retrieve()
                     .toEntity(Map.class);
-            return (String) response.getBody().get("id");
+            if (diagnosticsEnabled) {
+                emitDiagnostics("update", accessToken, request.externalEventId(), CALENDAR_ID, "all", 1,
+                        request.organizerEmail(), request.attendeeEmail(), body, response.getBody());
+            }
+            log.info("google_calendar_event_update_response externalEventId={} conferenceLinkPresent={}",
+                    extractId(response.getBody()), extractConferenceLink(response.getBody()) != null);
+            return toDetails(response.getBody());
         } catch (RestClientException ex) {
             throw classify(ex);
         }
@@ -84,10 +104,16 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     @Override
     public TokenRefreshResult refreshAccessToken(String refreshToken) {
         try {
+            MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+            form.add("grant_type", "refresh_token");
+            form.add("refresh_token", refreshToken);
+            form.add("client_id", googleOAuthProperties.getClientId());
+            form.add("client_secret", googleOAuthProperties.getClientSecret());
+
             ResponseEntity<Map> response = restClient.post()
                     .uri("https://oauth2.googleapis.com/token")
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .body("grant_type=refresh_token&refresh_token=" + refreshToken)
+                    .body(form)
                     .retrieve()
                     .toEntity(Map.class);
             String accessToken = (String) response.getBody().get("access_token");
@@ -189,9 +215,15 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     }
 
     private static CalendarClientException classify(RestClientException ex) {
+        if (ex instanceof RestClientResponseException responseEx) {
+            String body = responseEx.getResponseBodyAsString();
+            String message = "Calendar API request failed: status=%d body=%s"
+                    .formatted(responseEx.getStatusCode().value(), body == null ? "" : body);
+            return new CalendarClientException(responseEx.getStatusCode().value(), message);
+        }
         String message = ex.getMessage() == null ? "calendar api error" : ex.getMessage();
         int status = extractStatus(message);
-        return new CalendarClientException(status, "Calendar API request failed");
+        return new CalendarClientException(status, "Calendar API request failed: " + message);
     }
 
     private static int extractStatus(String msg) {
@@ -205,6 +237,306 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (msg.contains("403")) return 403;
         if (msg.contains("404")) return 404;
         return 500;
+    }
+
+    static Map<String, Object> buildCreateEventBody(CreateEventRequest request) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("summary", request.title());
+        body.put("description", request.description());
+        body.put("start", Map.of("dateTime", request.startsAt().toString()));
+        body.put("end", Map.of("dateTime", request.endsAt().toString()));
+        body.put("extendedProperties", Map.of("private", Map.of("idempotencyKey", request.idempotencyKey())));
+        body.put("conferenceData", Map.of(
+                "createRequest", Map.of(
+                        "requestId", request.idempotencyKey(),
+                        "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
+                )));
+        body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
+        return body;
+    }
+
+    static Map<String, Object> buildUpdateEventBody(UpdateEventRequest request) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("summary", request.title());
+        body.put("description", request.description());
+        body.put("start", Map.of("dateTime", request.startsAt().toString()));
+        body.put("end", Map.of("dateTime", request.endsAt().toString()));
+        body.put("conferenceData", Map.of(
+                "createRequest", Map.of(
+                        "requestId", request.externalEventId(),
+                        "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
+                )));
+        body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
+        return body;
+    }
+
+    static List<Map<String, Object>> attendees(String attendeeEmail, String attendeeName) {
+        List<Map<String, Object>> attendees = new ArrayList<>();
+        if (attendeeEmail != null && !attendeeEmail.isBlank()) {
+            Map<String, Object> guest = new HashMap<>();
+            guest.put("email", attendeeEmail);
+            if (attendeeName != null && !attendeeName.isBlank()) {
+                guest.put("displayName", attendeeName);
+            }
+            attendees.add(guest);
+        }
+        return attendees;
+    }
+
+    private static String extractId(Map body) {
+        if (body == null) return null;
+        Object id = body.get("id");
+        return id instanceof String s ? s : null;
+    }
+
+    private static String extractConferenceLink(Map body) {
+        if (body == null) return null;
+        Object hangout = body.get("hangoutLink");
+        if (hangout instanceof String s && !s.isBlank()) {
+            return s;
+        }
+        Object conferenceDataObj = body.get("conferenceData");
+        if (!(conferenceDataObj instanceof Map<?, ?> conferenceData)) {
+            return null;
+        }
+        Object entryPointsObj = conferenceData.get("entryPoints");
+        if (!(entryPointsObj instanceof List<?> entryPoints)) {
+            return null;
+        }
+        for (Object entry : entryPoints) {
+            if (!(entry instanceof Map<?, ?> point)) {
+                continue;
+            }
+            Object uri = point.get("uri");
+            if (uri instanceof String s && !s.isBlank()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    private static GoogleEventDetails toDetails(Map body) {
+        return new GoogleEventDetails(extractId(body), extractHtmlLink(body), extractConferenceLink(body));
+    }
+
+    private static String extractHtmlLink(Map body) {
+        if (body == null) return null;
+        Object htmlLink = body.get("htmlLink");
+        return htmlLink instanceof String s ? s : null;
+    }
+
+    private void emitDiagnostics(String action,
+                                 String accessToken,
+                                 String correlationId,
+                                 String calendarId,
+                                 String sendUpdates,
+                                 int conferenceDataVersion,
+                                 String expectedOrganizerEmail,
+                                 String expectedAttendeeEmail,
+                                 Map<String, Object> requestBody,
+                                 Map<String, Object> responseBody) {
+        Map<String, Object> userInfo = fetchUserInfoSafe(accessToken);
+        String eventId = extractId(responseBody);
+        Map<String, Object> fetched = fetchEventSafe(accessToken, calendarId, eventId);
+        Map<String, Object> source = fetched != null ? fetched : responseBody;
+        String oauthEmail = asString(userInfo == null ? null : userInfo.get("email"));
+        String organizerEmail = nestedString(source, "organizer", "email");
+        boolean attendeePresent = attendeePresent(source, expectedAttendeeEmail);
+        String warningCode = diagnoseWarning(
+                fetched,
+                source,
+                expectedOrganizerEmail,
+                organizerEmail,
+                oauthEmail,
+                expectedAttendeeEmail,
+                attendeePresent
+        );
+        log.info(
+                "google_calendar_provider_truth action={} correlationId={} calendarId={} targetIsPrimary={} sendUpdates={} conferenceDataVersion={} oauthSub={} oauthEmail={} responseEventId={} responseHtmlLink={} responseStatus={} organizerEmail={} creatorEmail={} attendees={} expectedOrganizerEmail={} expectedAttendeeEmail={} attendeePresent={} warningCode={} hangoutLink={} conferenceData={} visibility={} summary={} start={} end={} fetchedFromGoogle={}",
+                action,
+                correlationId,
+                calendarId,
+                "primary".equals(calendarId),
+                sendUpdates,
+                conferenceDataVersion,
+                asString(userInfo == null ? null : userInfo.get("sub")),
+                maskEmail(oauthEmail),
+                eventId,
+                extractHtmlLink(source),
+                asString(source == null ? null : source.get("status")),
+                organizerEmail,
+                nestedString(source, "creator", "email"),
+                attendeeSummary(source),
+                expectedOrganizerEmail,
+                expectedAttendeeEmail,
+                attendeePresent,
+                warningCode,
+                extractConferenceLink(source),
+                source == null ? null : source.get("conferenceData"),
+                asString(source == null ? null : source.get("visibility")),
+                asString(source == null ? null : source.get("summary")),
+                source == null ? null : source.get("start"),
+                source == null ? null : source.get("end"),
+                fetched != null);
+
+        log.info("google_calendar_provider_request action={} correlationId={} attendeeCount={} attendeeEmails={} requestBodyKeys={}",
+                action,
+                correlationId,
+                attendeeCountFromRequest(requestBody),
+                attendeeEmailsFromRequest(requestBody),
+                requestBody == null ? List.of() : requestBody.keySet());
+        if (!"NONE".equals(warningCode)) {
+            log.warn("google_calendar_provider_truth_warning action={} correlationId={} warningCode={} calendarId={} eventId={}",
+                    action, correlationId, warningCode, calendarId, eventId);
+        }
+    }
+
+    private Map<String, Object> fetchUserInfoSafe(String accessToken) {
+        try {
+            ResponseEntity<Map> response = restClient.get()
+                    .uri("https://www.googleapis.com/oauth2/v3/userinfo")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            return response.getBody();
+        } catch (RuntimeException ex) {
+            log.warn("google_calendar_provider_truth_userinfo_failed message={}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private Map<String, Object> fetchEventSafe(String accessToken, String calendarId, String eventId) {
+        if (eventId == null || eventId.isBlank()) {
+            return null;
+        }
+        try {
+            ResponseEntity<Map> response = restClient.get()
+                    .uri("/calendar/v3/calendars/{calendarId}/events/{id}", calendarId, eventId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            return response.getBody();
+        } catch (RuntimeException ex) {
+            log.warn("google_calendar_provider_truth_event_fetch_failed calendarId={} eventId={} message={}",
+                    calendarId, eventId, ex.getMessage());
+            return null;
+        }
+    }
+
+    private static String nestedString(Map body, String parentKey, String childKey) {
+        if (body == null) return null;
+        Object parent = body.get(parentKey);
+        if (!(parent instanceof Map<?, ?> parentMap)) {
+            return null;
+        }
+        Object child = parentMap.get(childKey);
+        return child instanceof String s ? s : null;
+    }
+
+    private static String attendeeSummary(Map body) {
+        if (body == null) return "[]";
+        Object attendeesObj = body.get("attendees");
+        if (!(attendeesObj instanceof List<?> attendees)) {
+            return "[]";
+        }
+        List<String> summary = new ArrayList<>();
+        for (Object attendee : attendees) {
+            if (!(attendee instanceof Map<?, ?> a)) {
+                continue;
+            }
+            String email = asString(a.get("email"));
+            String status = asString(a.get("responseStatus"));
+            summary.add(maskEmail(email) + ":" + status);
+        }
+        return summary.toString();
+    }
+
+    private static boolean attendeePresent(Map source, String expectedAttendeeEmail) {
+        if (source == null || expectedAttendeeEmail == null || expectedAttendeeEmail.isBlank()) {
+            return false;
+        }
+        Object attendeesObj = source.get("attendees");
+        if (!(attendeesObj instanceof List<?> attendees)) {
+            return false;
+        }
+        for (Object attendee : attendees) {
+            if (!(attendee instanceof Map<?, ?> a)) {
+                continue;
+            }
+            String email = asString(a.get("email"));
+            if (email != null && email.equalsIgnoreCase(expectedAttendeeEmail)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int attendeeCountFromRequest(Map<String, Object> body) {
+        if (body == null) return 0;
+        Object attendeesObj = body.get("attendees");
+        if (!(attendeesObj instanceof List<?> attendees)) {
+            return 0;
+        }
+        return attendees.size();
+    }
+
+    private static String attendeeEmailsFromRequest(Map<String, Object> body) {
+        if (body == null) return "[]";
+        Object attendeesObj = body.get("attendees");
+        if (!(attendeesObj instanceof List<?> attendees)) {
+            return "[]";
+        }
+        List<String> emails = new ArrayList<>();
+        for (Object attendee : attendees) {
+            if (!(attendee instanceof Map<?, ?> a)) continue;
+            emails.add(maskEmail(asString(a.get("email"))));
+        }
+        return emails.toString();
+    }
+
+    private static String asString(Object value) {
+        return value instanceof String s ? s : null;
+    }
+
+    static String diagnoseWarning(Map<String, Object> fetched,
+                                  Map<String, Object> source,
+                                  String expectedOrganizerEmail,
+                                  String organizerEmail,
+                                  String oauthEmail,
+                                  String expectedAttendeeEmail,
+                                  boolean attendeePresent) {
+        if (fetched == null) {
+            return "EVENT_NOT_FOUND_ON_READBACK";
+        }
+        if (source == null) {
+            return "MISSING_SOURCE";
+        }
+        String status = asString(source.get("status"));
+        if (status != null && !"confirmed".equalsIgnoreCase(status)) {
+            return "EVENT_NOT_CONFIRMED";
+        }
+        if (expectedOrganizerEmail != null && organizerEmail != null
+                && !expectedOrganizerEmail.equalsIgnoreCase(organizerEmail)) {
+            return "ORGANIZER_EMAIL_MISMATCH";
+        }
+        if (oauthEmail != null && expectedOrganizerEmail != null
+                && !oauthEmail.equalsIgnoreCase(expectedOrganizerEmail)) {
+            return "OAUTH_ACCOUNT_MISMATCH";
+        }
+        if (expectedAttendeeEmail != null && !expectedAttendeeEmail.isBlank() && !attendeePresent) {
+            return "GUEST_ATTENDEE_MISSING";
+        }
+        if (extractHtmlLink(source) == null || extractHtmlLink(source).isBlank()) {
+            return "EVENT_HTML_LINK_MISSING";
+        }
+        return "NONE";
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null || email.isBlank()) return "";
+        int at = email.indexOf('@');
+        if (at <= 1) return "***";
+        return email.charAt(0) + "***" + email.substring(at);
     }
 
 }

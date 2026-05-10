@@ -32,9 +32,13 @@ public class CalendarIntegrationController {
     }
 
     @GetMapping("/google/connect")
-    public ResponseEntity<ApiResponse<Map<String, String>>> connectGoogle(Authentication authentication) {
+    public ResponseEntity<ApiResponse<Map<String, String>>> connectGoogle(Authentication authentication,
+                                                                          @RequestParam(value = "source", required = false) String source,
+                                                                          @RequestParam(value = "returnTo", required = false) String returnTo,
+                                                                          @RequestParam(value = "bookingSessionId", required = false)
+                                                                          String bookingSessionId) {
         UUID userId = extractUserId(authentication);
-        String redirectUrl = oauthService.buildGoogleConnectUrl(userId);
+        String redirectUrl = oauthService.buildGoogleConnectUrl(userId, source, normalizeReturnTo(returnTo), bookingSessionId);
         return ResponseEntity.ok(ApiResponse.success(Map.of("redirectUrl", redirectUrl)));
     }
 
@@ -57,12 +61,12 @@ public class CalendarIntegrationController {
         try {
             log.info("Processing Google OAuth callback...");
 
-            oauthService.handleGoogleCallback(code, state);
+            CalendarOAuthService.OAuthCallbackResult result = oauthService.handleGoogleCallback(code, state);
 
             log.info("OAuth callback SUCCESS");
 
             return ResponseEntity.status(302)
-                    .location(URI.create(googleOAuthProperties.getFrontendSuccessRedirect()))
+                    .location(resolveSuccessRedirect(result))
                     .build();
 
         } catch (RuntimeException ex) {
@@ -115,5 +119,24 @@ public class CalendarIntegrationController {
             return "OAUTH_INVALID_RESPONSE";
         }
         return "INTERNAL_SERVER_ERROR";
+    }
+
+    private URI resolveSuccessRedirect(CalendarOAuthService.OAuthCallbackResult result) {
+        if (result != null && "public-booking".equals(result.source()) && result.returnTo() != null && !result.returnTo().isBlank()) {
+            URI success = URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
+            String origin = success.getScheme() + "://" + success.getAuthority();
+            return URI.create(origin + result.returnTo());
+        }
+        return URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
+    }
+
+    private static String normalizeReturnTo(String returnTo) {
+        if (returnTo == null || returnTo.isBlank()) {
+            return null;
+        }
+        if (!returnTo.startsWith("/") || returnTo.startsWith("//")) {
+            throw new IllegalArgumentException("returnTo must be a relative path");
+        }
+        return returnTo;
     }
 }

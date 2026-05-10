@@ -17,20 +17,20 @@ public class GoogleCalendarProvider implements CalendarProvider {
 
     @Override
     public CreateEventResponse createEvent(CreateEventRequest request) {
-        String externalId = tokenRefresher.executeWithValidToken(
+        var details = tokenRefresher.executeWithValidToken(
                 request.connectionId(),
                 token -> googleApiClient.createEvent(token, request)
         );
-        return new CreateEventResponse(externalId);
+        return new CreateEventResponse(details.externalEventId(), details.providerEventUrl(), details.conferenceUrl());
     }
 
     @Override
     public UpdateEventResponse updateEvent(UpdateEventRequest request) {
-        String externalId = tokenRefresher.executeWithValidToken(
+        var details = tokenRefresher.executeWithValidToken(
                 request.connectionId(),
                 token -> googleApiClient.updateEvent(token, request)
         );
-        return new UpdateEventResponse(externalId);
+        return new UpdateEventResponse(details.externalEventId(), details.providerEventUrl(), details.conferenceUrl());
     }
 
     @Override

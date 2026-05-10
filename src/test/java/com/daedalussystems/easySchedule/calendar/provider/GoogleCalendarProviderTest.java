@@ -40,6 +40,9 @@ class GoogleCalendarProviderTest {
                 "desc",
                 Instant.now(),
                 Instant.now().plusSeconds(3600),
+                "host@example.com",
+                "guest@example.com",
+                "Guest",
                 "idem-1"
         );
 
@@ -47,11 +50,15 @@ class GoogleCalendarProviderTest {
             var fn = invocation.<java.util.function.Function<String, String>>getArgument(1);
             return fn.apply("token-1");
         });
-        when(googleApiClient.createEvent("token-1", request)).thenReturn("evt-123");
+        when(googleApiClient.createEvent("token-1", request))
+                .thenReturn(new com.daedalussystems.easySchedule.calendar.client.GoogleApiClient.GoogleEventDetails(
+                        "evt-123", "https://calendar.google.com/event?eid=123", "https://meet.google.com/abc-defg-hij"));
 
         CreateEventResponse response = provider.createEvent(request);
 
         assertEquals("evt-123", response.externalEventId());
+        assertEquals("https://calendar.google.com/event?eid=123", response.providerEventUrl());
+        assertEquals("https://meet.google.com/abc-defg-hij", response.conferenceUrl());
         verify(googleApiClient).createEvent("token-1", request);
     }
 }

@@ -8,10 +8,15 @@ spring:
     password: secret
     driver-class-name: org.postgresql.Driver
 
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
   jpa:
     hibernate:
       ddl-auto: none
-    show-sql: true
+    show-sql: false
 
   flyway:
     enabled: true
@@ -20,7 +25,7 @@ spring:
 
   docker:
     compose:
-      enabled: false
+      enabled: true
 
   security:
     oauth2:
@@ -68,17 +73,22 @@ logging:
     org.flywaydb: DEBUG
 
 calendar:
+  provider:
+    mode: ${CALENDAR_PROVIDER_MODE:google}
+  google:
+    diagnostics:
+      enabled: ${CALENDAR_GOOGLE_DIAGNOSTICS_ENABLED:false}
   security:
     encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY=}
     oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET:calendar-oauth-state-secret-change-me}
 
 google:
   oauth:
-    client-id: ${GOOGLE_CLIENT_ID}
-    client-secret: ${GOOGLE_CLIENT_SECRET}
+    client-id: ${GOOGLE_CLIENT_ID:}
+    client-secret: ${GOOGLE_CLIENT_SECRET:}
     redirect-uri: ${GOOGLE_REDIRECT_URI:http://localhost:8080/integrations/calendar/google/callback}
-    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:http://localhost:3000/calendar-connected}
-    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:http://localhost:3000/calendar-error}
+    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:http://localhost:5173/calendar-connected}
+    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:http://localhost:5173/calendar-error}
     scopes:
       - openid
       - email

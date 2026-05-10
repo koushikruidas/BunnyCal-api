@@ -6,48 +6,61 @@ import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarConnectionWriteService;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-import jakarta.transaction.Transactional;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
-import org.springframework.dao.OptimisticLockingFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Component
 public class TokenRefresher {
     private static final Logger log = LoggerFactory.getLogger(TokenRefresher.class);
     private static final Duration REFRESH_SKEW = Duration.ofMinutes(5);
+    private static final Duration FAILURE_COOLDOWN = Duration.ofMinutes(2);
 
     private final CalendarConnectionRepository connectionRepository;
     private final TokenCipher tokenCipher;
     private final GoogleApiClient googleApiClient;
+    private final CalendarConnectionWriteService connectionWriteService;
     private final Counter tokenRefreshFailureCount;
     private final Counter tokenRefreshSuccessCount;
+    private final Map<UUID, CachedAccessToken> accessTokenCache = new ConcurrentHashMap<>();
 
     public TokenRefresher(CalendarConnectionRepository connectionRepository,
                           TokenCipher tokenCipher,
                           GoogleApiClient googleApiClient,
+                          CalendarConnectionWriteService connectionWriteService,
                           MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.tokenCipher = tokenCipher;
         this.googleApiClient = googleApiClient;
+        this.connectionWriteService = connectionWriteService;
         this.tokenRefreshFailureCount = meterRegistry.counter("token_refresh_failures_count");
         this.tokenRefreshSuccessCount = meterRegistry.counter("token_refresh_success_count");
     }
 
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public <T> T executeWithValidToken(UUID connectionId, Function<String, T> operation) {
         CalendarConnection connection = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
 
         if (connection.getStatus() == CalendarConnectionStatus.REVOKED) {
             throw new IllegalStateException("Calendar connection revoked");
+        }
+        if (connection.getStatus() == CalendarConnectionStatus.ERROR
+                && connection.getLastErrorAt() != null
+                && connection.getLastErrorAt().plus(FAILURE_COOLDOWN).isAfter(Instant.now())) {
+            throw new IllegalStateException("Calendar connection temporarily unavailable");
         }
 
         String token = ensureActiveAccessToken(connection);
@@ -75,18 +88,19 @@ public class TokenRefresher {
         if (connection.getLastTokenExpiresAt() == null || connection.getLastTokenExpiresAt().minus(REFRESH_SKEW).isBefore(now)) {
             return refreshConnectionToken(connection);
         }
-        return refreshConnectionToken(connection);
+        CachedAccessToken cached = accessTokenCache.get(connection.getId());
+        if (cached == null || cached.expiresAt().minus(REFRESH_SKEW).isBefore(now)) {
+            return refreshConnectionToken(connection);
+        }
+        return cached.accessToken();
     }
 
     private String refreshConnectionToken(CalendarConnection connection) {
         String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
         try {
             TokenRefreshResult refresh = googleApiClient.refreshAccessToken(refreshToken);
-            connection.setLastTokenExpiresAt(refresh.expiresAt());
-            connection.setStatus(CalendarConnectionStatus.ACTIVE);
-            connection.setLastErrorCode(null);
-            connection.setLastErrorAt(null);
-            String token = saveRefreshedTokenWithRetry(connection, refresh.accessToken(), refresh.expiresAt());
+            String token = saveRefreshedToken(connection.getId(), refresh.accessToken(), refresh.expiresAt(), connection.getLastSyncedAt());
+            accessTokenCache.put(connection.getId(), new CachedAccessToken(token, refresh.expiresAt()));
             tokenRefreshSuccessCount.increment();
             log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\"}}", connection.getId());
             return token;
@@ -99,44 +113,24 @@ public class TokenRefresher {
     }
 
     private void markFailed(CalendarConnection connection, String errorCode, boolean revoked) {
-        connection.setStatus(revoked ? CalendarConnectionStatus.REVOKED : CalendarConnectionStatus.ERROR);
-        connection.setLastErrorCode(errorCode);
-        connection.setLastErrorAt(Instant.now());
-        saveStatusWithRetry(connection);
+        accessTokenCache.remove(connection.getId());
+        connectionWriteService.markFailure(connection.getId(),
+                revoked ? CalendarConnectionStatus.REVOKED : CalendarConnectionStatus.ERROR,
+                errorCode,
+                Instant.now(),
+                "token_refresh_mark_failed");
     }
 
-    private String saveRefreshedTokenWithRetry(CalendarConnection connection,
-                                               String refreshedAccessToken,
-                                               Instant refreshedExpiresAt) {
-        try {
-            connectionRepository.saveAndFlush(connection);
-            return refreshedAccessToken;
-        } catch (OptimisticLockingFailureException conflict) {
-            CalendarConnection latest = connectionRepository.findById(connection.getId())
-                    .orElseThrow(() -> conflict);
-            if (latest.getLastTokenExpiresAt() != null && latest.getLastTokenExpiresAt().isAfter(refreshedExpiresAt)) {
-                return refreshedAccessToken;
-            }
-            latest.setLastTokenExpiresAt(refreshedExpiresAt);
-            latest.setStatus(CalendarConnectionStatus.ACTIVE);
-            latest.setLastErrorCode(null);
-            latest.setLastErrorAt(null);
-            connectionRepository.saveAndFlush(latest);
-            return refreshedAccessToken;
-        }
-    }
-
-    private void saveStatusWithRetry(CalendarConnection connection) {
-        try {
-            connectionRepository.saveAndFlush(connection);
-        } catch (OptimisticLockingFailureException conflict) {
-            CalendarConnection latest = connectionRepository.findById(connection.getId())
-                    .orElseThrow(() -> conflict);
-            latest.setStatus(connection.getStatus());
-            latest.setLastErrorCode(connection.getLastErrorCode());
-            latest.setLastErrorAt(connection.getLastErrorAt());
-            connectionRepository.saveAndFlush(latest);
-        }
+    private String saveRefreshedToken(UUID connectionId,
+                                      String refreshedAccessToken,
+                                      Instant refreshedExpiresAt,
+                                      Instant lastSyncedAt) {
+        connectionWriteService.markActive(
+                connectionId,
+                refreshedExpiresAt,
+                lastSyncedAt,
+                "token_refresh_success");
+        return refreshedAccessToken;
     }
 
     private static String resolveErrorCode(RuntimeException ex) {
@@ -155,4 +149,6 @@ public class TokenRefresher {
         String message = ex.getMessage();
         return message != null && message.toLowerCase(Locale.ROOT).contains("invalid_grant");
     }
+
+    private record CachedAccessToken(String accessToken, Instant expiresAt) {}
 }

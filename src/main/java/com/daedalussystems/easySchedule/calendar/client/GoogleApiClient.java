@@ -6,9 +6,9 @@ import java.time.Instant;
 import java.util.List;
 
 public interface GoogleApiClient {
-    String createEvent(String accessToken, CreateEventRequest request);
+    GoogleEventDetails createEvent(String accessToken, CreateEventRequest request);
 
-    String updateEvent(String accessToken, UpdateEventRequest request);
+    GoogleEventDetails updateEvent(String accessToken, UpdateEventRequest request);
 
     void deleteEvent(String accessToken, String externalEventId);
 
@@ -19,6 +19,8 @@ public interface GoogleApiClient {
     String fetchProviderUserId(String accessToken);
 
     List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end);
+
+    record GoogleEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {}
 
     record BusyInterval(Instant start, Instant end) {}
 }

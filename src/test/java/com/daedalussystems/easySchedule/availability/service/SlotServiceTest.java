@@ -36,6 +36,8 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
+import com.daedalussystems.easySchedule.common.time.TimezoneService;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -66,6 +68,7 @@ class SlotServiceTest {
     @Mock private CalendarBusyTimeService calendarBusyTimeService;
 
     private SlotService slotService;
+    private TimeConversionService timeConversionService;
 
     private final UUID userId = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private final UUID eventTypeId = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -78,6 +81,7 @@ class SlotServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        timeConversionService = new TimeConversionService(new TimezoneService());
         slotService = new SlotService(
                 userRepository,
                 eventTypeRepository,
@@ -87,7 +91,8 @@ class SlotServiceTest {
                 dbClockRepository,
                 slotCacheService,
                 slotCacheVersionService,
-                calendarBusyTimeService);
+                calendarBusyTimeService,
+                timeConversionService);
 
         host = User.builder()
                 .id(userId)

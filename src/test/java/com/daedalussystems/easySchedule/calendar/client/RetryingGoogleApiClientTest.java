@@ -24,24 +24,28 @@ class RetryingGoogleApiClientTest {
     @Test
     void retriesOn429ThenSucceeds() {
         RetryingGoogleApiClient client = new RetryingGoogleApiClient(delegate);
-        CreateEventRequest req = new CreateEventRequest(UUID.randomUUID(), "t", "d", Instant.now(), Instant.now(), "id1");
+        CreateEventRequest req = new CreateEventRequest(
+                UUID.randomUUID(), "t", "d", Instant.now(), Instant.now(),
+                "host@example.com", "guest@example.com", "Guest", "id1");
 
         AtomicInteger calls = new AtomicInteger();
         when(delegate.createEvent("tok", req)).thenAnswer(inv -> {
             if (calls.incrementAndGet() < 3) {
                 throw new CalendarClientException(429, "rate limited");
             }
-            return "evt-1";
+            return new GoogleApiClient.GoogleEventDetails("evt-1", null, null);
         });
 
-        assertEquals("evt-1", client.createEvent("tok", req));
+        assertEquals("evt-1", client.createEvent("tok", req).externalEventId());
         verify(delegate, times(3)).createEvent("tok", req);
     }
 
     @Test
     void doesNotRetryNonRetryable4xx() {
         RetryingGoogleApiClient client = new RetryingGoogleApiClient(delegate);
-        CreateEventRequest req = new CreateEventRequest(UUID.randomUUID(), "t", "d", Instant.now(), Instant.now(), "id1");
+        CreateEventRequest req = new CreateEventRequest(
+                UUID.randomUUID(), "t", "d", Instant.now(), Instant.now(),
+                "host@example.com", "guest@example.com", "Guest", "id1");
 
         when(delegate.createEvent("tok", req)).thenThrow(new CalendarClientException(400, "bad request"));
 

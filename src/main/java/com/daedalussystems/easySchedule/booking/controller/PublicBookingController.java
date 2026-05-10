@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
 import com.daedalussystems.easySchedule.booking.dto.PublicEventInfoResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyOutcome;
+import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyRoutes;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyService;
 import com.daedalussystems.easySchedule.booking.idempotency.ResponseEnvelope;
 import com.daedalussystems.easySchedule.booking.service.PublicBookingService;
@@ -68,12 +69,14 @@ public class PublicBookingController {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
-        String route = "POST /public/" + username + "/" + eventTypeSlug + "/book";
-        String requestHash = RequestHasher.hash(Map.of(
-                "username", username,
-                "eventTypeSlug", eventTypeSlug,
-                "startTime", request.startTime()
-        ), objectMapper);
+        String route = IdempotencyRoutes.PUBLIC_BOOK_HOLD;
+        Map<String, Object> hashPayload = new java.util.LinkedHashMap<>();
+        hashPayload.put("username", username);
+        hashPayload.put("eventTypeSlug", eventTypeSlug);
+        hashPayload.put("startTime", request.startTime());
+        hashPayload.put("guestEmail", normalizeGuestEmail(request.guestEmail()));
+        hashPayload.put("guestName", normalizeGuestName(request.guestName()));
+        String requestHash = RequestHasher.hash(hashPayload, objectMapper);
 
         IdempotencyOutcome outcome = idempotencyService.execute(
                 idempotencyKey,
@@ -102,7 +105,7 @@ public class PublicBookingController {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
-        String route = "POST /public/" + username + "/" + eventTypeSlug + "/book/" + bookingId + "/cancel";
+        String route = IdempotencyRoutes.PUBLIC_BOOK_CANCEL;
         String requestHash = RequestHasher.hash(Map.of(
                 "username", username,
                 "eventTypeSlug", eventTypeSlug,
@@ -131,7 +134,7 @@ public class PublicBookingController {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
-        String route = "POST /public/" + username + "/" + eventTypeSlug + "/book/" + bookingId + "/reschedule";
+        String route = IdempotencyRoutes.PUBLIC_BOOK_RESCHEDULE;
         String requestHash = RequestHasher.hash(Map.of(
                 "username", username,
                 "eventTypeSlug", eventTypeSlug,
@@ -152,5 +155,17 @@ public class PublicBookingController {
 
     private static java.util.UUID routeScopeUser(String username, String eventTypeSlug) {
         return java.util.UUID.nameUUIDFromBytes((username + ":" + eventTypeSlug).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static String normalizeGuestEmail(String value) {
+        if (value == null) return null;
+        String v = value.trim().toLowerCase();
+        return v.isBlank() ? null : v;
+    }
+
+    private static String normalizeGuestName(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        return v.isBlank() ? null : v;
     }
 }

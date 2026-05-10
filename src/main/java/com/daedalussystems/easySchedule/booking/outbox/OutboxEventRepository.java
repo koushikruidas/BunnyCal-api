@@ -81,7 +81,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
             SELECT id FROM outbox_events
             WHERE status = 'PENDING'
               AND aggregate_type = 'Booking'
-              AND event_type IN ('BOOKING_CREATED', 'BOOKING_UPDATED', 'BOOKING_CANCELLED')
+              AND event_type IN ('BOOKING_CONFIRMED', 'BOOKING_UPDATED', 'BOOKING_CANCELLED')
             ORDER BY created_at
             LIMIT :batchSize
             FOR UPDATE SKIP LOCKED

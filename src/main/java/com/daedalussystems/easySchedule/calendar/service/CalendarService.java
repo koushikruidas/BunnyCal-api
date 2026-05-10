@@ -41,17 +41,25 @@ public interface CalendarService {
 
     record CreateEventResult(CreateEventStatus status,
                              String externalEventId,
+                             String providerEventUrl,
+                             String conferenceUrl,
                              String errorCode) {
         public static CreateEventResult success(String externalEventId) {
-            return new CreateEventResult(CreateEventStatus.SUCCESS, externalEventId, null);
+            return new CreateEventResult(CreateEventStatus.SUCCESS, externalEventId, null, null, null);
+        }
+
+        public static CreateEventResult success(String externalEventId,
+                                                String providerEventUrl,
+                                                String conferenceUrl) {
+            return new CreateEventResult(CreateEventStatus.SUCCESS, externalEventId, providerEventUrl, conferenceUrl, null);
         }
 
         public static CreateEventResult retryable(String errorCode) {
-            return new CreateEventResult(CreateEventStatus.RETRYABLE_FAILURE, null, errorCode);
+            return new CreateEventResult(CreateEventStatus.RETRYABLE_FAILURE, null, null, null, errorCode);
         }
 
         public static CreateEventResult permanent(String errorCode) {
-            return new CreateEventResult(CreateEventStatus.PERMANENT_FAILURE, null, errorCode);
+            return new CreateEventResult(CreateEventStatus.PERMANENT_FAILURE, null, null, null, errorCode);
         }
     }
 

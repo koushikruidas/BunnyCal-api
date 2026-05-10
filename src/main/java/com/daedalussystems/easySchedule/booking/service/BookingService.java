@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.booking.contract.BookingStateTransitions
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.domain.BookingRules;
 import com.daedalussystems.easySchedule.booking.domain.events.BookingCancelledEvent;
+import com.daedalussystems.easySchedule.booking.domain.events.BookingConfirmedEvent;
 import com.daedalussystems.easySchedule.booking.domain.events.BookingCreatedEvent;
 import com.daedalussystems.easySchedule.booking.domain.events.BookingUpdatedEvent;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPayloadEnvelope;
@@ -114,7 +115,9 @@ public class BookingService {
             UUID hostId,
             UUID eventTypeId,
             Instant requestedStart,
-            Instant requestedEnd) {
+            Instant requestedEnd,
+            String guestEmail,
+            String guestName) {
 
         // ─────────────────────────────────────────────────────────
         // 1. Input validation
@@ -156,6 +159,8 @@ public class BookingService {
                     .eventTypeId(eventTypeId)
                     .startTime(requestedStart)
                     .endTime(requestedEnd)
+                    .guestEmail(guestEmail)
+                    .guestName(guestName)
                     .build());
 
             // outboxPublisher.publish() invokes timeSource.now() which executes
@@ -181,21 +186,41 @@ public class BookingService {
     }
 
     @Transactional
+    public Booking createBooking(
+            UUID hostId,
+            UUID eventTypeId,
+            Instant requestedStart,
+            Instant requestedEnd) {
+        return createBooking(hostId, eventTypeId, requestedStart, requestedEnd, null, null);
+    }
+
+    @Transactional
     public Booking createHeldBooking(UUID hostId,
                                      UUID eventTypeId,
                                      Instant requestedStart,
                                      Instant requestedEnd,
-                                     Duration holdDuration) {
+                                     Duration holdDuration,
+                                     String guestEmail,
+                                     String guestName) {
         if (holdDuration == null || holdDuration.isZero() || holdDuration.isNegative()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "holdDuration must be positive.");
         }
-        Booking booking = createBooking(hostId, eventTypeId, requestedStart, requestedEnd);
+        Booking booking = createBooking(hostId, eventTypeId, requestedStart, requestedEnd, guestEmail, guestName);
         Instant expiresAt = timeSource.now().plus(holdDuration);
         int updated = bookingRepository.setPendingExpiry(booking.getId(), expiresAt);
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
         return booking;
+    }
+
+    @Transactional
+    public Booking createHeldBooking(UUID hostId,
+                                     UUID eventTypeId,
+                                     Instant requestedStart,
+                                     Instant requestedEnd,
+                                     Duration holdDuration) {
+        return createHeldBooking(hostId, eventTypeId, requestedStart, requestedEnd, holdDuration, null, null);
     }
 
     @Transactional
@@ -233,6 +258,12 @@ public class BookingService {
     @Transactional
     public void confirmBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.CONFIRMED);
+        bookingRepository.findAnyById(id).ifPresent(booking ->
+                outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+                        UUID.randomUUID().toString(),
+                        "BOOKING_CONFIRMED",
+                        1,
+                        new BookingConfirmedEvent(id, booking.getHostId()))));
     }
 
     @Transactional

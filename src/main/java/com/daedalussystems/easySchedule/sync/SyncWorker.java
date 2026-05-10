@@ -127,9 +127,10 @@ public class SyncWorker {
         }
 
         String externalEventId;
+        CalendarService.CreateEventResult createResult;
         Instant providerCallStartedAt = Instant.now();
         try {
-            CalendarService.CreateEventResult createResult = calendarService.createEvent(
+            createResult = calendarService.createEvent(
                     new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey(bookingId, provider)));
             long latencyMs = Duration.between(providerCallStartedAt, Instant.now()).toMillis();
             if (createResult.status() == CalendarService.CreateEventStatus.PERMANENT_FAILURE) {
@@ -198,7 +199,7 @@ public class SyncWorker {
         }
 
         FinalizeOutcome finalizeOutcome = mappingRepository.updateMappingWithEventId(
-                bookingId, provider, externalEventId, token, workerId);
+                bookingId, provider, externalEventId, createResult.providerEventUrl(), createResult.conferenceUrl(), token, workerId);
         countFinalize(finalizeOutcome, provider);
         log.debug("calendar sync finalize bookingId={} provider={} token={} workerId={} outcome={}",
                 bookingId, provider, token, workerId, finalizeOutcome);

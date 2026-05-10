@@ -27,6 +27,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class IdempotencyService {
 
     private static final Logger log = LoggerFactory.getLogger(IdempotencyService.class);
+    private static final int REQUEST_HASH_LENGTH = 64;
+    private static final int ROUTE_MAX_LENGTH = 64;
 
     static {
         if (BookingContracts.IDEMPOTENCY_POLL_TOTAL.compareTo(BookingContracts.IDEMPOTENCY_PROCESSING_TIMEOUT) >= 0) {
@@ -46,6 +48,7 @@ public class IdempotencyService {
             String route,
             String requestHash,
             Supplier<ResponseEnvelope<T>> work) {
+        validateInputs(route, requestHash);
         Instant start = timeSource.now();
         if (phase1Insert(key, userId, route, requestHash)) {
             return phase2RunAndFinalize(key, userId, route, work);
@@ -230,5 +233,28 @@ public class IdempotencyService {
 
     private Counter finalizeRaceCounter() {
         return Counter.builder("idempotency_finalize_race_total").register(meterRegistry);
+    }
+
+    private static void validateInputs(String route, String requestHash) {
+        int routeLength = route == null ? -1 : route.length();
+        int hashLength = requestHash == null ? -1 : requestHash.length();
+        String hashPrefix = requestHash == null ? "" : requestHash.substring(0, Math.min(12, requestHash.length()));
+        String routePrefix = route == null ? "" : route.substring(0, Math.min(48, route.length()));
+
+        if (route == null || routeLength > ROUTE_MAX_LENGTH) {
+            log.error("idempotency_route_invalid routeLength={} routePrefix={}", routeLength, routePrefix);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Idempotency route key exceeds supported length.");
+        }
+        if (requestHash == null
+                || hashLength != REQUEST_HASH_LENGTH
+                || !requestHash.matches("^[0-9a-f]{64}$")) {
+            log.error("idempotency_request_hash_invalid algorithm=sha256-hex hashLength={} hashPrefix={}",
+                    hashLength, hashPrefix);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Idempotency request hash must be a 64-character SHA-256 hex string.");
+        }
+        log.debug("idempotency_request_fingerprint algorithm=sha256-hex routeLength={} hashLength={} hashPrefix={}",
+                routeLength, hashLength, hashPrefix);
     }
 }

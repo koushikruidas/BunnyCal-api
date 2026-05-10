@@ -2,7 +2,6 @@ package com.daedalussystems.easySchedule.calendar.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -38,9 +37,9 @@ class CalendarIntegrationControllerTest {
     void connectReturnsRedirectUrl() {
         UUID userId = UUID.randomUUID();
         Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
-        when(oauthService.buildGoogleConnectUrl(userId)).thenReturn("https://accounts.google.com/...");
+        when(oauthService.buildGoogleConnectUrl(userId, null, null, null)).thenReturn("https://accounts.google.com/...");
 
-        ApiResponse<Map<String, String>> body = controller.connectGoogle(auth).getBody();
+        ApiResponse<Map<String, String>> body = controller.connectGoogle(auth, null, null, null).getBody();
 
         assertEquals(true, body.isSuccess());
         assertEquals("https://accounts.google.com/...", body.getData().get("redirectUrl"));
@@ -48,6 +47,8 @@ class CalendarIntegrationControllerTest {
 
     @Test
     void callbackSuccessRedirects() {
+        when(oauthService.handleGoogleCallback("code", "state"))
+                .thenReturn(new CalendarOAuthService.OAuthCallbackResult("dashboard", null, null));
         var response = controller.callbackGoogle("code", "state");
         assertEquals(302, response.getStatusCode().value());
         assertNotNull(response.getHeaders().getLocation());
@@ -78,7 +79,7 @@ class CalendarIntegrationControllerTest {
 
     @Test
     void callbackFailureRedirectsWithErrorCode() {
-        doThrow(new IllegalArgumentException("bad")).when(oauthService).handleGoogleCallback("code", "state");
+        when(oauthService.handleGoogleCallback("code", "state")).thenThrow(new IllegalArgumentException("bad"));
         var response = controller.callbackGoogle("code", "state");
         assertEquals(302, response.getStatusCode().value());
         assertEquals("http://localhost:3000/error?code=OAUTH_INVALID_RESPONSE",

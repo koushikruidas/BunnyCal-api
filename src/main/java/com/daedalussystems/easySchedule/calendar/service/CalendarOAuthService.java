@@ -1,6 +1,8 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
+import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStatePayload;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.OAuthTokenExchangeResult;
@@ -29,21 +31,38 @@ public class CalendarOAuthService {
     private final GoogleOAuthProperties properties;
     private final OAuthStateService stateService;
     private final TokenCipher tokenCipher;
+    private final CalendarEventIngestionService ingestionService;
+    private final ExternalCalendarSyncClient syncClient;
+    private final SlotCacheVersionService slotCacheVersionService;
+    private final CalendarConnectionWriteService connectionWriteService;
 
     public CalendarOAuthService(CalendarConnectionRepository repository,
                                 GoogleApiClient googleApiClient,
                                 GoogleOAuthProperties properties,
                                 OAuthStateService stateService,
-                                TokenCipher tokenCipher) {
+                                TokenCipher tokenCipher,
+                                CalendarEventIngestionService ingestionService,
+                                ExternalCalendarSyncClient syncClient,
+                                SlotCacheVersionService slotCacheVersionService,
+                                CalendarConnectionWriteService connectionWriteService) {
         this.repository = repository;
         this.googleApiClient = googleApiClient;
         this.properties = properties;
         this.stateService = stateService;
         this.tokenCipher = tokenCipher;
+        this.ingestionService = ingestionService;
+        this.syncClient = syncClient;
+        this.slotCacheVersionService = slotCacheVersionService;
+        this.connectionWriteService = connectionWriteService;
     }
 
     public String buildGoogleConnectUrl(UUID userId) {
-        String state = stateService.generate(userId);
+        return buildGoogleConnectUrl(userId, OAuthStateService.SOURCE_DASHBOARD, null, null);
+    }
+
+    public String buildGoogleConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
+        String effectiveSource = (source == null || source.isBlank()) ? OAuthStateService.SOURCE_DASHBOARD : source;
+        String state = stateService.generate(userId, effectiveSource, returnTo, bookingSessionId);
         String clientId = properties.getClientId();
         log.info("DEBUG Google clientId='{}'", clientId);
         Assert.hasText(clientId, "Google clientId must not be empty");
@@ -59,8 +78,9 @@ public class CalendarOAuthService {
     }
 
     @Transactional
-    public void handleGoogleCallback(String code, String state) {
-        UUID userId = stateService.validateAndExtractUserId(state);
+    public OAuthCallbackResult handleGoogleCallback(String code, String state) {
+        OAuthStatePayload payload = stateService.validateAndExtract(state);
+        UUID userId = payload.userId();
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
         OAuthTokenExchangeResult token = googleApiClient.exchangeCodeForToken(
                 code,
@@ -76,12 +96,13 @@ public class CalendarOAuthService {
             throw new IllegalArgumentException("Provider user id missing");
         }
 
-        CalendarConnection connection = existing.orElseGet(CalendarConnection::new);
+        CalendarConnection base = existing.orElse(null);
+        CalendarConnection connection = base == null ? new CalendarConnection() : copyForUpdate(base);
         String refreshTokenCiphertext;
         if (token.refreshToken() != null && !token.refreshToken().isBlank()) {
             refreshTokenCiphertext = tokenCipher.encrypt(token.refreshToken());
-        } else if (connection.getRefreshTokenCiphertext() != null && !connection.getRefreshTokenCiphertext().isBlank()) {
-            refreshTokenCiphertext = connection.getRefreshTokenCiphertext();
+        } else if (base != null && base.getRefreshTokenCiphertext() != null && !base.getRefreshTokenCiphertext().isBlank()) {
+            refreshTokenCiphertext = base.getRefreshTokenCiphertext();
         } else {
             throw new IllegalArgumentException("Refresh token missing from provider response");
         }
@@ -92,11 +113,24 @@ public class CalendarOAuthService {
         connection.setRefreshTokenCiphertext(refreshTokenCiphertext);
         connection.setLastTokenExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
         connection.setScopes(properties.getScopes());
-        connection.setStatus(CalendarConnectionStatus.ACTIVE);
+        connection.setStatus(CalendarConnectionStatus.SYNCING);
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
-        repository.save(connection);
+        CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
+
+        try {
+            ingestionService.upsertEvents(saved.getId(), syncClient.fetchFull(saved));
+            saved.setStatus(CalendarConnectionStatus.ACTIVE);
+            slotCacheVersionService.bumpVersion(userId);
+        } catch (RuntimeException ex) {
+            saved.setStatus(CalendarConnectionStatus.FAILED);
+            saved.setLastErrorCode("INITIAL_SYNC_FAILED");
+            saved.setLastErrorAt(Instant.now());
+            log.warn("initial calendar sync failed for userId={} connectionId={}", userId, saved.getId(), ex);
+        }
+        connectionWriteService.saveSnapshot(saved, "oauth_callback_final");
         log.info("{{\"event\":\"calendar_connected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
+        return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
     @Transactional(readOnly = true)
@@ -113,8 +147,11 @@ public class CalendarOAuthService {
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
         if (existing.isPresent()) {
             CalendarConnection connection = existing.get();
-            connection.setStatus(CalendarConnectionStatus.REVOKED);
-            repository.save(connection);
+            connectionWriteService.markFailure(connection.getId(),
+                    CalendarConnectionStatus.REVOKED,
+                    connection.getLastErrorCode(),
+                    connection.getLastErrorAt(),
+                    "oauth_disconnect");
             log.info("{{\"event\":\"calendar_disconnected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
         }
     }
@@ -122,4 +159,28 @@ public class CalendarOAuthService {
     private static String enc(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
+
+    private static CalendarConnection copyForUpdate(CalendarConnection existing) {
+        CalendarConnection copy = new CalendarConnection();
+        try {
+            java.lang.reflect.Field idField = CalendarConnection.class.getDeclaredField("id");
+            idField.setAccessible(true);
+            idField.set(copy, existing.getId());
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("Unable to copy calendar connection id", ex);
+        }
+        copy.setUserId(existing.getUserId());
+        copy.setProvider(existing.getProvider());
+        copy.setProviderUserId(existing.getProviderUserId());
+        copy.setRefreshTokenCiphertext(existing.getRefreshTokenCiphertext());
+        copy.setLastTokenExpiresAt(existing.getLastTokenExpiresAt());
+        copy.setScopes(existing.getScopes());
+        copy.setStatus(existing.getStatus());
+        copy.setLastErrorCode(existing.getLastErrorCode());
+        copy.setLastErrorAt(existing.getLastErrorAt());
+        copy.setLastSyncedAt(existing.getLastSyncedAt());
+        return copy;
+    }
+
+    public record OAuthCallbackResult(String source, String returnTo, String bookingSessionId) {}
 }

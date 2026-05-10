@@ -8,5 +8,8 @@ public record UpdateEventRequest(UUID connectionId,
                                  String title,
                                  String description,
                                  Instant startsAt,
-                                 Instant endsAt) {
+                                 Instant endsAt,
+                                 String organizerEmail,
+                                 String attendeeEmail,
+                                 String attendeeName) {
 }

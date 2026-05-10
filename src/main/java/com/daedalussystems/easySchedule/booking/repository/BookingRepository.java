@@ -31,6 +31,22 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Long getVersion();
     }
 
+    interface MeetingRow {
+        UUID getBookingId();
+        UUID getEventTypeId();
+        String getEventTypeName();
+        Instant getStartTime();
+        Instant getEndTime();
+        String getBookingStatus();
+        String getGuestEmail();
+        String getGuestName();
+        String getProvider();
+        String getCalendarSyncStatus();
+        String getExternalEventId();
+        String getProviderEventUrl();
+        String getConferenceUrl();
+    }
+
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
     // Used by the phantom-pending-explosion guard in BookingService. Native query
     // required because Booking entity does not map the status column.
@@ -142,6 +158,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingStateRow> findStateById(@Param("id") UUID id);
 
     @Query(value = """
+            SELECT *
+            FROM bookings
+            WHERE id = :id
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<Booking> findAnyById(@Param("id") UUID id);
+
+    @Query(value = """
             SELECT id, version
             FROM bookings
             WHERE status = 'PENDING'
@@ -177,4 +201,59 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingStateRow> findStateByIdAndHostAndEventType(@Param("id") UUID id,
                                                                 @Param("hostId") UUID hostId,
                                                                 @Param("eventTypeId") UUID eventTypeId);
+
+    @Query(value = """
+            SELECT
+                b.id AS bookingId,
+                b.event_type_id AS eventTypeId,
+                et.name AS eventTypeName,
+                b.start_time AS startTime,
+                b.end_time AS endTime,
+                b.status AS bookingStatus,
+                b.guest_email AS guestEmail,
+                b.guest_name AS guestName,
+                cem.provider AS provider,
+                cem.status AS calendarSyncStatus,
+                cem.external_event_id AS externalEventId,
+                cem.provider_event_url AS providerEventUrl,
+                cem.conference_url AS conferenceUrl
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            LEFT JOIN calendar_event_mappings cem
+                ON cem.booking_id = b.id
+               AND cem.provider = 'google'
+            WHERE b.host_id = :hostId
+            ORDER BY b.start_time DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<MeetingRow> findMeetingsForHost(@Param("hostId") UUID hostId, @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT
+                b.id AS bookingId,
+                b.event_type_id AS eventTypeId,
+                et.name AS eventTypeName,
+                b.start_time AS startTime,
+                b.end_time AS endTime,
+                b.status AS bookingStatus,
+                b.guest_email AS guestEmail,
+                b.guest_name AS guestName,
+                cem.provider AS provider,
+                cem.status AS calendarSyncStatus,
+                cem.external_event_id AS externalEventId,
+                cem.provider_event_url AS providerEventUrl,
+                cem.conference_url AS conferenceUrl
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            LEFT JOIN calendar_event_mappings cem
+                ON cem.booking_id = b.id
+               AND cem.provider = 'google'
+            WHERE b.host_id = :hostId
+              AND b.end_time >= :now
+            ORDER BY b.start_time ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<MeetingRow> findUpcomingMeetingsForHost(@Param("hostId") UUID hostId,
+                                                 @Param("now") Instant now,
+                                                 @Param("limit") int limit);
 }

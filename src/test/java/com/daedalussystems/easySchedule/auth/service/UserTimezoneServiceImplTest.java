@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimezoneService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -15,7 +16,7 @@ class UserTimezoneServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        userTimezoneServiceImpl = new UserTimezoneServiceImpl();
+        userTimezoneServiceImpl = new UserTimezoneServiceImpl(new TimezoneService());
     }
 
     @Test

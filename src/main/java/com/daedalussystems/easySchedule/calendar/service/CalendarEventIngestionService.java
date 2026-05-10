@@ -19,13 +19,16 @@ public class CalendarEventIngestionService {
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
     private final SlotCacheVersionService slotCacheVersionService;
+    private final CalendarConnectionWriteService connectionWriteService;
 
     public CalendarEventIngestionService(CalendarConnectionRepository connectionRepository,
                                          CalendarEventRepository eventRepository,
-                                         SlotCacheVersionService slotCacheVersionService) {
+                                         SlotCacheVersionService slotCacheVersionService,
+                                         CalendarConnectionWriteService connectionWriteService) {
         this.connectionRepository = connectionRepository;
         this.eventRepository = eventRepository;
         this.slotCacheVersionService = slotCacheVersionService;
+        this.connectionWriteService = connectionWriteService;
     }
 
     @Transactional
@@ -57,8 +60,7 @@ public class CalendarEventIngestionService {
             slotCacheVersionService.incrementVersion(connection.getUserId());
         }
 
-        connection.setLastSyncedAt(Instant.now());
-        connectionRepository.save(connection);
+        connectionWriteService.updateLastSyncedAt(connection.getId(), Instant.now(), "event_ingestion_upsert");
     }
 
     public record IncomingCalendarEvent(String externalEventId,

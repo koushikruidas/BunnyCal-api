@@ -7,6 +7,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
@@ -30,6 +31,8 @@ class BookingSyncWorkerTest {
     @Mock
     private CalendarSyncJobRepository repository;
     @Mock
+    private BookingRepository bookingRepository;
+    @Mock
     private CalendarService calendarService;
     @Mock
     private SyncRetryPolicy retryPolicy;
@@ -42,8 +45,15 @@ class BookingSyncWorkerTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         worker = new BookingSyncWorker(
-                repository, calendarService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
+                repository, bookingRepository, calendarService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
+        when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+            public UUID getId() { return UUID.randomUUID(); }
+            public UUID getHostId() { return UUID.randomUUID(); }
+            public String getStatus() { return "CONFIRMED"; }
+            public Long getVersion() { return 1L; }
+            public Instant getExpiresAt() { return null; }
+        }));
     }
 
     @Test
@@ -102,6 +112,26 @@ class BookingSyncWorkerTest {
 
         verify(repository).markSynced(id, 11L, "ext-existing");
         verify(calendarService, never()).createEvent(any());
+    }
+
+    @Test
+    void createSkippedWhenBookingNotConfirmed() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 13L, null);
+        when(repository.claimPendingBatch(any(), eq(2))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+            public UUID getId() { return UUID.randomUUID(); }
+            public UUID getHostId() { return UUID.randomUUID(); }
+            public String getStatus() { return "PENDING"; }
+            public Long getVersion() { return 1L; }
+            public Instant getExpiresAt() { return Instant.now().plusSeconds(10); }
+        }));
+
+        worker.processPending(2);
+
+        verify(calendarService, never()).createEvent(any());
+        verify(repository).markSynced(id, 13L, null);
     }
 
     private static CalendarSyncJob pendingCreateJob(UUID id, long version, String externalEventId) {

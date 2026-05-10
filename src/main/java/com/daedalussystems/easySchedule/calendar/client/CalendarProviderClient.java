@@ -3,7 +3,7 @@ package com.daedalussystems.easySchedule.calendar.client;
 import java.util.UUID;
 
 public interface CalendarProviderClient {
-    String createEvent(UUID internalId, String provider, String idempotencyKey);
+    CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey);
 
     String updateEvent(UUID internalId, String provider, String externalEventId, String idempotencyKey);
 
@@ -12,4 +12,8 @@ public interface CalendarProviderClient {
     boolean eventExists(UUID internalId, String provider, String externalEventId);
 
     boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey);
+
+    record CreateEventDetails(String externalEventId,
+                              String providerEventUrl,
+                              String conferenceUrl) {}
 }

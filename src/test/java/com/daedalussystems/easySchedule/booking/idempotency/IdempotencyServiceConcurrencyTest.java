@@ -1,12 +1,17 @@
 package com.daedalussystems.easySchedule.booking.idempotency;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.daedalussystems.easySchedule.common.enums.ErrorCode;
+import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.time.TimeSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -44,6 +49,45 @@ class IdempotencyServiceConcurrencyTest {
     private static final String REQUEST_HASH = "a".repeat(64);
     private static final String REPLAY_BODY = "{\"id\":\"booking-1\"}";
     private static final int REPLAY_STATUS = 201;
+
+    @Test
+    void execute_rejectsOverlongRouteBeforeInsert() {
+        IdempotencyKeyRepository repository = mock(IdempotencyKeyRepository.class);
+        PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        IdempotencyService service = new IdempotencyService(
+                repository,
+                new ObjectMapper(),
+                Instant::now,
+                new SimpleMeterRegistry(),
+                txManager);
+
+        String overlongRoute = "POST /public/" + "x".repeat(80);
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.execute("k", UUID.randomUUID(), overlongRoute, REQUEST_HASH,
+                        () -> new ResponseEnvelope<>(201, "ok")));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
+        verify(repository, never()).tryInsert(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void execute_rejectsInvalidHashBeforeInsert() {
+        IdempotencyKeyRepository repository = mock(IdempotencyKeyRepository.class);
+        PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        IdempotencyService service = new IdempotencyService(
+                repository,
+                new ObjectMapper(),
+                Instant::now,
+                new SimpleMeterRegistry(),
+                txManager);
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.execute("k", UUID.randomUUID(), ROUTE, "not-a-sha256",
+                        () -> new ResponseEnvelope<>(201, "ok")));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
+        verify(repository, never()).tryInsert(any(), any(), any(), any(), any(), any());
+    }
 
     @Test
     void concurrentExecute_sameKey_workRunsOnceAndAllGetSameReplay() throws Exception {

@@ -27,6 +27,7 @@ import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -47,6 +48,7 @@ public class SlotService {
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarBusyTimeService calendarBusyTimeService;
+    private final TimeConversionService timeConversionService;
 
     public SlotService(
             UserRepository userRepository,
@@ -57,7 +59,8 @@ public class SlotService {
             DbClockRepository dbClockRepository,
             SlotCacheService slotCacheService,
             SlotCacheVersionService slotCacheVersionService,
-            CalendarBusyTimeService calendarBusyTimeService) {
+            CalendarBusyTimeService calendarBusyTimeService,
+            TimeConversionService timeConversionService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -67,6 +70,7 @@ public class SlotService {
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.calendarBusyTimeService = calendarBusyTimeService;
+        this.timeConversionService = timeConversionService;
     }
 
     public SlotResponse getSlots(SlotRequest request) {
@@ -123,12 +127,7 @@ public class SlotService {
         Instant now = dbClockRepository.now();
 
         // 6.2 Resolve host timezone.
-        ZoneId zoneId;
-        try {
-            zoneId = ZoneId.of(host.getTimezone());
-        } catch (Exception ex) {
-            throw new CustomException(ErrorCode.INVALID_TIMEZONE);
-        }
+        ZoneId zoneId = timeConversionService.resolveZone(host.getTimezone());
 
         // 6.3 Load availability rules.
         List<AvailabilityRule> rules =
@@ -139,8 +138,8 @@ public class SlotService {
                 availabilityOverrideRepository.findByUserIdAndDate(host.getId(), date).orElse(null);
 
         // 6.5 Load bookings overlapping the day in UTC.
-        Instant dayStartUtc = date.atStartOfDay(zoneId).toInstant();
-        Instant dayEndUtc = date.atStartOfDay(zoneId).plusDays(1).toInstant();
+        Instant dayStartUtc = timeConversionService.dayStartUtc(date, host.getTimezone());
+        Instant dayEndUtc = timeConversionService.dayEndUtcExclusive(date, host.getTimezone());
         List<Booking> dayBookings = bookingRepository
                 .findActiveOverlappingBookings(host.getId(), dayEndUtc, dayStartUtc);
         List<BookingWindow> bookingWindows = new ArrayList<>(dayBookings.size());

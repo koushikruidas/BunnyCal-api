@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.sync.worker;
 
+import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
@@ -24,8 +25,10 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class BookingSyncWorker {
     private static final Logger log = LoggerFactory.getLogger(BookingSyncWorker.class);
+    private static final String BOOKING_CONFIRMED = "CONFIRMED";
 
     private final CalendarSyncJobRepository syncJobRepository;
+    private final BookingRepository bookingRepository;
     private final CalendarService calendarService;
     private final SyncRetryPolicy retryPolicy;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
@@ -37,11 +40,13 @@ public class BookingSyncWorker {
     private final ConcurrentMap<String, Timer> providerLatencyTimers = new ConcurrentHashMap<>();
 
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
+                             BookingRepository bookingRepository,
                              CalendarService calendarService,
                              SyncRetryPolicy retryPolicy,
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              MeterRegistry meterRegistry) {
         this.syncJobRepository = syncJobRepository;
+        this.bookingRepository = bookingRepository;
         this.calendarService = calendarService;
         this.retryPolicy = retryPolicy;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
@@ -97,6 +102,19 @@ public class BookingSyncWorker {
     private void processCreate(CalendarSyncJob job) {
         // Idempotency: if already mapped, no API call.
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
+            syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
+            return;
+        }
+        var state = bookingRepository.findStateById(job.getInternalRefId()).orElse(null);
+        if (state == null || !BOOKING_CONFIRMED.equals(state.getStatus())) {
+            log.warn("sync_job_skipped_non_confirmed syncJobId={} bookingId={} desiredAction={} bookingStatus={} externalEventId={}",
+                    job.getId(), job.getInternalRefId(), job.getDesiredAction(),
+                    state == null ? "MISSING" : state.getStatus(), job.getExternalEventId());
+            if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
+                log.error("orphan_external_event_detected bookingId={} syncJobId={} bookingStatus={} externalEventId={}",
+                        job.getInternalRefId(), job.getId(),
+                        state == null ? "MISSING" : state.getStatus(), job.getExternalEventId());
+            }
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
         }
