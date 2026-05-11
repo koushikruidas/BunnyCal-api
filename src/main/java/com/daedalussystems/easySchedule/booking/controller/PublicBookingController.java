@@ -13,8 +13,10 @@ import com.daedalussystems.easySchedule.booking.service.PublicBookingService;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
 import com.daedalussystems.easySchedule.common.util.RequestHasher;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Map;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -34,13 +36,16 @@ public class PublicBookingController {
     private final PublicBookingService publicBookingService;
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
+    private final TimeConversionService timeConversionService;
 
     public PublicBookingController(PublicBookingService publicBookingService,
                                    IdempotencyService idempotencyService,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   TimeConversionService timeConversionService) {
         this.publicBookingService = publicBookingService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
+        this.timeConversionService = timeConversionService;
     }
 
     @GetMapping("/{username}/{eventTypeSlug}/availability")
@@ -65,15 +70,22 @@ public class PublicBookingController {
     public ResponseEntity<?> hold(@PathVariable String username,
                                   @PathVariable String eventTypeSlug,
                                   @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                  @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
                                   @RequestBody PublicBookRequest request) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
+        Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
+        PublicBookRequest normalizedRequest = new PublicBookRequest(
+                normalizedStart,
+                request.guestEmail(),
+                request.guestName());
+
         String route = IdempotencyRoutes.PUBLIC_BOOK_HOLD;
         Map<String, Object> hashPayload = new java.util.LinkedHashMap<>();
         hashPayload.put("username", username);
         hashPayload.put("eventTypeSlug", eventTypeSlug);
-        hashPayload.put("startTime", request.startTime());
+        hashPayload.put("startTime", normalizedRequest.startTime());
         hashPayload.put("guestEmail", normalizeGuestEmail(request.guestEmail()));
         hashPayload.put("guestName", normalizeGuestName(request.guestName()));
         String requestHash = RequestHasher.hash(hashPayload, objectMapper);
@@ -83,7 +95,7 @@ public class PublicBookingController {
                 routeScopeUser(username, eventTypeSlug),
                 route,
                 requestHash,
-                () -> new ResponseEnvelope<>(201, publicBookingService.hold(username, eventTypeSlug, request))
+                () -> new ResponseEnvelope<>(201, publicBookingService.hold(username, eventTypeSlug, normalizedRequest))
         );
 
         return outcome.toResponseEntity(objectMapper);
@@ -127,6 +139,7 @@ public class PublicBookingController {
                                         @PathVariable String eventTypeSlug,
                                         @PathVariable String bookingId,
                                         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                        @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
                                         @RequestBody PublicRescheduleRequest request) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
@@ -134,12 +147,15 @@ public class PublicBookingController {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
+        Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
+        PublicRescheduleRequest normalizedRequest = new PublicRescheduleRequest(normalizedStart);
+
         String route = IdempotencyRoutes.PUBLIC_BOOK_RESCHEDULE;
         String requestHash = RequestHasher.hash(Map.of(
                 "username", username,
                 "eventTypeSlug", eventTypeSlug,
                 "bookingId", bookingId,
-                "startTime", request.startTime()
+                "startTime", normalizedRequest.startTime()
         ), objectMapper);
 
         IdempotencyOutcome outcome = idempotencyService.execute(
@@ -148,7 +164,7 @@ public class PublicBookingController {
                 route,
                 requestHash,
                 () -> new ResponseEnvelope<>(200, publicBookingService.reschedule(
-                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), request))
+                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), normalizedRequest))
         );
         return outcome.toResponseEntity(objectMapper);
     }

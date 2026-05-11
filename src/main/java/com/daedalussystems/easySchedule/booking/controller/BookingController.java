@@ -13,8 +13,10 @@ import com.daedalussystems.easySchedule.booking.service.MeetingQueryService;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
 import com.daedalussystems.easySchedule.common.util.RequestHasher;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +41,7 @@ public class BookingController {
     private final MeetingQueryService meetingQueryService;
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
+    private final TimeConversionService timeConversionService;
 
     @GetMapping("/hosts/{hostId}/meetings")
     public ResponseEntity<ApiResponse<List<MeetingSummaryResponse>>> listHostMeetings(
@@ -52,12 +55,18 @@ public class BookingController {
     @PostMapping
     public ResponseEntity<?> create(
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
             @RequestBody CreateBookingRequest request) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
 
-        String requestHash = RequestHasher.hash(request, objectMapper);
+        Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
+        Instant normalizedEnd = timeConversionService.normalizeClientInstant(request.endTime(), timezoneHeader);
+        CreateBookingRequest normalizedRequest =
+                new CreateBookingRequest(request.hostId(), request.eventTypeId(), normalizedStart, normalizedEnd);
+
+        String requestHash = RequestHasher.hash(normalizedRequest, objectMapper);
         // Known debt: idempotency scope is the auth principal, not the
         // host. The current API uses request.hostId() for both — treat
         // as a separate refactor (auth subject vs. booking target).
@@ -68,10 +77,10 @@ public class BookingController {
                 requestHash,
                 () -> {
                     Booking saved = bookingService.createBooking(
-                            request.hostId(),
-                            request.eventTypeId(),
-                            request.startTime(),
-                            request.endTime(),
+                            normalizedRequest.hostId(),
+                            normalizedRequest.eventTypeId(),
+                            normalizedRequest.startTime(),
+                            normalizedRequest.endTime(),
                             null,
                             null);
                     return new ResponseEnvelope<>(201, BookingResponse.from(saved));

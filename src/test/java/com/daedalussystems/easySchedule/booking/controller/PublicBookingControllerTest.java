@@ -9,6 +9,7 @@ import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyOutcome;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyService;
 import com.daedalussystems.easySchedule.booking.service.PublicBookingService;
+import com.daedalussystems.easySchedule.common.time.TimeConversionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.Map;
@@ -24,11 +25,14 @@ class PublicBookingControllerTest {
     private PublicBookingService publicBookingService;
     @Mock
     private IdempotencyService idempotencyService;
+    @Mock
+    private TimeConversionService timeConversionService;
 
     @Test
     void hold_requestHashIncludesNormalizedGuestFields() {
         PublicBookingController controller = new PublicBookingController(
-                publicBookingService, idempotencyService, new ObjectMapper().findAndRegisterModules());
+                publicBookingService, idempotencyService, new ObjectMapper().findAndRegisterModules(), timeConversionService);
+        when(timeConversionService.normalizeClientInstant(any(), any())).thenAnswer(inv -> inv.getArgument(0));
         when(idempotencyService.execute(anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(new IdempotencyOutcome.Fresh<>(201, Map.of("ok", true)));
 
@@ -37,7 +41,7 @@ class PublicBookingControllerTest {
                 "  Guest@Example.COM ",
                 "  Guest User  "
         );
-        controller.hold("host", "intro", "idem-1", request);
+        controller.hold("host", "intro", "idem-1", null, request);
 
         ArgumentCaptor<String> hashCaptor = ArgumentCaptor.forClass(String.class);
         org.mockito.Mockito.verify(idempotencyService).execute(
@@ -49,7 +53,7 @@ class PublicBookingControllerTest {
                 "guest@example.com",
                 "Guest User"
         );
-        controller.hold("host", "intro", "idem-2", normalizedEquivalent);
+        controller.hold("host", "intro", "idem-2", null, normalizedEquivalent);
         org.mockito.Mockito.verify(idempotencyService, org.mockito.Mockito.times(2)).execute(
                 anyString(), any(), anyString(), hashCaptor.capture(), any());
         String secondHash = hashCaptor.getAllValues().get(1);

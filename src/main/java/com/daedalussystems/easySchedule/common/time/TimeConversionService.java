@@ -2,8 +2,10 @@ package com.daedalussystems.easySchedule.common.time;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import org.springframework.stereotype.Service;
 
@@ -39,5 +41,13 @@ public class TimeConversionService {
         ZoneId zoneId = timezoneService.resolveZone(timezone);
         return date.plusDays(1).atStartOfDay(zoneId).toInstant();
     }
-}
 
+    public Instant normalizeClientInstant(Instant clientInstant, String timezoneHeader) {
+        if (clientInstant == null || timezoneHeader == null || timezoneHeader.isBlank()) {
+            return clientInstant;
+        }
+        ZoneId zoneId = timezoneService.resolveZone(timezoneHeader);
+        LocalDateTime localDateTime = LocalDateTime.ofInstant(clientInstant, ZoneOffset.UTC);
+        return localDateTime.atZone(zoneId).toInstant();
+    }
+}
