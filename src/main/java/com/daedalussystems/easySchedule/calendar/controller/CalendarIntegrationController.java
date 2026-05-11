@@ -5,6 +5,8 @@ import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -23,6 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class CalendarIntegrationController {
     private static final Logger log = LoggerFactory.getLogger(CalendarIntegrationController.class);
     private static final String GOOGLE_PROVIDER = "google";
+    private static final String DASHBOARD_FALLBACK_RETURN_TO = "/dashboard/integrations";
+    private static final String PUBLIC_FALLBACK_RETURN_TO = "/";
     private final CalendarOAuthService oauthService;
     private final GoogleOAuthProperties googleOAuthProperties;
 
@@ -122,12 +126,34 @@ public class CalendarIntegrationController {
     }
 
     private URI resolveSuccessRedirect(CalendarOAuthService.OAuthCallbackResult result) {
-        if (result != null && "public-booking".equals(result.source()) && result.returnTo() != null && !result.returnTo().isBlank()) {
-            URI success = URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
-            String origin = success.getScheme() + "://" + success.getAuthority();
-            return URI.create(origin + result.returnTo());
+        URI success = URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
+        String origin = success.getScheme() + "://" + success.getAuthority();
+
+        String returnTo = resolveReturnTo(result);
+        String target = appendQueryParam(returnTo, "integrationSuccess", GOOGLE_PROVIDER);
+        return URI.create(origin + target);
+    }
+
+    private static String resolveReturnTo(CalendarOAuthService.OAuthCallbackResult result) {
+        if (result != null && result.returnTo() != null && !result.returnTo().isBlank()) {
+            return result.returnTo();
         }
-        return URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
+        if (result != null && "public-booking".equals(result.source())) {
+            return PUBLIC_FALLBACK_RETURN_TO;
+        }
+        return DASHBOARD_FALLBACK_RETURN_TO;
+    }
+
+    private static String appendQueryParam(String pathWithQueryAndHash, String key, String value) {
+        int hashIndex = pathWithQueryAndHash.indexOf('#');
+        String pathAndQuery = hashIndex >= 0 ? pathWithQueryAndHash.substring(0, hashIndex) : pathWithQueryAndHash;
+        String hash = hashIndex >= 0 ? pathWithQueryAndHash.substring(hashIndex) : "";
+        String separator = pathAndQuery.contains("?") ? "&" : "?";
+        return pathAndQuery + separator + encode(key) + "=" + encode(value) + hash;
+    }
+
+    private static String encode(String input) {
+        return URLEncoder.encode(input, StandardCharsets.UTF_8);
     }
 
     private static String normalizeReturnTo(String returnTo) {

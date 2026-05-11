@@ -87,11 +87,29 @@ google:
     client-id: ${GOOGLE_CLIENT_ID:}
     client-secret: ${GOOGLE_CLIENT_SECRET:}
     redirect-uri: ${GOOGLE_REDIRECT_URI:http://localhost:8080/integrations/calendar/google/callback}
-    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:http://localhost:5173/calendar-connected}
-    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:http://localhost:5173/calendar-error}
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+    frontend-success-path: ${GOOGLE_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${GOOGLE_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:}
     scopes:
       - openid
       - email
       - profile
       - https://www.googleapis.com/auth/calendar.events
       - https://www.googleapis.com/auth/calendar.readonly
+
+booking:
+  public:
+    provider-optional:
+      enabled: ${BOOKING_PUBLIC_PROVIDER_OPTIONAL_ENABLED:false}
+  notifications:
+    enabled: ${BOOKING_NOTIFICATIONS_ENABLED:false}
+    from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@easyschedule.local}
+
+draft:
+  ttl:
+    days: ${DRAFT_TTL_DAYS:21}
+  reaper:
+    enabled: ${DRAFT_REAPER_ENABLED:false}
+    interval-ms: ${DRAFT_REAPER_INTERVAL_MS:60000}
