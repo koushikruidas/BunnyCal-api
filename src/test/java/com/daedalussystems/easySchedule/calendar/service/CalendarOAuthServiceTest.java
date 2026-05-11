@@ -155,6 +155,15 @@ class CalendarOAuthServiceTest {
         conn.setStatus(CalendarConnectionStatus.ACTIVE);
         when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
         assertEquals("CONNECTED", service.googleConnectionStatus(userId));
+
+        conn.setStatus(CalendarConnectionStatus.REVOKED);
+        assertEquals("DISCONNECTED", service.googleConnectionStatus(userId));
+
+        conn.setStatus(CalendarConnectionStatus.DISCONNECTED);
+        assertEquals("DISCONNECTED", service.googleConnectionStatus(userId));
+
+        conn.setStatus(CalendarConnectionStatus.ERROR);
+        assertEquals("ERROR", service.googleConnectionStatus(userId));
     }
 
     @Test

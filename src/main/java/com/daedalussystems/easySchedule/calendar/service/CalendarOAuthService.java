@@ -139,7 +139,7 @@ public class CalendarOAuthService {
         if (connection.isEmpty()) {
             return "NOT_CONNECTED";
         }
-        return connection.get().getStatus() == CalendarConnectionStatus.ACTIVE ? "CONNECTED" : "ERROR";
+        return mapPublicConnectionStatus(connection.get().getStatus());
     }
 
     @Transactional
@@ -158,6 +158,16 @@ public class CalendarOAuthService {
 
     private static String enc(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String mapPublicConnectionStatus(CalendarConnectionStatus status) {
+        if (status == CalendarConnectionStatus.ACTIVE) {
+            return "CONNECTED";
+        }
+        if (status == CalendarConnectionStatus.REVOKED || status == CalendarConnectionStatus.DISCONNECTED) {
+            return "DISCONNECTED";
+        }
+        return "ERROR";
     }
 
     private static CalendarConnection copyForUpdate(CalendarConnection existing) {
