@@ -1,8 +1,10 @@
 package com.daedalussystems.easySchedule.booking.outbox;
 
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
+import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.lang.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -20,16 +22,24 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private static final String BOOKING_AGGREGATE = "Booking";
 
     private final CalendarSyncJobRepository calendarSyncJobRepository;
+    @Nullable
+    private final BookingNotificationService bookingNotificationService;
     private final String provider;
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
+                                        @Nullable BookingNotificationService bookingNotificationService,
                                         @Value("${sync.provider.default:google}") String provider) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
+        this.bookingNotificationService = bookingNotificationService;
         this.provider = provider;
     }
 
     @Override
     public void dispatch(OutboxEvent event) {
+        if (bookingNotificationService != null) {
+            bookingNotificationService.handleOutboxEvent(event);
+        }
+
         if (isBookingSyncCandidate(event)) {
             String desiredAction = mapDesiredAction(event.getEventType());
             if (desiredAction != null) {

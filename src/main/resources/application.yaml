@@ -102,7 +102,7 @@ google:
 booking:
   public:
     provider-optional:
-      enabled: ${BOOKING_PUBLIC_PROVIDER_OPTIONAL_ENABLED:false}
+      enabled: ${BOOKING_PUBLIC_PROVIDER_OPTIONAL_ENABLED:true}
   notifications:
     enabled: ${BOOKING_NOTIFICATIONS_ENABLED:false}
     from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@easyschedule.local}

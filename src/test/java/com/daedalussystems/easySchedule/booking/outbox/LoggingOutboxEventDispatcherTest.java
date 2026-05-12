@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,12 +18,14 @@ class LoggingOutboxEventDispatcherTest {
 
     @Mock
     private CalendarSyncJobRepository calendarSyncJobRepository;
+    @Mock
+    private BookingNotificationService bookingNotificationService;
 
     private LoggingOutboxEventDispatcher dispatcher;
 
     @BeforeEach
     void setUp() {
-        dispatcher = new LoggingOutboxEventDispatcher(calendarSyncJobRepository, "google");
+        dispatcher = new LoggingOutboxEventDispatcher(calendarSyncJobRepository, bookingNotificationService, "google");
     }
 
     @Test

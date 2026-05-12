@@ -79,6 +79,9 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE status = :status", nativeQuery = true)
     long countByStatus(@Param("status") String status);
 
+    @Query(value = "SELECT COUNT(*) FROM bookings WHERE host_id = :hostId", nativeQuery = true)
+    long countByHostId(@Param("hostId") UUID hostId);
+
     // CAS transition: returns 1 on success, 0 if state/version mismatch.
     // Native query required — status and version are not mapped in the Booking entity.
     // clearAutomatically = true prevents stale reads within the same transaction.

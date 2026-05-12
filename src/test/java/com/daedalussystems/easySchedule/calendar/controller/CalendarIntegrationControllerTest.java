@@ -52,8 +52,32 @@ class CalendarIntegrationControllerTest {
         var response = controller.callbackGoogle("code", "state");
         assertEquals(302, response.getStatusCode().value());
         assertNotNull(response.getHeaders().getLocation());
-        assertEquals("http://localhost:3000/success", response.getHeaders().getLocation().toString());
+        assertEquals("http://localhost:3000/dashboard/integrations?integrationSuccess=google",
+                response.getHeaders().getLocation().toString());
         verify(oauthService).handleGoogleCallback("code", "state");
+    }
+
+    @Test
+    void callbackSuccessRedirectsToStateReturnToWithQueryAndHash() {
+        when(oauthService.handleGoogleCallback("code", "state"))
+                .thenReturn(new CalendarOAuthService.OAuthCallbackResult(
+                        "dashboard",
+                        "/dashboard/integrations?tab=calendar#providers",
+                        null));
+        var response = controller.callbackGoogle("code", "state");
+        assertEquals(302, response.getStatusCode().value());
+        assertEquals("http://localhost:3000/dashboard/integrations?tab=calendar&integrationSuccess=google#providers",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void callbackSuccessPublicFallbackRedirectsToRoot() {
+        when(oauthService.handleGoogleCallback("code", "state"))
+                .thenReturn(new CalendarOAuthService.OAuthCallbackResult("public-booking", null, null));
+        var response = controller.callbackGoogle("code", "state");
+        assertEquals(302, response.getStatusCode().value());
+        assertEquals("http://localhost:3000/?integrationSuccess=google",
+                response.getHeaders().getLocation().toString());
     }
 
     @Test

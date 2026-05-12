@@ -1,13 +1,9 @@
 package com.daedalussystems.easySchedule.booking.service;
 
-import com.daedalussystems.easySchedule.auth.domain.user.User;
-import com.daedalussystems.easySchedule.auth.repository.UserRepository;
-import com.daedalussystems.easySchedule.availability.domain.EventType;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityStatus;
 import com.daedalussystems.easySchedule.availability.dto.SlotDto;
 import com.daedalussystems.easySchedule.availability.dto.SlotRequest;
 import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
-import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.availability.service.SlotService;
 import com.daedalussystems.easySchedule.booking.dto.PublicConfirmResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookingStatusResponse;
@@ -36,12 +32,12 @@ import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
 
 @Service
 @Slf4j
 public class PublicBookingService {
-    private final UserRepository userRepository;
-    private final EventTypeRepository eventTypeRepository;
+    private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
     private final BookingService bookingService;
     private final BookingRepository bookingRepository;
@@ -51,9 +47,9 @@ public class PublicBookingService {
     private final CalendarEventMappingRepository calendarEventMappingRepository;
     private final FencingTokenGenerator fencingTokenGenerator;
     private final TimeConversionService timeConversionService;
+    private final boolean providerOptionalPublicBookingEnabled;
 
-    public PublicBookingService(UserRepository userRepository,
-                                EventTypeRepository eventTypeRepository,
+    public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
                                 BookingService bookingService,
                                 BookingRepository bookingRepository,
@@ -62,9 +58,10 @@ public class PublicBookingService {
                                 CalendarService calendarService,
                                 CalendarEventMappingRepository calendarEventMappingRepository,
                                 FencingTokenGenerator fencingTokenGenerator,
-                                TimeConversionService timeConversionService) {
-        this.userRepository = userRepository;
-        this.eventTypeRepository = eventTypeRepository;
+                                TimeConversionService timeConversionService,
+                                @Value("${booking.public.provider-optional.enabled:false}")
+                                boolean providerOptionalPublicBookingEnabled) {
+        this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.slotService = slotService;
         this.bookingService = bookingService;
         this.bookingRepository = bookingRepository;
@@ -74,20 +71,20 @@ public class PublicBookingService {
         this.calendarEventMappingRepository = calendarEventMappingRepository;
         this.fencingTokenGenerator = fencingTokenGenerator;
         this.timeConversionService = timeConversionService;
+        this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
     }
 
     @Transactional(readOnly = true)
     public PublicEventInfoResponse eventInfo(String username, String eventTypeSlug) {
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         return new PublicEventInfoResponse(
-                eventType.getName(),
-                eventType.getDuration().toMinutes(),
-                user.getTimezone(),
-                user.getName(),
-                user.getUsername(),
-                eventType.getDescription(),
-                eventType.getLocation(),
+                target.eventName(),
+                target.duration().toMinutes(),
+                target.timezone(),
+                target.hostName(),
+                target.hostUsername(),
+                target.eventDescription(),
+                target.eventLocation(),
                 null
         );
     }
@@ -95,40 +92,57 @@ public class PublicBookingService {
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         long startedNanos = System.nanoTime();
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         java.util.Optional<CalendarConnection> connection =
-                calendarConnectionRepository.findByUserIdAndProvider(user.getId(), CalendarProviderType.GOOGLE);
-        if (connection.isEmpty()
+                calendarConnectionRepository.findByUserIdAndProvider(target.userId(), CalendarProviderType.GOOGLE);
+        boolean missingOrDisconnected = connection.isEmpty()
                 || connection.get().getStatus() == CalendarConnectionStatus.REVOKED
-                || connection.get().getStatus() == CalendarConnectionStatus.DISCONNECTED) {
+                || connection.get().getStatus() == CalendarConnectionStatus.DISCONNECTED;
+        if (!providerOptionalPublicBookingEnabled && missingOrDisconnected) {
             log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision=SHORT_CIRCUIT_NOT_CONNECTED elapsedMs={}",
-                    user.getId(), eventType.getId(), date,
+                    target.userId(), target.eventTypeId(), date,
                     connection.map(c -> c.getStatus().name()).orElse("MISSING"),
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
-            return notReadyAvailability(user.getId(), eventType.getId(), date, user.getTimezone(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
+            return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
         }
-        CalendarConnectionStatus status = connection.get().getStatus();
-        if (status == CalendarConnectionStatus.SYNCING || status == CalendarConnectionStatus.PENDING) {
+        if (providerOptionalPublicBookingEnabled && missingOrDisconnected) {
+            SlotResponse base = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
+            return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
+                    base.version(), base.generatedAt(), true, base.slots(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
+        }
+        CalendarConnectionStatus status = connection.map(CalendarConnection::getStatus).orElse(null);
+        if (!providerOptionalPublicBookingEnabled && (status == CalendarConnectionStatus.SYNCING || status == CalendarConnectionStatus.PENDING)) {
             log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision=SHORT_CIRCUIT_SYNCING elapsedMs={}",
-                    user.getId(), eventType.getId(), date, status,
+                    target.userId(), target.eventTypeId(), date, status,
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
-            return notReadyAvailability(user.getId(), eventType.getId(), date, user.getTimezone(), AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS);
+            return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS);
         }
 
-        SlotResponse base = slotService.getSlots(new SlotRequest(user.getId(), eventType.getId(), date));
+        SlotResponse base = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
         boolean staleCalendarData = status == CalendarConnectionStatus.FAILED || status == CalendarConnectionStatus.ERROR;
+        boolean freeBusyConnected = connection.isPresent()
+                && status != CalendarConnectionStatus.REVOKED
+                && status != CalendarConnectionStatus.DISCONNECTED
+                && status != CalendarConnectionStatus.PENDING
+                && status != CalendarConnectionStatus.SYNCING;
         log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={}",
-                user.getId(), eventType.getId(), date, status,
+                target.userId(), target.eventTypeId(), date, status == null ? "MISSING" : status,
                 staleCalendarData ? "COMPUTE_DEGRADED" : "COMPUTE_NORMAL",
                 base.version(), base.slots().size());
         try {
+            if (!freeBusyConnected) {
+                AvailabilityStatus responseStatus = base.slots().isEmpty()
+                        ? AvailabilityStatus.NO_SLOTS_AVAILABLE
+                        : AvailabilityStatus.AVAILABLE;
+                return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
+                        base.version(), base.generatedAt(), true, base.slots(), responseStatus);
+            }
             Instant dayStart = timeConversionService.dayStartUtc(date, base.timezone());
             Instant dayEnd = timeConversionService.dayEndUtcExclusive(date, base.timezone());
             long freeBusyStart = System.nanoTime();
-            List<GoogleFreeBusyService.BusyInterval> busy = freeBusyService.busyIntervals(user.getId(), dayStart, dayEnd);
+            List<GoogleFreeBusyService.BusyInterval> busy = freeBusyService.busyIntervals(target.userId(), dayStart, dayEnd);
             log.info("availability_freebusy_done userId={} eventTypeId={} date={} busyIntervals={} elapsedMs={}",
-                    user.getId(), eventType.getId(), date, busy.size(),
+                    target.userId(), target.eventTypeId(), date, busy.size(),
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - freeBusyStart));
 
             List<SlotDto> filtered = base.slots().stream()
@@ -155,28 +169,27 @@ public class PublicBookingService {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         Instant start = request.startTime();
-        Instant end = start.plus(eventType.getDuration());
+        Instant end = start.plus(target.duration());
 
         var booking = bookingService.createHeldBooking(
-                user.getId(),
-                eventType.getId(),
+                target.userId(),
+                target.eventTypeId(),
                 start,
                 end,
-                eventType.getHoldDuration(),
+                target.holdDuration(),
                 normalizeGuestEmail(request.guestEmail()),
                 normalizeGuestName(request.guestName())
         );
         log.info("booking_hold_created bookingId={} hostId={} eventTypeId={} guestEmail={} guestNamePresent={}",
                 booking.getId(),
-                user.getId(),
-                eventType.getId(),
+                target.userId(),
+                target.eventTypeId(),
                 maskEmail(booking.getGuestEmail()),
                 booking.getGuestName() != null && !booking.getGuestName().isBlank());
 
-        var state = bookingRepository.findStateByIdAndHostAndEventType(booking.getId(), user.getId(), eventType.getId())
+        var state = bookingRepository.findStateByIdAndHostAndEventType(booking.getId(), target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
         return new PublicHoldResponse(
                 booking.getId(),
@@ -189,25 +202,24 @@ public class PublicBookingService {
     @Transactional
     public PublicConfirmResponse confirm(String username, String eventTypeSlug, UUID bookingId) {
         // Resolve resources to ensure URL ownership is valid.
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
-        bookingRepository.findStateByIdAndHostAndEventType(bookingId, user.getId(), eventType.getId())
+        bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
-        var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, user.getId()))
+        var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, target.userId()))
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         Instant start = booking.getStartTime();
         Instant end = booking.getEndTime();
 
-        long conflicts = bookingRepository.countConflictsExcludingBooking(user.getId(), bookingId, start, end);
+        long conflicts = bookingRepository.countConflictsExcludingBooking(target.userId(), bookingId, start, end);
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
         List<GoogleFreeBusyService.BusyInterval> busy;
         try {
-            busy = freeBusyService.busyIntervals(user.getId(), start, end);
+            busy = freeBusyService.busyIntervals(target.userId(), start, end);
         } catch (RuntimeException ex) {
             log.error(ex.getMessage());
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
@@ -217,21 +229,24 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        ensureCalendarEventCreated(bookingId);
+        if (!providerOptionalPublicBookingEnabled) {
+            ensureCalendarEventCreated(bookingId);
+        } else {
+            tryEnsureCalendarEventCreatedBestEffort(bookingId);
+        }
         bookingService.confirmHeldBooking(bookingId);
         return new PublicConfirmResponse(bookingId, "CONFIRMED");
     }
 
     @Transactional
     public PublicBookingStatusResponse cancel(String username, String eventTypeSlug, UUID bookingId) {
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
-        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, user.getId(), eventType.getId())
+        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
-        bookingService.cancelBooking(bookingId, user.getId(), state.getVersion());
+        bookingService.cancelBooking(bookingId, target.userId(), state.getVersion());
 
-        var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, user.getId()))
+        var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, target.userId()))
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         return new PublicBookingStatusResponse(
                 bookingId,
@@ -250,21 +265,20 @@ public class PublicBookingService {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
-        User user = resolveUser(username);
-        EventType eventType = resolveEventType(user.getId(), eventTypeSlug);
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
-        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, user.getId(), eventType.getId())
+        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         Instant start = request.startTime();
-        Instant end = start.plus(eventType.getDuration());
+        Instant end = start.plus(target.duration());
 
-        long conflicts = bookingRepository.countConflictsExcludingBooking(user.getId(), bookingId, start, end);
+        long conflicts = bookingRepository.countConflictsExcludingBooking(target.userId(), bookingId, start, end);
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
         List<GoogleFreeBusyService.BusyInterval> busy;
         try {
-            busy = freeBusyService.busyIntervals(user.getId(), start, end);
+            busy = freeBusyService.busyIntervals(target.userId(), start, end);
         } catch (RuntimeException ex) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -273,7 +287,7 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        bookingService.updateBooking(bookingId, user.getId(), start, end, state.getVersion());
+        bookingService.updateBooking(bookingId, target.userId(), start, end, state.getVersion());
         return new PublicBookingStatusResponse(
                 bookingId,
                 state.getStatus(),
@@ -281,16 +295,6 @@ public class PublicBookingService {
                 end,
                 state.getExpiresAt()
         );
-    }
-
-    private User resolveUser(String username) {
-        return userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
-    }
-
-    private EventType resolveEventType(UUID userId, String eventTypeSlug) {
-        return eventTypeRepository.findByUserIdAndSlug(userId, eventTypeSlug)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
     }
 
     private static boolean overlaps(Instant aStart, Instant aEnd, Instant bStart, Instant bEnd) {
@@ -385,6 +389,17 @@ public class PublicBookingService {
                 bookingId, provider, errorCode, result.status());
         throw new CustomException(ErrorCode.GOOGLE_EVENT_CREATION_FAILED,
                 "Unable to create Google Calendar event. Please try again.");
+    }
+
+    private void tryEnsureCalendarEventCreatedBestEffort(UUID bookingId) {
+        try {
+            ensureCalendarEventCreated(bookingId);
+        } catch (CustomException ex) {
+            log.info("booking_confirm_calendar_optional_skip bookingId={} code={} message={}",
+                    bookingId, ex.getErrorCode().getCode(), ex.getMessage());
+        } catch (RuntimeException ex) {
+            log.warn("booking_confirm_calendar_optional_runtime_skip bookingId={}", bookingId, ex);
+        }
     }
 
     private boolean awaitMappingCreated(UUID bookingId, String provider, long timeoutMs) {
