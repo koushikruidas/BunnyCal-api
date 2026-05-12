@@ -538,10 +538,64 @@ class PublicBookingServiceTest {
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
+        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                userId,
+                CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE))
+                .thenReturn(Optional.empty());
+
+        var response = providerOptionalService.confirm("koushik", "30min", bookingId);
+        assertEquals("CONFIRMED", response.status());
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
+        verify(bookingService).confirmHeldBooking(bookingId);
+    }
+
+    @Test
+    void confirm_optionalModeWithActiveConnection_stillAttemptsCalendarCreate() {
+        PublicBookingService providerOptionalService = new PublicBookingService(
+                publicBookingTargetResolver,
+                slotService,
+                bookingService,
+                bookingRepository,
+                freeBusyService,
+                calendarConnectionRepository,
+                calendarService,
+                calendarEventMappingRepository,
+                fencingTokenGenerator,
+                timeConversionService,
+                true
+        );
+        UUID bookingId = UUID.randomUUID();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
         when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                userId,
+                CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE))
+                .thenReturn(Optional.of(conn));
         when(fencingTokenGenerator.nextToken()).thenReturn(10L);
         when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
                 .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
@@ -551,6 +605,8 @@ class PublicBookingServiceTest {
 
         var response = providerOptionalService.confirm("koushik", "30min", bookingId);
         assertEquals("CONFIRMED", response.status());
+        verify(calendarService).createEvent(new CalendarService.CreateCalendarEventCommand(
+                bookingId, "google", "google:" + bookingId));
         verify(bookingService).confirmHeldBooking(bookingId);
     }
 

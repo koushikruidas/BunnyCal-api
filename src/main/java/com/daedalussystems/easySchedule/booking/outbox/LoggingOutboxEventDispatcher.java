@@ -1,7 +1,12 @@
 package com.daedalussystems.easySchedule.booking.outbox;
 
+import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
+import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import java.util.Locale;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.lang.Nullable;
@@ -22,16 +27,26 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private static final String BOOKING_AGGREGATE = "Booking";
 
     private final CalendarSyncJobRepository calendarSyncJobRepository;
+    private final BookingRepository bookingRepository;
+    private final CalendarConnectionRepository calendarConnectionRepository;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
     private final String provider;
+    private final boolean providerOptionalPublicBookingEnabled;
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
+                                        BookingRepository bookingRepository,
+                                        CalendarConnectionRepository calendarConnectionRepository,
                                         @Nullable BookingNotificationService bookingNotificationService,
-                                        @Value("${sync.provider.default:google}") String provider) {
+                                        @Value("${sync.provider.default:google}") String provider,
+                                        @Value("${booking.public.provider-optional.enabled:false}")
+                                        boolean providerOptionalPublicBookingEnabled) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
+        this.bookingRepository = bookingRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingNotificationService = bookingNotificationService;
         this.provider = provider;
+        this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
     }
 
     @Override
@@ -43,6 +58,11 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (isBookingSyncCandidate(event)) {
             String desiredAction = mapDesiredAction(event.getEventType());
             if (desiredAction != null) {
+                if (shouldSkipProviderSync(event)) {
+                    log.info("outbox.sync_job_skipped_no_active_provider bookingId={} provider={} action={}",
+                            event.getAggregateId(), provider, desiredAction);
+                    return;
+                }
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
@@ -66,6 +86,32 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         return event != null
                 && BOOKING_AGGREGATE.equals(event.getAggregateType())
                 && event.getAggregateId() != null;
+    }
+
+    private boolean shouldSkipProviderSync(OutboxEvent event) {
+        if (!providerOptionalPublicBookingEnabled) {
+            return false;
+        }
+        CalendarProviderType providerType = parseProviderType(provider);
+        if (providerType == null) {
+            return false;
+        }
+        return bookingRepository.findAnyById(event.getAggregateId())
+                .map(booking -> calendarConnectionRepository
+                        .findByUserIdAndProviderAndStatus(booking.getHostId(), providerType, CalendarConnectionStatus.ACTIVE)
+                        .isEmpty())
+                .orElse(false);
+    }
+
+    private static CalendarProviderType parseProviderType(String provider) {
+        if (provider == null || provider.isBlank()) {
+            return null;
+        }
+        try {
+            return CalendarProviderType.valueOf(provider.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 
     private static String mapDesiredAction(String eventType) {

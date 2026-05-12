@@ -231,8 +231,11 @@ public class PublicBookingService {
 
         if (!providerOptionalPublicBookingEnabled) {
             ensureCalendarEventCreated(bookingId);
-        } else {
+        } else if (hasActiveGoogleConnection(target.userId())) {
             tryEnsureCalendarEventCreatedBestEffort(bookingId);
+        } else {
+            log.info("booking_confirm_calendar_skipped_no_active_provider bookingId={} userId={} eventTypeId={} provider=google",
+                    bookingId, target.userId(), target.eventTypeId());
         }
         bookingService.confirmHeldBooking(bookingId);
         return new PublicConfirmResponse(bookingId, "CONFIRMED");
@@ -400,6 +403,12 @@ public class PublicBookingService {
         } catch (RuntimeException ex) {
             log.warn("booking_confirm_calendar_optional_runtime_skip bookingId={}", bookingId, ex);
         }
+    }
+
+    private boolean hasActiveGoogleConnection(UUID userId) {
+        return calendarConnectionRepository
+                .findByUserIdAndProviderAndStatus(userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
+                .isPresent();
     }
 
     private boolean awaitMappingCreated(UUID bookingId, String provider, long timeoutMs) {
