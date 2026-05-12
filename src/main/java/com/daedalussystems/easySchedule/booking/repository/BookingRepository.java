@@ -100,6 +100,22 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             @Param("newStatus")      String newStatus,
             @Param("version")        long version);
 
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET status  = :newStatus,
+                   version = version + 1,
+                   calendar_sequence = calendar_sequence + 1
+             WHERE id      = :id
+               AND status  = :expectedStatus
+               AND version = :version
+            """, nativeQuery = true)
+    int updateStatusAndCalendarSequence(
+            @Param("id") UUID id,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("newStatus") String newStatus,
+            @Param("version") long version);
+
     // CAS expiry: succeeds only when booking is PENDING, has the expected version,
     // AND expires_at is in the past. The expires_at guard prevents premature expiry
     // and means expiry competes safely with confirmBooking / cancelPendingBooking.
@@ -130,6 +146,25 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                AND status IN ('PENDING', 'CONFIRMED')
             """, nativeQuery = true)
     int updateWindow(
+            @Param("id") UUID id,
+            @Param("hostId") UUID hostId,
+            @Param("startTime") Instant startTime,
+            @Param("endTime") Instant endTime,
+            @Param("version") long version);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET start_time = :startTime,
+                   end_time   = :endTime,
+                   version    = version + 1,
+                   calendar_sequence = calendar_sequence + 1
+             WHERE id      = :id
+               AND host_id = :hostId
+               AND version = :version
+               AND status IN ('PENDING', 'CONFIRMED')
+            """, nativeQuery = true)
+    int updateWindowAndCalendarSequence(
             @Param("id") UUID id,
             @Param("hostId") UUID hostId,
             @Param("startTime") Instant startTime,

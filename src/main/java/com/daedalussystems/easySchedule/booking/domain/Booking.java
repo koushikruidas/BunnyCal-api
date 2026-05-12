@@ -54,4 +54,8 @@ public class Booking extends BaseEntity {
 
     @Column(name = "guest_name", length = 120)
     private String guestName;
+
+    @Builder.Default
+    @Column(name = "calendar_sequence", nullable = false)
+    private long calendarSequence = 0L;
 }

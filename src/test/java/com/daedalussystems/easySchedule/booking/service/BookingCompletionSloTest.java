@@ -100,8 +100,9 @@ class BookingCompletionSloTest {
     @Test
     void completionTimer_doesNotRecordOnConfirmBooking() {
         UUID id = UUID.randomUUID();
-        when(bookingRepo.updateStatus(eq(id), eq("PENDING"), eq("CONFIRMED"), anyLong()))
+        when(bookingRepo.updateStatusAndCalendarSequence(eq(id), eq("PENDING"), eq("CONFIRMED"), anyLong()))
                 .thenReturn(1);
+        when(bookingRepo.findAnyById(id)).thenReturn(Optional.empty());
 
         service.confirmBooking(id, 0L);
 

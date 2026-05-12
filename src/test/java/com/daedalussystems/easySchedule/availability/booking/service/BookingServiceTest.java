@@ -100,11 +100,11 @@ class BookingServiceTest {
         Instant start = Instant.parse("2026-05-01T10:00:00Z");
         Instant end = Instant.parse("2026-05-01T11:00:00Z");
 
-        when(bookingRepository.updateWindow(bookingId, hostId, start, end, 3L)).thenReturn(1);
+        when(bookingRepository.updateWindowAndCalendarSequence(bookingId, hostId, start, end, 3L)).thenReturn(1);
 
         bookingService.updateBooking(bookingId, hostId, start, end, 3L);
 
-        verify(bookingRepository, times(1)).updateWindow(bookingId, hostId, start, end, 3L);
+        verify(bookingRepository, times(1)).updateWindowAndCalendarSequence(bookingId, hostId, start, end, 3L);
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
     }
 
@@ -113,11 +113,11 @@ class BookingServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
 
-        when(bookingRepository.updateStatus(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(1);
+        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(1);
 
         bookingService.cancelBooking(bookingId, hostId, 4L);
 
-        verify(bookingRepository, times(1)).updateStatus(bookingId, "PENDING", "CANCELLED", 4L);
+        verify(bookingRepository, times(1)).updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L);
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
     }
 

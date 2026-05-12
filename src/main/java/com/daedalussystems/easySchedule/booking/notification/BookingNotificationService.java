@@ -7,6 +7,9 @@ import com.daedalussystems.easySchedule.availability.repository.EventTypeReposit
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
+import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,31 +36,42 @@ public class BookingNotificationService {
     private final BookingRepository bookingRepository;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
+    private final CalendarConnectionRepository calendarConnectionRepository;
     private final JavaMailSender mailSender;
     private final IcsInviteGenerator icsInviteGenerator;
     private final NotificationRecipientResolver recipientResolver;
     private final EmailDeliverabilityPolicy deliverabilityPolicy;
     private final boolean notificationsEnabled;
     private final String fromAddress;
+    private final String calendarOrganizerEmail;
+    private final String calendarOrganizerName;
 
     public BookingNotificationService(BookingRepository bookingRepository,
                                       UserRepository userRepository,
                                       EventTypeRepository eventTypeRepository,
+                                      CalendarConnectionRepository calendarConnectionRepository,
                                       JavaMailSender mailSender,
                                       IcsInviteGenerator icsInviteGenerator,
                                       NotificationRecipientResolver recipientResolver,
                                       EmailDeliverabilityPolicy deliverabilityPolicy,
                                       @Value("${booking.notifications.enabled:false}") boolean notificationsEnabled,
-                                      @Value("${booking.notifications.from:no-reply@easyschedule.local}") String fromAddress) {
+                                      @Value("${booking.notifications.from:no-reply@easyschedule.local}") String fromAddress,
+                                      @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@easyschedule.local}}")
+                                      String calendarOrganizerEmail,
+                                      @Value("${booking.notifications.calendar-organizer-name:easySchedule Calendar}")
+                                      String calendarOrganizerName) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
         this.recipientResolver = recipientResolver;
         this.deliverabilityPolicy = deliverabilityPolicy;
         this.notificationsEnabled = notificationsEnabled;
         this.fromAddress = fromAddress;
+        this.calendarOrganizerEmail = calendarOrganizerEmail;
+        this.calendarOrganizerName = calendarOrganizerName;
     }
 
     public void handleOutboxEvent(OutboxEvent event) {
@@ -116,15 +130,63 @@ public class BookingNotificationService {
             return;
         }
 
-        String method = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
-        String ics = "CANCEL".equals(method)
-                ? icsInviteGenerator.buildCancel(booking.getId(), summary, description, booking.getStartTime(),
-                booking.getEndTime(), host.getEmail(), attendee.orElse(hostRecipient.orElse(fromAddress)))
-                : icsInviteGenerator.buildRequest(booking.getId(), summary, description, booking.getStartTime(),
-                booking.getEndTime(), host.getEmail(), attendee.orElse(hostRecipient.orElse(fromAddress)));
-
+        boolean providerConnected = calendarConnectionRepository
+                .findByUserIdAndProviderAndStatus(host.getId(), CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
+                .isPresent();
+        String organizer = providerConnected ? hostRecipient.orElse(fromAddress) : calendarOrganizerEmail;
+        String organizerName = providerConnected ? host.getName() : calendarOrganizerName;
+        String attendeeName = booking.getGuestName();
+        String attendeeEmail = attendee.orElse(null);
+        String hostEmail = hostRecipient.orElse(null);
+        String hostName = host.getName();
+        int sequence = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, booking.getCalendarSequence()));
+        String eventMethod = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
+        String standaloneIcs = providerConnected ? null : ("CANCEL".equals(eventMethod)
+                ? icsInviteGenerator.buildStandaloneCancel(
+                booking.getId(),
+                summary,
+                description,
+                booking.getStartTime(),
+                booking.getEndTime(),
+                organizerName,
+                organizer,
+                hostName,
+                hostEmail,
+                attendeeName,
+                attendeeEmail,
+                sequence)
+                : icsInviteGenerator.buildStandaloneRequest(
+                booking.getId(),
+                summary,
+                description,
+                booking.getStartTime(),
+                booking.getEndTime(),
+                organizerName,
+                organizer,
+                hostName,
+                hostEmail,
+                attendeeName,
+                attendeeEmail,
+                sequence));
         for (String recipient : recipients) {
-            sendMail(recipient, summary, event.getEventType(), ics, method);
+            String calendarMethod;
+            String ics;
+            if (providerConnected) {
+                calendarMethod = "PUBLISH";
+                ics = icsInviteGenerator.buildConnectedSnapshot(
+                        booking.getId(),
+                        summary,
+                        description,
+                        booking.getStartTime(),
+                        booking.getEndTime(),
+                        organizerName,
+                        organizer,
+                        sequence);
+            } else {
+                calendarMethod = eventMethod;
+                ics = standaloneIcs;
+            }
+            sendMail(recipient, summary, event.getEventType(), ics, calendarMethod);
         }
     }
 

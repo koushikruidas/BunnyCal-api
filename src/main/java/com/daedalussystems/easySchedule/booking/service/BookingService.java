@@ -257,7 +257,12 @@ public class BookingService {
 
     @Transactional
     public void confirmBooking(UUID id, long version) {
-        transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.CONFIRMED);
+        BookingStateTransitions.requireAllowed(BookingState.PENDING, BookingState.CONFIRMED);
+        int updated = bookingRepository.updateStatusAndCalendarSequence(
+                id, BookingState.PENDING.name(), BookingState.CONFIRMED.name(), version);
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
         bookingRepository.findAnyById(id).ifPresent(booking ->
                 outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
                         UUID.randomUUID().toString(),
@@ -296,7 +301,7 @@ public class BookingService {
     public void updateBooking(UUID id, UUID hostId, Instant startTime, Instant endTime, long version) {
         BookingRules.validateReschedule(id, hostId, startTime, endTime);
 
-        int updated = bookingRepository.updateWindow(id, hostId, startTime, endTime, version);
+        int updated = bookingRepository.updateWindowAndCalendarSequence(id, hostId, startTime, endTime, version);
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
@@ -314,9 +319,11 @@ public class BookingService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "id and hostId are required.");
         }
 
-        int updated = bookingRepository.updateStatus(id, BookingState.PENDING.name(), BookingState.CANCELLED.name(), version);
+        int updated = bookingRepository.updateStatusAndCalendarSequence(
+                id, BookingState.PENDING.name(), BookingState.CANCELLED.name(), version);
         if (updated == 0) {
-            updated = bookingRepository.updateStatus(id, BookingState.CONFIRMED.name(), BookingState.CANCELLED.name(), version);
+            updated = bookingRepository.updateStatusAndCalendarSequence(
+                    id, BookingState.CONFIRMED.name(), BookingState.CANCELLED.name(), version);
         }
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);

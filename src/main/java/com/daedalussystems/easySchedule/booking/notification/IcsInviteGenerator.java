@@ -3,7 +3,13 @@ package com.daedalussystems.easySchedule.booking.notification;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -11,25 +17,53 @@ public class IcsInviteGenerator {
 
     private static final DateTimeFormatter ICS_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
             .withZone(ZoneOffset.UTC);
+    private final String uidDomain;
 
-    public String buildRequest(UUID bookingId,
-                               String summary,
-                               String description,
-                               Instant start,
-                               Instant end,
-                               String organizerEmail,
-                               String attendeeEmail) {
-        return build("REQUEST", bookingId, summary, description, start, end, organizerEmail, attendeeEmail);
+    public IcsInviteGenerator(@Value("${booking.notifications.uid-domain:easyschedule.local}") String uidDomain) {
+        this.uidDomain = uidDomain;
     }
 
-    public String buildCancel(UUID bookingId,
-                              String summary,
-                              String description,
-                              Instant start,
-                              Instant end,
-                              String organizerEmail,
-                              String attendeeEmail) {
-        return build("CANCEL", bookingId, summary, description, start, end, organizerEmail, attendeeEmail);
+    public String buildStandaloneRequest(UUID bookingId,
+                                         String summary,
+                                         String description,
+                                         Instant start,
+                                         Instant end,
+                                         String organizerName,
+                                         String organizerEmail,
+                                         String hostName,
+                                         String hostEmail,
+                                         String guestName,
+                                         String guestEmail,
+                                         int sequence) {
+        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
+        return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail, attendees, sequence, true);
+    }
+
+    public String buildStandaloneCancel(UUID bookingId,
+                                        String summary,
+                                        String description,
+                                        Instant start,
+                                        Instant end,
+                                        String organizerName,
+                                        String organizerEmail,
+                                        String hostName,
+                                        String hostEmail,
+                                        String guestName,
+                                        String guestEmail,
+                                        int sequence) {
+        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
+        return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail, attendees, sequence, true);
+    }
+
+    public String buildConnectedSnapshot(UUID bookingId,
+                                         String summary,
+                                         String description,
+                                         Instant start,
+                                         Instant end,
+                                         String organizerName,
+                                         String organizerEmail,
+                                         int sequence) {
+        return build("PUBLISH", bookingId, summary, description, start, end, organizerName, organizerEmail, List.of(), sequence, false);
     }
 
     private String build(String method,
@@ -38,35 +72,64 @@ public class IcsInviteGenerator {
                          String description,
                          Instant start,
                          Instant end,
+                         String organizerName,
                          String organizerEmail,
-                         String attendeeEmail) {
-        String uid = bookingId + "@easySchedule";
+                         List<Participant> attendees,
+                         int sequence,
+                         boolean includeRsvpSemantics) {
+        String uid = "booking-" + bookingId + "@" + uidDomain;
         String dtStamp = ICS_TIME.format(Instant.now());
         String dtStart = ICS_TIME.format(start);
         String dtEnd = ICS_TIME.format(end);
         String escapedSummary = escape(summary == null ? "Scheduled Meeting" : summary);
         String escapedDescription = escape(description == null ? "" : description);
+        String organizerDisplayName = escape(organizerName == null || organizerName.isBlank() ? "easySchedule" : organizerName.trim());
         String organizer = normalizeEmail(organizerEmail);
-        String attendee = normalizeEmail(attendeeEmail);
 
-        return "BEGIN:VCALENDAR\r\n"
-                + "PRODID:-//easySchedule//EN\r\n"
-                + "VERSION:2.0\r\n"
-                + "CALSCALE:GREGORIAN\r\n"
-                + "METHOD:" + method + "\r\n"
-                + "BEGIN:VEVENT\r\n"
-                + "UID:" + uid + "\r\n"
-                + "DTSTAMP:" + dtStamp + "\r\n"
-                + "DTSTART:" + dtStart + "\r\n"
-                + "DTEND:" + dtEnd + "\r\n"
-                + "SUMMARY:" + escapedSummary + "\r\n"
-                + "DESCRIPTION:" + escapedDescription + "\r\n"
-                + "ORGANIZER:mailto:" + organizer + "\r\n"
-                + "ATTENDEE;CN=" + escape(attendee) + ":mailto:" + attendee + "\r\n"
-                + "SEQUENCE:0\r\n"
-                + "STATUS:" + ("CANCEL".equals(method) ? "CANCELLED" : "CONFIRMED") + "\r\n"
-                + "END:VEVENT\r\n"
-                + "END:VCALENDAR\r\n";
+        StringBuilder builder = new StringBuilder();
+        builder.append("BEGIN:VCALENDAR\r\n");
+        builder.append("PRODID:-//easySchedule//EN\r\n");
+        builder.append("VERSION:2.0\r\n");
+        builder.append("CALSCALE:GREGORIAN\r\n");
+        builder.append("METHOD:").append(method).append("\r\n");
+        builder.append("BEGIN:VEVENT\r\n");
+        builder.append("UID:").append(uid).append("\r\n");
+        builder.append("DTSTAMP:").append(dtStamp).append("\r\n");
+        builder.append("DTSTART:").append(dtStart).append("\r\n");
+        builder.append("DTEND:").append(dtEnd).append("\r\n");
+        appendLine(builder, "SUMMARY:" + escapedSummary);
+        appendLine(builder, "DESCRIPTION:" + escapedDescription);
+        appendLine(builder, "TRANSP:OPAQUE");
+        appendLine(builder, "CLASS:PUBLIC");
+        appendLine(builder, "PRIORITY:5");
+        appendLine(builder, "ORGANIZER;CN=" + organizerDisplayName + ":mailto:" + organizer);
+        for (Participant attendee : attendees) {
+            String attendeeLine = includeRsvpSemantics
+                    ? "ATTENDEE;CN=" + attendee.displayName + ";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:" + attendee.email
+                    : "ATTENDEE;CN=" + attendee.displayName + ":mailto:" + attendee.email;
+            appendLine(builder, attendeeLine);
+        }
+        appendLine(builder, "SEQUENCE:" + Math.max(0, sequence));
+        appendLine(builder, "STATUS:" + ("CANCEL".equals(method) ? "CANCELLED" : "CONFIRMED"));
+        builder.append("END:VEVENT\r\n");
+        builder.append("END:VCALENDAR\r\n");
+        return builder.toString();
+    }
+
+    private static void appendLine(StringBuilder builder, String line) {
+        final int max = 73;
+        if (line.length() <= max) {
+            builder.append(line).append("\r\n");
+            return;
+        }
+        int index = 0;
+        builder.append(line, index, max).append("\r\n");
+        index = max;
+        while (index < line.length()) {
+            int next = Math.min(index + max - 1, line.length());
+            builder.append(' ').append(line, index, next).append("\r\n");
+            index = next;
+        }
     }
 
     private static String normalizeEmail(String value) {
@@ -75,6 +138,32 @@ public class IcsInviteGenerator {
         }
         return value.trim().toLowerCase();
     }
+
+    private static List<Participant> buildAttendees(String hostName,
+                                                    String hostEmail,
+                                                    String guestName,
+                                                    String guestEmail,
+                                                    String organizerEmail) {
+        Map<String, Participant> deduped = new LinkedHashMap<>();
+        addAttendee(deduped, hostName, hostEmail, organizerEmail);
+        addAttendee(deduped, guestName, guestEmail, organizerEmail);
+        return new ArrayList<>(deduped.values());
+    }
+
+    private static void addAttendee(Map<String, Participant> deduped,
+                                    String name,
+                                    String email,
+                                    String organizerEmail) {
+        String normalizedEmail = normalizeEmail(email);
+        String organizer = normalizeEmail(organizerEmail);
+        if (normalizedEmail.equals("no-reply@localhost") || normalizedEmail.equals(organizer)) {
+            return;
+        }
+        String normalizedName = escape(name == null || name.isBlank() ? normalizedEmail : name.trim());
+        deduped.put(normalizedEmail.toLowerCase(Locale.ROOT), new Participant(normalizedName, normalizedEmail));
+    }
+
+    private record Participant(String displayName, String email) {}
 
     private static String escape(String value) {
         return value
