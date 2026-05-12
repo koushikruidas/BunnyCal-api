@@ -65,6 +65,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId=primary attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(),
                 1, maskedGuest);
+        log.info("google_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
+                booking.getId(), provider, booking.getStartTime(), booking.getEndTime(), host.getTimezone());
         log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
                 booking.getId(), provider, maskedGuest);
 

@@ -23,6 +23,12 @@ spring:
     baseline-on-migrate: true
     validate-on-migrate: true
 
+  mail:
+    host: email-smtp.ap-south-1.amazonaws.com
+    port: 587
+    username: ${AWS_SES_SMTP_USERNAME}
+    password: ${AWS_SES_SMTP_PASSWORD}
+
   docker:
     compose:
       enabled: true
@@ -104,8 +110,8 @@ booking:
     provider-optional:
       enabled: ${BOOKING_PUBLIC_PROVIDER_OPTIONAL_ENABLED:true}
   notifications:
-    enabled: ${BOOKING_NOTIFICATIONS_ENABLED:false}
-    from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@easyschedule.local}
+    enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
+    from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@logpulse.dev}
 
 draft:
   ttl:

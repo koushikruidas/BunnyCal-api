@@ -2,10 +2,8 @@ package com.daedalussystems.easySchedule.common.time;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import org.springframework.stereotype.Service;
 
@@ -43,11 +41,14 @@ public class TimeConversionService {
     }
 
     public Instant normalizeClientInstant(Instant clientInstant, String timezoneHeader) {
-        if (clientInstant == null || timezoneHeader == null || timezoneHeader.isBlank()) {
+        if (clientInstant == null) {
             return clientInstant;
         }
-        ZoneId zoneId = timezoneService.resolveZone(timezoneHeader);
-        LocalDateTime localDateTime = LocalDateTime.ofInstant(clientInstant, ZoneOffset.UTC);
-        return localDateTime.atZone(zoneId).toInstant();
+        // Caller provides an absolute timestamp (Instant). Never reinterpret
+        // it as local wall-time from a timezone header.
+        if (timezoneHeader != null && !timezoneHeader.isBlank()) {
+            timezoneService.resolveZone(timezoneHeader); // validate timezone header format
+        }
+        return clientInstant;
     }
 }

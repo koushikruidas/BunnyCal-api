@@ -46,6 +46,15 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     public GoogleEventDetails createEvent(String accessToken, CreateEventRequest request) {
         try {
             Map<String, Object> body = buildCreateEventBody(request);
+            Object start = body.get("start");
+            Object end = body.get("end");
+            log.info("google_api_create_event_payload requestId={} start={} end={} timezoneMetadataPresent={} startsAtUtc={} endsAtUtc={}",
+                    request.idempotencyKey(),
+                    start,
+                    end,
+                    hasTimezoneMetadata(start) || hasTimezoneMetadata(end),
+                    request.startsAt(),
+                    request.endsAt());
             ResponseEntity<Map> response = restClient.post()
                     .uri(CREATE_EVENT_URI)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
@@ -69,6 +78,15 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     public GoogleEventDetails updateEvent(String accessToken, UpdateEventRequest request) {
         try {
             Map<String, Object> body = buildUpdateEventBody(request);
+            Object start = body.get("start");
+            Object end = body.get("end");
+            log.info("google_api_update_event_payload externalEventId={} start={} end={} timezoneMetadataPresent={} startsAtUtc={} endsAtUtc={}",
+                    request.externalEventId(),
+                    start,
+                    end,
+                    hasTimezoneMetadata(start) || hasTimezoneMetadata(end),
+                    request.startsAt(),
+                    request.endsAt());
             ResponseEntity<Map> response = restClient.put()
                     .uri(UPDATE_EVENT_URI, request.externalEventId())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
@@ -317,6 +335,13 @@ public class HttpGoogleApiClient implements GoogleApiClient {
 
     private static GoogleEventDetails toDetails(Map body) {
         return new GoogleEventDetails(extractId(body), extractHtmlLink(body), extractConferenceLink(body));
+    }
+
+    private static boolean hasTimezoneMetadata(Object timeObj) {
+        if (!(timeObj instanceof Map<?, ?> map)) {
+            return false;
+        }
+        return map.containsKey("timeZone");
     }
 
     private static String extractHtmlLink(Map body) {

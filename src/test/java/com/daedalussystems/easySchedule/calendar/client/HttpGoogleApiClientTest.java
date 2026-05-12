@@ -28,7 +28,13 @@ class HttpGoogleApiClientTest {
 
         Map<String, Object> body = HttpGoogleApiClient.buildCreateEventBody(request);
         @SuppressWarnings("unchecked")
+        Map<String, Object> start = (Map<String, Object>) body.get("start");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> end = (Map<String, Object>) body.get("end");
+        @SuppressWarnings("unchecked")
         List<Map<String, Object>> attendees = (List<Map<String, Object>>) body.get("attendees");
+        assertEquals("2026-05-10T10:00:00Z", start.get("dateTime"));
+        assertEquals("2026-05-10T10:30:00Z", end.get("dateTime"));
         assertEquals(1, attendees.size());
         assertEquals("guest@example.com", attendees.get(0).get("email"));
         assertEquals("Guest User", attendees.get(0).get("displayName"));
@@ -52,7 +58,13 @@ class HttpGoogleApiClientTest {
 
         Map<String, Object> body = HttpGoogleApiClient.buildUpdateEventBody(request);
         @SuppressWarnings("unchecked")
+        Map<String, Object> start = (Map<String, Object>) body.get("start");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> end = (Map<String, Object>) body.get("end");
+        @SuppressWarnings("unchecked")
         List<Map<String, Object>> attendees = (List<Map<String, Object>>) body.get("attendees");
+        assertEquals("2026-05-10T10:00:00Z", start.get("dateTime"));
+        assertEquals("2026-05-10T10:30:00Z", end.get("dateTime"));
         assertEquals(1, attendees.size());
         assertEquals("guest@example.com", attendees.get(0).get("email"));
         assertTrue(body.containsKey("conferenceData"));

@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 @RestController
 @RequestMapping("/api/bookings")
 @RequiredArgsConstructor
+@Slf4j
 public class BookingController {
 
     private static final String ROUTE = IdempotencyRoutes.API_BOOKINGS_CREATE;
@@ -63,6 +65,15 @@ public class BookingController {
 
         Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
         Instant normalizedEnd = timeConversionService.normalizeClientInstant(request.endTime(), timezoneHeader);
+        log.info("api_booking_create_time_normalization hostId={} eventTypeId={} timezoneHeader={} rawStartTime={} normalizedStartTime={} rawEndTime={} normalizedEndTime={} temporalType={}",
+                request.hostId(),
+                request.eventTypeId(),
+                timezoneHeader,
+                request.startTime(),
+                normalizedStart,
+                request.endTime(),
+                normalizedEnd,
+                normalizedStart == null ? "null" : normalizedStart.getClass().getSimpleName());
         CreateBookingRequest normalizedRequest =
                 new CreateBookingRequest(request.hostId(), request.eventTypeId(), normalizedStart, normalizedEnd);
 

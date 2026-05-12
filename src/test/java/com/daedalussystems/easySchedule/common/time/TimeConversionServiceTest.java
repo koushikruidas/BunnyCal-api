@@ -34,5 +34,18 @@ class TimeConversionServiceTest {
         assertEquals(Instant.parse("2026-05-10T04:00:00Z"), dayStart);
         assertEquals(Instant.parse("2026-05-11T04:00:00Z"), dayEnd);
     }
-}
 
+    @Test
+    void normalizeClientInstant_doesNotReinterpretUtcInstantWhenTimezoneProvided() {
+        Instant incoming = Instant.parse("2026-05-15T04:30:00Z");
+        Instant normalized = timeConversionService.normalizeClientInstant(incoming, "Asia/Kolkata");
+        assertEquals(incoming, normalized);
+    }
+
+    @Test
+    void normalizeClientInstant_doesNotReinterpretUtcInstantAcrossDstZones() {
+        Instant incoming = Instant.parse("2026-11-01T05:30:00Z");
+        Instant normalized = timeConversionService.normalizeClientInstant(incoming, "America/New_York");
+        assertEquals(incoming, normalized);
+    }
+}

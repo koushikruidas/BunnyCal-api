@@ -182,10 +182,12 @@ public class PublicBookingService {
                 normalizeGuestEmail(request.guestEmail()),
                 normalizeGuestName(request.guestName())
         );
-        log.info("booking_hold_created bookingId={} hostId={} eventTypeId={} guestEmail={} guestNamePresent={}",
+        log.info("booking_hold_created bookingId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={} guestNamePresent={}",
                 booking.getId(),
                 target.userId(),
                 target.eventTypeId(),
+                booking.getStartTime(),
+                booking.getEndTime(),
                 maskEmail(booking.getGuestEmail()),
                 booking.getGuestName() != null && !booking.getGuestName().isBlank());
 

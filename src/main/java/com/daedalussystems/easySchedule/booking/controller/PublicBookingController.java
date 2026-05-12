@@ -19,6 +19,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,6 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/public")
 public class PublicBookingController {
+    private static final Logger log = LoggerFactory.getLogger(PublicBookingController.class);
     private final PublicBookingService publicBookingService;
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
@@ -76,6 +79,13 @@ public class PublicBookingController {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
         Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
+        log.info("public_booking_hold_time_normalization username={} eventTypeSlug={} timezoneHeader={} rawStartTime={} normalizedStartTime={} temporalType={}",
+                username,
+                eventTypeSlug,
+                timezoneHeader,
+                request.startTime(),
+                normalizedStart,
+                normalizedStart == null ? "null" : normalizedStart.getClass().getSimpleName());
         PublicBookRequest normalizedRequest = new PublicBookRequest(
                 normalizedStart,
                 request.guestEmail(),
@@ -148,6 +158,14 @@ public class PublicBookingController {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
         Instant normalizedStart = timeConversionService.normalizeClientInstant(request.startTime(), timezoneHeader);
+        log.info("public_booking_reschedule_time_normalization username={} eventTypeSlug={} bookingId={} timezoneHeader={} rawStartTime={} normalizedStartTime={} temporalType={}",
+                username,
+                eventTypeSlug,
+                bookingId,
+                timezoneHeader,
+                request.startTime(),
+                normalizedStart,
+                normalizedStart == null ? "null" : normalizedStart.getClass().getSimpleName());
         PublicRescheduleRequest normalizedRequest = new PublicRescheduleRequest(normalizedStart);
 
         String route = IdempotencyRoutes.PUBLIC_BOOK_RESCHEDULE;
