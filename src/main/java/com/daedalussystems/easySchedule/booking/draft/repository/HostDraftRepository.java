@@ -13,5 +13,6 @@ public interface HostDraftRepository extends JpaRepository<HostDraft, UUID> {
     Optional<HostDraft> findByPublicSlug(String publicSlug);
     Optional<HostDraft> findByPublicSlugAndState(String publicSlug, DraftLifecycleState state);
     Optional<HostDraft> findByPublicSlugAndManagementTokenHash(String publicSlug, String managementTokenHash);
+    Optional<HostDraft> findFirstByShadowUserIdOrderByCreatedAtDesc(UUID shadowUserId);
     List<HostDraft> findTop200ByStateAndExpiresAtBeforeOrderByExpiresAtAsc(DraftLifecycleState state, Instant now);
 }

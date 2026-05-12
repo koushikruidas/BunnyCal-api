@@ -8,6 +8,8 @@ import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +35,8 @@ public class BookingNotificationService {
     private final EventTypeRepository eventTypeRepository;
     private final JavaMailSender mailSender;
     private final IcsInviteGenerator icsInviteGenerator;
+    private final NotificationRecipientResolver recipientResolver;
+    private final EmailDeliverabilityPolicy deliverabilityPolicy;
     private final boolean notificationsEnabled;
     private final String fromAddress;
 
@@ -41,6 +45,8 @@ public class BookingNotificationService {
                                       EventTypeRepository eventTypeRepository,
                                       JavaMailSender mailSender,
                                       IcsInviteGenerator icsInviteGenerator,
+                                      NotificationRecipientResolver recipientResolver,
+                                      EmailDeliverabilityPolicy deliverabilityPolicy,
                                       @Value("${booking.notifications.enabled:false}") boolean notificationsEnabled,
                                       @Value("${booking.notifications.from:no-reply@easyschedule.local}") String fromAddress) {
         this.bookingRepository = bookingRepository;
@@ -48,6 +54,8 @@ public class BookingNotificationService {
         this.eventTypeRepository = eventTypeRepository;
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
+        this.recipientResolver = recipientResolver;
+        this.deliverabilityPolicy = deliverabilityPolicy;
         this.notificationsEnabled = notificationsEnabled;
         this.fromAddress = fromAddress;
     }
@@ -84,9 +92,26 @@ public class BookingNotificationService {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "Booking " + booking.getId();
-        String attendee = normalizeEmail(booking.getGuestEmail());
-        if (attendee == null) {
+        Optional<String> attendee = recipientResolver.resolveAttendeeRecipient(booking);
+        if (attendee.isEmpty()) {
             log.warn("booking_notification_skip_missing_attendee bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+        }
+        Optional<String> hostRecipient = recipientResolver.resolveHostRecipient(host);
+        if (hostRecipient.isEmpty()) {
+            String normalizedHost = deliverabilityPolicy.normalize(host.getEmail());
+            String reason = normalizedHost == null ? "MISSING_OR_INVALID" :
+                    (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
+            log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
+                    booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
+        }
+
+        List<String> candidateRecipients = new ArrayList<>(2);
+        hostRecipient.ifPresent(candidateRecipients::add);
+        attendee.ifPresent(candidateRecipients::add);
+        List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
+        if (recipients.isEmpty()) {
+            log.info("booking_notification_all_recipients_skipped bookingId={} eventType={}",
                     booking.getId(), event.getEventType());
             return;
         }
@@ -94,12 +119,13 @@ public class BookingNotificationService {
         String method = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
         String ics = "CANCEL".equals(method)
                 ? icsInviteGenerator.buildCancel(booking.getId(), summary, description, booking.getStartTime(),
-                booking.getEndTime(), host.getEmail(), attendee)
+                booking.getEndTime(), host.getEmail(), attendee.orElse(hostRecipient.orElse(fromAddress)))
                 : icsInviteGenerator.buildRequest(booking.getId(), summary, description, booking.getStartTime(),
-                booking.getEndTime(), host.getEmail(), attendee);
+                booking.getEndTime(), host.getEmail(), attendee.orElse(hostRecipient.orElse(fromAddress)));
 
-        sendMail(host.getEmail(), summary, event.getEventType(), ics, method);
-        sendMail(attendee, summary, event.getEventType(), ics, method);
+        for (String recipient : recipients) {
+            sendMail(recipient, summary, event.getEventType(), ics, method);
+        }
     }
 
     private void sendMail(String to, String summary, String eventType, String ics, String method) {
@@ -137,12 +163,5 @@ public class BookingNotificationService {
             return "Your meeting has been rescheduled.\n\nEvent: " + summary;
         }
         return "Your meeting is confirmed.\n\nEvent: " + summary;
-    }
-
-    private static String normalizeEmail(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        return value.trim().toLowerCase();
     }
 }
