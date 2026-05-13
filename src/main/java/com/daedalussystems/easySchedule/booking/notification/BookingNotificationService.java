@@ -169,24 +169,11 @@ public class BookingNotificationService {
                 attendeeEmail,
                 sequence));
         for (String recipient : recipients) {
-            String calendarMethod;
-            String ics;
             if (providerConnected) {
-                calendarMethod = "PUBLISH";
-                ics = icsInviteGenerator.buildConnectedSnapshot(
-                        booking.getId(),
-                        summary,
-                        description,
-                        booking.getStartTime(),
-                        booking.getEndTime(),
-                        organizerName,
-                        organizer,
-                        sequence);
+                sendMail(recipient, summary, event.getEventType(), null, null);
             } else {
-                calendarMethod = eventMethod;
-                ics = standaloneIcs;
+                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod);
             }
-            sendMail(recipient, summary, event.getEventType(), ics, calendarMethod);
         }
     }
 
@@ -198,9 +185,11 @@ public class BookingNotificationService {
             helper.setTo(to);
             helper.setSubject(subject(summary, eventType));
             helper.setText(body(summary, eventType), false);
-            helper.addAttachment("invite.ics",
-                    new org.springframework.core.io.ByteArrayResource(ics.getBytes(StandardCharsets.UTF_8)),
-                    "text/calendar; method=" + method + "; charset=UTF-8");
+            if (ics != null && method != null) {
+                helper.addAttachment("invite.ics",
+                        new org.springframework.core.io.ByteArrayResource(ics.getBytes(StandardCharsets.UTF_8)),
+                        "text/calendar; method=" + method + "; charset=UTF-8");
+            }
             mailSender.send(message);
         } catch (Exception ex) {
             log.warn("booking_notification_send_failed to={} eventType={} message={}", to, eventType, ex.getMessage());

@@ -178,7 +178,7 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void connectedProvider_staysPublishForHostAndAttendee() throws Exception {
+    void connectedProvider_sendsInformationalOnlyWithoutCalendarAttachment() throws Exception {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 2L);
@@ -199,8 +199,10 @@ class BookingNotificationServiceTest {
 
         verify(mailSender, times(2)).send(messageCaptor.capture());
         var sent = messageCaptor.getAllValues();
-        assertTrue(unfold(icsBody(findByRecipient(sent, "host@example.com"))).contains("METHOD:PUBLISH"));
-        assertTrue(unfold(icsBody(findByRecipient(sent, "guest@example.com"))).contains("METHOD:PUBLISH"));
+        assertFalse(hasIcsAttachment(findByRecipient(sent, "host@example.com")));
+        assertFalse(hasIcsAttachment(findByRecipient(sent, "guest@example.com")));
+        assertFalse(hasCalendarMimePart(findByRecipient(sent, "host@example.com")));
+        assertFalse(hasCalendarMimePart(findByRecipient(sent, "guest@example.com")));
     }
 
     private static Booking booking(UUID bookingId, UUID hostId, String guestEmail, String guestName, long sequence) {
@@ -258,6 +260,35 @@ class BookingNotificationServiceTest {
             }
         }
         throw new IllegalStateException("invite.ics attachment not found");
+    }
+
+    private static boolean hasIcsAttachment(MimeMessage message) throws Exception {
+        Object content = message.getContent();
+        if (!(content instanceof MimeMultipart multipart)) {
+            return false;
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            if ("invite.ics".equalsIgnoreCase(part.getFileName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasCalendarMimePart(MimeMessage message) throws Exception {
+        Object content = message.getContent();
+        if (!(content instanceof MimeMultipart multipart)) {
+            return false;
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            String contentType = part.getContentType();
+            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/calendar")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String icsBody(MimeMessage message) throws Exception {
