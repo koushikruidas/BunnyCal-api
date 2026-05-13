@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
@@ -69,6 +70,24 @@ class CalendarConnectionWriteServiceTest {
         assertEquals(syncedAt, saved.getLastSyncedAt());
     }
 
+    @Test
+    void saveSnapshot_withNullId_createsWithoutFindById() {
+        CalendarConnection candidate = new CalendarConnection();
+        candidate.setUserId(UUID.randomUUID());
+        candidate.setProvider(com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.GOOGLE);
+        candidate.setProviderUserId("provider-user");
+        candidate.setRefreshTokenCiphertext("cipher");
+        candidate.setLastTokenExpiresAt(Instant.now().plusSeconds(100));
+        candidate.setStatus(CalendarConnectionStatus.SYNCING);
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.saveSnapshot(candidate, "test-create");
+
+        assertEquals(candidate.getUserId(), saved.getUserId());
+        verify(repository, never()).findById(any());
+        verify(repository, times(1)).saveAndFlush(any(CalendarConnection.class));
+    }
+
     private static CalendarConnection connection(UUID id) {
         CalendarConnection c = new CalendarConnection();
         c.setUserId(UUID.randomUUID());
@@ -82,4 +101,3 @@ class CalendarConnectionWriteServiceTest {
         return c;
     }
 }
-

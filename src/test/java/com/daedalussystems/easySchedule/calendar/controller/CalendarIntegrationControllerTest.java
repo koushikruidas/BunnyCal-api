@@ -6,6 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
@@ -111,7 +112,17 @@ class CalendarIntegrationControllerTest {
         when(oauthService.handleGoogleCallback("code", "state")).thenThrow(new IllegalArgumentException("bad"));
         var response = controller.callbackGoogle("code", "state");
         assertEquals(302, response.getStatusCode().value());
-        assertEquals("http://localhost:3000/error?code=OAUTH_INVALID_RESPONSE",
+        assertEquals("http://localhost:3000/error?error=oauth_invalid_response&code=oauth_invalid_response",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void callbackFailureRedirectsWithStateExpiredCode() {
+        when(oauthService.handleGoogleCallback("code", "state"))
+                .thenThrow(new OAuthStateException(OAuthStateException.Reason.EXPIRED, "expired"));
+        var response = controller.callbackGoogle("code", "state");
+        assertEquals(302, response.getStatusCode().value());
+        assertEquals("http://localhost:3000/error?error=oauth_state_expired&code=oauth_state_expired",
                 response.getHeaders().getLocation().toString());
     }
 

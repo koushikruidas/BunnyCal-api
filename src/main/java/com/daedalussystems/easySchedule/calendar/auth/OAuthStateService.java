@@ -46,29 +46,31 @@ public class OAuthStateService {
         try {
             String[] parts = state.split("\\.", 2);
             if (parts.length != 2) {
-                throw new IllegalArgumentException("Invalid state format");
+                throw new OAuthStateException(OAuthStateException.Reason.INVALID, "Invalid state format");
             }
             String payloadBase64 = parts[0];
             if (!sign(payloadBase64).equals(parts[1])) {
-                throw new IllegalArgumentException("Invalid state signature");
+                throw new OAuthStateException(OAuthStateException.Reason.INVALID, "Invalid state signature");
             }
             OAuthStatePayload payload = objectMapper.readValue(
                     Base64.getUrlDecoder().decode(payloadBase64),
                     OAuthStatePayload.class);
             if (payload.expiresAtEpochSeconds() <= 0) {
-                throw new IllegalArgumentException("Invalid state expiration");
+                throw new OAuthStateException(OAuthStateException.Reason.INVALID, "Invalid state expiration");
             }
             if (Instant.now().getEpochSecond() > payload.expiresAtEpochSeconds()) {
-                throw new IllegalArgumentException("State expired");
+                throw new OAuthStateException(OAuthStateException.Reason.EXPIRED, "State expired");
             }
             if (payload.userId() == null) {
-                throw new IllegalArgumentException("State userId missing");
+                throw new OAuthStateException(OAuthStateException.Reason.MISSING_USER, "State userId missing");
             }
             return payload;
+        } catch (OAuthStateException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
-            throw new IllegalArgumentException("Invalid state", ex);
+            throw new OAuthStateException(OAuthStateException.Reason.INVALID, "Invalid state", ex);
         } catch (Exception ex) {
-            throw new IllegalArgumentException("Invalid state", ex);
+            throw new OAuthStateException(OAuthStateException.Reason.INVALID, "Invalid state", ex);
         }
     }
 

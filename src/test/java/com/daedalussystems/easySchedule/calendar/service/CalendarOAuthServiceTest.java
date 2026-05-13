@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.atLeastOnce;
 
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
@@ -123,7 +124,7 @@ class CalendarOAuthServiceTest {
 
     @Test
     void callbackInvalidState_throws() {
-        assertThrows(IllegalArgumentException.class, () -> service.handleGoogleCallback("code", "bad-state"));
+        assertThrows(OAuthStateException.class, () -> service.handleGoogleCallback("code", "bad-state"));
     }
 
     @Test

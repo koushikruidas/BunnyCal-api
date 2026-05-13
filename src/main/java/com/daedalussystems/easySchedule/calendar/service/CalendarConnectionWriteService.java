@@ -30,6 +30,14 @@ public class CalendarConnectionWriteService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public CalendarConnection saveSnapshot(CalendarConnection candidate, String context) {
+        if (candidate == null) {
+            throw new IllegalArgumentException("Calendar connection snapshot candidate is required");
+        }
+        log.info("calendar_connection_save_snapshot context={} candidateId={} userId={} provider={} status={}",
+                context, candidate.getId(), candidate.getUserId(), candidate.getProvider(), candidate.getStatus());
+        if (candidate.getId() == null) {
+            return repository.saveAndFlush(candidate);
+        }
         return withRetry(candidate.getId(), context, latest -> {
             copySnapshot(candidate, latest);
             return latest;
@@ -79,9 +87,14 @@ public class CalendarConnectionWriteService {
     }
 
     private CalendarConnection withRetry(UUID connectionId, String context, Mutator mutator) {
+        if (connectionId == null) {
+            throw new IllegalArgumentException("Calendar connection id is required for update path");
+        }
         OptimisticLockingFailureException lastConflict = null;
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
+                log.info("calendar_connection_lookup context={} connectionId={} attempt={}",
+                        context, connectionId, attempt);
                 CalendarConnection latest = repository.findById(connectionId)
                         .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
                 CalendarConnection toSave = mutator.apply(latest);

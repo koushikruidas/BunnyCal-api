@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
@@ -26,6 +27,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.MDC;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -78,6 +80,7 @@ public class CalendarIntegrationController {
 
         try {
             log.info("Processing Google OAuth callback...");
+            MDC.put("oauthCorrelationId", Integer.toHexString(state.hashCode()));
 
             CalendarOAuthService.OAuthCallbackResult result = oauthService.handleGoogleCallback(code, state);
 
@@ -99,6 +102,8 @@ public class CalendarIntegrationController {
             return ResponseEntity.status(302)
                     .location(errorRedirect(errorCode))
                     .build();
+        } finally {
+            MDC.remove("oauthCorrelationId");
         }
     }
 
@@ -146,14 +151,22 @@ public class CalendarIntegrationController {
 
     private URI errorRedirect(String code) {
         String sep = googleOAuthProperties.getFrontendErrorRedirect().contains("?") ? "&" : "?";
-        return URI.create(googleOAuthProperties.getFrontendErrorRedirect() + sep + "code=" + code);
+        String encoded = encode(code);
+        return URI.create(googleOAuthProperties.getFrontendErrorRedirect() + sep + "error=" + encoded + "&code=" + encoded);
     }
 
     private static String mapErrorCode(RuntimeException ex) {
-        if (ex instanceof IllegalArgumentException) {
-            return "OAUTH_INVALID_RESPONSE";
+        if (ex instanceof OAuthStateException stateException) {
+            return switch (stateException.getReason()) {
+                case EXPIRED -> "oauth_state_expired";
+                case MISSING_USER -> "oauth_user_missing";
+                case INVALID -> "oauth_state_invalid";
+            };
         }
-        return "INTERNAL_SERVER_ERROR";
+        if (ex instanceof IllegalArgumentException) {
+            return "oauth_invalid_response";
+        }
+        return "internal_server_error";
     }
 
     private URI resolveSuccessRedirect(CalendarOAuthService.OAuthCallbackResult result) {

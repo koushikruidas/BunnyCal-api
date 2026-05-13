@@ -11,11 +11,14 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class CalendarEventIngestionService {
+    private static final Logger log = LoggerFactory.getLogger(CalendarEventIngestionService.class);
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
     private final SlotCacheVersionService slotCacheVersionService;
@@ -33,6 +36,11 @@ public class CalendarEventIngestionService {
 
     @Transactional
     public void upsertEvents(UUID connectionId, List<IncomingCalendarEvent> incomingEvents) {
+        if (connectionId == null) {
+            throw new IllegalArgumentException("connectionId is required");
+        }
+        log.info("calendar_event_ingestion_lookup connectionId={} incomingCount={}",
+                connectionId, incomingEvents == null ? 0 : incomingEvents.size());
         CalendarConnection connection = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
 

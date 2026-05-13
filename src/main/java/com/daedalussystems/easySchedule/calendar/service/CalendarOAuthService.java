@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.calendar.service;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStatePayload;
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.OAuthTokenExchangeResult;
@@ -81,6 +82,13 @@ public class CalendarOAuthService {
     public OAuthCallbackResult handleGoogleCallback(String code, String state) {
         OAuthStatePayload payload = stateService.validateAndExtract(state);
         UUID userId = payload.userId();
+        if (userId == null) {
+            throw new OAuthStateException(OAuthStateException.Reason.MISSING_USER, "OAuth state missing userId");
+        }
+        String stateRef = Integer.toHexString(state == null ? 0 : state.hashCode());
+        log.info("oauth_state_resolution stateRef={} resolvedUserId={} source={} returnTo={} bookingSessionIdPresent={}",
+                stateRef, userId, payload.source(), payload.returnTo(), payload.bookingSessionId() != null);
+        log.info("calendar_connection_lookup_by_user provider={} userId={}", GOOGLE_PROVIDER, userId);
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
         OAuthTokenExchangeResult token = googleApiClient.exchangeCodeForToken(
                 code,
