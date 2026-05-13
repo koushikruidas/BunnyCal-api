@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
@@ -17,6 +18,8 @@ import com.daedalussystems.easySchedule.availability.repository.EventTypeReposit
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
+import com.daedalussystems.easySchedule.booking.service.BookingActionType;
+import com.daedalussystems.easySchedule.booking.service.GuestCapabilityTokenService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
@@ -47,6 +50,8 @@ class BookingNotificationServiceTest {
     @Mock private EventTypeRepository eventTypeRepository;
     @Mock private CalendarConnectionRepository calendarConnectionRepository;
     @Mock private JavaMailSender mailSender;
+    @Mock private BookingManageLinkService bookingManageLinkService;
+    @Mock private GuestCapabilityTokenService guestCapabilityTokenService;
     @Mock private NotificationRecipientResolver recipientResolver;
     @Mock private EmailDeliverabilityPolicy deliverabilityPolicy;
 
@@ -63,13 +68,20 @@ class BookingNotificationServiceTest {
                 calendarConnectionRepository,
                 mailSender,
                 new IcsInviteGenerator("example.com"),
+                bookingManageLinkService,
+                guestCapabilityTokenService,
                 recipientResolver,
                 deliverabilityPolicy,
                 true,
                 "no-reply@example.com",
                 "calendar@example.com",
-                "EasySchedule Calendar");
+                "EasySchedule Calendar",
+                14L);
         when(mailSender.createMimeMessage()).thenAnswer(i -> new MimeMessage(Session.getInstance(new Properties())));
+        lenient().when(guestCapabilityTokenService.issueToken(any(), any(), eq(BookingActionType.MANAGE_BOOKING), any(), any()))
+                .thenReturn("token-abc");
+        lenient().when(bookingManageLinkService.build(any(), any(), any(), any()))
+                .thenReturn("https://app.example.com/manage/booking?token=token-abc&u=host-user&e=discovery-call");
     }
 
     @Test
@@ -77,13 +89,13 @@ class BookingNotificationServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
-        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").timezone("UTC").build();
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
-                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").build()));
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
@@ -113,6 +125,8 @@ class BookingNotificationServiceTest {
         assertTrue(attendeeIcs.contains("ATTENDEE;CN=Guest Name;RSVP=TRUE;PARTSTAT=NEEDS-ACTION"));
         assertTrue(attendeeIcs.contains("mailto:host@example.com"));
         assertTrue(attendeeIcs.contains("mailto:guest@example.com"));
+        assertTrue(textBody(hostMsg).contains("Manage your booking"));
+        assertTrue(textBody(attendeeMsg).contains("Manage your booking"));
     }
 
     @Test
@@ -120,13 +134,13 @@ class BookingNotificationServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 4L);
-        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").timezone("UTC").build();
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CANCELLED");
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
-                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").build()));
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
@@ -148,6 +162,8 @@ class BookingNotificationServiceTest {
         assertTrue(guestIcs.contains("METHOD:CANCEL"));
         assertTrue(guestIcs.contains("STATUS:CANCELLED"));
         assertTrue(guestIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
+        assertFalse(textBody(hostMsg).contains("Manage your booking"));
+        assertFalse(textBody(attendeeMsg).contains("Manage your booking"));
     }
 
     @Test
@@ -155,13 +171,13 @@ class BookingNotificationServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "same@example.com", "Guest Name", 1L);
-        User host = User.builder().id(hostId).name("Host Name").email("same@example.com").timezone("UTC").build();
+        User host = User.builder().id(hostId).name("Host Name").email("same@example.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
-                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").build()));
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("same@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("same@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("same@example.com"));
@@ -175,6 +191,7 @@ class BookingNotificationServiceTest {
         String singleIcs = unfold(icsBody(sent));
         assertTrue(singleIcs.contains("METHOD:REQUEST"));
         assertTrue(singleIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
+        assertTrue(textBody(sent).contains("Manage your booking"));
     }
 
     @Test
@@ -182,13 +199,13 @@ class BookingNotificationServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 2L);
-        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").timezone("UTC").build();
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
-                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").build()));
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
@@ -203,6 +220,34 @@ class BookingNotificationServiceTest {
         assertFalse(hasIcsAttachment(findByRecipient(sent, "guest@example.com")));
         assertFalse(hasCalendarMimePart(findByRecipient(sent, "host@example.com")));
         assertFalse(hasCalendarMimePart(findByRecipient(sent, "guest@example.com")));
+        assertTrue(textBody(findByRecipient(sent, "host@example.com")).contains("Manage your booking"));
+        assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
+    }
+
+    @Test
+    void standalone_updated_sendsManageLinkToHostAndAttendee() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 5L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_UPDATED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        var sent = messageCaptor.getAllValues();
+        assertTrue(textBody(findByRecipient(sent, "host@example.com")).contains("Manage your booking"));
+        assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
     }
 
     private static Booking booking(UUID bookingId, UUID hostId, String guestEmail, String guestName, long sequence) {
@@ -300,6 +345,22 @@ class BookingNotificationServiceTest {
 
     private static String unfold(String ics) {
         return ics.replace("\r\n ", "");
+    }
+
+    private static String textBody(MimeMessage message) throws Exception {
+        Object content = message.getContent();
+        if (!(content instanceof MimeMultipart multipart)) {
+            throw new IllegalStateException("expected multipart content");
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            if (part.getFileName() == null) {
+                try (InputStream in = part.getInputStream()) {
+                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            }
+        }
+        throw new IllegalStateException("text part not found");
     }
 
 }

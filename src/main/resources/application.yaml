@@ -111,6 +111,9 @@ google:
       - https://www.googleapis.com/auth/calendar.events
       - https://www.googleapis.com/auth/calendar.readonly
 
+app:
+  public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
+
 booking:
   public:
     provider-optional:
