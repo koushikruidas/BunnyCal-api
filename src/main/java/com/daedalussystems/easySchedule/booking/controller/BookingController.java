@@ -18,6 +18,7 @@ import com.daedalussystems.easySchedule.common.util.RequestHasher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.security.core.Authentication;
 
 @RestController
 @RequestMapping("/api/bookings")
@@ -38,6 +40,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 public class BookingController {
 
     private static final String ROUTE = IdempotencyRoutes.API_BOOKINGS_CREATE;
+    private static final String CANCEL_ROUTE = IdempotencyRoutes.API_BOOKINGS_CANCEL;
 
     private final BookingService bookingService;
     private final MeetingQueryService meetingQueryService;
@@ -98,5 +101,49 @@ public class BookingController {
                 });
 
         return outcome.toResponseEntity(objectMapper);
+    }
+
+    @PostMapping("/{bookingId}/cancel")
+    public ResponseEntity<?> cancel(
+            Authentication authentication,
+            @PathVariable UUID bookingId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+        UUID authenticatedUserId = extractUserId(authentication);
+        String requestHash = RequestHasher.hash(Map.of(
+                "bookingId", bookingId,
+                "actorUserId", authenticatedUserId
+        ), objectMapper);
+
+        IdempotencyOutcome outcome = idempotencyService.execute(
+                idempotencyKey,
+                authenticatedUserId,
+                CANCEL_ROUTE,
+                requestHash,
+                () -> {
+                    Booking booking = bookingService.cancelBookingAsHost(bookingId, authenticatedUserId, null);
+                    return new ResponseEnvelope<>(200, BookingResponse.from(booking));
+                });
+        return outcome.toResponseEntity(objectMapper);
+    }
+
+    private static UUID extractUserId(Authentication authentication) {
+        if (authentication == null || authentication.getPrincipal() == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof UUID uuid) {
+            return uuid;
+        }
+        if (principal instanceof String text) {
+            try {
+                return UUID.fromString(text);
+            } catch (IllegalArgumentException ignored) {
+                throw new CustomException(ErrorCode.UNAUTHORIZED);
+            }
+        }
+        throw new CustomException(ErrorCode.UNAUTHORIZED);
     }
 }

@@ -220,7 +220,12 @@ class PublicBookingServiceTest {
 
         var response = service.cancel("koushik", "30min", bookingId);
         assertEquals("CANCELLED", response.status());
-        verify(bookingService).cancelBooking(bookingId, userId, 7L);
+        verify(bookingService).cancelBooking(
+                bookingId,
+                userId,
+                7L,
+                CancellationSource.GUEST,
+                null);
     }
 
     @Test

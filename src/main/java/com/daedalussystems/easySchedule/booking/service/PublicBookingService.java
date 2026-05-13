@@ -249,7 +249,7 @@ public class PublicBookingService {
 
         var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
-        bookingService.cancelBooking(bookingId, target.userId(), state.getVersion());
+        bookingService.cancelBooking(bookingId, target.userId(), state.getVersion(), CancellationSource.GUEST, null);
 
         var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, target.userId()))
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));

@@ -23,6 +23,8 @@ import io.micrometer.core.instrument.Timer;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -236,6 +238,48 @@ public class BookingService {
         confirmBooking(bookingId, row.getVersion());
     }
 
+    @Transactional(readOnly = true)
+    public BookingRepository.BookingStateRow findState(UUID bookingId) {
+        return bookingRepository.findStateById(bookingId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+    }
+
+    @Transactional(readOnly = true)
+    public Booking findBooking(UUID bookingId, UUID hostId) {
+        return bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, hostId))
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+    }
+
+    @Transactional
+    public Booking cancelBookingAsHost(UUID bookingId, UUID authenticatedHostId, String reasonCode) {
+        if (bookingId == null || authenticatedHostId == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "bookingId and authenticatedHostId are required.");
+        }
+
+        var state = findState(bookingId);
+        if (!authenticatedHostId.equals(state.getHostId())) {
+            throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this booking.");
+        }
+
+        BookingState current = parseBookingState(state.getStatus());
+        if (current.isCancelled()) {
+            return findBooking(bookingId, authenticatedHostId);
+        }
+
+        try {
+            cancelBooking(bookingId, authenticatedHostId, state.getVersion(), CancellationSource.HOST, reasonCode);
+        } catch (CustomException ex) {
+            if (ex.getErrorCode() != ErrorCode.INVALID_STATE_TRANSITION) {
+                throw ex;
+            }
+            BookingState latest = parseBookingState(findState(bookingId).getStatus());
+            if (!latest.isCancelled()) {
+                throw ex;
+            }
+        }
+        return findBooking(bookingId, authenticatedHostId);
+    }
+
     // ── State Transitions ────────────────────────────────────────────────────
 
     // DB result is the sole authority. Static check is a guardrail only
@@ -315,6 +359,11 @@ public class BookingService {
 
     @Transactional
     public void cancelBooking(UUID id, UUID hostId, long version) {
+        cancelBooking(id, hostId, version, CancellationSource.HOST, null);
+    }
+
+    @Transactional
+    public void cancelBooking(UUID id, UUID hostId, long version, CancellationSource source, String reasonCode) {
         if (id == null || hostId == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "id and hostId are required.");
         }
@@ -329,11 +378,27 @@ public class BookingService {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
 
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("cancelledBy", hostId.toString());
+        metadata.put("source", source == null ? CancellationSource.EXTERNAL.name() : source.name());
+        metadata.put("reasonCode", reasonCode);
+        metadata.put("correlationId", null);
+        metadata.put("causationId", null);
+
         outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(),
                 "BOOKING_CANCELLED",
                 1,
-                new BookingCancelledEvent(id, hostId)));
+                new BookingCancelledEvent(id, hostId),
+                metadata));
+    }
+
+    private static BookingState parseBookingState(String status) {
+        try {
+            return BookingState.fromStatus(status);
+        } catch (RuntimeException ex) {
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Unknown booking status: " + status);
+        }
     }
 
     // ── SLO instrumentation ──────────────────────────────────────────────────

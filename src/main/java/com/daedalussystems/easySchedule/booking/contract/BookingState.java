@@ -48,4 +48,12 @@ public enum BookingState {
     public boolean blocksTimeSlot() {
         return blocksTimeSlot;
     }
+
+    public boolean isCancelled() {
+        return this == CANCELLED;
+    }
+
+    public static BookingState fromStatus(String status) {
+        return BookingState.valueOf(status);
+    }
 }

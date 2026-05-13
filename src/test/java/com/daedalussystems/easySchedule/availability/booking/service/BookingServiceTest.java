@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,6 +25,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.lang.reflect.Field;
@@ -118,6 +120,75 @@ class BookingServiceTest {
         bookingService.cancelBooking(bookingId, hostId, 4L);
 
         verify(bookingRepository, times(1)).updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L);
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void cancelBooking_includesCancellationMetadataInOutboxEnvelope() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 7L)).thenReturn(1);
+
+        bookingService.cancelBooking(bookingId, hostId, 7L, com.daedalussystems.easySchedule.booking.service.CancellationSource.HOST, "USER_REQUEST");
+
+        org.mockito.ArgumentCaptor<OutboxPayloadEnvelope> captor =
+                org.mockito.ArgumentCaptor.forClass(OutboxPayloadEnvelope.class);
+        verify(outboxPublisher).publish(eq("Booking"), eq(bookingId), captor.capture());
+        OutboxPayloadEnvelope envelope = captor.getValue();
+        Map<String, Object> metadata = envelope.metadata();
+        org.junit.jupiter.api.Assertions.assertNotNull(metadata);
+        assertEquals("HOST", metadata.get("source"));
+        assertEquals("USER_REQUEST", metadata.get("reasonCode"));
+        assertEquals(hostId.toString(), metadata.get("cancelledBy"));
+    }
+
+    @Test
+    void cancelBookingAsHost_alreadyCancelled_isNoopAndDoesNotEmitOutbox() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        when(bookingRepository.findStateById(bookingId))
+                .thenReturn(Optional.of(stateRow(bookingId, hostId, "CANCELLED", 3L)));
+        when(bookingRepository.findById(any()))
+                .thenReturn(Optional.of(bookingEntity(bookingId, hostId)));
+
+        bookingService.cancelBookingAsHost(bookingId, hostId, null);
+
+        verify(outboxPublisher, never()).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void cancelBookingAsHost_concurrentRace_emitsSingleOutboxEvent() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+
+        when(bookingRepository.findStateById(bookingId)).thenAnswer(inv -> {
+            if (cancelled.get()) {
+                return Optional.of(stateRow(bookingId, hostId, "CANCELLED", 5L));
+            }
+            return Optional.of(stateRow(bookingId, hostId, "CONFIRMED", 4L));
+        });
+        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(0);
+        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "CONFIRMED", "CANCELLED", 4L))
+                .thenAnswer(inv -> cancelled.compareAndSet(false, true) ? 1 : 0);
+        when(bookingRepository.findById(any()))
+                .thenReturn(Optional.of(bookingEntity(bookingId, hostId)));
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch startGate = new CountDownLatch(1);
+        Callable<Void> task = () -> {
+            startGate.await();
+            bookingService.cancelBookingAsHost(bookingId, hostId, null);
+            return null;
+        };
+
+        Future<Void> f1 = executor.submit(task);
+        Future<Void> f2 = executor.submit(task);
+        startGate.countDown();
+        f1.get();
+        f2.get();
+        executor.shutdownNow();
+
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
     }
 
@@ -262,5 +333,26 @@ class BookingServiceTest {
         assertEquals(1, successCount);
         assertEquals(1, persisted.size());
 
+    }
+
+    private static Booking bookingEntity(UUID bookingId, UUID hostId) {
+        Booking booking = new Booking();
+        booking.setId(bookingId);
+        booking.setHostId(hostId);
+        booking.setEventTypeId(UUID.randomUUID());
+        booking.setStartTime(Instant.parse("2026-05-01T10:00:00Z"));
+        booking.setEndTime(Instant.parse("2026-05-01T10:30:00Z"));
+        booking.setCreatedAt(Instant.parse("2026-05-01T09:00:00Z"));
+        return booking;
+    }
+
+    private static BookingRepository.BookingStateRow stateRow(UUID id, UUID hostId, String status, long version) {
+        return new BookingRepository.BookingStateRow() {
+            @Override public UUID getId() { return id; }
+            @Override public UUID getHostId() { return hostId; }
+            @Override public String getStatus() { return status; }
+            @Override public Long getVersion() { return version; }
+            @Override public Instant getExpiresAt() { return null; }
+        };
     }
 }

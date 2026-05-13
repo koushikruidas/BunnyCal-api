@@ -61,6 +61,14 @@ Where runtime activation is not explicit from one file, this doc marks **Inferre
   - `eventId`, `type`, `version`, `payload`
 - Persisted as JSON string by `OutboxPublisher`.
 
+### Cancellation metadata contract
+- `BOOKING_CANCELLED` envelopes may include `metadata` with:
+  - `cancelledBy` (host UUID string)
+  - `source` (`HOST`, `GUEST`, `EXTERNAL`)
+  - `reasonCode` (nullable string)
+  - `correlationId` (nullable string; reserved)
+  - `causationId` (nullable string; reserved)
+
 ---
 
 ## 3. Event Production Flow
@@ -255,4 +263,3 @@ sequenceDiagram
 2. **Outbox status semantics evolved**
 - Migration updated status check and nullable `next_attempt_at` for terminal rows.
 - Entity/repository behavior aligns with new statuses.
-
