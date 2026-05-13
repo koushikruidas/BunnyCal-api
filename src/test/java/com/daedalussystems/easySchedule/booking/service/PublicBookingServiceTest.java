@@ -51,6 +51,8 @@ class PublicBookingServiceTest {
     @Mock CalendarService calendarService;
     @Mock CalendarEventMappingRepository calendarEventMappingRepository;
     @Mock FencingTokenGenerator fencingTokenGenerator;
+    @Mock BookingLifecycleService bookingLifecycleService;
+    @Mock GuestCapabilityTokenService guestCapabilityTokenService;
 
     private PublicBookingService service;
     private TimeConversionService timeConversionService;
@@ -72,6 +74,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 false
         );
     }
@@ -208,24 +213,10 @@ class PublicBookingServiceTest {
                 .build();
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
-                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
-                    public UUID getId() { return bookingId; }
-                    public UUID getHostId() { return userId; }
-                    public String getStatus() { return "PENDING"; }
-                    public Long getVersion() { return 7L; }
-                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
-                }));
-        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-
-        var response = service.cancel("koushik", "30min", bookingId);
+        when(bookingLifecycleService.cancelAsGuest(bookingId, userId, eventTypeId, null)).thenReturn(booking);
+        var response = service.cancel("koushik", "30min", bookingId, null);
         assertEquals("CANCELLED", response.status());
-        verify(bookingService).cancelBooking(
-                bookingId,
-                userId,
-                7L,
-                CancellationSource.GUEST,
-                null);
+        verify(bookingLifecycleService).cancelAsGuest(bookingId, userId, eventTypeId, null);
     }
 
     @Test
@@ -251,7 +242,7 @@ class PublicBookingServiceTest {
                 )));
 
         CustomException ex = assertThrows(CustomException.class,
-                () -> service.reschedule("koushik", "30min", bookingId, new PublicRescheduleRequest(start)));
+                () -> service.reschedule("koushik", "30min", bookingId, new PublicRescheduleRequest(start), null));
         assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
         verify(bookingService, never()).updateBooking(
                 org.mockito.ArgumentMatchers.eq(bookingId),
@@ -411,6 +402,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 true
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
@@ -448,6 +442,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 true
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
@@ -485,6 +482,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 true
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
@@ -525,6 +525,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 true
         );
         UUID bookingId = UUID.randomUUID();
@@ -571,6 +574,9 @@ class PublicBookingServiceTest {
                 calendarEventMappingRepository,
                 fencingTokenGenerator,
                 timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                14L,
                 true
         );
         UUID bookingId = UUID.randomUUID();

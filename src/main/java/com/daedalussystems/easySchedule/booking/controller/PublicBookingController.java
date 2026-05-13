@@ -123,6 +123,7 @@ public class PublicBookingController {
     public ResponseEntity<?> cancel(@PathVariable String username,
                                     @PathVariable String eventTypeSlug,
                                     @PathVariable String bookingId,
+                                    @RequestParam(value = "token", required = false) String guestCapabilityToken,
                                     @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
@@ -131,7 +132,8 @@ public class PublicBookingController {
         String requestHash = RequestHasher.hash(Map.of(
                 "username", username,
                 "eventTypeSlug", eventTypeSlug,
-                "bookingId", bookingId
+                "bookingId", bookingId,
+                "token", guestCapabilityToken == null ? "" : guestCapabilityToken
         ), objectMapper);
         IdempotencyOutcome outcome = idempotencyService.execute(
                 idempotencyKey,
@@ -139,7 +141,7 @@ public class PublicBookingController {
                 route,
                 requestHash,
                 () -> new ResponseEnvelope<>(200, publicBookingService.cancel(
-                        username, eventTypeSlug, java.util.UUID.fromString(bookingId)))
+                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), guestCapabilityToken))
         );
         return outcome.toResponseEntity(objectMapper);
     }
@@ -148,6 +150,7 @@ public class PublicBookingController {
     public ResponseEntity<?> reschedule(@PathVariable String username,
                                         @PathVariable String eventTypeSlug,
                                         @PathVariable String bookingId,
+                                        @RequestParam(value = "token", required = false) String guestCapabilityToken,
                                         @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
                                         @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
                                         @RequestBody PublicRescheduleRequest request) {
@@ -173,7 +176,8 @@ public class PublicBookingController {
                 "username", username,
                 "eventTypeSlug", eventTypeSlug,
                 "bookingId", bookingId,
-                "startTime", normalizedRequest.startTime()
+                "startTime", normalizedRequest.startTime(),
+                "token", guestCapabilityToken == null ? "" : guestCapabilityToken
         ), objectMapper);
 
         IdempotencyOutcome outcome = idempotencyService.execute(
@@ -182,7 +186,7 @@ public class PublicBookingController {
                 route,
                 requestHash,
                 () -> new ResponseEnvelope<>(200, publicBookingService.reschedule(
-                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), normalizedRequest))
+                        username, eventTypeSlug, java.util.UUID.fromString(bookingId), normalizedRequest, guestCapabilityToken))
         );
         return outcome.toResponseEntity(objectMapper);
     }

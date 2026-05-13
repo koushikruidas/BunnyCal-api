@@ -25,6 +25,7 @@ import com.daedalussystems.easySchedule.common.time.TimeConversionService;
 import com.daedalussystems.easySchedule.sync.FencingTokenGenerator;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
@@ -48,6 +49,9 @@ public class PublicBookingService {
     private final FencingTokenGenerator fencingTokenGenerator;
     private final TimeConversionService timeConversionService;
     private final boolean providerOptionalPublicBookingEnabled;
+    private final BookingLifecycleService bookingLifecycleService;
+    private final GuestCapabilityTokenService guestCapabilityTokenService;
+    private final Duration guestManageTokenTtl;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
@@ -59,6 +63,9 @@ public class PublicBookingService {
                                 CalendarEventMappingRepository calendarEventMappingRepository,
                                 FencingTokenGenerator fencingTokenGenerator,
                                 TimeConversionService timeConversionService,
+                                BookingLifecycleService bookingLifecycleService,
+                                GuestCapabilityTokenService guestCapabilityTokenService,
+                                @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 @Value("${booking.public.provider-optional.enabled:false}")
                                 boolean providerOptionalPublicBookingEnabled) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
@@ -71,6 +78,9 @@ public class PublicBookingService {
         this.calendarEventMappingRepository = calendarEventMappingRepository;
         this.fencingTokenGenerator = fencingTokenGenerator;
         this.timeConversionService = timeConversionService;
+        this.bookingLifecycleService = bookingLifecycleService;
+        this.guestCapabilityTokenService = guestCapabilityTokenService;
+        this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
     }
 
@@ -240,19 +250,20 @@ public class PublicBookingService {
                     bookingId, target.userId(), target.eventTypeId());
         }
         bookingService.confirmHeldBooking(bookingId);
-        return new PublicConfirmResponse(bookingId, "CONFIRMED");
+        String manageToken = guestCapabilityTokenService.issueToken(
+                bookingId,
+                target.userId(),
+                BookingActionType.MANAGE_BOOKING,
+                guestManageTokenTtl,
+                TokenCreatorType.SYSTEM
+        );
+        return new PublicConfirmResponse(bookingId, "CONFIRMED", manageToken);
     }
 
     @Transactional
-    public PublicBookingStatusResponse cancel(String username, String eventTypeSlug, UUID bookingId) {
+    public PublicBookingStatusResponse cancel(String username, String eventTypeSlug, UUID bookingId, String guestCapabilityToken) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
-
-        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
-        bookingService.cancelBooking(bookingId, target.userId(), state.getVersion(), CancellationSource.GUEST, null);
-
-        var booking = bookingRepository.findById(new com.daedalussystems.easySchedule.booking.domain.BookingId(bookingId, target.userId()))
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        var booking = bookingLifecycleService.cancelAsGuest(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
         return new PublicBookingStatusResponse(
                 bookingId,
                 "CANCELLED",
@@ -266,11 +277,13 @@ public class PublicBookingService {
     public PublicBookingStatusResponse reschedule(String username,
                                                   String eventTypeSlug,
                                                   UUID bookingId,
-                                                  PublicRescheduleRequest request) {
+                                                  PublicRescheduleRequest request,
+                                                  String guestCapabilityToken) {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        bookingLifecycleService.authorizeGuestReschedule(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
 
         var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
