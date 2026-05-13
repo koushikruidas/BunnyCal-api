@@ -1,9 +1,12 @@
 package com.daedalussystems.easySchedule.calendar.controller;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
+import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
+import com.daedalussystems.easySchedule.common.exception.CustomException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -19,6 +22,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.beans.factory.annotation.Value;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -28,11 +35,18 @@ public class CalendarIntegrationController {
     private static final String DASHBOARD_FALLBACK_RETURN_TO = "/dashboard/integrations";
     private static final String PUBLIC_FALLBACK_RETURN_TO = "/";
     private final CalendarOAuthService oauthService;
+    private final CalendarWebhookIngestionService webhookIngestionService;
     private final GoogleOAuthProperties googleOAuthProperties;
+    private final String webhookSharedSecret;
 
-    public CalendarIntegrationController(CalendarOAuthService oauthService, GoogleOAuthProperties googleOAuthProperties) {
+    public CalendarIntegrationController(CalendarOAuthService oauthService,
+                                         CalendarWebhookIngestionService webhookIngestionService,
+                                         GoogleOAuthProperties googleOAuthProperties,
+                                         @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
+        this.webhookIngestionService = webhookIngestionService;
         this.googleOAuthProperties = googleOAuthProperties;
+        this.webhookSharedSecret = webhookSharedSecret;
     }
 
     @GetMapping("/google/connect")
@@ -103,6 +117,23 @@ public class CalendarIntegrationController {
                     .body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
         }
         oauthService.disconnectGoogle(userId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    @PostMapping("/webhooks/google")
+    public ResponseEntity<ApiResponse<Void>> ingestGoogleWebhook(
+            @RequestHeader(value = "X-Webhook-Secret", required = false) String webhookSecret,
+            @RequestBody GoogleWebhookRequest request) {
+        if (webhookSharedSecret == null || webhookSharedSecret.isBlank()) {
+            throw new CustomException(ErrorCode.FORBIDDEN, "Webhook shared secret is not configured.");
+        }
+        if (!webhookSharedSecret.equals(webhookSecret)) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED, "Invalid webhook secret.");
+        }
+        if (request == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Webhook payload is required.");
+        }
+        webhookIngestionService.ingestGoogle(request.connectionId(), request.providerEventId(), request.rawPayload());
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 

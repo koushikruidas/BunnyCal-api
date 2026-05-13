@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.repository.CalendarWebhookEventRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -20,7 +21,7 @@ class CalendarWebhookDedupServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CalendarWebhookDedupService(repository);
+        service = new CalendarWebhookDedupService(repository, new SimpleMeterRegistry());
     }
 
     @Test

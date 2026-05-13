@@ -7,6 +7,9 @@ import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
+import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
+import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import java.util.Map;
 import java.util.UUID;
@@ -20,6 +23,8 @@ import org.springframework.security.core.Authentication;
 class CalendarIntegrationControllerTest {
     @Mock
     private CalendarOAuthService oauthService;
+    @Mock
+    private CalendarWebhookIngestionService webhookIngestionService;
 
     private CalendarIntegrationController controller;
     private GoogleOAuthProperties properties;
@@ -30,7 +35,7 @@ class CalendarIntegrationControllerTest {
         properties = new GoogleOAuthProperties();
         properties.setFrontendSuccessRedirect("http://localhost:3000/success");
         properties.setFrontendErrorRedirect("http://localhost:3000/error");
-        controller = new CalendarIntegrationController(oauthService, properties);
+        controller = new CalendarIntegrationController(oauthService, webhookIngestionService, properties, "secret");
     }
 
     @Test
@@ -108,5 +113,20 @@ class CalendarIntegrationControllerTest {
         assertEquals(302, response.getStatusCode().value());
         assertEquals("http://localhost:3000/error?code=OAUTH_INVALID_RESPONSE",
                 response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void webhook_ingestAccepted_whenSecretValid() {
+        GoogleWebhookRequest request = new GoogleWebhookRequest(UUID.randomUUID(), "evt-1", "{\"id\":\"evt-1\"}");
+        ApiResponse<Void> body = controller.ingestGoogleWebhook("secret", request).getBody();
+        assertEquals(true, body.isSuccess());
+        verify(webhookIngestionService).ingestGoogle(request.connectionId(), request.providerEventId(), request.rawPayload());
+    }
+
+    @Test
+    void webhook_rejects_whenSecretInvalid() {
+        GoogleWebhookRequest request = new GoogleWebhookRequest(UUID.randomUUID(), "evt-1", "{}");
+        org.junit.jupiter.api.Assertions.assertThrows(CustomException.class,
+                () -> controller.ingestGoogleWebhook("wrong", request));
     }
 }

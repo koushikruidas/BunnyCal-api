@@ -1,22 +1,31 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.calendar.repository.CalendarWebhookEventRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class CalendarWebhookDedupService {
+    private static final Logger log = LoggerFactory.getLogger(CalendarWebhookDedupService.class);
 
     private final CalendarWebhookEventRepository repository;
+    private final Counter duplicateCounter;
+    private final Counter replayRejectedCounter;
 
-    public CalendarWebhookDedupService(CalendarWebhookEventRepository repository) {
+    public CalendarWebhookDedupService(CalendarWebhookEventRepository repository, MeterRegistry meterRegistry) {
         this.repository = repository;
+        this.duplicateCounter = Counter.builder("webhook_duplicate_total").register(meterRegistry);
+        this.replayRejectedCounter = Counter.builder("webhook_replay_rejected_total").register(meterRegistry);
     }
 
     @Transactional
@@ -31,6 +40,11 @@ public class CalendarWebhookDedupService {
                 hashNullable(rawPayload),
                 Instant.now()
         );
+        if (inserted == 0) {
+            duplicateCounter.increment();
+            replayRejectedCounter.increment();
+            log.info("calendar_webhook_replay_rejected provider={} providerEventId={}", provider, providerEventId);
+        }
         return inserted > 0;
     }
 

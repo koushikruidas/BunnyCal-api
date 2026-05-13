@@ -30,6 +30,7 @@ public class BookingSyncReconciler {
     private final Counter driftDetectedCount;
     private final Counter repairSuccessCount;
     private final Counter repairFailureCount;
+    private final MeterRegistry meterRegistry;
 
     public BookingSyncReconciler(CalendarSyncJobRepository repository,
                                  CalendarService calendarService,
@@ -40,6 +41,7 @@ public class BookingSyncReconciler {
         this.calendarService = calendarService;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.throttleDelayMs = Math.max(0L, throttleDelayMs);
+        this.meterRegistry = meterRegistry;
         this.checkedCounter = meterRegistry.counter("sync.reconcile.checked.total");
         this.driftCounter = meterRegistry.counter("sync.reconcile.drift_detected.total");
         this.requeuedCounter = meterRegistry.counter("sync.reconcile.requeued.total");
@@ -111,6 +113,7 @@ public class BookingSyncReconciler {
                                String reason) {
         driftCounter.increment();
         driftDetectedCount.increment();
+        meterRegistry.counter("reconciliation_conflict_total", "reason", reason).increment();
         int updated = repository.requeue(
                 job.getId(),
                 job.getVersion(),

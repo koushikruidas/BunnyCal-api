@@ -68,6 +68,7 @@ public class BookingService {
     private final Timer completionTimer;
     private final Counter bookingCompletedTotal;
     private final Counter bookingCompletedWithinSloTotal;
+    private final MeterRegistry meterRegistry;
 
     public BookingService(
             UserRepository userRepository,
@@ -79,6 +80,7 @@ public class BookingService {
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
+        this.meterRegistry = meterRegistry;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
@@ -391,6 +393,8 @@ public class BookingService {
                 1,
                 new BookingCancelledEvent(id, hostId),
                 metadata));
+        meterRegistry.counter("booking_cancellation_total",
+                "source", source == null ? CancellationSource.EXTERNAL.name() : source.name()).increment();
     }
 
     private static BookingState parseBookingState(String status) {

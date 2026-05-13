@@ -81,6 +81,12 @@ logging:
 calendar:
   provider:
     mode: ${CALENDAR_PROVIDER_MODE:google}
+  webhook:
+    enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
+    provider:
+      google:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_GOOGLE_ENABLED:false}
+    shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET:}
   google:
     diagnostics:
       enabled: ${CALENDAR_GOOGLE_DIAGNOSTICS_ENABLED:false}

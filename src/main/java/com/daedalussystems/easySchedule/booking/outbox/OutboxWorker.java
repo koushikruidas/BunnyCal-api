@@ -39,6 +39,7 @@ public class OutboxWorker {
     private final MeterRegistry meterRegistry;
     private final DistributionSummary outboxLag;
     private final Counter retryCounter;
+    private final Counter retryCounterAlias;
     private final Counter bookingFailedTotal;
     private final Timer processingLatency;
 
@@ -68,6 +69,9 @@ public class OutboxWorker {
 
         this.retryCounter = Counter.builder("outbox.retries.total")
                 .description("Number of outbox events that entered RETRYING state after a dispatch failure")
+                .register(meterRegistry);
+        this.retryCounterAlias = Counter.builder("outbox_retry_total")
+                .description("Alias counter for outbox retries")
                 .register(meterRegistry);
 
         // Counts booking outbox events that exhausted all retries and entered DLQ (FAILED).
@@ -160,6 +164,7 @@ public class OutboxWorker {
                     // "how many events are in backoff?" without a timestamp scan.
                     event.setStatus(OutboxEventStatus.RETRYING);
                     retryCounter.increment();
+                    retryCounterAlias.increment();
 
                     long delay = computeBackoffMillis(nextAttempt);
                     event.setNextAttemptAt(timeSource.now().plusMillis(delay));

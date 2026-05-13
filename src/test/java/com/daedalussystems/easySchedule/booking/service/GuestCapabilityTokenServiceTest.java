@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,7 +29,7 @@ class GuestCapabilityTokenServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new GuestCapabilityTokenService(repository);
+        service = new GuestCapabilityTokenService(repository, new SimpleMeterRegistry());
     }
 
     @Test

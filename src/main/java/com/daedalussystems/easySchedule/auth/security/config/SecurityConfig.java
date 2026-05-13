@@ -90,6 +90,7 @@ public class SecurityConfig {
                         .requestMatchers("/oauth2/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/integrations/calendar/google/callback").permitAll()
+                        .requestMatchers("/integrations/calendar/webhooks/**").permitAll()
                         .requestMatchers("/integrations/calendar/**").authenticated()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll()
