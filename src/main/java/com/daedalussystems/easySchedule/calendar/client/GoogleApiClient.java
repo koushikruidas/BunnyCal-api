@@ -12,6 +12,8 @@ public interface GoogleApiClient {
 
     void deleteEvent(String accessToken, String externalEventId);
 
+    boolean eventExists(String accessToken, String externalEventId);
+
     TokenRefreshResult refreshAccessToken(String refreshToken);
 
     OAuthTokenExchangeResult exchangeCodeForToken(String code, String redirectUri, String clientId, String clientSecret);

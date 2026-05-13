@@ -155,11 +155,20 @@ public class BookingSyncWorker {
     private void processDelete(CalendarSyncJob job) {
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
             Instant startedAt = Instant.now();
-            calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
-                    job.getInternalRefId(),
-                    job.getProvider(),
-                    job.getExternalEventId()
-            ));
+            try {
+                calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
+                        job.getInternalRefId(),
+                        job.getProvider(),
+                        job.getExternalEventId()
+                ));
+            } catch (CalendarClientException ex) {
+                if (isDeleteAlreadyConverged(ex)) {
+                    log.info("sync_delete_idempotent_success syncJobId={} bookingId={} provider={} externalEventId={} status={}",
+                            job.getId(), job.getInternalRefId(), job.getProvider(), job.getExternalEventId(), ex.getStatusCode());
+                } else {
+                    throw ex;
+                }
+            }
             providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         }
         syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
@@ -205,5 +214,10 @@ public class BookingSyncWorker {
         if (status >= 500) return "PROVIDER_DOWN";
         if (status >= 400) return "INVALID_REQUEST";
         return "PROVIDER_ERROR";
+    }
+
+    private static boolean isDeleteAlreadyConverged(CalendarClientException ex) {
+        int status = ex.getStatusCode();
+        return status == 404 || status == 410;
     }
 }

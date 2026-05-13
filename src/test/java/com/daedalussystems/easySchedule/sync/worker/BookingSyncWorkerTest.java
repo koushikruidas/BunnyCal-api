@@ -2,6 +2,7 @@ package com.daedalussystems.easySchedule.sync.worker;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -134,6 +135,38 @@ class BookingSyncWorkerTest {
         verify(repository).markSynced(id, 13L, null);
     }
 
+    @Test
+    void deleteNotFound_isTreatedAsIdempotentSuccess() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingDeleteJob(id, 17L, "ext-deleted");
+        when(repository.claimPendingBatch(any(), eq(2))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        org.mockito.Mockito.doThrow(new com.daedalussystems.easySchedule.calendar.client.CalendarClientException(404, "missing"))
+                .when(calendarService).deleteEvent(any());
+
+        worker.processPending(2);
+
+        verify(repository).markSynced(id, 17L, "ext-deleted");
+        verify(repository, never()).markFailure(eq(id), eq(17L), any(), any(), anyBoolean());
+    }
+
+    @Test
+    void deleteOtherClientError_marksFailure() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingDeleteJob(id, 19L, "ext-bad");
+        when(repository.claimPendingBatch(any(), eq(2))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        org.mockito.Mockito.doThrow(new com.daedalussystems.easySchedule.calendar.client.CalendarClientException(400, "bad"))
+                .when(calendarService).deleteEvent(any());
+        Instant next = Instant.parse("2030-01-01T00:00:00Z");
+        when(retryPolicy.nextRetryAt(1)).thenReturn(next);
+        when(retryPolicy.isRetryExhausted(1)).thenReturn(false);
+
+        worker.processPending(2);
+
+        verify(repository).markFailure(id, 19L, next, "INVALID_REQUEST", true);
+    }
+
     private static CalendarSyncJob pendingCreateJob(UUID id, long version, String externalEventId) {
         CalendarSyncJob job = new CalendarSyncJob();
         job.setId(id);
@@ -146,6 +179,12 @@ class BookingSyncWorkerTest {
         job.setAttemptCount(0);
         job.setNextRetryAt(Instant.now());
         job.setExternalEventId(externalEventId);
+        return job;
+    }
+
+    private static CalendarSyncJob pendingDeleteJob(UUID id, long version, String externalEventId) {
+        CalendarSyncJob job = pendingCreateJob(id, version, externalEventId);
+        job.setDesiredAction(SyncDesiredAction.DELETE);
         return job;
     }
 }

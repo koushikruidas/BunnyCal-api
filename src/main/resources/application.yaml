@@ -115,7 +115,7 @@ booking:
   public:
     provider-optional:
       enabled: ${BOOKING_PUBLIC_PROVIDER_OPTIONAL_ENABLED:true}
-    require-capability-token: ${BOOKING_PUBLIC_REQUIRE_CAPABILITY_TOKEN:false}
+    require-capability-token: ${BOOKING_PUBLIC_REQUIRE_CAPABILITY_TOKEN:true}
     capability-token-ttl-days: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_TTL_DAYS:14}
     capability-token-legacy-cutoff: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_LEGACY_CUTOFF:}
   notifications:

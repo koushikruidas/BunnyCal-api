@@ -21,6 +21,7 @@ import com.daedalussystems.easySchedule.calendar.provider.CreateEventResponse;
 import com.daedalussystems.easySchedule.calendar.provider.GoogleCalendarProvider;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventResponse;
+import com.daedalussystems.easySchedule.calendar.provider.DeleteEventRequest;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import java.time.Instant;
 import java.util.Optional;
@@ -152,5 +153,32 @@ class GoogleCalendarProviderClientTest {
         assertEquals("guest@example.com", sent.attendeeEmail());
         assertEquals("Guest User", sent.attendeeName());
         verify(bookingRepository).findAnyById(eq(bookingId));
+    }
+
+    @Test
+    void eventExists_usesProviderTruth() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = Booking.builder()
+                .id(bookingId)
+                .hostId(hostId)
+                .eventTypeId(UUID.randomUUID())
+                .startTime(Instant.parse("2026-05-10T10:00:00Z"))
+                .endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .guestName("Guest User")
+                .build();
+        CalendarConnection connection = new CalendarConnection();
+        connection.setStatus(CalendarConnectionStatus.ACTIVE);
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(connectionRepository.findByUserIdAndProvider(hostId, CalendarProviderType.GOOGLE))
+                .thenReturn(Optional.of(connection));
+        when(googleCalendarProvider.eventExists(any(DeleteEventRequest.class))).thenReturn(false);
+
+        boolean exists = client.eventExists(bookingId, "google", "ext-1");
+
+        assertEquals(false, exists);
+        verify(googleCalendarProvider).eventExists(any(DeleteEventRequest.class));
     }
 }

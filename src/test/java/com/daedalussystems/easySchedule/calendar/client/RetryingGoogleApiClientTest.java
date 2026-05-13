@@ -67,4 +67,13 @@ class RetryingGoogleApiClientTest {
         assertEquals("sub-1", client.fetchProviderUserId("tok"));
         verify(delegate, times(2)).fetchProviderUserId("tok");
     }
+
+    @Test
+    void eventExists_notFoundReturnsFalseWithoutRetryStorm() {
+        RetryingGoogleApiClient client = new RetryingGoogleApiClient(delegate);
+        when(delegate.eventExists("tok", "ext-1")).thenReturn(false);
+
+        assertEquals(false, client.eventExists("tok", "ext-1"));
+        verify(delegate, times(1)).eventExists("tok", "ext-1");
+    }
 }

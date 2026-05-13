@@ -138,11 +138,19 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
 
     @Override
     public boolean eventExists(UUID internalId, String provider, String externalEventId) {
-        return externalEventId != null && !externalEventId.isBlank();
+        if (externalEventId == null || externalEventId.isBlank()) {
+            return false;
+        }
+        Booking booking = bookingRepository.findAnyById(internalId)
+                .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
+        CalendarConnection connection = resolveAnyConnection(booking.getHostId(), provider);
+        return googleCalendarProvider.eventExists(new DeleteEventRequest(connection.getId(), externalEventId));
     }
 
     @Override
     public boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
+        // Google-backed flow does not persist idempotency metadata on provider events.
+        // Treat current existence as "match" for reconciliation purposes.
         return eventExists(internalId, provider, externalEventId);
     }
 

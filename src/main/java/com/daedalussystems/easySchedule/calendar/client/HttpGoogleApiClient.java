@@ -120,6 +120,26 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
+    public boolean eventExists(String accessToken, String externalEventId) {
+        try {
+            restClient.get()
+                    .uri("/calendar/v3/calendars/primary/events/{id}", externalEventId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            return true;
+        } catch (RestClientResponseException ex) {
+            int status = ex.getStatusCode().value();
+            if (status == 404 || status == 410) {
+                return false;
+            }
+            throw classify(ex);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
     public TokenRefreshResult refreshAccessToken(String refreshToken) {
         try {
             MultiValueMap<String, String> form = new LinkedMultiValueMap<>();

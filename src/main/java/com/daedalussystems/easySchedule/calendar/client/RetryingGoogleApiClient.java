@@ -40,6 +40,11 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
+    public boolean eventExists(String accessToken, String externalEventId) {
+        return withRetry(() -> delegate.eventExists(accessToken, externalEventId));
+    }
+
+    @Override
     public TokenRefreshResult refreshAccessToken(String refreshToken) {
         return delegate.refreshAccessToken(refreshToken);
     }

@@ -2,6 +2,7 @@ package com.daedalussystems.easySchedule.sync.orchestration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -78,6 +79,38 @@ class BookingSyncReconcilerTest {
         reconciler.reconcile(10);
 
         verify(repository).markFailedPermanent(job.getId(), 5L, "AUTH_REVOKED");
+    }
+
+    @Test
+    void deleteMissingExternal_isNoopAndDoesNotRequeue() {
+        CalendarSyncJob job = synced("ext-3", 6L);
+        job.setDesiredAction(SyncDesiredAction.DELETE);
+        when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
+        when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
+        when(calendarService.observeEvent(any())).thenReturn(CalendarService.ObserveEventResult.missing());
+
+        reconciler.reconcile(10);
+
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never())
+                .requeue(any(), anyLong(), any(), any(), any());
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never())
+                .markFailedPermanent(any(), anyLong(), any());
+    }
+
+    @Test
+    void deleteInvalidRequestPermanent_isTreatedAsConvergedNoop() {
+        CalendarSyncJob job = synced("ext-4", 7L);
+        job.setDesiredAction(SyncDesiredAction.DELETE);
+        when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
+        when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
+        when(calendarService.observeEvent(any())).thenReturn(CalendarService.ObserveEventResult.permanent("INVALID_REQUEST"));
+
+        reconciler.reconcile(10);
+
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never())
+                .markFailedPermanent(any(), anyLong(), any());
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never())
+                .requeue(any(), anyLong(), any(), any(), any());
     }
 
     private static CalendarSyncJob synced(String externalId, long version) {

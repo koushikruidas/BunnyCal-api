@@ -43,4 +43,11 @@ public class GoogleCalendarProvider implements CalendarProvider {
                 }
         );
     }
+
+    public boolean eventExists(DeleteEventRequest request) {
+        return tokenRefresher.executeWithValidToken(
+                request.connectionId(),
+                token -> googleApiClient.eventExists(token, request.externalEventId())
+        );
+    }
 }

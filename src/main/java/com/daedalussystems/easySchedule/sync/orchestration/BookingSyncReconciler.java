@@ -96,6 +96,13 @@ public class BookingSyncReconciler {
                         "DRIFT_DATA_MISMATCH");
                 case RETRYABLE_FAILURE -> errorCounter.increment();
                 case PERMANENT_FAILURE -> {
+                    if (job.getDesiredAction() == SyncDesiredAction.DELETE
+                            && "INVALID_REQUEST".equals(observed.errorCode())) {
+                        log.info("sync_reconcile_delete_converged_invalid_request internalRefId={} provider={} correlationId={}",
+                                job.getInternalRefId(), job.getProvider(), job.getId());
+                        noopCounter.increment();
+                        break;
+                    }
                     repository.markFailedPermanent(job.getId(), job.getVersion(),
                             observed.errorCode() == null ? "RECONCILE_PERMANENT_FAILURE" : observed.errorCode());
                     errorCounter.increment();
