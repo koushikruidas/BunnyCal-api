@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.sync.reconcile.DeterministicReconcileEvaluator;
+import com.daedalussystems.easySchedule.sync.reconcile.PersistedReconcileSnapshotAssembler;
 import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParityClassifier;
 import com.daedalussystems.easySchedule.sync.reconcile.ReconcileSnapshotCanonicalizer;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
@@ -35,6 +36,8 @@ class BookingSyncReconcilerTest {
     private IdempotencyKeyFactory idempotencyKeyFactory;
     @Mock
     private SyncReconcileDecisionLogRepository decisionLogRepository;
+    @Mock
+    private PersistedReconcileSnapshotAssembler snapshotAssembler;
 
     private DeterministicReconcileEvaluator evaluator;
     private ReconcileShadowParityClassifier parityClassifier;
@@ -49,7 +52,15 @@ class BookingSyncReconcilerTest {
         parityClassifier = new ReconcileShadowParityClassifier();
         canonicalizer = new ReconcileSnapshotCanonicalizer();
         reconciler = new BookingSyncReconciler(
-                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, decisionLogRepository, 0L, new SimpleMeterRegistry());
+                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, 0L, new SimpleMeterRegistry());
+
+        when(snapshotAssembler.assembleAndPersist(any(), any(), any())).thenAnswer(invocation -> {
+            var runtime = invocation.getArgument(2, com.daedalussystems.easySchedule.sync.reconcile.ReconcileInputSnapshot.class);
+            return new PersistedReconcileSnapshotAssembler.SnapshotAssemblyResult(
+                    null,
+                    runtime,
+                    com.daedalussystems.easySchedule.sync.reconcile.SnapshotInputParity.EXACT_MATCH);
+        });
     }
 
     @Test

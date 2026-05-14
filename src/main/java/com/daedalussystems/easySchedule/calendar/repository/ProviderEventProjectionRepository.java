@@ -8,6 +8,8 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.QueryHints;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface ProviderEventProjectionRepository extends JpaRepository<ProviderEventProjection, UUID> {
     Optional<ProviderEventProjection> findByConnectionIdAndProviderAndExternalEventId(
@@ -23,4 +25,14 @@ public interface ProviderEventProjectionRepository extends JpaRepository<Provide
             UUID connectionId,
             String provider,
             String externalEventId);
+
+    @Query(value = """
+            SELECT p FROM ProviderEventProjection p
+            WHERE p.provider = :provider
+              AND p.externalEventId = :externalEventId
+            ORDER BY p.lastObservedAt DESC
+            """)
+    java.util.List<ProviderEventProjection> findLatestByProviderAndExternalEventId(
+            @Param("provider") String provider,
+            @Param("externalEventId") String externalEventId);
 }
