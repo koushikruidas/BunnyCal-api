@@ -1,0 +1,8 @@
+rationale,owner,policy_ref,description
+confirmed_booking_sync_failed_with_active_projection,sync-worker,operational,Confirmed booking with failed sync and active projection is an operational fault that requires worker-level remediation.
+confirmed_synced_active_happy_path,booking-service,structural,Confirmed synced booking with active projection is the steady state owned by booking lifecycle.
+declined_participation_does_not_autocancel,booking-service,product,Attendee decline does not automatically cancel host booking in current product semantics.
+explicitly_reviewed_illegal_state_combination,sync-invariants,structural,Combination is forbidden by reviewed structural semantics and should alert immediately.
+sync_pipeline_in_progress,sync-orchestrator,operational,Transient states while sync pipeline is actively processing are legal operationally.
+terminal_booking_cannot_remain_externally_active,reconcile-engine,structural,Terminal booking must not retain active external projection and requires repair.
+terminal_booking_with_tombstoned_projection_converged,reconcile-engine,structural,Terminal booking with tombstoned projection is converged steady semantics.

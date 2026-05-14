@@ -20,12 +20,16 @@ public class CompositeSyncStateClassifier {
                                    SyncJobStatus syncStatus,
                                    ProjectionLifecycle projectionLifecycle,
                                    ParticipationLifecycle participationLifecycle) {
-        CompositeKey key = new CompositeKey(bookingState, syncStatus, projectionLifecycle, participationLifecycle);
+        return reviewedClassification(new CompositeKey(bookingState, syncStatus, projectionLifecycle, participationLifecycle))
+                .classification();
+    }
+
+    public ReviewedClassification reviewedClassification(CompositeKey key) {
         ReviewedClassification classification = matrix.get(key);
         if (classification == null) {
             throw new IllegalStateException("Unclassified composite sync state: " + key);
         }
-        return classification.classification();
+        return classification;
     }
 
     public int coveredCombinationCount() {
