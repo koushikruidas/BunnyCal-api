@@ -1,11 +1,23 @@
 package com.daedalussystems.easySchedule.sync.orchestration;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.domain.SyncReconcileDecisionLog;
+import com.daedalussystems.easySchedule.sync.reconcile.DeterministicReconcileEvaluator;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileDecision;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileDecisionResult;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileInputSnapshot;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParity;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParityClassifier;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileSnapshotCanonicalizer;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
+import com.daedalussystems.easySchedule.sync.repository.SyncReconcileDecisionLogRepository;
 import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
 import com.daedalussystems.easySchedule.sync.state.SyncDesiredAction;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +33,11 @@ public class BookingSyncReconciler {
     private final CalendarSyncJobRepository repository;
     private final CalendarService calendarService;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
+    private final DeterministicReconcileEvaluator evaluator;
+    private final ReconcileShadowParityClassifier parityClassifier;
+    private final ReconcileSnapshotCanonicalizer canonicalizer;
+    private final SyncReconcileDecisionLogRepository decisionLogRepository;
+    private final Clock clock;
     private final long throttleDelayMs;
     private final Counter checkedCounter;
     private final Counter driftCounter;
@@ -31,15 +48,25 @@ public class BookingSyncReconciler {
     private final Counter repairSuccessCount;
     private final Counter repairFailureCount;
     private final MeterRegistry meterRegistry;
+    private final Timer convergenceLatency;
 
     public BookingSyncReconciler(CalendarSyncJobRepository repository,
                                  CalendarService calendarService,
                                  IdempotencyKeyFactory idempotencyKeyFactory,
+                                 DeterministicReconcileEvaluator evaluator,
+                                 ReconcileShadowParityClassifier parityClassifier,
+                                 ReconcileSnapshotCanonicalizer canonicalizer,
+                                 SyncReconcileDecisionLogRepository decisionLogRepository,
                                  @Value("${sync.reconcile.throttle-ms:25}") long throttleDelayMs,
                                  MeterRegistry meterRegistry) {
         this.repository = repository;
         this.calendarService = calendarService;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
+        this.evaluator = evaluator;
+        this.parityClassifier = parityClassifier;
+        this.canonicalizer = canonicalizer;
+        this.decisionLogRepository = decisionLogRepository;
+        this.clock = Clock.systemUTC();
         this.throttleDelayMs = Math.max(0L, throttleDelayMs);
         this.meterRegistry = meterRegistry;
         this.checkedCounter = meterRegistry.counter("sync.reconcile.checked.total");
@@ -50,6 +77,9 @@ public class BookingSyncReconciler {
         this.driftDetectedCount = meterRegistry.counter("sync.reconcile.drift_detected.total");
         this.repairSuccessCount = meterRegistry.counter("sync.reconcile.repair_success.total");
         this.repairFailureCount = meterRegistry.counter("sync.reconcile.repair_failure.total");
+        this.convergenceLatency = Timer.builder("sync.convergence.latency.ms")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
     }
 
     @Transactional
@@ -73,6 +103,37 @@ public class BookingSyncReconciler {
                             job.getExternalEventId(),
                             idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())));
             rateLimit(throttleDelayMs);
+            ReconcileInputSnapshot snapshot = new ReconcileInputSnapshot(
+                    job.getId(),
+                    job.getInternalRefId(),
+                    job.getProvider(),
+                    job.getExternalEventId(),
+                    job.getStatus(),
+                    job.getDesiredAction(),
+                    observed.status(),
+                    observed.errorCode(),
+                    null,
+                    null
+            );
+            ReconcileDecisionResult shadowDecision = evaluator.evaluate(snapshot);
+            persistShadowDecision(snapshot, shadowDecision);
+            ReconcileDecision legacyDecision = evaluator.legacyDecision(snapshot);
+            ReconcileShadowParity parity = parityClassifier.classify(legacyDecision, shadowDecision.decision());
+            meterRegistry.counter("sync.shadow.parity.total",
+                    "provider", job.getProvider(),
+                    "parity", parity.name(),
+                    "legacy_decision", legacyDecision.name(),
+                    "shadow_decision", shadowDecision.decision().name()).increment();
+            if (parity != ReconcileShadowParity.EXACT_MATCH) {
+                log.warn("sync_shadow_decision_parity_mismatch bookingId={} syncJobId={} provider={} legacyDecision={} shadowDecision={} rationaleCode={}",
+                        job.getInternalRefId(), job.getId(), job.getProvider(),
+                        legacyDecision, shadowDecision.decision(), shadowDecision.rationaleCode());
+            }
+            if (job.getCreatedAt() != null) {
+                // Operational metric only; deterministic replay logic must not depend on wall clock.
+                long latencyMs = Math.max(0L, Duration.between(job.getCreatedAt(), clock.instant()).toMillis());
+                convergenceLatency.record(latencyMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
 
             switch (observed.status()) {
                 case EXISTS -> {
@@ -136,6 +197,30 @@ public class BookingSyncReconciler {
             noopCounter.increment();
             repairFailureCount.increment();
         }
+    }
+
+    private void persistShadowDecision(ReconcileInputSnapshot snapshot, ReconcileDecisionResult shadowDecision) {
+        meterRegistry.counter("sync.shadow.decision.total",
+                "provider", snapshot.provider(),
+                "decision", shadowDecision.decision().name()).increment();
+        SyncReconcileDecisionLog logRow = new SyncReconcileDecisionLog();
+        logRow.setSyncJobId(snapshot.syncJobId());
+        logRow.setBookingId(snapshot.bookingId());
+        logRow.setProvider(snapshot.provider());
+        logRow.setExternalEventId(snapshot.externalEventId());
+        logRow.setInputHash(canonicalizer.hash(snapshot));
+        logRow.setDecision(shadowDecision.decision().name());
+        logRow.setRationaleCode(shadowDecision.rationaleCode());
+        logRow.setRationaleDetail(shadowDecision.rationaleDetail());
+        logRow.setObservedStatus(snapshot.observedStatus().name());
+        logRow.setObservedErrorCode(snapshot.observedErrorCode());
+        logRow.setSyncJobStatus(snapshot.syncJobStatus().name());
+        logRow.setDesiredAction(snapshot.desiredAction().name());
+        logRow.setProjectionVersion(snapshot.projectionVersion());
+        logRow.setTerminalIntentEpoch(snapshot.terminalIntentEpoch());
+        logRow.setCorrelationId(MDC.get("correlationId"));
+        logRow.setCausationId(MDC.get("causationId"));
+        decisionLogRepository.save(logRow);
     }
 
     private static void rateLimit(long throttleDelayMs) {

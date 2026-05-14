@@ -8,7 +8,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.reconcile.DeterministicReconcileEvaluator;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParityClassifier;
+import com.daedalussystems.easySchedule.sync.reconcile.ReconcileSnapshotCanonicalizer;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
+import com.daedalussystems.easySchedule.sync.repository.SyncReconcileDecisionLogRepository;
 import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
 import com.daedalussystems.easySchedule.sync.state.InternalRefType;
 import com.daedalussystems.easySchedule.sync.state.SyncDesiredAction;
@@ -29,14 +33,23 @@ class BookingSyncReconcilerTest {
     private CalendarService calendarService;
     @Mock
     private IdempotencyKeyFactory idempotencyKeyFactory;
+    @Mock
+    private SyncReconcileDecisionLogRepository decisionLogRepository;
+
+    private DeterministicReconcileEvaluator evaluator;
+    private ReconcileShadowParityClassifier parityClassifier;
+    private ReconcileSnapshotCanonicalizer canonicalizer;
 
     private BookingSyncReconciler reconciler;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        evaluator = new DeterministicReconcileEvaluator();
+        parityClassifier = new ReconcileShadowParityClassifier();
+        canonicalizer = new ReconcileSnapshotCanonicalizer();
         reconciler = new BookingSyncReconciler(
-                repository, calendarService, idempotencyKeyFactory, 0L, new SimpleMeterRegistry());
+                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, decisionLogRepository, 0L, new SimpleMeterRegistry());
     }
 
     @Test

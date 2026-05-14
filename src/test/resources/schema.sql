@@ -79,6 +79,8 @@ CREATE TABLE IF NOT EXISTS bookings (
     end_time TIMESTAMPTZ NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
     version     BIGINT       NOT NULL DEFAULT 0,
+    calendar_sequence BIGINT NOT NULL DEFAULT 0,
+    terminal_intent_epoch BIGINT NOT NULL DEFAULT 0,
     expires_at  TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -199,3 +201,56 @@ CREATE TABLE IF NOT EXISTS processed_events (
     event_id UUID PRIMARY KEY,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS provider_event_projections (
+    id UUID PRIMARY KEY,
+    booking_id UUID,
+    connection_id UUID NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    external_event_id VARCHAR(255) NOT NULL,
+    projection_status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    provider_sequence BIGINT,
+    provider_updated_at TIMESTAMPTZ,
+    provider_etag VARCHAR(255),
+    payload_hash VARCHAR(128),
+    last_observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uk_provider_event_projection_key UNIQUE (connection_id, provider, external_event_id),
+    CONSTRAINT ck_provider_event_projection_status CHECK (projection_status IN ('ACTIVE', 'TOMBSTONED_SOFT', 'TOMBSTONED_HARD'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_event_projection_booking
+ON provider_event_projections (booking_id);
+
+CREATE INDEX IF NOT EXISTS idx_provider_event_projection_observed
+ON provider_event_projections (provider, last_observed_at);
+
+CREATE TABLE IF NOT EXISTS sync_reconcile_decision_log (
+    id UUID PRIMARY KEY,
+    sync_job_id UUID NOT NULL,
+    booking_id UUID NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    external_event_id VARCHAR(255),
+    input_hash VARCHAR(64) NOT NULL,
+    decision VARCHAR(32) NOT NULL,
+    rationale_code VARCHAR(64) NOT NULL,
+    rationale_detail TEXT,
+    observed_status VARCHAR(32) NOT NULL,
+    observed_error_code VARCHAR(64),
+    sync_job_status VARCHAR(16) NOT NULL,
+    desired_action VARCHAR(16) NOT NULL,
+    projection_version BIGINT,
+    terminal_intent_epoch BIGINT,
+    correlation_id VARCHAR(128),
+    causation_id VARCHAR(128),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_reconcile_decision_log_booking_created
+ON sync_reconcile_decision_log (booking_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_sync_reconcile_decision_log_job_created
+ON sync_reconcile_decision_log (sync_job_id, created_at);

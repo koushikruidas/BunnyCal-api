@@ -379,6 +379,18 @@ sequenceDiagram
 
 ## 12. Observability
 
+### 12.x Calendar Projection Hardening Notes (RFC v3)
+- `sync.projection.apply.duration.ms` measures end-to-end projection apply transaction duration (lock + compare + write), not pure DB lock wait time.
+- Ambiguous comparator outcomes are feature-flagged by `sync.projection.accept-ambiguous`.
+- Projection ordering semantics are documented in [`ADR_SYNC_PROJECTION_VERSION_SEMANTICS.md`](./ADR_SYNC_PROJECTION_VERSION_SEMANTICS.md).
+- Lineage propagation semantics and limits are documented in [`ADR_SYNC_LINEAGE_CONTEXT_SEMANTICS.md`](./ADR_SYNC_LINEAGE_CONTEXT_SEMANTICS.md).
+- Composite invariant classification is backed by an explicit 288-row reviewed matrix (`src/main/resources/sync/composite_state_matrix.csv`) with startup/CI coverage validation.
+- Replay/convergence model and non-guarantees are documented in [`ADR_SYNC_REPLAY_CONVERGENCE_GUARANTEES.md`](./ADR_SYNC_REPLAY_CONVERGENCE_GUARANTEES.md).
+- External-action semantics are documented in [`ADR_SYNC_EXTERNAL_ACTION_SEMANTICS.md`](./ADR_SYNC_EXTERNAL_ACTION_SEMANTICS.md).
+- Deterministic shadow reconcile decisions are documented in [`ADR_SYNC_DETERMINISTIC_RECONCILE_DECISIONS.md`](./ADR_SYNC_DETERMINISTIC_RECONCILE_DECISIONS.md).
+- Canonical input hash contract is documented in [`ADR_SYNC_CANONICAL_SNAPSHOT_SERIALIZATION.md`](./ADR_SYNC_CANONICAL_SNAPSHOT_SERIALIZATION.md).
+- Shadow parity taxonomy governance is documented in [`ADR_SYNC_PARITY_SEMANTICS.md`](./ADR_SYNC_PARITY_SEMANTICS.md).
+
 Implemented metrics/logging include:
 - Booking conflict counters and completion latency (`BookingService`).
 - Idempotency outcome/replay/poll/finalize-race metrics (`IdempotencyService`).
