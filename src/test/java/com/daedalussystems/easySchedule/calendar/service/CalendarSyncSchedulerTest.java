@@ -9,6 +9,8 @@ import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionServi
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -41,7 +43,8 @@ class CalendarSyncSchedulerTest {
                 ingestionService,
                 syncClient,
                 slotCacheVersionService,
-                connectionWriteService);
+                connectionWriteService,
+                new SimpleMeterRegistry());
     }
 
     @Test
@@ -53,11 +56,12 @@ class CalendarSyncSchedulerTest {
         when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
         when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of(failed));
         when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of(errored));
-        when(syncClient.fetchIncremental(any())).thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), org.mockito.ArgumentMatchers.eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor-1", false, false, "incremental"));
 
         scheduler.sync();
 
-        verify(syncClient, times(2)).fetchIncremental(any());
+        verify(syncClient, times(2)).fetchIncremental(any(), org.mockito.ArgumentMatchers.eq(SyncSourceAttribution.PULL_SYNC));
         verify(connectionWriteService, times(2)).markActive(any(), any(), any(), any());
     }
 

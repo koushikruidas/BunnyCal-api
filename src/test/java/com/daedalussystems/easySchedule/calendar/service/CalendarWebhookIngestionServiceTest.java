@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -59,7 +60,7 @@ class CalendarWebhookIngestionServiceTest {
 
         service.ingestGoogle(connectionId, "evt-1", "{}");
 
-        verify(syncClient, never()).fetchIncremental(any());
+        verify(syncClient, never()).fetchIncremental(any(), any());
         verify(ingestionService, never()).upsertEvents(any(), any(), any());
         verify(replayCaptureService).capture(any(), any(), any(), any(), any(), any(), org.mockito.Mockito.eq(true), any());
     }
@@ -72,7 +73,8 @@ class CalendarWebhookIngestionServiceTest {
         when(dedupService.checkAndRecord("google", connectionId, "evt-2", "{}"))
                 .thenReturn(new CalendarWebhookDedupService.DedupOutcome(true, "k2", "h2"));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
-        when(syncClient.fetchIncremental(connection)).thenReturn(List.of());
+        when(syncClient.fetchIncremental(eq(connection), eq(SyncSourceAttribution.WEBHOOK)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor-2", false, false, "incremental"));
 
         service.ingestGoogle(connectionId, "evt-2", "{}");
 

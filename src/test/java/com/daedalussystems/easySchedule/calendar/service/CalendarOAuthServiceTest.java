@@ -77,6 +77,8 @@ class CalendarOAuthServiceTest {
         when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any())).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
+        when(syncClient.fetchFull(any(CalendarConnection.class), any()))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), null, true, false, "test"));
     }
 
     @Test
