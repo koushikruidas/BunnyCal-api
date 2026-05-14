@@ -15,6 +15,10 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.time.TimeSource;
+import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassifier;
+import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
+import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
+import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -29,8 +33,11 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -62,6 +69,8 @@ public class BookingService {
     private final BookingRepository bookingRepository;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
+    @Nullable
+    private final SyncInvariantMonitor invariantMonitor;
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     private final Counter conflictCounter;
@@ -70,17 +79,20 @@ public class BookingService {
     private final Counter bookingCompletedWithinSloTotal;
     private final MeterRegistry meterRegistry;
 
+    @Autowired
     public BookingService(
             UserRepository userRepository,
             BookingRepository bookingRepository,
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            @Nullable SyncInvariantMonitor invariantMonitor) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
         this.meterRegistry = meterRegistry;
+        this.invariantMonitor = invariantMonitor;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
@@ -105,6 +117,15 @@ public class BookingService {
         this.bookingCompletedWithinSloTotal = Counter.builder("booking.completed.within_slo.total")
                 .description("Bookings that reached terminal state within the " + SLO_THRESHOLD_SECONDS + "-second SLO")
                 .register(meterRegistry);
+    }
+
+    public BookingService(
+            UserRepository userRepository,
+            BookingRepository bookingRepository,
+            OutboxPublisher outboxPublisher,
+            TimeSource timeSource,
+            MeterRegistry meterRegistry) {
+        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null);
     }
 
     /**
@@ -309,6 +330,7 @@ public class BookingService {
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        assertInvariant("booking_transition_confirmed", id, BookingState.CONFIRMED);
         bookingRepository.findAnyById(id).ifPresent(booking ->
                 outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
                         UUID.randomUUID().toString(),
@@ -351,6 +373,7 @@ public class BookingService {
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        assertInvariant("booking_transition_rescheduled", id, BookingState.CONFIRMED);
 
         outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(),
@@ -370,15 +393,16 @@ public class BookingService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "id and hostId are required.");
         }
 
-        int updated = bookingRepository.updateStatusAndCalendarSequence(
+        int updated = bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(
                 id, BookingState.PENDING.name(), BookingState.CANCELLED.name(), version);
         if (updated == 0) {
-            updated = bookingRepository.updateStatusAndCalendarSequence(
+            updated = bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(
                     id, BookingState.CONFIRMED.name(), BookingState.CANCELLED.name(), version);
         }
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        assertInvariant("booking_transition_cancelled", id, BookingState.CANCELLED);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("cancelledBy", hostId.toString());
@@ -444,6 +468,40 @@ public class BookingService {
             }
         }
         return false;
+    }
+
+    private void assertInvariant(String source, UUID bookingId, BookingState bookingState) {
+        if (invariantMonitor == null) {
+            return;
+        }
+        var row = bookingRepository.findStateById(bookingId).orElse(null);
+        if (row != null && row.getTerminalIntentEpoch() != null) {
+            MDC.put("terminalIntentEpoch", String.valueOf(row.getTerminalIntentEpoch()));
+        }
+        try {
+            invariantMonitor.assertState(
+                    source,
+                    bookingState,
+                    SyncJobStatus.PENDING,
+                    bookingState == BookingState.CANCELLED
+                            ? CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT
+                            : CompositeSyncStateClassifier.ProjectionLifecycle.ACTIVE,
+                    CompositeSyncStateClassifier.ParticipationLifecycle.NEEDS_ACTION,
+                    new LineageContext(
+                            safeMdc("correlationId"),
+                            safeMdc("causationId"),
+                            String.valueOf(bookingId),
+                            "",
+                            "",
+                            safeMdc("terminalIntentEpoch")));
+        } finally {
+            MDC.remove("terminalIntentEpoch");
+        }
+    }
+
+    private static String safeMdc(String key) {
+        String v = MDC.get(key);
+        return v == null ? "" : v;
     }
 
 }

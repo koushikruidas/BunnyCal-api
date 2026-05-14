@@ -58,4 +58,8 @@ public class Booking extends BaseEntity {
     @Builder.Default
     @Column(name = "calendar_sequence", nullable = false)
     private long calendarSequence = 0L;
+
+    @Builder.Default
+    @Column(name = "terminal_intent_epoch", nullable = false)
+    private long terminalIntentEpoch = 0L;
 }

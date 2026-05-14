@@ -193,6 +193,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
@@ -233,6 +234,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 3L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
         when(freeBusyService.busyIntervals(userId, start, end))
@@ -268,6 +270,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
@@ -306,6 +309,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
@@ -336,6 +340,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
@@ -370,6 +375,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
@@ -544,6 +550,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
@@ -596,6 +603,7 @@ class PublicBookingServiceTest {
                     public String getStatus() { return "PENDING"; }
                     public Long getVersion() { return 1L; }
                     public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));

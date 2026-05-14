@@ -55,3 +55,9 @@ auth:
 calendar:
   provider:
     mode: in-memory
+
+sync:
+  projection:
+    accept-ambiguous: true
+  invariants:
+    fail-fast: true

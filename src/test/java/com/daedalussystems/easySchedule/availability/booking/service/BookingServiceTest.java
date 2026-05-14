@@ -115,11 +115,11 @@ class BookingServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
 
-        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(1);
+        when(bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(1);
 
         bookingService.cancelBooking(bookingId, hostId, 4L);
 
-        verify(bookingRepository, times(1)).updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L);
+        verify(bookingRepository, times(1)).updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "PENDING", "CANCELLED", 4L);
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
     }
 
@@ -127,7 +127,7 @@ class BookingServiceTest {
     void cancelBooking_includesCancellationMetadataInOutboxEnvelope() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 7L)).thenReturn(1);
+        when(bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "PENDING", "CANCELLED", 7L)).thenReturn(1);
 
         bookingService.cancelBooking(bookingId, hostId, 7L, com.daedalussystems.easySchedule.booking.service.CancellationSource.HOST, "USER_REQUEST");
 
@@ -168,8 +168,8 @@ class BookingServiceTest {
             }
             return Optional.of(stateRow(bookingId, hostId, "CONFIRMED", 4L));
         });
-        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(0);
-        when(bookingRepository.updateStatusAndCalendarSequence(bookingId, "CONFIRMED", "CANCELLED", 4L))
+        when(bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "PENDING", "CANCELLED", 4L)).thenReturn(0);
+        when(bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "CONFIRMED", "CANCELLED", 4L))
                 .thenAnswer(inv -> cancelled.compareAndSet(false, true) ? 1 : 0);
         when(bookingRepository.findById(any()))
                 .thenReturn(Optional.of(bookingEntity(bookingId, hostId)));
@@ -197,6 +197,7 @@ class BookingServiceTest {
         Set<String> allowedPrefixes = Set.of(
                 "com.daedalussystems.easySchedule.booking.",
                 "com.daedalussystems.easySchedule.auth.",
+                "com.daedalussystems.easySchedule.sync.",
                 "com.daedalussystems.easySchedule.common.",
                 "io.micrometer.",
                 "org.slf4j.",
@@ -353,6 +354,7 @@ class BookingServiceTest {
             @Override public String getStatus() { return status; }
             @Override public Long getVersion() { return version; }
             @Override public Instant getExpiresAt() { return null; }
+                    public Long getTerminalIntentEpoch() { return 0L; }
         };
     }
 }

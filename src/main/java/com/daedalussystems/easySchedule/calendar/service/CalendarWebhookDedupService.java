@@ -29,14 +29,18 @@ public class CalendarWebhookDedupService {
     }
 
     @Transactional
-    public boolean firstSeen(String provider, String providerEventId, String rawPayload) {
+    public boolean firstSeen(String provider, UUID connectionId, String providerEventId, String rawPayload) {
         if (provider == null || provider.isBlank() || providerEventId == null || providerEventId.isBlank()) {
             return false;
         }
+        String normalizedProvider = provider.trim().toUpperCase();
+        String deliveryKey = normalizedProvider + ":" + connectionId + ":" + providerEventId.trim() + ":" + hashNullable(rawPayload);
         int inserted = repository.insertIfAbsent(
                 UUID.randomUUID(),
-                provider.trim().toUpperCase(),
+                normalizedProvider,
                 providerEventId.trim(),
+                connectionId,
+                deliveryKey,
                 hashNullable(rawPayload),
                 Instant.now()
         );

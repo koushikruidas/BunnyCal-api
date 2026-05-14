@@ -51,7 +51,7 @@ class CalendarWebhookIngestionServiceTest {
     @Test
     void duplicateWebhook_isNoop() {
         UUID connectionId = UUID.randomUUID();
-        when(dedupService.firstSeen("google", "evt-1", "{}")).thenReturn(false);
+        when(dedupService.firstSeen("google", connectionId, "evt-1", "{}")).thenReturn(false);
 
         service.ingestGoogle(connectionId, "evt-1", "{}");
 
@@ -64,7 +64,7 @@ class CalendarWebhookIngestionServiceTest {
         UUID connectionId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         CalendarConnection connection = connection(connectionId, userId, CalendarConnectionStatus.ACTIVE);
-        when(dedupService.firstSeen("google", "evt-2", "{}")).thenReturn(true);
+        when(dedupService.firstSeen("google", connectionId, "evt-2", "{}")).thenReturn(true);
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
         when(syncClient.fetchIncremental(connection)).thenReturn(List.of());
 

@@ -24,6 +24,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         String getStatus();
         Long getVersion();
         Instant getExpiresAt();
+        Long getTerminalIntentEpoch();
     }
 
     interface BookingExpiryRow {
@@ -116,6 +117,31 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             @Param("newStatus") String newStatus,
             @Param("version") long version);
 
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET status  = :newStatus,
+                   version = version + 1,
+                   calendar_sequence = calendar_sequence + 1,
+                   terminal_intent_epoch = terminal_intent_epoch + 1
+             WHERE id      = :id
+               AND status  = :expectedStatus
+               AND version = :version
+            """, nativeQuery = true)
+    int updateStatusAndCalendarSequenceAndIntentEpoch(
+            @Param("id") UUID id,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("newStatus") String newStatus,
+            @Param("version") long version);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET terminal_intent_epoch = terminal_intent_epoch + 1
+             WHERE id = :id
+            """, nativeQuery = true)
+    int bumpTerminalIntentEpoch(@Param("id") UUID id);
+
     // CAS expiry: succeeds only when booking is PENDING, has the expected version,
     // AND expires_at is in the past. The expires_at guard prevents premature expiry
     // and means expiry competes safely with confirmBooking / cancelPendingBooking.
@@ -189,6 +215,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
 
     @Query(value = """
             SELECT id, host_id, status, version, expires_at
+                   , terminal_intent_epoch
             FROM bookings
             WHERE id = :id
             LIMIT 1
@@ -230,6 +257,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
 
     @Query(value = """
             SELECT id, host_id, status, version, expires_at
+                   , terminal_intent_epoch
             FROM bookings
             WHERE id = :id
               AND host_id = :hostId

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.repository.CalendarWebhookEventRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,13 +27,13 @@ class CalendarWebhookDedupServiceTest {
 
     @Test
     void firstSeen_trueWhenInsertSucceeds() {
-        when(repository.insertIfAbsent(any(), any(), any(), any(), any())).thenReturn(1);
-        assertTrue(service.firstSeen("google", "evt-1", "{\"id\":\"evt-1\"}"));
+        when(repository.insertIfAbsent(any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        assertTrue(service.firstSeen("google", UUID.randomUUID(), "evt-1", "{\"id\":\"evt-1\"}"));
     }
 
     @Test
     void firstSeen_falseWhenDuplicate() {
-        when(repository.insertIfAbsent(any(), any(), any(), any(), any())).thenReturn(0);
-        assertFalse(service.firstSeen("google", "evt-1", "{\"id\":\"evt-1\"}"));
+        when(repository.insertIfAbsent(any(), any(), any(), any(), any(), any(), any())).thenReturn(0);
+        assertFalse(service.firstSeen("google", UUID.randomUUID(), "evt-1", "{\"id\":\"evt-1\"}"));
     }
 }

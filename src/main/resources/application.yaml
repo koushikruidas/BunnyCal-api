@@ -94,6 +94,12 @@ calendar:
     encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY=}
     oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET:calendar-oauth-state-secret-change-me}
 
+sync:
+  projection:
+    accept-ambiguous: ${SYNC_PROJECTION_ACCEPT_AMBIGUOUS:true}
+  invariants:
+    fail-fast: ${SYNC_INVARIANTS_FAIL_FAST:false}
+
 google:
   oauth:
     client-id: ${GOOGLE_CLIENT_ID:}

@@ -13,7 +13,7 @@ import org.hibernate.annotations.UuidGenerator;
 
 @Entity
 @Table(name = "calendar_webhook_events", uniqueConstraints = {
-        @UniqueConstraint(name = "uq_calendar_webhook_events_provider_event", columnNames = {"provider", "provider_event_id"})
+        @UniqueConstraint(name = "uq_calendar_webhook_events_delivery_key", columnNames = {"delivery_key"})
 })
 public class CalendarWebhookEvent extends BaseEntity {
 
@@ -27,6 +27,12 @@ public class CalendarWebhookEvent extends BaseEntity {
 
     @Column(name = "provider_event_id", nullable = false, length = 255)
     private String providerEventId;
+
+    @Column(name = "source_connection_id")
+    private UUID sourceConnectionId;
+
+    @Column(name = "delivery_key", nullable = false, length = 255)
+    private String deliveryKey;
 
     @Column(name = "payload_hash", length = 128)
     private String payloadHash;
@@ -48,6 +54,10 @@ public class CalendarWebhookEvent extends BaseEntity {
     public void setProvider(String provider) { this.provider = provider; }
     public String getProviderEventId() { return providerEventId; }
     public void setProviderEventId(String providerEventId) { this.providerEventId = providerEventId; }
+    public UUID getSourceConnectionId() { return sourceConnectionId; }
+    public void setSourceConnectionId(UUID sourceConnectionId) { this.sourceConnectionId = sourceConnectionId; }
+    public String getDeliveryKey() { return deliveryKey; }
+    public void setDeliveryKey(String deliveryKey) { this.deliveryKey = deliveryKey; }
     public String getPayloadHash() { return payloadHash; }
     public void setPayloadHash(String payloadHash) { this.payloadHash = payloadHash; }
     public String getStatus() { return status; }

@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEventRepository;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEventStatus;
+import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import java.time.Instant;
 import java.util.List;
@@ -28,13 +29,15 @@ class OutboxProcessorTest {
     private CalendarSyncJobRepository syncJobRepository;
     @Mock
     private BookingOutboxEventRouter eventRouter;
+    @Mock
+    private SyncInvariantMonitor invariantMonitor;
 
     private OutboxProcessor processor;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        processor = new OutboxProcessor(outboxRepository, syncJobRepository, eventRouter, new SimpleMeterRegistry());
+        processor = new OutboxProcessor(outboxRepository, syncJobRepository, eventRouter, invariantMonitor, new SimpleMeterRegistry());
     }
 
     @Test

@@ -54,6 +54,7 @@ class BookingSyncWorkerTest {
             public String getStatus() { return "CONFIRMED"; }
             public Long getVersion() { return 1L; }
             public Instant getExpiresAt() { return null; }
+                    public Long getTerminalIntentEpoch() { return 0L; }
         }));
     }
 
@@ -127,6 +128,7 @@ class BookingSyncWorkerTest {
             public String getStatus() { return "PENDING"; }
             public Long getVersion() { return 1L; }
             public Instant getExpiresAt() { return Instant.now().plusSeconds(10); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
         }));
 
         worker.processPending(2);

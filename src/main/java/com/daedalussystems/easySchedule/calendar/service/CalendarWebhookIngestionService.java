@@ -65,9 +65,12 @@ public class CalendarWebhookIngestionService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "connectionId and providerEventId are required.");
         }
         MDC.put("correlationId", providerEventId);
+        MDC.put("causationId", providerEventId);
+        MDC.put("bookingId", "");
+        MDC.put("externalEventId", providerEventId);
         try {
             webhookIngestTotal.increment();
-            boolean firstSeen = dedupService.firstSeen("google", providerEventId, rawPayload);
+            boolean firstSeen = dedupService.firstSeen("google", connectionId, providerEventId, rawPayload);
             if (!firstSeen) {
                 webhookDuplicateTotal.increment();
                 reconciliationConflictTotal.increment();
@@ -113,6 +116,9 @@ public class CalendarWebhookIngestionService {
                 throw ex;
             }
         } finally {
+            MDC.remove("externalEventId");
+            MDC.remove("bookingId");
+            MDC.remove("causationId");
             MDC.remove("correlationId");
         }
     }

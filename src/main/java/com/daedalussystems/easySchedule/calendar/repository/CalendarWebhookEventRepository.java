@@ -13,15 +13,17 @@ public interface CalendarWebhookEventRepository extends JpaRepository<CalendarWe
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             INSERT INTO calendar_webhook_events (
-                id, provider, provider_event_id, payload_hash, status, received_at, created_at, updated_at
+                id, provider, provider_event_id, source_connection_id, delivery_key, payload_hash, status, received_at, created_at, updated_at
             ) VALUES (
-                :id, :provider, :providerEventId, :payloadHash, 'RECEIVED', :receivedAt, NOW(), NOW()
+                :id, :provider, :providerEventId, :sourceConnectionId, :deliveryKey, :payloadHash, 'RECEIVED', :receivedAt, NOW(), NOW()
             )
-            ON CONFLICT (provider, provider_event_id) DO NOTHING
+            ON CONFLICT (delivery_key) DO NOTHING
             """, nativeQuery = true)
     int insertIfAbsent(@Param("id") UUID id,
                        @Param("provider") String provider,
                        @Param("providerEventId") String providerEventId,
+                       @Param("sourceConnectionId") UUID sourceConnectionId,
+                       @Param("deliveryKey") String deliveryKey,
                        @Param("payloadHash") String payloadHash,
                        @Param("receivedAt") Instant receivedAt);
 }

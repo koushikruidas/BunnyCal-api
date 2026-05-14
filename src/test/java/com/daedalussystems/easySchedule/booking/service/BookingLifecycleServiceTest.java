@@ -90,6 +90,7 @@ class BookingLifecycleServiceTest {
             @Override public String getStatus() { return status; }
             @Override public Long getVersion() { return version; }
             @Override public Instant getExpiresAt() { return null; }
+                    public Long getTerminalIntentEpoch() { return 0L; }
         };
     }
 }

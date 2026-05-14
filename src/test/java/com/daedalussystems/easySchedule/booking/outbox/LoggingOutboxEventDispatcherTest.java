@@ -10,6 +10,7 @@ import com.daedalussystems.easySchedule.booking.notification.BookingNotification
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +30,8 @@ class LoggingOutboxEventDispatcherTest {
     private CalendarConnectionRepository calendarConnectionRepository;
     @Mock
     private BookingNotificationService bookingNotificationService;
+    @Mock
+    private SyncInvariantMonitor invariantMonitor;
 
     private LoggingOutboxEventDispatcher dispatcher;
 
@@ -39,6 +42,7 @@ class LoggingOutboxEventDispatcherTest {
                 bookingRepository,
                 calendarConnectionRepository,
                 bookingNotificationService,
+                invariantMonitor,
                 "google",
                 false);
     }
@@ -76,6 +80,7 @@ class LoggingOutboxEventDispatcherTest {
                 bookingRepository,
                 calendarConnectionRepository,
                 bookingNotificationService,
+                invariantMonitor,
                 "google",
                 true);
         OutboxEvent event = OutboxEvent.builder()
@@ -118,6 +123,7 @@ class LoggingOutboxEventDispatcherTest {
                 bookingRepository,
                 calendarConnectionRepository,
                 bookingNotificationService,
+                invariantMonitor,
                 "google",
                 true);
         OutboxEvent event = OutboxEvent.builder()

@@ -3,7 +3,12 @@ package com.daedalussystems.easySchedule.sync.orchestration;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEventRepository;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxEventStatus;
+import com.daedalussystems.easySchedule.booking.contract.BookingState;
+import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassifier;
+import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
+import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
+import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.transaction.Transactional;
@@ -22,16 +27,19 @@ public class OutboxProcessor {
     private final OutboxEventRepository outboxEventRepository;
     private final CalendarSyncJobRepository calendarSyncJobRepository;
     private final BookingOutboxEventRouter eventRouter;
+    private final SyncInvariantMonitor invariantMonitor;
     private final Counter outboxProcessedCounter;
     private final Counter outboxFailedCounter;
 
     public OutboxProcessor(OutboxEventRepository outboxEventRepository,
                            CalendarSyncJobRepository calendarSyncJobRepository,
                            BookingOutboxEventRouter eventRouter,
+                           SyncInvariantMonitor invariantMonitor,
                            MeterRegistry meterRegistry) {
         this.outboxEventRepository = outboxEventRepository;
         this.calendarSyncJobRepository = calendarSyncJobRepository;
         this.eventRouter = eventRouter;
+        this.invariantMonitor = invariantMonitor;
         this.outboxProcessedCounter = meterRegistry.counter("sync.outbox.processed.total");
         this.outboxFailedCounter = meterRegistry.counter("sync.outbox.failed.total");
     }
@@ -60,6 +68,24 @@ public class OutboxProcessor {
                 );
                 evt.setStatus(OutboxEventStatus.PROCESSED);
                 evt.setLastError(null);
+                BookingState bookingState = plan.desiredAction().name().equals("DELETE")
+                        ? BookingState.CANCELLED
+                        : BookingState.CONFIRMED;
+                invariantMonitor.assertState(
+                        "sync_enqueue_transition_outbox_processor",
+                        bookingState,
+                        SyncJobStatus.PENDING,
+                        bookingState == BookingState.CANCELLED
+                                ? CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT
+                                : CompositeSyncStateClassifier.ProjectionLifecycle.ACTIVE,
+                        CompositeSyncStateClassifier.ParticipationLifecycle.NEEDS_ACTION,
+                        new LineageContext(
+                                String.valueOf(id),
+                                String.valueOf(id),
+                                String.valueOf(plan.internalRefId()),
+                                "",
+                                "",
+                                ""));
                 outboxProcessedCounter.increment();
                 log.info("{{\"event\":\"outbox_sync_job_created\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
                         plan.internalRefId(), plan.provider(), id, plan.desiredAction());
