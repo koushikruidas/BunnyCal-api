@@ -11,6 +11,8 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,14 +36,17 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     private final RestClient restClient;
     private final GoogleOAuthProperties googleOAuthProperties;
     private final boolean diagnosticsEnabled;
+    private final MeterRegistry meterRegistry;
 
     public HttpGoogleApiClient(RestClient.Builder restClientBuilder,
                                GoogleOAuthProperties googleOAuthProperties,
+                               MeterRegistry meterRegistry,
                                @Value("${calendar.google.diagnostics.enabled:false}") boolean diagnosticsEnabled) {
         this.restClient = restClientBuilder
                 .baseUrl("https://www.googleapis.com")
                 .build();
         this.googleOAuthProperties = googleOAuthProperties;
+        this.meterRegistry = meterRegistry;
         this.diagnosticsEnabled = diagnosticsEnabled;
     }
 
@@ -125,11 +130,17 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     @Override
     public boolean eventExists(String accessToken, String externalEventId) {
         try {
-            restClient.get()
+            ResponseEntity<Map> response = restClient.get()
                     .uri("/calendar/v3/calendars/primary/events/{id}", externalEventId)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .retrieve()
                     .toEntity(Map.class);
+            if (isCancelledEventBody(response.getBody())) {
+                meterRegistry.counter("calendar.google.cancelled_body_detected.total").increment();
+                log.info("google_event_cancelled_body_detected externalEventId={} observeResult=missing_terminal",
+                        externalEventId);
+                return false;
+            }
             return true;
         } catch (RestClientResponseException ex) {
             int status = ex.getStatusCode().value();
@@ -140,6 +151,14 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         } catch (RestClientException ex) {
             throw classify(ex);
         }
+    }
+
+    static boolean isCancelledEventBody(Map<?, ?> body) {
+        if (body == null) {
+            return false;
+        }
+        Object status = body.get("status");
+        return status instanceof String value && "cancelled".equalsIgnoreCase(value.trim());
     }
 
     @Override
@@ -268,6 +287,35 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         return listEvents(accessToken, syncCursor);
     }
 
+    @Override
+    public WatchChannel watchEvents(String accessToken, String webhookUrl, String channelToken) {
+        try {
+            String channelId = UUID.randomUUID().toString();
+            ResponseEntity<Map> response = restClient.post()
+                    .uri("/calendar/v3/calendars/primary/events/watch")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "id", channelId,
+                            "type", "web_hook",
+                            "address", webhookUrl,
+                            "token", channelToken
+                    ))
+                    .retrieve()
+                    .toEntity(Map.class);
+            Map body = response.getBody();
+            String returnedChannelId = asStringLoose(body == null ? null : body.get("id"));
+            String resourceId = asStringLoose(body == null ? null : body.get("resourceId"));
+            Instant expiration = parseEpochMillisInstant(asStringLoose(body == null ? null : body.get("expiration")));
+            return new WatchChannel(
+                    returnedChannelId == null || returnedChannelId.isBlank() ? channelId : returnedChannelId,
+                    resourceId,
+                    expiration);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
     private SyncWindow listEvents(String accessToken, String syncCursor) {
         try {
             List<CalendarEventObservation> observations = new ArrayList<>();
@@ -342,7 +390,11 @@ public class HttpGoogleApiClient implements GoogleApiClient {
             Instant start = parseDateTimeField(item.get("start"), updated);
             Instant end = parseDateTimeField(item.get("end"), updated == null ? null : updated.plusSeconds(60));
             if (start == null || end == null || !start.isBefore(end)) {
-                if (updated != null) {
+                if (cancelled) {
+                    Instant anchor = updated == null ? Instant.EPOCH : updated;
+                    start = anchor;
+                    end = anchor.plusSeconds(60);
+                } else if (updated != null) {
                     start = updated;
                     end = updated.plusSeconds(60);
                 } else {
@@ -446,6 +498,18 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (msg.contains("403")) return 403;
         if (msg.contains("404")) return 404;
         return 500;
+    }
+
+    private static Instant parseEpochMillisInstant(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            long epochMillis = Long.parseLong(value);
+            return Instant.ofEpochMilli(epochMillis);
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     static Map<String, Object> buildCreateEventBody(CreateEventRequest request) {

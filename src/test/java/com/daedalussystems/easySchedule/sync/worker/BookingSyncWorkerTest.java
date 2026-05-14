@@ -9,7 +9,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
+import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.retry.SyncRetryPolicy;
@@ -34,11 +37,17 @@ class BookingSyncWorkerTest {
     @Mock
     private BookingRepository bookingRepository;
     @Mock
+    private SlotCacheVersionService slotCacheVersionService;
+    @Mock
+    private OutboxPublisher outboxPublisher;
+    @Mock
     private CalendarService calendarService;
     @Mock
     private SyncRetryPolicy retryPolicy;
     @Mock
     private IdempotencyKeyFactory idempotencyKeyFactory;
+    @Mock
+    private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
 
     private BookingSyncWorker worker;
 
@@ -46,7 +55,7 @@ class BookingSyncWorkerTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         worker = new BookingSyncWorker(
-                repository, bookingRepository, calendarService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
+                repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
             public UUID getId() { return UUID.randomUUID(); }
@@ -55,6 +64,12 @@ class BookingSyncWorkerTest {
             public Long getVersion() { return 1L; }
             public Instant getExpiresAt() { return null; }
                     public Long getTerminalIntentEpoch() { return 0L; }
+        }));
+        when(bookingRepository.findProjectionStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingProjectionRow() {
+            public UUID getId() { return UUID.randomUUID(); }
+            public UUID getHostId() { return UUID.randomUUID(); }
+            public String getStatus() { return "CONFIRMED"; }
+            public Instant getAvailabilityReleasedAt() { return null; }
         }));
     }
 
@@ -145,10 +160,28 @@ class BookingSyncWorkerTest {
         when(repository.findById(id)).thenReturn(Optional.of(job));
         org.mockito.Mockito.doThrow(new com.daedalussystems.easySchedule.calendar.client.CalendarClientException(404, "missing"))
                 .when(calendarService).deleteEvent(any());
+        when(repository.markSyncedFromProcessingWithLifecycle(id, 17L, "ext-deleted", "TERMINAL_EXTERNAL_DELETE"))
+                .thenReturn(1);
+        when(terminalDeleteConvergenceService.convergeProcessingJob(job, "worker_delete"))
+                .thenReturn(new ExternalTerminalDeleteConvergenceService.ConvergenceResult(1, 1, "applied"));
+        UUID hostId = UUID.randomUUID();
+        when(bookingRepository.findProjectionStateById(job.getInternalRefId()))
+                .thenReturn(Optional.of(new BookingRepository.BookingProjectionRow() {
+                    public UUID getId() { return job.getInternalRefId(); }
+                    public UUID getHostId() { return hostId; }
+                    public String getStatus() { return "CONFIRMED"; }
+                    public Instant getAvailabilityReleasedAt() { return null; }
+                }))
+                .thenReturn(Optional.of(new BookingRepository.BookingProjectionRow() {
+                    public UUID getId() { return job.getInternalRefId(); }
+                    public UUID getHostId() { return hostId; }
+                    public String getStatus() { return "CANCELLED"; }
+                    public Instant getAvailabilityReleasedAt() { return Instant.now(); }
+                }));
 
         worker.processPending(2);
 
-        verify(repository).markSynced(id, 17L, "ext-deleted");
+        verify(terminalDeleteConvergenceService).convergeProcessingJob(job, "worker_delete");
         verify(repository, never()).markFailure(eq(id), eq(17L), any(), any(), anyBoolean());
     }
 

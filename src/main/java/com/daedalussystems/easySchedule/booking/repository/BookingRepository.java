@@ -27,6 +27,13 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Long getTerminalIntentEpoch();
     }
 
+    interface BookingProjectionRow {
+        UUID getId();
+        UUID getHostId();
+        String getStatus();
+        Instant getAvailabilityReleasedAt();
+    }
+
     interface BookingExpiryRow {
         UUID getId();
         Long getVersion();
@@ -46,6 +53,9 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         String getExternalEventId();
         String getProviderEventUrl();
         String getConferenceUrl();
+        String getExternalLifecycleState();
+        String getExternalLifecycleReason();
+        Boolean getReconcileSuppressed();
     }
 
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
@@ -67,6 +77,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     SELECT * FROM bookings
     WHERE host_id = :hostId
       AND status IN ('PENDING','CONFIRMED')
+      AND availability_released_at IS NULL
       AND start_time < :end
       AND end_time > :start
     """, nativeQuery = true)
@@ -223,6 +234,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingStateRow> findStateById(@Param("id") UUID id);
 
     @Query(value = """
+            SELECT id, host_id, status, availability_released_at
+            FROM bookings
+            WHERE id = :id
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingProjectionRow> findProjectionStateById(@Param("id") UUID id);
+
+    @Query(value = """
             SELECT *
             FROM bookings
             WHERE id = :id
@@ -247,6 +266,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             WHERE host_id = :hostId
               AND id <> :bookingId
               AND status IN ('PENDING','CONFIRMED')
+              AND availability_released_at IS NULL
               AND start_time < :end
               AND end_time > :start
             """, nativeQuery = true)
@@ -254,6 +274,29 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                         @Param("bookingId") UUID bookingId,
                                         @Param("start") Instant start,
                                         @Param("end") Instant end);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+            SET availability_released_at = NOW()
+            WHERE id = :bookingId
+              AND status IN ('PENDING','CONFIRMED')
+              AND availability_released_at IS NULL
+            """, nativeQuery = true)
+    int releaseAvailabilityForProviderTerminal(@Param("bookingId") UUID bookingId);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+            SET status = 'CANCELLED',
+                version = version + 1,
+                calendar_sequence = calendar_sequence + 1,
+                terminal_intent_epoch = terminal_intent_epoch + 1,
+                availability_released_at = COALESCE(availability_released_at, NOW())
+            WHERE id = :bookingId
+              AND status IN ('PENDING','CONFIRMED')
+            """, nativeQuery = true)
+    int projectExternalTerminalToCancelled(@Param("bookingId") UUID bookingId);
 
     @Query(value = """
             SELECT id, host_id, status, version, expires_at
@@ -275,19 +318,44 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 et.name AS eventTypeName,
                 b.start_time AS startTime,
                 b.end_time AS endTime,
-                b.status AS bookingStatus,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'CANCELLED'
+                    ELSE b.status
+                END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
                 cem.provider AS provider,
                 cem.status AS calendarSyncStatus,
                 cem.external_event_id AS externalEventId,
                 cem.provider_event_url AS providerEventUrl,
-                cem.conference_url AS conferenceUrl
+                cem.conference_url AS conferenceUrl,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
+                    WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
+                    WHEN csj.last_error = 'PROVIDER_STATE_ORPHANED' THEN 'PROVIDER_STATE_ORPHANED'
+                    WHEN csj.last_error LIKE 'DRIFT_%' THEN 'ACTIVE_DRIFT'
+                    ELSE 'STABLE'
+                END AS externalLifecycleState,
+                csj.last_error AS externalLifecycleReason,
+                CASE
+                    WHEN csj.last_error IN ('TERMINAL_EXTERNAL_DELETE', 'EXTERNAL_ACTION_REQUIRED', 'PROVIDER_STATE_ORPHANED')
+                    THEN TRUE
+                    ELSE FALSE
+                END AS reconcileSuppressed
             FROM bookings b
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
                AND cem.provider = 'google'
+            LEFT JOIN LATERAL (
+                SELECT j.last_error
+                FROM calendar_sync_jobs j
+                WHERE j.internal_ref_type = 'BOOKING'
+                  AND j.internal_ref_id = b.id
+                  AND j.provider = 'google'
+                ORDER BY j.created_at DESC, j.id DESC
+                LIMIT 1
+            ) csj ON TRUE
             WHERE b.host_id = :hostId
             ORDER BY b.start_time DESC
             LIMIT :limit
@@ -301,20 +369,47 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 et.name AS eventTypeName,
                 b.start_time AS startTime,
                 b.end_time AS endTime,
-                b.status AS bookingStatus,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'CANCELLED'
+                    ELSE b.status
+                END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
                 cem.provider AS provider,
                 cem.status AS calendarSyncStatus,
                 cem.external_event_id AS externalEventId,
                 cem.provider_event_url AS providerEventUrl,
-                cem.conference_url AS conferenceUrl
+                cem.conference_url AS conferenceUrl,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
+                    WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
+                    WHEN csj.last_error = 'PROVIDER_STATE_ORPHANED' THEN 'PROVIDER_STATE_ORPHANED'
+                    WHEN csj.last_error LIKE 'DRIFT_%' THEN 'ACTIVE_DRIFT'
+                    ELSE 'STABLE'
+                END AS externalLifecycleState,
+                csj.last_error AS externalLifecycleReason,
+                CASE
+                    WHEN csj.last_error IN ('TERMINAL_EXTERNAL_DELETE', 'EXTERNAL_ACTION_REQUIRED', 'PROVIDER_STATE_ORPHANED')
+                    THEN TRUE
+                    ELSE FALSE
+                END AS reconcileSuppressed
             FROM bookings b
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
                AND cem.provider = 'google'
+            LEFT JOIN LATERAL (
+                SELECT j.last_error
+                FROM calendar_sync_jobs j
+                WHERE j.internal_ref_type = 'BOOKING'
+                  AND j.internal_ref_id = b.id
+                  AND j.provider = 'google'
+                ORDER BY j.created_at DESC, j.id DESC
+                LIMIT 1
+            ) csj ON TRUE
             WHERE b.host_id = :hostId
+              AND b.status IN ('PENDING','CONFIRMED')
+              AND csj.last_error IS DISTINCT FROM 'TERMINAL_EXTERNAL_DELETE'
               AND b.end_time >= :now
             ORDER BY b.start_time ASC
             LIMIT :limit

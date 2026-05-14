@@ -38,6 +38,8 @@ class BookingSyncReconcilerTest {
     private SyncReconcileDecisionLogRepository decisionLogRepository;
     @Mock
     private PersistedReconcileSnapshotAssembler snapshotAssembler;
+    @Mock
+    private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
 
     private DeterministicReconcileEvaluator evaluator;
     private ReconcileShadowParityClassifier parityClassifier;
@@ -52,7 +54,7 @@ class BookingSyncReconcilerTest {
         parityClassifier = new ReconcileShadowParityClassifier();
         canonicalizer = new ReconcileSnapshotCanonicalizer();
         reconciler = new BookingSyncReconciler(
-                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, 0L, new SimpleMeterRegistry());
+                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, terminalDeleteConvergenceService, 0L, true, new SimpleMeterRegistry());
 
         when(snapshotAssembler.assembleAndPersist(any(), any(), any())).thenAnswer(invocation -> {
             var runtime = invocation.getArgument(2, com.daedalussystems.easySchedule.sync.reconcile.ReconcileInputSnapshot.class);
@@ -64,18 +66,17 @@ class BookingSyncReconcilerTest {
     }
 
     @Test
-    void missingExternalEvent_requeuesCreate() {
+    void missingExternalEvent_marksTerminalExternalDeleteAndSuppressesRepair() {
         CalendarSyncJob job = synced("ext-1", 2L);
         when(repository.findSyncedCandidates(20)).thenReturn(List.of(job));
         when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
         when(calendarService.observeEvent(any())).thenReturn(CalendarService.ObserveEventResult.missing());
-        when(repository.requeue(eq(job.getId()), eq(2L), eq("CREATE"), eq(null), eq("DRIFT_MISSING_EXTERNAL")))
-                .thenReturn(1);
-
+        when(terminalDeleteConvergenceService.convergeSyncedJob(job, "reconcile"))
+                .thenReturn(new ExternalTerminalDeleteConvergenceService.ConvergenceResult(1, 1, "applied"));
         int checked = reconciler.reconcile(20);
 
         assertEquals(1, checked);
-        verify(repository).requeue(job.getId(), 2L, "CREATE", null, "DRIFT_MISSING_EXTERNAL");
+        verify(terminalDeleteConvergenceService).convergeSyncedJob(job, "reconcile");
     }
 
     @Test
@@ -93,7 +94,20 @@ class BookingSyncReconcilerTest {
     }
 
     @Test
-    void permanentObserveFailure_marksFailedPermanent() {
+    void providerPermissionLoss_marksExternalActionRequired() {
+        CalendarSyncJob job = synced("ext-9", 9L);
+        when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
+        when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
+        when(calendarService.observeEvent(any()))
+                .thenReturn(CalendarService.ObserveEventResult.permanent("AUTH_REVOKED"));
+
+        reconciler.reconcile(10);
+
+        verify(repository).markSyncedLifecycle(job.getId(), 9L, "ext-9", "EXTERNAL_ACTION_REQUIRED");
+    }
+
+    @Test
+    void permanentObserveFailure_marksLifecycleSuppressed() {
         CalendarSyncJob job = synced("ext-2", 5L);
         when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
         when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
@@ -102,7 +116,7 @@ class BookingSyncReconcilerTest {
 
         reconciler.reconcile(10);
 
-        verify(repository).markFailedPermanent(job.getId(), 5L, "AUTH_REVOKED");
+        verify(repository).markSyncedLifecycle(job.getId(), 5L, "ext-2", "EXTERNAL_ACTION_REQUIRED");
     }
 
     @Test
@@ -112,6 +126,8 @@ class BookingSyncReconcilerTest {
         when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
         when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
         when(calendarService.observeEvent(any())).thenReturn(CalendarService.ObserveEventResult.missing());
+        when(terminalDeleteConvergenceService.convergeSyncedJob(job, "reconcile"))
+                .thenReturn(new ExternalTerminalDeleteConvergenceService.ConvergenceResult(1, 0, "already_terminal"));
 
         reconciler.reconcile(10);
 
@@ -128,6 +144,8 @@ class BookingSyncReconcilerTest {
         when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
         when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
         when(calendarService.observeEvent(any())).thenReturn(CalendarService.ObserveEventResult.permanent("INVALID_REQUEST"));
+        when(terminalDeleteConvergenceService.convergeSyncedJob(job, "reconcile"))
+                .thenReturn(new ExternalTerminalDeleteConvergenceService.ConvergenceResult(1, 0, "already_terminal"));
 
         reconciler.reconcile(10);
 

@@ -403,7 +403,7 @@ class SlotServiceTest {
         Instant expectedDayStart = Instant.parse("2026-05-04T00:00:00Z");
         Instant expectedDayEnd = Instant.parse("2026-05-05T00:00:00Z");
         when(bookingRepository.findActiveOverlappingBookings(
-                eq(userId), eq(expectedDayEnd), eq(expectedDayStart)))
+                eq(userId), eq(expectedDayStart), eq(expectedDayEnd)))
                 .thenReturn(List.of(existing));
 
         when(slotCacheService.getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any()))
@@ -422,12 +422,12 @@ class SlotServiceTest {
         assertEquals(Instant.parse("2026-05-04T10:00:00Z"), response.slots().get(0).end());
 
         // Verify the booking query was actually invoked with the right UTC bounds.
-        ArgumentCaptor<Instant> endCaptor = ArgumentCaptor.forClass(Instant.class);
         ArgumentCaptor<Instant> startCaptor = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Instant> endCaptor = ArgumentCaptor.forClass(Instant.class);
         verify(bookingRepository).findActiveOverlappingBookings(
-                eq(userId), endCaptor.capture(), startCaptor.capture());
-        assertEquals(expectedDayEnd, endCaptor.getValue());
+                eq(userId), startCaptor.capture(), endCaptor.capture());
         assertEquals(expectedDayStart, startCaptor.getValue());
+        assertEquals(expectedDayEnd, endCaptor.getValue());
     }
 
     @Test

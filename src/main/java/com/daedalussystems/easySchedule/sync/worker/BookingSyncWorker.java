@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.sync.worker;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.retry.SyncRetryPolicy;
@@ -30,6 +31,7 @@ public class BookingSyncWorker {
     private final CalendarSyncJobRepository syncJobRepository;
     private final BookingRepository bookingRepository;
     private final CalendarService calendarService;
+    private final ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
     private final SyncRetryPolicy retryPolicy;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
     private final MeterRegistry meterRegistry;
@@ -42,12 +44,14 @@ public class BookingSyncWorker {
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
                              BookingRepository bookingRepository,
                              CalendarService calendarService,
+                             ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
                              SyncRetryPolicy retryPolicy,
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              MeterRegistry meterRegistry) {
         this.syncJobRepository = syncJobRepository;
         this.bookingRepository = bookingRepository;
         this.calendarService = calendarService;
+        this.terminalDeleteConvergenceService = terminalDeleteConvergenceService;
         this.retryPolicy = retryPolicy;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.meterRegistry = meterRegistry;
@@ -62,7 +66,9 @@ public class BookingSyncWorker {
     @Transactional
     public int processPending(int batchSize) {
         List<UUID> claimedIds = syncJobRepository.claimPendingBatch(Instant.now(), batchSize);
+        log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
         for (UUID id : claimedIds) {
+            log.info("sync_job_claimed jobId={}", id);
             syncJobRepository.findById(id).ifPresent(this::processOne);
         }
         return claimedIds.size();
@@ -153,6 +159,7 @@ public class BookingSyncWorker {
     }
 
     private void processDelete(CalendarSyncJob job) {
+        boolean idempotentProviderMissing = false;
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
             Instant startedAt = Instant.now();
             try {
@@ -165,11 +172,24 @@ public class BookingSyncWorker {
                 if (isDeleteAlreadyConverged(ex)) {
                     log.info("sync_delete_idempotent_success syncJobId={} bookingId={} provider={} externalEventId={} status={}",
                             job.getId(), job.getInternalRefId(), job.getProvider(), job.getExternalEventId(), ex.getStatusCode());
+                    idempotentProviderMissing = true;
                 } else {
                     throw ex;
                 }
             }
             providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
+        }
+        if (idempotentProviderMissing) {
+            var result = terminalDeleteConvergenceService.convergeProcessingJob(job, "worker_delete");
+            log.info("sync_delete_terminal_promotion syncJobId={} bookingId={} provider={} lifecycleState={} lifecycleRows={} bookingRows={} result={}",
+                    job.getId(),
+                    job.getInternalRefId(),
+                    job.getProvider(),
+                    ExternalTerminalDeleteConvergenceService.LIFECYCLE_STATE,
+                    result.lifecycleRows(),
+                    result.bookingRows(),
+                    result.result());
+            return;
         }
         syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
     }

@@ -82,6 +82,60 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE calendar_sync_jobs
+            SET status = 'SYNCED',
+                external_event_id = :externalEventId,
+                last_error = :lifecycleCode,
+                version = version + 1
+            WHERE id = :id
+              AND status = 'PROCESSING'
+              AND version = :version
+            """, nativeQuery = true)
+    int markSyncedFromProcessingWithLifecycle(
+            @Param("id") UUID id,
+            @Param("version") long version,
+            @Param("externalEventId") String externalEventId,
+            @Param("lifecycleCode") String lifecycleCode);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'SYNCED',
+                external_event_id = :externalEventId,
+                last_error = :lifecycleCode,
+                version = version + 1
+            WHERE id = :id
+              AND status = 'SYNCED'
+              AND version = :version
+            """, nativeQuery = true)
+    int markSyncedLifecycle(
+            @Param("id") UUID id,
+            @Param("version") long version,
+            @Param("externalEventId") String externalEventId,
+            @Param("lifecycleCode") String lifecycleCode);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'SYNCED',
+                external_event_id = COALESCE(external_event_id, :externalEventId),
+                last_error = :lifecycleCode,
+                version = version + 1
+            WHERE internal_ref_type = :internalRefType
+              AND internal_ref_id = :internalRefId
+              AND provider = :provider
+              AND (:externalEventId IS NULL OR external_event_id IS NULL OR external_event_id = :externalEventId)
+              AND (status <> 'SYNCED' OR last_error IS DISTINCT FROM :lifecycleCode)
+            """, nativeQuery = true)
+    int markLifecycleByBookingProviderExternalEvent(
+            @Param("internalRefType") String internalRefType,
+            @Param("internalRefId") UUID internalRefId,
+            @Param("provider") String provider,
+            @Param("externalEventId") String externalEventId,
+            @Param("lifecycleCode") String lifecycleCode);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
             SET status = CASE WHEN :permanentFailure THEN 'FAILED' ELSE 'PENDING' END,
                 attempt_count = attempt_count + 1,
                 next_retry_at = CASE WHEN :permanentFailure THEN next_retry_at ELSE :nextRetryAt END,
@@ -105,6 +159,11 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SELECT *
             FROM calendar_sync_jobs
             WHERE status = 'SYNCED'
+              AND (last_error IS NULL OR last_error NOT IN (
+                  'TERMINAL_EXTERNAL_DELETE',
+                  'EXTERNAL_ACTION_REQUIRED',
+                  'PROVIDER_STATE_ORPHANED'
+              ))
             ORDER BY updated_at
             LIMIT :batchSize
             """, nativeQuery = true)

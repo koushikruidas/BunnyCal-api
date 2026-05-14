@@ -387,6 +387,59 @@ public class CalendarEventMappingRepository {
         ));
     }
 
+    public BookingLinkageResult findUniqueBookingForProviderEvent(UUID connectionId,
+                                                                  String provider,
+                                                                  String externalEventId) {
+        List<?> rows = entityManager.createNativeQuery("""
+                WITH candidates AS (
+                    SELECT m.booking_id
+                      FROM calendar_event_mappings m
+                      JOIN bookings b
+                        ON b.id = m.booking_id
+                      JOIN calendar_connections c
+                        ON c.user_id = b.host_id
+                       AND c.provider = m.provider
+                     WHERE c.id = :connectionId
+                       AND m.provider = :provider
+                       AND m.external_event_id = :externalEventId
+                    UNION
+                    SELECT j.internal_ref_id AS booking_id
+                      FROM calendar_sync_jobs j
+                      JOIN bookings b
+                        ON b.id = j.internal_ref_id
+                      JOIN calendar_connections c
+                        ON c.user_id = b.host_id
+                       AND c.provider = j.provider
+                     WHERE c.id = :connectionId
+                       AND j.internal_ref_type = 'BOOKING'
+                       AND j.provider = :provider
+                       AND j.external_event_id = :externalEventId
+                )
+                SELECT DISTINCT booking_id
+                  FROM candidates
+                 LIMIT 2
+                """)
+                .setParameter("connectionId", connectionId)
+                .setParameter("provider", provider)
+                .setParameter("externalEventId", externalEventId)
+                .getResultList();
+
+        if (rows.isEmpty()) {
+            return new BookingLinkageResult(Optional.empty(), "no_match", 0);
+        }
+        if (rows.size() > 1) {
+            return new BookingLinkageResult(Optional.empty(), "ambiguous", rows.size());
+        }
+        return new BookingLinkageResult(Optional.of(toUuid(rows.get(0))), "linked", 1);
+    }
+
+    private static UUID toUuid(Object value) {
+        if (value instanceof UUID uuid) {
+            return uuid;
+        }
+        return UUID.fromString(String.valueOf(value));
+    }
+
     public enum ClaimOutcome {
         CLAIMED,
         REJECTED,
@@ -423,5 +476,8 @@ public class CalendarEventMappingRepository {
     }
 
     public record MappingKey(UUID bookingId, String provider) {
+    }
+
+    public record BookingLinkageResult(Optional<UUID> bookingId, String reason, int matches) {
     }
 }

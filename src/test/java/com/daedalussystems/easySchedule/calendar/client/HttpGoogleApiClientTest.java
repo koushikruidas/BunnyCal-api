@@ -99,4 +99,10 @@ class HttpGoogleApiClientTest {
         );
         assertEquals("GUEST_ATTENDEE_MISSING", warning);
     }
+
+    @Test
+    void cancelledEventBody_isTreatedAsMissingForObserve() {
+        assertTrue(HttpGoogleApiClient.isCancelledEventBody(Map.of("status", "cancelled")));
+        assertTrue(HttpGoogleApiClient.isCancelledEventBody(Map.of("status", "CANCELLED")));
+    }
 }
