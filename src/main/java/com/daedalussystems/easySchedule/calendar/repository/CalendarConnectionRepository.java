@@ -17,6 +17,7 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
                                                                   CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByUserIdAndStatus(UUID userId, CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByStatus(CalendarConnectionStatus status);
+    Optional<CalendarConnection> findByWebhookChannelId(String webhookChannelId);
 
     @Query(value = """
             SELECT *

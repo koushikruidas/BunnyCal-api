@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.calendar.controller;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -18,6 +19,7 @@ import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -150,5 +152,24 @@ class CalendarIntegrationControllerTest {
                 .when(webhookAuthService).verifyGoogle(any(), any(), any(), any(), any());
         org.junit.jupiter.api.Assertions.assertThrows(CustomException.class,
                 () -> controller.ingestGoogleWebhook("wrong", request));
+    }
+
+    @Test
+    void webhook_googlePushHeaders_resolvesConnectionByChannel() {
+        UUID connectionId = UUID.randomUUID();
+        when(oauthService.findGoogleConnectionIdByWebhookChannel("ch-1")).thenReturn(Optional.of(connectionId));
+
+        ApiResponse<Void> body = controller.ingestGoogleWebhook(
+                null, null, null, null,
+                "ch-1", "secret", "77", "res-1", "exists",
+                null, null, null, null).getBody();
+
+        assertEquals(true, body.isSuccess());
+        verify(webhookAuthService).verifyGoogleWatchNotification("secret", "secret");
+        verify(webhookIngestionService).ingestGoogle(
+                eq(connectionId),
+                eq("google_channel_signal"),
+                any(),
+                any(WebhookDeliveryMetadata.class));
     }
 }

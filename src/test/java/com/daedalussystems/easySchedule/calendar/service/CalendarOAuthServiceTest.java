@@ -72,13 +72,16 @@ class CalendarOAuthServiceTest {
         securityProperties.setOauthStateSecret("state-secret");
         stateService = new OAuthStateService(securityProperties, new ObjectMapper());
         service = new CalendarOAuthService(
-                repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClient, slotCacheVersionService, connectionWriteService);
+                repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClient, slotCacheVersionService, connectionWriteService,
+                "http://localhost:8080/integrations/calendar/webhooks/google", "secret");
         when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any())).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         when(syncClient.fetchFull(any(CalendarConnection.class), any()))
                 .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), null, true, false, "test"));
+        when(googleApiClient.watchEvents(any(), any(), any()))
+                .thenReturn(new GoogleApiClient.WatchChannel("ch-1", "res-1", Instant.now().plusSeconds(3600)));
     }
 
     @Test

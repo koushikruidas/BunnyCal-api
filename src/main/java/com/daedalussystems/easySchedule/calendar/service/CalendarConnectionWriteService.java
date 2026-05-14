@@ -159,6 +159,9 @@ public class CalendarConnectionWriteService {
         target.setProviderSyncCursor(source.getProviderSyncCursor());
         target.setProviderCursorUpdatedAt(source.getProviderCursorUpdatedAt());
         target.setProviderCursorInvalidatedAt(source.getProviderCursorInvalidatedAt());
+        target.setWebhookChannelId(source.getWebhookChannelId());
+        target.setWebhookResourceId(source.getWebhookResourceId());
+        target.setWebhookChannelExpiresAt(source.getWebhookChannelExpiresAt());
     }
 
     private static boolean equalsNullable(String a, String b) {

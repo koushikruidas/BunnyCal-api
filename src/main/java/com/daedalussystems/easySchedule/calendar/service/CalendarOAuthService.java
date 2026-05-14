@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,8 @@ public class CalendarOAuthService {
     private final ExternalCalendarSyncClient syncClient;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
+    private final String googleWebhookAddress;
+    private final String googleWebhookToken;
 
     public CalendarOAuthService(CalendarConnectionRepository repository,
                                 GoogleApiClient googleApiClient,
@@ -46,7 +49,9 @@ public class CalendarOAuthService {
                                 CalendarEventIngestionService ingestionService,
                                 ExternalCalendarSyncClient syncClient,
                                 SlotCacheVersionService slotCacheVersionService,
-                                CalendarConnectionWriteService connectionWriteService) {
+                                CalendarConnectionWriteService connectionWriteService,
+                                @Value("${calendar.webhook.google.address:http://localhost:8080/integrations/calendar/webhooks/google}") String googleWebhookAddress,
+                                @Value("${calendar.webhook.shared-secret:}") String googleWebhookToken) {
         this.repository = repository;
         this.googleApiClient = googleApiClient;
         this.properties = properties;
@@ -56,6 +61,8 @@ public class CalendarOAuthService {
         this.syncClient = syncClient;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
+        this.googleWebhookAddress = googleWebhookAddress;
+        this.googleWebhookToken = googleWebhookToken;
     }
 
     public String buildGoogleConnectUrl(UUID userId) {
@@ -135,6 +142,20 @@ public class CalendarOAuthService {
                 connectionWriteService.advanceProviderCursor(
                         saved.getId(), null, fullBatch.nextCursor(), Instant.now(), "oauth_initial_full_cursor_advance");
             }
+            if (googleWebhookAddress != null && !googleWebhookAddress.isBlank()
+                    && googleWebhookToken != null && !googleWebhookToken.isBlank()) {
+                try {
+                    GoogleApiClient.WatchChannel watch = googleApiClient.watchEvents(
+                            token.accessToken(),
+                            googleWebhookAddress,
+                            googleWebhookToken);
+                    saved.setWebhookChannelId(watch.channelId());
+                    saved.setWebhookResourceId(watch.resourceId());
+                    saved.setWebhookChannelExpiresAt(watch.expiration());
+                } catch (RuntimeException ex) {
+                    log.warn("google_watch_registration_failed userId={} connectionId={}", userId, saved.getId(), ex);
+                }
+            }
             saved.setStatus(CalendarConnectionStatus.ACTIVE);
             slotCacheVersionService.bumpVersion(userId);
         } catch (RuntimeException ex) {
@@ -155,6 +176,16 @@ public class CalendarOAuthService {
             return "NOT_CONNECTED";
         }
         return mapPublicConnectionStatus(connection.get().getStatus());
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<UUID> findGoogleConnectionIdByWebhookChannel(String channelId) {
+        if (channelId == null || channelId.isBlank()) {
+            return Optional.empty();
+        }
+        return repository.findByWebhookChannelId(channelId)
+                .filter(conn -> conn.getProvider() == CalendarProviderType.GOOGLE)
+                .map(CalendarConnection::getId);
     }
 
     @Transactional
@@ -207,6 +238,9 @@ public class CalendarOAuthService {
         copy.setProviderSyncCursor(existing.getProviderSyncCursor());
         copy.setProviderCursorUpdatedAt(existing.getProviderCursorUpdatedAt());
         copy.setProviderCursorInvalidatedAt(existing.getProviderCursorInvalidatedAt());
+        copy.setWebhookChannelId(existing.getWebhookChannelId());
+        copy.setWebhookResourceId(existing.getWebhookResourceId());
+        copy.setWebhookChannelExpiresAt(existing.getWebhookChannelExpiresAt());
         return copy;
     }
 

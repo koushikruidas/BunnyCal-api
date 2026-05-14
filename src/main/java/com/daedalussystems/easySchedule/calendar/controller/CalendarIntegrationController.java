@@ -138,27 +138,64 @@ public class CalendarIntegrationController {
             @RequestHeader(value = "X-Webhook-Signature", required = false) String webhookSignature,
             @RequestHeader(value = "X-Webhook-Timestamp", required = false) String webhookTimestamp,
             @RequestHeader(value = "X-Webhook-Delivery-Id", required = false) String deliveryId,
+            @RequestHeader(value = "X-Goog-Channel-Id", required = false) String googleChannelId,
+            @RequestHeader(value = "X-Goog-Channel-Token", required = false) String googleChannelToken,
+            @RequestHeader(value = "X-Goog-Message-Number", required = false) String googleMessageNumber,
+            @RequestHeader(value = "X-Goog-Resource-Id", required = false) String googleResourceId,
+            @RequestHeader(value = "X-Goog-Resource-State", required = false) String googleResourceState,
             @RequestHeader(value = "X-Provider-Updated-At", required = false) String providerUpdatedAtHeader,
             @RequestHeader(value = "X-Provider-Etag", required = false) String providerEtag,
             @RequestHeader(value = "X-Provider-Sequence", required = false) String providerSequenceHeader,
-            @RequestBody GoogleWebhookRequest request) {
-        if (request == null) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Webhook payload is required.");
+            @RequestBody(required = false) GoogleWebhookRequest request) {
+        boolean isGooglePushNotification = googleChannelId != null && !googleChannelId.isBlank();
+        UUID resolvedConnectionId = request == null ? null : request.connectionId();
+        String resolvedProviderEventId = request == null ? null : request.providerEventId();
+        String resolvedRawPayload = request == null ? null : request.rawPayload();
+        if (isGooglePushNotification) {
+            webhookAuthService.verifyGoogleWatchNotification(webhookSharedSecret, googleChannelToken);
+            resolvedConnectionId = oauthService.findGoogleConnectionIdByWebhookChannel(googleChannelId)
+                    .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection for Google channel not found."));
+            if (resolvedProviderEventId == null || resolvedProviderEventId.isBlank()) {
+                resolvedProviderEventId = "google_channel_signal";
+            }
+            if (resolvedRawPayload == null) {
+                resolvedRawPayload = "";
+            }
+            resolvedRawPayload = resolvedRawPayload
+                    + "|goog_message_number=" + (googleMessageNumber == null ? "" : googleMessageNumber)
+                    + "|goog_resource_state=" + (googleResourceState == null ? "" : googleResourceState)
+                    + "|goog_resource_id=" + (googleResourceId == null ? "" : googleResourceId);
+        } else {
+            if (request == null) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR, "Webhook payload is required.");
+            }
+            webhookAuthService.verifyGoogle(
+                    webhookSharedSecret,
+                    webhookSecret,
+                    webhookSignature,
+                    webhookTimestamp,
+                    request);
         }
-        webhookAuthService.verifyGoogle(
-                webhookSharedSecret,
-                webhookSecret,
-                webhookSignature,
-                webhookTimestamp,
-                request);
-        String correlationId = deliveryId == null || deliveryId.isBlank() ? UUID.randomUUID().toString() : deliveryId;
+        log.info("webhook_received provider=google connectionId={} providerEventId={} deliveryId={} providerSequence={} providerUpdatedAt={} payloadPresent={}",
+                resolvedConnectionId,
+                resolvedProviderEventId,
+                deliveryId,
+                providerSequenceHeader,
+                providerUpdatedAtHeader,
+                resolvedRawPayload != null && !resolvedRawPayload.isBlank());
+        String fallbackDeliveryId = isGooglePushNotification && googleMessageNumber != null && !googleMessageNumber.isBlank()
+                ? "goog-msg-" + googleMessageNumber
+                : null;
+        String correlationId = deliveryId == null || deliveryId.isBlank()
+                ? (fallbackDeliveryId == null ? UUID.randomUUID().toString() : fallbackDeliveryId)
+                : deliveryId;
         MDC.put("correlationId", correlationId);
-        MDC.put("causationId", request.providerEventId() == null ? "" : request.providerEventId());
+        MDC.put("causationId", resolvedProviderEventId == null ? "" : resolvedProviderEventId);
         try {
             webhookIngestionService.ingestGoogle(
-                    request.connectionId(),
-                    request.providerEventId(),
-                    request.rawPayload(),
+                    resolvedConnectionId,
+                    resolvedProviderEventId,
+                    resolvedRawPayload,
                     new WebhookDeliveryMetadata(
                             parseInstantOrNull(providerUpdatedAtHeader),
                             providerEtag,
@@ -176,7 +213,10 @@ public class CalendarIntegrationController {
     ResponseEntity<ApiResponse<Void>> ingestGoogleWebhook(
             String webhookSecret,
             GoogleWebhookRequest request) {
-        return ingestGoogleWebhook(webhookSecret, null, null, null, null, null, null, request);
+        return ingestGoogleWebhook(
+                webhookSecret, null, null, null,
+                null, null, null, null, null,
+                null, null, null, request);
     }
 
     private UUID extractUserId(Authentication authentication) {

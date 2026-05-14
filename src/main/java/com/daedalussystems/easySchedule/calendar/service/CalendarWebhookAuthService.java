@@ -72,6 +72,19 @@ public class CalendarWebhookAuthService {
         meterRegistry.counter("calendar.webhook.auth.success.total", "mode", "hmac").increment();
     }
 
+    public void verifyGoogleWatchNotification(String configuredSecret, String channelTokenHeader) {
+        if (configuredSecret == null || configuredSecret.isBlank()) {
+            reject("missing_secret_config", ErrorCode.FORBIDDEN, "Webhook shared secret is not configured.");
+        }
+        if (channelTokenHeader == null || channelTokenHeader.isBlank()) {
+            reject("channel_token_missing", ErrorCode.UNAUTHORIZED, "Missing Google webhook channel token.");
+        }
+        if (!configuredSecret.equals(channelTokenHeader)) {
+            reject("channel_token_mismatch", ErrorCode.UNAUTHORIZED, "Invalid Google webhook channel token.");
+        }
+        meterRegistry.counter("calendar.webhook.auth.success.total", "mode", "google_watch").increment();
+    }
+
     private void reject(String reason, ErrorCode code, String message) {
         meterRegistry.counter("calendar.webhook.auth.failure.total", "reason", reason).increment();
         throw new CustomException(code, message);
@@ -95,4 +108,3 @@ public class CalendarWebhookAuthService {
         }
     }
 }
-

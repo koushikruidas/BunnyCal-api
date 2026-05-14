@@ -44,4 +44,10 @@ class CalendarWebhookAuthServiceTest {
 
         assertDoesNotThrow(() -> service.verifyGoogle("secret", null, sig, String.valueOf(now), request));
     }
+
+    @Test
+    void googleWatchMode_acceptsMatchingChannelToken() {
+        CalendarWebhookAuthService service = new CalendarWebhookAuthService(new SimpleMeterRegistry(), true, 300);
+        assertDoesNotThrow(() -> service.verifyGoogleWatchNotification("secret", "secret"));
+    }
 }

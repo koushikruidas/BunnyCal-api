@@ -71,6 +71,15 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "provider_cursor_invalidated_at")
     private Instant providerCursorInvalidatedAt;
 
+    @Column(name = "webhook_channel_id", length = 255)
+    private String webhookChannelId;
+
+    @Column(name = "webhook_resource_id", length = 255)
+    private String webhookResourceId;
+
+    @Column(name = "webhook_channel_expires_at")
+    private Instant webhookChannelExpiresAt;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -102,6 +111,12 @@ public class CalendarConnection extends BaseEntity {
     public void setProviderCursorUpdatedAt(Instant providerCursorUpdatedAt) { this.providerCursorUpdatedAt = providerCursorUpdatedAt; }
     public Instant getProviderCursorInvalidatedAt() { return providerCursorInvalidatedAt; }
     public void setProviderCursorInvalidatedAt(Instant providerCursorInvalidatedAt) { this.providerCursorInvalidatedAt = providerCursorInvalidatedAt; }
+    public String getWebhookChannelId() { return webhookChannelId; }
+    public void setWebhookChannelId(String webhookChannelId) { this.webhookChannelId = webhookChannelId; }
+    public String getWebhookResourceId() { return webhookResourceId; }
+    public void setWebhookResourceId(String webhookResourceId) { this.webhookResourceId = webhookResourceId; }
+    public Instant getWebhookChannelExpiresAt() { return webhookChannelExpiresAt; }
+    public void setWebhookChannelExpiresAt(Instant webhookChannelExpiresAt) { this.webhookChannelExpiresAt = webhookChannelExpiresAt; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }

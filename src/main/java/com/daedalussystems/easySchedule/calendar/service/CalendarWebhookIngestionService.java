@@ -73,22 +73,27 @@ public class CalendarWebhookIngestionService {
         if (!webhookEnabled || !googleWebhookEnabled) {
             throw new CustomException(ErrorCode.FORBIDDEN, "Calendar webhook ingestion is disabled.");
         }
-        if (connectionId == null || providerEventId == null || providerEventId.isBlank()) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "connectionId and providerEventId are required.");
+        if (connectionId == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "connectionId is required.");
         }
-        putIfAbsent("correlationId", providerEventId);
-        putIfAbsent("causationId", providerEventId);
+        String normalizedProviderEventId = (providerEventId == null || providerEventId.isBlank())
+                ? "google_channel_signal"
+                : providerEventId;
+        putIfAbsent("correlationId", normalizedProviderEventId);
+        putIfAbsent("causationId", normalizedProviderEventId);
         putIfAbsent("bookingId", "");
-        putIfAbsent("externalEventId", providerEventId);
+        putIfAbsent("externalEventId", normalizedProviderEventId);
         putIfAbsent("syncSource", SyncSourceAttribution.WEBHOOK.name());
         try {
             webhookIngestTotal.increment();
             CalendarWebhookDedupService.DedupOutcome dedupOutcome =
-                    dedupService.checkAndRecord("google", connectionId, providerEventId, rawPayload);
+                    dedupService.checkAndRecord("google", connectionId, normalizedProviderEventId, rawPayload);
+            log.info("webhook_dedup_outcome provider=google connectionId={} providerEventId={} firstSeen={} deliveryKey={} payloadHash={}",
+                    connectionId, normalizedProviderEventId, dedupOutcome.firstSeen(), dedupOutcome.deliveryKey(), dedupOutcome.payloadHash());
             replayCaptureService.capture(
                     "google",
                     connectionId,
-                    providerEventId,
+                    normalizedProviderEventId,
                     rawPayload,
                     dedupOutcome.deliveryKey(),
                     dedupOutcome.payloadHash(),
@@ -98,7 +103,7 @@ public class CalendarWebhookIngestionService {
                 webhookDuplicateTotal.increment();
                 reconciliationConflictTotal.increment();
                 log.info("calendar_webhook_duplicate provider={} providerEventId={} connectionId={}",
-                        "google", providerEventId, connectionId);
+                        "google", normalizedProviderEventId, connectionId);
                 return;
             }
 
@@ -109,6 +114,8 @@ public class CalendarWebhookIngestionService {
             try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.WEBHOOK);
+                log.info("incremental_fetch_result provider=google source=WEBHOOK mode=incremental recoveryAction={} gapSuspected={} eventsCount={} nextCursorPresent={}",
+                        batch.recoveryAction(), batch.gapSuspected(), batch.events().size(), batch.nextCursor() != null);
                 if (batch.gapSuspected()) {
                     meterRegistry.counter("calendar.sync.webhook_gap_suspected.total", "provider", "google", "action", batch.recoveryAction())
                             .increment();
@@ -121,6 +128,8 @@ public class CalendarWebhookIngestionService {
                 if (batch.nextCursor() != null) {
                     boolean advanced = connectionWriteService.advanceProviderCursor(
                             connection.getId(), expectedCursor, batch.nextCursor(), Instant.now(), "webhook_incremental_cursor_advance");
+                    log.info("cursor_advance_attempt provider=google source=WEBHOOK connectionId={} advanced={} expectedCursorPresent={} nextCursorPresent={}",
+                            connection.getId(), advanced, expectedCursor != null && !expectedCursor.isBlank(), batch.nextCursor() != null);
                     if (!advanced) {
                         meterRegistry.counter("calendar.sync.cursor_conflict.total", "provider", "google", "source", "WEBHOOK")
                                 .increment();
@@ -135,15 +144,19 @@ public class CalendarWebhookIngestionService {
                         connection.getLastSyncedAt(),
                         "webhook_incremental_success");
                 log.info("calendar_webhook_ingested provider={} providerEventId={} connectionId={} mode=incremental",
-                        "google", providerEventId, connectionId);
+                        "google", normalizedProviderEventId, connectionId);
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
                 connectionWriteService.invalidateProviderCursor(connection.getId(), Instant.now(), "webhook_sync_cursor_invalidated");
                 ExternalCalendarSyncClient.SyncBatch fullBatch =
                         syncClient.fetchFull(connection, SyncSourceAttribution.WEBHOOK);
+                log.info("incremental_fetch_result provider=google source=WEBHOOK mode=full_recovery recoveryAction={} gapSuspected={} eventsCount={} nextCursorPresent={}",
+                        fullBatch.recoveryAction(), fullBatch.gapSuspected(), fullBatch.events().size(), fullBatch.nextCursor() != null);
                 ingestionService.upsertEvents(connectionId, fullBatch.events(), SyncSourceAttribution.WEBHOOK);
                 if (fullBatch.nextCursor() != null) {
                     connectionWriteService.advanceProviderCursor(
                             connection.getId(), null, fullBatch.nextCursor(), Instant.now(), "webhook_full_cursor_advance");
+                    log.info("cursor_advance_attempt provider=google source=WEBHOOK connectionId={} advanced={} expectedCursorPresent=false nextCursorPresent={}",
+                            connection.getId(), true, true);
                 }
                 meterRegistry.counter("calendar.sync.replay_recovery_action.total", "provider", "google", "action", "webhook_full_recovery")
                         .increment();
@@ -154,7 +167,7 @@ public class CalendarWebhookIngestionService {
                         connection.getLastSyncedAt(),
                         "webhook_full_resync_success");
                 log.info("calendar_webhook_ingested provider={} providerEventId={} connectionId={} mode=full_resync",
-                        "google", providerEventId, connectionId);
+                        "google", normalizedProviderEventId, connectionId);
             } catch (RuntimeException ex) {
                 connectionWriteService.markFailure(
                         connection.getId(),
@@ -163,7 +176,7 @@ public class CalendarWebhookIngestionService {
                         Instant.now(),
                         "webhook_sync_failure");
                 log.warn("calendar_webhook_ingest_failed provider={} providerEventId={} connectionId={}",
-                        "google", providerEventId, connectionId, ex);
+                        "google", normalizedProviderEventId, connectionId, ex);
                 throw ex;
             }
         } finally {

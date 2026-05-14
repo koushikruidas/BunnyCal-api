@@ -26,6 +26,8 @@ public interface GoogleApiClient {
 
     SyncWindow listEventsIncremental(String accessToken, String syncCursor);
 
+    WatchChannel watchEvents(String accessToken, String webhookUrl, String channelToken);
+
     record GoogleEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {}
 
     record BusyInterval(Instant start, Instant end) {}
@@ -42,4 +44,6 @@ public interface GoogleApiClient {
             String providerEtag,
             String payloadHash
     ) {}
+
+    record WatchChannel(String channelId, String resourceId, Instant expiration) {}
 }
