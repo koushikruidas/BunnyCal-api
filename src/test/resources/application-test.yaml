@@ -55,6 +55,11 @@ auth:
 calendar:
   provider:
     mode: in-memory
+  webhook:
+    auth:
+      require-signature: false
+    replay-capture:
+      enabled: true
 
 sync:
   projection:

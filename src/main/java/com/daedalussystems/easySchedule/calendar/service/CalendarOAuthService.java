@@ -12,6 +12,7 @@ import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -127,7 +128,7 @@ public class CalendarOAuthService {
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
-            ingestionService.upsertEvents(saved.getId(), syncClient.fetchFull(saved));
+            ingestionService.upsertEvents(saved.getId(), syncClient.fetchFull(saved), SyncSourceAttribution.USER_ACTION);
             saved.setStatus(CalendarConnectionStatus.ACTIVE);
             slotCacheVersionService.bumpVersion(userId);
         } catch (RuntimeException ex) {

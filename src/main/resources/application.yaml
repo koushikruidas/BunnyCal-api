@@ -83,6 +83,11 @@ calendar:
     mode: ${CALENDAR_PROVIDER_MODE:google}
   webhook:
     enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
+    auth:
+      require-signature: ${CALENDAR_WEBHOOK_REQUIRE_SIGNATURE:false}
+      max-skew-seconds: ${CALENDAR_WEBHOOK_MAX_SKEW_SECONDS:300}
+    replay-capture:
+      enabled: ${CALENDAR_WEBHOOK_REPLAY_CAPTURE_ENABLED:true}
     provider:
       google:
         enabled: ${CALENDAR_WEBHOOK_PROVIDER_GOOGLE_ENABLED:false}

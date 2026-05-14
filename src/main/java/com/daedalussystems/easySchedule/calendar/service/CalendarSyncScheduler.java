@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionServi
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -49,7 +50,7 @@ public class CalendarSyncScheduler {
             long connectionStart = System.nanoTime();
             CalendarConnectionStatus previousStatus = connection.getStatus();
             try {
-                ingestionService.upsertEvents(connection.getId(), syncClient.fetchIncremental(connection));
+                ingestionService.upsertEvents(connection.getId(), syncClient.fetchIncremental(connection), SyncSourceAttribution.PULL_SYNC);
                 if (previousStatus != CalendarConnectionStatus.ACTIVE) {
                     slotCacheVersionService.bumpVersion(connection.getUserId());
                 }
@@ -62,7 +63,7 @@ public class CalendarSyncScheduler {
                         connection.getId(), connection.getUserId(), previousStatus,
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart));
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
-                ingestionService.upsertEvents(connection.getId(), syncClient.fetchFull(connection));
+                ingestionService.upsertEvents(connection.getId(), syncClient.fetchFull(connection), SyncSourceAttribution.PULL_SYNC);
                 slotCacheVersionService.bumpVersion(connection.getUserId());
                 connectionWriteService.markActive(
                         connection.getId(),

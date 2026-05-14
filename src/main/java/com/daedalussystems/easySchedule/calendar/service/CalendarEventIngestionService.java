@@ -10,6 +10,7 @@ import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassi
 import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
 import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -48,6 +49,13 @@ public class CalendarEventIngestionService {
 
     @Transactional
     public void upsertEvents(UUID connectionId, List<IncomingCalendarEvent> incomingEvents) {
+        upsertEvents(connectionId, incomingEvents, SyncSourceAttribution.PULL_SYNC);
+    }
+
+    @Transactional
+    public void upsertEvents(UUID connectionId,
+                             List<IncomingCalendarEvent> incomingEvents,
+                             SyncSourceAttribution sourceAttribution) {
         if (connectionId == null) {
             throw new IllegalArgumentException("connectionId is required");
         }
@@ -83,7 +91,7 @@ public class CalendarEventIngestionService {
                 event.setCancelled(incoming.cancelled());
                 eventRepository.save(event);
                 invariantMonitor.assertState(
-                        "webhook_ingestion_acceptance",
+                        sourceAttribution == null ? "provider_ingestion_acceptance" : sourceAttribution.name().toLowerCase() + "_ingestion_acceptance",
                         incoming.cancelled() ? BookingState.CANCELLED : BookingState.CONFIRMED,
                         SyncJobStatus.PROCESSING,
                         incoming.cancelled()

@@ -254,3 +254,59 @@ ON sync_reconcile_decision_log (booking_id, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_sync_reconcile_decision_log_job_created
 ON sync_reconcile_decision_log (sync_job_id, created_at);
+
+CREATE TABLE IF NOT EXISTS calendar_webhook_replay_fixtures (
+    id UUID PRIMARY KEY,
+    arrival_index BIGINT AUTO_INCREMENT NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    connection_id UUID NOT NULL,
+    provider_event_id VARCHAR(255) NOT NULL,
+    delivery_key VARCHAR(255) NOT NULL,
+    payload_hash VARCHAR(128),
+    raw_payload TEXT,
+    dedup_result VARCHAR(16) NOT NULL,
+    provider_updated_at TIMESTAMPTZ,
+    provider_etag VARCHAR(255),
+    provider_sequence BIGINT,
+    delivery_id VARCHAR(255),
+    source_attribution VARCHAR(32) NOT NULL DEFAULT 'WEBHOOK',
+    recurring_hint BOOLEAN NOT NULL DEFAULT FALSE,
+    correlation_id VARCHAR(128),
+    causation_id VARCHAR(128),
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_webhook_replay_fixtures_conn_arrival
+ON calendar_webhook_replay_fixtures (connection_id, arrival_index);
+
+CREATE TABLE IF NOT EXISTS sync_reconcile_input_snapshots (
+    id UUID PRIMARY KEY,
+    snapshot_version BIGINT AUTO_INCREMENT NOT NULL,
+    snapshot_hash VARCHAR(64) NOT NULL,
+    sync_job_id UUID NOT NULL,
+    booking_id UUID NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    external_event_id VARCHAR(255),
+    booking_state VARCHAR(16) NOT NULL,
+    sync_status VARCHAR(16) NOT NULL,
+    projection_lifecycle VARCHAR(24) NOT NULL,
+    participation_lifecycle VARCHAR(24) NOT NULL,
+    invariant_classification VARCHAR(32) NOT NULL,
+    desired_action VARCHAR(16) NOT NULL,
+    observed_status VARCHAR(32) NOT NULL,
+    observed_error_code VARCHAR(64),
+    projection_version BIGINT,
+    terminal_intent_epoch BIGINT,
+    projection_connection_id UUID,
+    provider_updated_at TIMESTAMPTZ,
+    provider_etag VARCHAR(255),
+    provider_sequence BIGINT,
+    recurring_hint BOOLEAN NOT NULL DEFAULT FALSE,
+    correlation_id VARCHAR(128),
+    causation_id VARCHAR(128),
+    lineage_source VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

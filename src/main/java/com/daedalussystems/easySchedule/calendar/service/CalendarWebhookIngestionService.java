@@ -3,9 +3,11 @@ package com.daedalussystems.easySchedule.calendar.service;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.replay.WebhookDeliveryMetadata;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
@@ -25,6 +27,7 @@ public class CalendarWebhookIngestionService {
     private final CalendarConnectionRepository connectionRepository;
     private final ExternalCalendarSyncClient syncClient;
     private final CalendarEventIngestionService ingestionService;
+    private final CalendarWebhookReplayCaptureService replayCaptureService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final boolean webhookEnabled;
@@ -38,6 +41,7 @@ public class CalendarWebhookIngestionService {
             CalendarConnectionRepository connectionRepository,
             ExternalCalendarSyncClient syncClient,
             CalendarEventIngestionService ingestionService,
+            CalendarWebhookReplayCaptureService replayCaptureService,
             CalendarConnectionWriteService connectionWriteService,
             SlotCacheVersionService slotCacheVersionService,
             MeterRegistry meterRegistry,
@@ -47,6 +51,7 @@ public class CalendarWebhookIngestionService {
         this.connectionRepository = connectionRepository;
         this.syncClient = syncClient;
         this.ingestionService = ingestionService;
+        this.replayCaptureService = replayCaptureService;
         this.connectionWriteService = connectionWriteService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.webhookEnabled = webhookEnabled;
@@ -58,20 +63,36 @@ public class CalendarWebhookIngestionService {
 
     @Transactional
     public void ingestGoogle(UUID connectionId, String providerEventId, String rawPayload) {
+        ingestGoogle(connectionId, providerEventId, rawPayload, WebhookDeliveryMetadata.empty());
+    }
+
+    @Transactional
+    public void ingestGoogle(UUID connectionId, String providerEventId, String rawPayload, WebhookDeliveryMetadata deliveryMetadata) {
         if (!webhookEnabled || !googleWebhookEnabled) {
             throw new CustomException(ErrorCode.FORBIDDEN, "Calendar webhook ingestion is disabled.");
         }
         if (connectionId == null || providerEventId == null || providerEventId.isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "connectionId and providerEventId are required.");
         }
-        MDC.put("correlationId", providerEventId);
-        MDC.put("causationId", providerEventId);
-        MDC.put("bookingId", "");
-        MDC.put("externalEventId", providerEventId);
+        putIfAbsent("correlationId", providerEventId);
+        putIfAbsent("causationId", providerEventId);
+        putIfAbsent("bookingId", "");
+        putIfAbsent("externalEventId", providerEventId);
+        putIfAbsent("syncSource", SyncSourceAttribution.WEBHOOK.name());
         try {
             webhookIngestTotal.increment();
-            boolean firstSeen = dedupService.firstSeen("google", connectionId, providerEventId, rawPayload);
-            if (!firstSeen) {
+            CalendarWebhookDedupService.DedupOutcome dedupOutcome =
+                    dedupService.checkAndRecord("google", connectionId, providerEventId, rawPayload);
+            replayCaptureService.capture(
+                    "google",
+                    connectionId,
+                    providerEventId,
+                    rawPayload,
+                    dedupOutcome.deliveryKey(),
+                    dedupOutcome.payloadHash(),
+                    !dedupOutcome.firstSeen(),
+                    deliveryMetadata);
+            if (!dedupOutcome.firstSeen()) {
                 webhookDuplicateTotal.increment();
                 reconciliationConflictTotal.increment();
                 log.info("calendar_webhook_duplicate provider={} providerEventId={} connectionId={}",
@@ -83,7 +104,7 @@ public class CalendarWebhookIngestionService {
                     .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection not found."));
             CalendarConnectionStatus prevStatus = connection.getStatus();
             try {
-                ingestionService.upsertEvents(connectionId, syncClient.fetchIncremental(connection));
+                ingestionService.upsertEvents(connectionId, syncClient.fetchIncremental(connection), SyncSourceAttribution.WEBHOOK);
                 if (prevStatus != CalendarConnectionStatus.ACTIVE) {
                     slotCacheVersionService.bumpVersion(connection.getUserId());
                 }
@@ -95,7 +116,7 @@ public class CalendarWebhookIngestionService {
                 log.info("calendar_webhook_ingested provider={} providerEventId={} connectionId={} mode=incremental",
                         "google", providerEventId, connectionId);
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
-                ingestionService.upsertEvents(connectionId, syncClient.fetchFull(connection));
+                ingestionService.upsertEvents(connectionId, syncClient.fetchFull(connection), SyncSourceAttribution.WEBHOOK);
                 slotCacheVersionService.bumpVersion(connection.getUserId());
                 connectionWriteService.markActive(
                         connection.getId(),
@@ -120,6 +141,13 @@ public class CalendarWebhookIngestionService {
             MDC.remove("bookingId");
             MDC.remove("causationId");
             MDC.remove("correlationId");
+            MDC.remove("syncSource");
+        }
+    }
+
+    private static void putIfAbsent(String key, String value) {
+        if (MDC.get(key) == null) {
+            MDC.put(key, value == null ? "" : value);
         }
     }
 }

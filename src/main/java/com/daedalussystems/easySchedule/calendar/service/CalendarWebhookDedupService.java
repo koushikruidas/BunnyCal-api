@@ -30,18 +30,24 @@ public class CalendarWebhookDedupService {
 
     @Transactional
     public boolean firstSeen(String provider, UUID connectionId, String providerEventId, String rawPayload) {
+        return checkAndRecord(provider, connectionId, providerEventId, rawPayload).firstSeen();
+    }
+
+    @Transactional
+    public DedupOutcome checkAndRecord(String provider, UUID connectionId, String providerEventId, String rawPayload) {
         if (provider == null || provider.isBlank() || providerEventId == null || providerEventId.isBlank()) {
-            return false;
+            return new DedupOutcome(false, null, null);
         }
         String normalizedProvider = provider.trim().toUpperCase();
-        String deliveryKey = normalizedProvider + ":" + connectionId + ":" + providerEventId.trim() + ":" + hashNullable(rawPayload);
+        String payloadHash = hashNullable(rawPayload);
+        String deliveryKey = normalizedProvider + ":" + connectionId + ":" + providerEventId.trim() + ":" + payloadHash;
         int inserted = repository.insertIfAbsent(
                 UUID.randomUUID(),
                 normalizedProvider,
                 providerEventId.trim(),
                 connectionId,
                 deliveryKey,
-                hashNullable(rawPayload),
+                payloadHash,
                 Instant.now()
         );
         if (inserted == 0) {
@@ -49,7 +55,7 @@ public class CalendarWebhookDedupService {
             replayRejectedCounter.increment();
             log.info("calendar_webhook_replay_rejected provider={} providerEventId={}", provider, providerEventId);
         }
-        return inserted > 0;
+        return new DedupOutcome(inserted > 0, deliveryKey, payloadHash);
     }
 
     private static String hashNullable(String payload) {
@@ -60,5 +66,8 @@ public class CalendarWebhookDedupService {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 not available", e);
         }
+    }
+
+    public record DedupOutcome(boolean firstSeen, String deliveryKey, String payloadHash) {
     }
 }

@@ -390,6 +390,11 @@ sequenceDiagram
 - Deterministic shadow reconcile decisions are documented in [`ADR_SYNC_DETERMINISTIC_RECONCILE_DECISIONS.md`](./ADR_SYNC_DETERMINISTIC_RECONCILE_DECISIONS.md).
 - Canonical input hash contract is documented in [`ADR_SYNC_CANONICAL_SNAPSHOT_SERIALIZATION.md`](./ADR_SYNC_CANONICAL_SNAPSHOT_SERIALIZATION.md).
 - Shadow parity taxonomy governance is documented in [`ADR_SYNC_PARITY_SEMANTICS.md`](./ADR_SYNC_PARITY_SEMANTICS.md).
+- Replay fixture format is documented in [`ADR_SYNC_REPLAY_FIXTURE_FORMAT.md`](./ADR_SYNC_REPLAY_FIXTURE_FORMAT.md).
+- Provider replay assumptions are documented in [`ADR_SYNC_PROVIDER_REPLAY_ASSUMPTIONS.md`](./ADR_SYNC_PROVIDER_REPLAY_ASSUMPTIONS.md).
+- Recurring-event limitations are documented in [`ADR_SYNC_RECURRING_EVENT_LIMITATIONS.md`](./ADR_SYNC_RECURRING_EVENT_LIMITATIONS.md).
+- Convergence proving strategy is documented in [`ADR_SYNC_CONVERGENCE_PROVING.md`](./ADR_SYNC_CONVERGENCE_PROVING.md).
+- Shadow divergence interpretation is documented in [`ADR_SYNC_SHADOW_DIVERGENCE_INTERPRETATION.md`](./ADR_SYNC_SHADOW_DIVERGENCE_INTERPRETATION.md).
 
 Implemented metrics/logging include:
 - Booking conflict counters and completion latency (`BookingService`).

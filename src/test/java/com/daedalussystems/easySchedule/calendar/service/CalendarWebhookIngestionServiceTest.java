@@ -10,6 +10,7 @@ import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -28,6 +29,7 @@ class CalendarWebhookIngestionServiceTest {
     @Mock private CalendarConnectionRepository connectionRepository;
     @Mock private ExternalCalendarSyncClient syncClient;
     @Mock private CalendarEventIngestionService ingestionService;
+    @Mock private CalendarWebhookReplayCaptureService replayCaptureService;
     @Mock private CalendarConnectionWriteService connectionWriteService;
     @Mock private SlotCacheVersionService slotCacheVersionService;
 
@@ -40,6 +42,7 @@ class CalendarWebhookIngestionServiceTest {
                 connectionRepository,
                 syncClient,
                 ingestionService,
+                replayCaptureService,
                 connectionWriteService,
                 slotCacheVersionService,
                 new SimpleMeterRegistry(),
@@ -51,12 +54,14 @@ class CalendarWebhookIngestionServiceTest {
     @Test
     void duplicateWebhook_isNoop() {
         UUID connectionId = UUID.randomUUID();
-        when(dedupService.firstSeen("google", connectionId, "evt-1", "{}")).thenReturn(false);
+        when(dedupService.checkAndRecord("google", connectionId, "evt-1", "{}"))
+                .thenReturn(new CalendarWebhookDedupService.DedupOutcome(false, "k1", "h1"));
 
         service.ingestGoogle(connectionId, "evt-1", "{}");
 
         verify(syncClient, never()).fetchIncremental(any());
-        verify(ingestionService, never()).upsertEvents(any(), any());
+        verify(ingestionService, never()).upsertEvents(any(), any(), any());
+        verify(replayCaptureService).capture(any(), any(), any(), any(), any(), any(), org.mockito.Mockito.eq(true), any());
     }
 
     @Test
@@ -64,18 +69,20 @@ class CalendarWebhookIngestionServiceTest {
         UUID connectionId = UUID.randomUUID();
         UUID userId = UUID.randomUUID();
         CalendarConnection connection = connection(connectionId, userId, CalendarConnectionStatus.ACTIVE);
-        when(dedupService.firstSeen("google", connectionId, "evt-2", "{}")).thenReturn(true);
+        when(dedupService.checkAndRecord("google", connectionId, "evt-2", "{}"))
+                .thenReturn(new CalendarWebhookDedupService.DedupOutcome(true, "k2", "h2"));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
         when(syncClient.fetchIncremental(connection)).thenReturn(List.of());
 
         service.ingestGoogle(connectionId, "evt-2", "{}");
 
-        verify(ingestionService).upsertEvents(connectionId, List.of());
+        verify(ingestionService).upsertEvents(connectionId, List.of(), SyncSourceAttribution.WEBHOOK);
         verify(connectionWriteService).markActive(
                 connectionId,
                 connection.getLastTokenExpiresAt(),
                 connection.getLastSyncedAt(),
                 "webhook_incremental_success");
+        verify(replayCaptureService).capture(any(), any(), any(), any(), any(), any(), org.mockito.Mockito.eq(false), any());
     }
 
     private static CalendarConnection connection(UUID id, UUID userId, CalendarConnectionStatus status) {

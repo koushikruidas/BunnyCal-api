@@ -1,7 +1,9 @@
 package com.daedalussystems.easySchedule.calendar.controller;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
+import com.daedalussystems.easySchedule.calendar.replay.WebhookDeliveryMetadata;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
@@ -11,6 +13,7 @@ import com.daedalussystems.easySchedule.common.exception.CustomException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -28,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.MDC;
+import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -37,15 +41,18 @@ public class CalendarIntegrationController {
     private static final String DASHBOARD_FALLBACK_RETURN_TO = "/dashboard/integrations";
     private static final String PUBLIC_FALLBACK_RETURN_TO = "/";
     private final CalendarOAuthService oauthService;
+    private final CalendarWebhookAuthService webhookAuthService;
     private final CalendarWebhookIngestionService webhookIngestionService;
     private final GoogleOAuthProperties googleOAuthProperties;
     private final String webhookSharedSecret;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
+                                         CalendarWebhookAuthService webhookAuthService,
                                          CalendarWebhookIngestionService webhookIngestionService,
                                          GoogleOAuthProperties googleOAuthProperties,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
+        this.webhookAuthService = webhookAuthService;
         this.webhookIngestionService = webhookIngestionService;
         this.googleOAuthProperties = googleOAuthProperties;
         this.webhookSharedSecret = webhookSharedSecret;
@@ -128,18 +135,48 @@ public class CalendarIntegrationController {
     @PostMapping("/webhooks/google")
     public ResponseEntity<ApiResponse<Void>> ingestGoogleWebhook(
             @RequestHeader(value = "X-Webhook-Secret", required = false) String webhookSecret,
+            @RequestHeader(value = "X-Webhook-Signature", required = false) String webhookSignature,
+            @RequestHeader(value = "X-Webhook-Timestamp", required = false) String webhookTimestamp,
+            @RequestHeader(value = "X-Webhook-Delivery-Id", required = false) String deliveryId,
+            @RequestHeader(value = "X-Provider-Updated-At", required = false) String providerUpdatedAtHeader,
+            @RequestHeader(value = "X-Provider-Etag", required = false) String providerEtag,
+            @RequestHeader(value = "X-Provider-Sequence", required = false) String providerSequenceHeader,
             @RequestBody GoogleWebhookRequest request) {
-        if (webhookSharedSecret == null || webhookSharedSecret.isBlank()) {
-            throw new CustomException(ErrorCode.FORBIDDEN, "Webhook shared secret is not configured.");
-        }
-        if (!webhookSharedSecret.equals(webhookSecret)) {
-            throw new CustomException(ErrorCode.UNAUTHORIZED, "Invalid webhook secret.");
-        }
         if (request == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Webhook payload is required.");
         }
-        webhookIngestionService.ingestGoogle(request.connectionId(), request.providerEventId(), request.rawPayload());
+        webhookAuthService.verifyGoogle(
+                webhookSharedSecret,
+                webhookSecret,
+                webhookSignature,
+                webhookTimestamp,
+                request);
+        String correlationId = deliveryId == null || deliveryId.isBlank() ? UUID.randomUUID().toString() : deliveryId;
+        MDC.put("correlationId", correlationId);
+        MDC.put("causationId", request.providerEventId() == null ? "" : request.providerEventId());
+        try {
+            webhookIngestionService.ingestGoogle(
+                    request.connectionId(),
+                    request.providerEventId(),
+                    request.rawPayload(),
+                    new WebhookDeliveryMetadata(
+                            parseInstantOrNull(providerUpdatedAtHeader),
+                            providerEtag,
+                            parseLongOrNull(providerSequenceHeader),
+                            deliveryId,
+                            SyncSourceAttribution.WEBHOOK)
+            );
+        } finally {
+            MDC.remove("causationId");
+            MDC.remove("correlationId");
+        }
         return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    ResponseEntity<ApiResponse<Void>> ingestGoogleWebhook(
+            String webhookSecret,
+            GoogleWebhookRequest request) {
+        return ingestGoogleWebhook(webhookSecret, null, null, null, null, null, null, request);
     }
 
     private UUID extractUserId(Authentication authentication) {
@@ -208,5 +245,23 @@ public class CalendarIntegrationController {
             throw new IllegalArgumentException("returnTo must be a relative path");
         }
         return returnTo;
+    }
+
+    private static Instant parseInstantOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private static Long parseLongOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Long.parseLong(value);
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 }
