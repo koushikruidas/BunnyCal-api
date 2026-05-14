@@ -22,7 +22,24 @@ public interface GoogleApiClient {
 
     List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end);
 
+    SyncWindow listEventsFull(String accessToken);
+
+    SyncWindow listEventsIncremental(String accessToken, String syncCursor);
+
     record GoogleEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {}
 
     record BusyInterval(Instant start, Instant end) {}
+
+    record SyncWindow(List<CalendarEventObservation> events, String nextSyncToken) {}
+
+    record CalendarEventObservation(
+            String externalEventId,
+            Instant startsAt,
+            Instant endsAt,
+            boolean cancelled,
+            Long providerSequence,
+            Instant providerUpdatedAt,
+            String providerEtag,
+            String payloadHash
+    ) {}
 }

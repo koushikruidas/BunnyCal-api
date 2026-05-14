@@ -55,6 +55,10 @@ auth:
 calendar:
   provider:
     mode: in-memory
+  sync:
+    incremental:
+      enabled: false
+      shadow-mode: true
   webhook:
     auth:
       require-signature: false

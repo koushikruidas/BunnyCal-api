@@ -67,6 +67,16 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
         return withRetry(() -> delegate.fetchBusyIntervals(accessToken, start, end));
     }
 
+    @Override
+    public SyncWindow listEventsFull(String accessToken) {
+        return withRetry(() -> delegate.listEventsFull(accessToken));
+    }
+
+    @Override
+    public SyncWindow listEventsIncremental(String accessToken, String syncCursor) {
+        return withRetry(() -> delegate.listEventsIncremental(accessToken, syncCursor));
+    }
+
     private interface Call<T> { T invoke(); }
 
     private <T> T withRetry(Call<T> call) {

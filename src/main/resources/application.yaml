@@ -81,6 +81,11 @@ logging:
 calendar:
   provider:
     mode: ${CALENDAR_PROVIDER_MODE:google}
+  sync:
+    incremental:
+      enabled: ${CALENDAR_SYNC_INCREMENTAL_ENABLED:false}
+      shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:true}
+      stale-cursor-max-age-hours: ${CALENDAR_SYNC_INCREMENTAL_STALE_CURSOR_MAX_AGE_HOURS:168}
   webhook:
     enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
     auth:

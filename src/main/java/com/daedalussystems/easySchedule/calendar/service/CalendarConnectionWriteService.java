@@ -82,6 +82,36 @@ public class CalendarConnectionWriteService {
         });
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean advanceProviderCursor(UUID connectionId,
+                                         String expectedCursor,
+                                         String nextCursor,
+                                         Instant observedAt,
+                                         String context) {
+        if (nextCursor == null || nextCursor.isBlank()) {
+            return false;
+        }
+        return withRetry(connectionId, context, latest -> {
+            String current = latest.getProviderSyncCursor();
+            if (!equalsNullable(current, expectedCursor)) {
+                return null;
+            }
+            latest.setProviderSyncCursor(nextCursor);
+            latest.setProviderCursorUpdatedAt(observedAt == null ? Instant.now() : observedAt);
+            latest.setProviderCursorInvalidatedAt(null);
+            return latest;
+        }) != null;
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CalendarConnection invalidateProviderCursor(UUID connectionId, Instant invalidatedAt, String context) {
+        return withRetry(connectionId, context, latest -> {
+            latest.setProviderSyncCursor(null);
+            latest.setProviderCursorInvalidatedAt(invalidatedAt == null ? Instant.now() : invalidatedAt);
+            return latest;
+        });
+    }
+
     private interface Mutator {
         CalendarConnection apply(CalendarConnection latest);
     }
@@ -98,6 +128,9 @@ public class CalendarConnectionWriteService {
                 CalendarConnection latest = repository.findById(connectionId)
                         .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
                 CalendarConnection toSave = mutator.apply(latest);
+                if (toSave == null) {
+                    return null;
+                }
                 return repository.saveAndFlush(toSave);
             } catch (OptimisticLockingFailureException conflict) {
                 lastConflict = conflict;
@@ -123,5 +156,13 @@ public class CalendarConnectionWriteService {
         target.setLastErrorCode(source.getLastErrorCode());
         target.setLastErrorAt(source.getLastErrorAt());
         target.setLastSyncedAt(source.getLastSyncedAt());
+        target.setProviderSyncCursor(source.getProviderSyncCursor());
+        target.setProviderCursorUpdatedAt(source.getProviderCursorUpdatedAt());
+        target.setProviderCursorInvalidatedAt(source.getProviderCursorInvalidatedAt());
+    }
+
+    private static boolean equalsNullable(String a, String b) {
+        if (a == null) return b == null;
+        return a.equals(b);
     }
 }

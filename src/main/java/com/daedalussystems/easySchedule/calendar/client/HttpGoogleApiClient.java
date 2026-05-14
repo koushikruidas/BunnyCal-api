@@ -3,8 +3,11 @@ package com.daedalussystems.easySchedule.calendar.client;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -252,6 +255,59 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         }
     }
 
+    @Override
+    public SyncWindow listEventsFull(String accessToken) {
+        return listEvents(accessToken, null);
+    }
+
+    @Override
+    public SyncWindow listEventsIncremental(String accessToken, String syncCursor) {
+        if (syncCursor == null || syncCursor.isBlank()) {
+            return listEventsFull(accessToken);
+        }
+        return listEvents(accessToken, syncCursor);
+    }
+
+    private SyncWindow listEvents(String accessToken, String syncCursor) {
+        try {
+            List<CalendarEventObservation> observations = new ArrayList<>();
+            String pageToken = null;
+            String nextSyncToken = null;
+            do {
+                String currentPageToken = pageToken;
+                ResponseEntity<Map> response = restClient.get()
+                        .uri(uriBuilder -> {
+                            uriBuilder.path("/calendar/v3/calendars/primary/events")
+                                    .queryParam("showDeleted", "true")
+                                    .queryParam("singleEvents", "true")
+                                    .queryParam("maxResults", "2500");
+                            if (syncCursor != null && !syncCursor.isBlank()) {
+                                uriBuilder.queryParam("syncToken", syncCursor);
+                            }
+                            if (currentPageToken != null && !currentPageToken.isBlank()) {
+                                uriBuilder.queryParam("pageToken", currentPageToken);
+                            }
+                            return uriBuilder.build();
+                        })
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                        .retrieve()
+                        .toEntity(Map.class);
+                Map body = response.getBody();
+                observations.addAll(toObservations(body));
+                pageToken = asStringLoose(body == null ? null : body.get("nextPageToken"));
+                nextSyncToken = asStringLoose(body == null ? null : body.get("nextSyncToken"));
+            } while (pageToken != null && !pageToken.isBlank());
+            return new SyncWindow(List.copyOf(observations), nextSyncToken);
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == 410 && syncCursor != null && !syncCursor.isBlank()) {
+                throw new CalendarClientException(410, "Sync token invalid or expired");
+            }
+            throw classify(ex);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
     private static CalendarClientException classify(RestClientException ex) {
         if (ex instanceof RestClientResponseException responseEx) {
             String body = responseEx.getResponseBodyAsString();
@@ -262,6 +318,121 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         String message = ex.getMessage() == null ? "calendar api error" : ex.getMessage();
         int status = extractStatus(message);
         return new CalendarClientException(status, "Calendar API request failed: " + message);
+    }
+
+    private static List<CalendarEventObservation> toObservations(Map body) {
+        if (body == null) {
+            return List.of();
+        }
+        Object itemsObj = body.get("items");
+        if (!(itemsObj instanceof List<?> items)) {
+            return List.of();
+        }
+        List<CalendarEventObservation> out = new ArrayList<>();
+        for (Object raw : items) {
+            if (!(raw instanceof Map<?, ?> item)) {
+                continue;
+            }
+            String id = asStringLoose(item.get("id"));
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            boolean cancelled = "cancelled".equalsIgnoreCase(asStringLoose(item.get("status")));
+            Instant updated = parseInstant(asStringLoose(item.get("updated")));
+            Instant start = parseDateTimeField(item.get("start"), updated);
+            Instant end = parseDateTimeField(item.get("end"), updated == null ? null : updated.plusSeconds(60));
+            if (start == null || end == null || !start.isBefore(end)) {
+                if (updated != null) {
+                    start = updated;
+                    end = updated.plusSeconds(60);
+                } else {
+                    continue;
+                }
+            }
+            String etag = asStringLoose(item.get("etag"));
+            Long sequence = asLong(item.get("sequence"));
+            String payloadHash = stableObservationHash(id, sequence, updated, etag, cancelled, start, end);
+            out.add(new CalendarEventObservation(id, start, end, cancelled, sequence, updated, etag, payloadHash));
+        }
+        return out;
+    }
+
+    private static String stableObservationHash(String id,
+                                                Long sequence,
+                                                Instant updated,
+                                                String etag,
+                                                boolean cancelled,
+                                                Instant start,
+                                                Instant end) {
+        String canonical = String.join("|",
+                id == null ? "" : id,
+                sequence == null ? "" : String.valueOf(sequence),
+                updated == null ? "" : updated.toString(),
+                etag == null ? "" : etag,
+                String.valueOf(cancelled),
+                start == null ? "" : start.toString(),
+                end == null ? "" : end.toString());
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(digest.digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            return Integer.toHexString(canonical.hashCode());
+        }
+    }
+
+    private static Instant parseDateTimeField(Object value, Instant fallback) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return fallback;
+        }
+        String dt = asStringLoose(map.get("dateTime"));
+        if (dt != null) {
+            Instant parsed = parseInstant(dt);
+            if (parsed != null) {
+                return parsed;
+            }
+        }
+        String date = asStringLoose(map.get("date"));
+        if (date != null) {
+            try {
+                return Instant.parse(date + "T00:00:00Z");
+            } catch (Exception ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    private static Instant parseInstant(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(text);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static Long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String s) {
+            try {
+                return Long.parseLong(s);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static String asStringLoose(Object value) {
+        if (value instanceof String s) {
+            return s;
+        }
+        return value == null ? null : String.valueOf(value);
     }
 
     private static int extractStatus(String msg) {

@@ -128,7 +128,13 @@ public class CalendarOAuthService {
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
-            ingestionService.upsertEvents(saved.getId(), syncClient.fetchFull(saved), SyncSourceAttribution.USER_ACTION);
+            ExternalCalendarSyncClient.SyncBatch fullBatch =
+                    syncClient.fetchFull(saved, SyncSourceAttribution.USER_ACTION);
+            ingestionService.upsertEvents(saved.getId(), fullBatch.events(), SyncSourceAttribution.USER_ACTION);
+            if (fullBatch.nextCursor() != null) {
+                connectionWriteService.advanceProviderCursor(
+                        saved.getId(), null, fullBatch.nextCursor(), Instant.now(), "oauth_initial_full_cursor_advance");
+            }
             saved.setStatus(CalendarConnectionStatus.ACTIVE);
             slotCacheVersionService.bumpVersion(userId);
         } catch (RuntimeException ex) {
@@ -198,6 +204,9 @@ public class CalendarOAuthService {
         copy.setLastErrorCode(existing.getLastErrorCode());
         copy.setLastErrorAt(existing.getLastErrorAt());
         copy.setLastSyncedAt(existing.getLastSyncedAt());
+        copy.setProviderSyncCursor(existing.getProviderSyncCursor());
+        copy.setProviderCursorUpdatedAt(existing.getProviderCursorUpdatedAt());
+        copy.setProviderCursorInvalidatedAt(existing.getProviderCursorInvalidatedAt());
         return copy;
     }
 

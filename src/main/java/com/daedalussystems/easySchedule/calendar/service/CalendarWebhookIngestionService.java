@@ -30,6 +30,7 @@ public class CalendarWebhookIngestionService {
     private final CalendarWebhookReplayCaptureService replayCaptureService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final SlotCacheVersionService slotCacheVersionService;
+    private final MeterRegistry meterRegistry;
     private final boolean webhookEnabled;
     private final boolean googleWebhookEnabled;
     private final Counter webhookIngestTotal;
@@ -54,6 +55,7 @@ public class CalendarWebhookIngestionService {
         this.replayCaptureService = replayCaptureService;
         this.connectionWriteService = connectionWriteService;
         this.slotCacheVersionService = slotCacheVersionService;
+        this.meterRegistry = meterRegistry;
         this.webhookEnabled = webhookEnabled;
         this.googleWebhookEnabled = googleWebhookEnabled;
         this.webhookIngestTotal = Counter.builder("webhook_ingest_total").register(meterRegistry);
@@ -103,8 +105,27 @@ public class CalendarWebhookIngestionService {
             CalendarConnection connection = connectionRepository.findById(connectionId)
                     .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection not found."));
             CalendarConnectionStatus prevStatus = connection.getStatus();
+            String expectedCursor = connection.getProviderSyncCursor();
             try {
-                ingestionService.upsertEvents(connectionId, syncClient.fetchIncremental(connection), SyncSourceAttribution.WEBHOOK);
+                ExternalCalendarSyncClient.SyncBatch batch =
+                        syncClient.fetchIncremental(connection, SyncSourceAttribution.WEBHOOK);
+                if (batch.gapSuspected()) {
+                    meterRegistry.counter("calendar.sync.webhook_gap_suspected.total", "provider", "google", "action", batch.recoveryAction())
+                            .increment();
+                }
+                ingestionService.upsertEvents(connectionId, batch.events(), SyncSourceAttribution.WEBHOOK);
+                if (batch.events().isEmpty()) {
+                    meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", "google", "source", "WEBHOOK")
+                            .increment();
+                }
+                if (batch.nextCursor() != null) {
+                    boolean advanced = connectionWriteService.advanceProviderCursor(
+                            connection.getId(), expectedCursor, batch.nextCursor(), Instant.now(), "webhook_incremental_cursor_advance");
+                    if (!advanced) {
+                        meterRegistry.counter("calendar.sync.cursor_conflict.total", "provider", "google", "source", "WEBHOOK")
+                                .increment();
+                    }
+                }
                 if (prevStatus != CalendarConnectionStatus.ACTIVE) {
                     slotCacheVersionService.bumpVersion(connection.getUserId());
                 }
@@ -116,7 +137,16 @@ public class CalendarWebhookIngestionService {
                 log.info("calendar_webhook_ingested provider={} providerEventId={} connectionId={} mode=incremental",
                         "google", providerEventId, connectionId);
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
-                ingestionService.upsertEvents(connectionId, syncClient.fetchFull(connection), SyncSourceAttribution.WEBHOOK);
+                connectionWriteService.invalidateProviderCursor(connection.getId(), Instant.now(), "webhook_sync_cursor_invalidated");
+                ExternalCalendarSyncClient.SyncBatch fullBatch =
+                        syncClient.fetchFull(connection, SyncSourceAttribution.WEBHOOK);
+                ingestionService.upsertEvents(connectionId, fullBatch.events(), SyncSourceAttribution.WEBHOOK);
+                if (fullBatch.nextCursor() != null) {
+                    connectionWriteService.advanceProviderCursor(
+                            connection.getId(), null, fullBatch.nextCursor(), Instant.now(), "webhook_full_cursor_advance");
+                }
+                meterRegistry.counter("calendar.sync.replay_recovery_action.total", "provider", "google", "action", "webhook_full_recovery")
+                        .increment();
                 slotCacheVersionService.bumpVersion(connection.getUserId());
                 connectionWriteService.markActive(
                         connection.getId(),

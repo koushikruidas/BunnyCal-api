@@ -62,6 +62,15 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "last_synced_at")
     private Instant lastSyncedAt;
 
+    @Column(name = "provider_sync_cursor", length = 2048)
+    private String providerSyncCursor;
+
+    @Column(name = "provider_cursor_updated_at")
+    private Instant providerCursorUpdatedAt;
+
+    @Column(name = "provider_cursor_invalidated_at")
+    private Instant providerCursorInvalidatedAt;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -87,6 +96,12 @@ public class CalendarConnection extends BaseEntity {
     public void setLastErrorAt(Instant lastErrorAt) { this.lastErrorAt = lastErrorAt; }
     public Instant getLastSyncedAt() { return lastSyncedAt; }
     public void setLastSyncedAt(Instant lastSyncedAt) { this.lastSyncedAt = lastSyncedAt; }
+    public String getProviderSyncCursor() { return providerSyncCursor; }
+    public void setProviderSyncCursor(String providerSyncCursor) { this.providerSyncCursor = providerSyncCursor; }
+    public Instant getProviderCursorUpdatedAt() { return providerCursorUpdatedAt; }
+    public void setProviderCursorUpdatedAt(Instant providerCursorUpdatedAt) { this.providerCursorUpdatedAt = providerCursorUpdatedAt; }
+    public Instant getProviderCursorInvalidatedAt() { return providerCursorInvalidatedAt; }
+    public void setProviderCursorInvalidatedAt(Instant providerCursorInvalidatedAt) { this.providerCursorInvalidatedAt = providerCursorInvalidatedAt; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }
