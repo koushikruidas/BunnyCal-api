@@ -5,11 +5,14 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.time.TimeSource;
 import java.util.List;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class MeetingQueryService {
+    private static final Logger log = LoggerFactory.getLogger(MeetingQueryService.class);
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
 
@@ -43,7 +46,7 @@ public class MeetingQueryService {
     }
 
     private MeetingSummaryResponse toDto(BookingRepository.MeetingRow row) {
-        return new MeetingSummaryResponse(
+        MeetingSummaryResponse response = new MeetingSummaryResponse(
                 row.getBookingId(),
                 row.getEventTypeId(),
                 row.getEventTypeName(),
@@ -56,7 +59,21 @@ public class MeetingQueryService {
                 row.getCalendarSyncStatus(),
                 row.getExternalEventId(),
                 row.getProviderEventUrl(),
-                row.getConferenceUrl()
+                row.getConferenceUrl(),
+                row.getExternalLifecycleState(),
+                row.getExternalLifecycleReason(),
+                Boolean.TRUE.equals(row.getReconcileSuppressed()),
+                "EXTERNAL_ACTION_REQUIRED".equals(row.getExternalLifecycleState())
+                        || "PROVIDER_STATE_ORPHANED".equals(row.getExternalLifecycleState())
         );
+        log.info("dashboard_meeting_lifecycle bookingId={} provider={} calendarSyncStatus={} externalLifecycleState={} externalLifecycleReason={} reconcileSuppressed={} actionRequired={}",
+                response.bookingId(),
+                response.provider(),
+                response.calendarSyncStatus(),
+                response.externalLifecycleState(),
+                response.externalLifecycleReason(),
+                response.reconcileSuppressed(),
+                response.actionRequired());
+        return response;
     }
 }

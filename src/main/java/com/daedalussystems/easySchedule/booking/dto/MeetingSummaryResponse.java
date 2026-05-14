@@ -16,6 +16,10 @@ public record MeetingSummaryResponse(
         String calendarSyncStatus,
         String externalEventId,
         String providerEventUrl,
-        String conferenceUrl
+        String conferenceUrl,
+        String externalLifecycleState,
+        String externalLifecycleReason,
+        boolean reconcileSuppressed,
+        boolean actionRequired
 ) {
 }

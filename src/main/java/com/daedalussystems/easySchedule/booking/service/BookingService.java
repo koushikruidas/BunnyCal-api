@@ -49,11 +49,13 @@ public class BookingService {
      * PostgreSQL SQLState for EXCLUDE constraint violation.
      */
     private static final String SQLSTATE_EXCLUSION_VIOLATION = "23P01";
+    private static final String SQLSTATE_UNIQUE_VIOLATION = "23505";
 
     /**
      * Constraint name prefix (matches partitioned tables).
      */
     private static final String OVERLAP_CONSTRAINT = "bookings_no_overlap";
+    private static final String OVERLAP_UNIQUE_INDEX_MARKER = "host_id_start_time_end_time";
 
     /**
      * Protection against "phantom pending explosion".
@@ -453,18 +455,25 @@ public class BookingService {
     }
 
     /**
-     * Detects whether a DataIntegrityViolationException was caused by
-     * the bookings_no_overlap EXCLUDE constraint.
+     * Detects overlap conflicts surfaced by either:
+     * - EXCLUDE constraint violations (23P01, bookings_no_overlap)
+     * - partition-local UNIQUE index violations (23505, host_id_start_time_end_time)
      */
     private static boolean isOverlapExclusionViolation(DataIntegrityViolationException ex) {
         for (Throwable cause = ex; cause != null; cause = cause.getCause()) {
 
-            if (cause instanceof SQLException sqlEx
-                    && SQLSTATE_EXCLUSION_VIOLATION.equals(sqlEx.getSQLState())) {
-
+            if (cause instanceof SQLException sqlEx) {
+                String state = sqlEx.getSQLState();
                 String msg = sqlEx.getMessage();
-
-                return msg != null && msg.contains(OVERLAP_CONSTRAINT);
+                if (msg == null) {
+                    continue;
+                }
+                if (SQLSTATE_EXCLUSION_VIOLATION.equals(state) && msg.contains(OVERLAP_CONSTRAINT)) {
+                    return true;
+                }
+                if (SQLSTATE_UNIQUE_VIOLATION.equals(state) && msg.contains(OVERLAP_UNIQUE_INDEX_MARKER)) {
+                    return true;
+                }
             }
         }
         return false;
