@@ -8,6 +8,7 @@ import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassi
 import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
 import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
+import com.daedalussystems.easySchedule.sync.orchestration.ExternalUpdateConvergenceService;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -38,6 +39,7 @@ public class ProviderEventProjectionService {
     private final SyncInvariantMonitor invariantMonitor;
     private final CalendarEventMappingRepository mappingRepository;
     private final ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
+    private final ExternalUpdateConvergenceService externalUpdateConvergenceService;
     private final boolean acceptAmbiguous;
 
     public ProviderEventProjectionService(ProviderEventProjectionRepository repository,
@@ -47,6 +49,7 @@ public class ProviderEventProjectionService {
                                           SyncInvariantMonitor invariantMonitor,
                                           CalendarEventMappingRepository mappingRepository,
                                           ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
+                                          ExternalUpdateConvergenceService externalUpdateConvergenceService,
                                           @Value("${sync.projection.accept-ambiguous:true}") boolean acceptAmbiguous) {
         this.repository = repository;
         this.comparator = comparator;
@@ -55,6 +58,7 @@ public class ProviderEventProjectionService {
         this.invariantMonitor = invariantMonitor;
         this.mappingRepository = mappingRepository;
         this.terminalDeleteConvergenceService = terminalDeleteConvergenceService;
+        this.externalUpdateConvergenceService = externalUpdateConvergenceService;
         this.acceptAmbiguous = acceptAmbiguous;
     }
 
@@ -198,6 +202,21 @@ public class ProviderEventProjectionService {
                             result.bookingRows(),
                             result.result());
                 }
+            } else if (linkedBookingId != null) {
+                var updateResult = externalUpdateConvergenceService.convergeProviderUpdate(
+                        linkedBookingId,
+                        provider,
+                        incoming.externalEventId(),
+                        incoming.startsAt(),
+                        incoming.endsAt(),
+                        "provider_projection");
+                log.info("provider_active_update_convergence provider={} connectionId={} bookingId={} externalEventId={} result={} bookingRows={}",
+                        provider,
+                        connectionId,
+                        linkedBookingId,
+                        incoming.externalEventId(),
+                        updateResult.result(),
+                        updateResult.bookingRows());
             }
             invariantMonitor.assertState(
                     "projection_mutation",

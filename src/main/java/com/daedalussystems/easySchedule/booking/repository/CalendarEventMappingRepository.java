@@ -398,9 +398,9 @@ public class CalendarEventMappingRepository {
                         ON b.id = m.booking_id
                       JOIN calendar_connections c
                         ON c.user_id = b.host_id
-                       AND c.provider = m.provider
+                       AND LOWER(c.provider) = LOWER(m.provider)
                      WHERE c.id = :connectionId
-                       AND m.provider = :provider
+                       AND LOWER(m.provider) = LOWER(:provider)
                        AND m.external_event_id = :externalEventId
                     UNION
                     SELECT j.internal_ref_id AS booking_id
@@ -409,10 +409,10 @@ public class CalendarEventMappingRepository {
                         ON b.id = j.internal_ref_id
                       JOIN calendar_connections c
                         ON c.user_id = b.host_id
-                       AND c.provider = j.provider
+                       AND LOWER(c.provider) = LOWER(j.provider)
                      WHERE c.id = :connectionId
                        AND j.internal_ref_type = 'BOOKING'
-                       AND j.provider = :provider
+                       AND LOWER(j.provider) = LOWER(:provider)
                        AND j.external_event_id = :externalEventId
                 )
                 SELECT DISTINCT booking_id

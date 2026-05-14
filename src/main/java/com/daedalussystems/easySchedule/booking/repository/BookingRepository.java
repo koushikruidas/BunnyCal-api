@@ -34,6 +34,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Instant getAvailabilityReleasedAt();
     }
 
+    interface BookingWindowStateRow {
+        UUID getId();
+        UUID getHostId();
+        String getStatus();
+        Instant getStartTime();
+        Instant getEndTime();
+    }
+
     interface BookingExpiryRow {
         UUID getId();
         Long getVersion();
@@ -242,6 +250,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingProjectionRow> findProjectionStateById(@Param("id") UUID id);
 
     @Query(value = """
+            SELECT id, host_id, status, start_time AS startTime, end_time AS endTime
+            FROM bookings
+            WHERE id = :id
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingWindowStateRow> findWindowStateById(@Param("id") UUID id);
+
+    @Query(value = """
             SELECT *
             FROM bookings
             WHERE id = :id
@@ -297,6 +313,22 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
               AND status IN ('PENDING','CONFIRMED')
             """, nativeQuery = true)
     int projectExternalTerminalToCancelled(@Param("bookingId") UUID bookingId);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+            SET start_time = :startTime,
+                end_time = :endTime,
+                version = version + 1,
+                calendar_sequence = calendar_sequence + 1
+            WHERE id = :bookingId
+              AND status = 'CONFIRMED'
+              AND availability_released_at IS NULL
+              AND (start_time IS DISTINCT FROM :startTime OR end_time IS DISTINCT FROM :endTime)
+            """, nativeQuery = true)
+    int projectExternalActiveWindow(@Param("bookingId") UUID bookingId,
+                                    @Param("startTime") Instant startTime,
+                                    @Param("endTime") Instant endTime);
 
     @Query(value = """
             SELECT id, host_id, status, version, expires_at

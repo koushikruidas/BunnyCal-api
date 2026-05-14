@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.daedalussystems.easySchedule.booking.AbstractBookingIT;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.ClaimOutcome;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository.FinalizeOutcome;
+import com.daedalussystems.easySchedule.auth.domain.user.User;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -240,5 +241,46 @@ class CalendarEventMappingRepositoryIT extends AbstractBookingIT {
         assertEquals(FinalizeOutcome.STALE_OR_NOT_OWNER,
                 repository.updateMappingWithEventId(
                         bookingId, provider, "ext-1", 200L, "worker-b"));
+    }
+
+    @Test
+    void findUniqueBookingForProviderEvent_matchesAcrossProviderCase() {
+        User host = createHost();
+        UUID connectionId = UUID.randomUUID();
+        String externalEventId = "ext-case-1";
+        UUID bookingId = insertBooking(
+                host.getId(),
+                UUID.randomUUID(),
+                Instant.parse("2026-06-01T10:00:00Z"),
+                Instant.parse("2026-06-01T10:30:00Z"),
+                "CONFIRMED",
+                1L);
+
+        jdbc.update("""
+                INSERT INTO calendar_connections
+                    (id, user_id, provider, provider_user_id, refresh_token_ciphertext, last_token_expires_at, scopes, status, version, created_at, updated_at)
+                VALUES (?, ?, 'GOOGLE', ?, ?, ?, ARRAY['calendar.events'], 'ACTIVE', 0, NOW(), NOW())
+                """,
+                connectionId,
+                host.getId(),
+                "provider-user",
+                "ciphertext",
+                java.sql.Timestamp.from(Instant.now().plusSeconds(3600)));
+
+        jdbc.update("""
+                INSERT INTO calendar_event_mappings
+                    (booking_id, provider, sync_token, status, external_event_id, claimed_by, claimed_at, created_at, updated_at)
+                VALUES (?, 'google', 1, 'CREATED', ?, ?, NOW(), NOW(), NOW())
+                """,
+                bookingId,
+                externalEventId,
+                "worker-a");
+
+        CalendarEventMappingRepository.BookingLinkageResult linkage =
+                repository.findUniqueBookingForProviderEvent(connectionId, "GOOGLE", externalEventId);
+
+        assertEquals("linked", linkage.reason());
+        assertEquals(1, linkage.matches());
+        assertEquals(bookingId, linkage.bookingId().orElse(null));
     }
 }
