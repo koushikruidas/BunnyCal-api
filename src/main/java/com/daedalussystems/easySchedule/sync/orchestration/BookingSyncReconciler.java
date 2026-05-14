@@ -9,6 +9,7 @@ import com.daedalussystems.easySchedule.sync.reconcile.ReconcileInputSnapshot;
 import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParity;
 import com.daedalussystems.easySchedule.sync.reconcile.ReconcileShadowParityClassifier;
 import com.daedalussystems.easySchedule.sync.reconcile.ReconcileSnapshotCanonicalizer;
+import com.daedalussystems.easySchedule.sync.reconcile.PersistedReconcileSnapshotAssembler;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.repository.SyncReconcileDecisionLogRepository;
 import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
@@ -36,6 +37,7 @@ public class BookingSyncReconciler {
     private final DeterministicReconcileEvaluator evaluator;
     private final ReconcileShadowParityClassifier parityClassifier;
     private final ReconcileSnapshotCanonicalizer canonicalizer;
+    private final PersistedReconcileSnapshotAssembler snapshotAssembler;
     private final SyncReconcileDecisionLogRepository decisionLogRepository;
     private final Clock clock;
     private final long throttleDelayMs;
@@ -56,6 +58,7 @@ public class BookingSyncReconciler {
                                  DeterministicReconcileEvaluator evaluator,
                                  ReconcileShadowParityClassifier parityClassifier,
                                  ReconcileSnapshotCanonicalizer canonicalizer,
+                                 PersistedReconcileSnapshotAssembler snapshotAssembler,
                                  SyncReconcileDecisionLogRepository decisionLogRepository,
                                  @Value("${sync.reconcile.throttle-ms:25}") long throttleDelayMs,
                                  MeterRegistry meterRegistry) {
@@ -65,6 +68,7 @@ public class BookingSyncReconciler {
         this.evaluator = evaluator;
         this.parityClassifier = parityClassifier;
         this.canonicalizer = canonicalizer;
+        this.snapshotAssembler = snapshotAssembler;
         this.decisionLogRepository = decisionLogRepository;
         this.clock = Clock.systemUTC();
         this.throttleDelayMs = Math.max(0L, throttleDelayMs);
@@ -115,8 +119,11 @@ public class BookingSyncReconciler {
                     null,
                     null
             );
-            ReconcileDecisionResult shadowDecision = evaluator.evaluate(snapshot);
-            persistShadowDecision(snapshot, shadowDecision);
+            PersistedReconcileSnapshotAssembler.SnapshotAssemblyResult assembly =
+                    snapshotAssembler.assembleAndPersist(job, observed, snapshot);
+
+            ReconcileDecisionResult shadowDecision = evaluator.evaluate(assembly.authoritativeInput());
+            persistShadowDecision(assembly.authoritativeInput(), shadowDecision);
             ReconcileDecision legacyDecision = evaluator.legacyDecision(snapshot);
             ReconcileShadowParity parity = parityClassifier.classify(legacyDecision, shadowDecision.decision());
             meterRegistry.counter("sync.shadow.parity.total",
@@ -128,6 +135,19 @@ public class BookingSyncReconciler {
                 log.warn("sync_shadow_decision_parity_mismatch bookingId={} syncJobId={} provider={} legacyDecision={} shadowDecision={} rationaleCode={}",
                         job.getInternalRefId(), job.getId(), job.getProvider(),
                         legacyDecision, shadowDecision.decision(), shadowDecision.rationaleCode());
+                meterRegistry.counter("sync.shadow.divergence.total",
+                        "provider", job.getProvider(),
+                        "parity", parity.name(),
+                        "rationale", shadowDecision.rationaleCode()).increment();
+                if (isRecurringEventId(job.getExternalEventId())) {
+                    meterRegistry.counter("sync.shadow.recurring_divergence.total",
+                            "provider", job.getProvider(),
+                            "parity", parity.name()).increment();
+                }
+            }
+            if (assembly.parity() == com.daedalussystems.easySchedule.sync.reconcile.SnapshotInputParity.MISMATCH) {
+                meterRegistry.counter("sync.snapshot.parity_mismatch.total",
+                        "provider", job.getProvider()).increment();
             }
             if (job.getCreatedAt() != null) {
                 // Operational metric only; deterministic replay logic must not depend on wall clock.
@@ -239,5 +259,9 @@ public class BookingSyncReconciler {
         MDC.remove("internalRefId");
         MDC.remove("provider");
         MDC.remove("correlationId");
+    }
+
+    private static boolean isRecurringEventId(String externalEventId) {
+        return externalEventId != null && externalEventId.contains("_");
     }
 }
