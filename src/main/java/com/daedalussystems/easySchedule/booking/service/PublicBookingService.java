@@ -30,14 +30,15 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 
 @Service
-@Slf4j
 public class PublicBookingService {
+    private static final Logger log = LoggerFactory.getLogger(PublicBookingService.class);
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
     private final BookingService bookingService;
