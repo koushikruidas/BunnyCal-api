@@ -1,0 +1,75 @@
+{
+  "id": null,
+  "uid": "sync-engine",
+  "title": "Synchronization Engine",
+  "tags": ["easyschedule", "sync"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Webhook Ingestion Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(webhook_ingest_total[5m]))", "legendFormat": "ingest/s" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider API Calls",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum by (provider, result) (rate(calendar_sync_attempts_total[5m]))", "legendFormat": "{{provider}} {{result}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconciliation Runs / Outcomes",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(sync_reconcile_checked_total[5m]))", "legendFormat": "checked/s" },
+        { "expr": "sum(rate(sync_reconcile_requeued_total[5m]))", "legendFormat": "requeued/s" },
+        { "expr": "sum(rate(sync_reconcile_errors_total[5m]))", "legendFormat": "errors/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retry Attempts",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(retry_count[5m]))", "legendFormat": "booking_sync_retry/s" },
+        { "expr": "sum(rate(calendar_sync_retries_total[5m]))", "legendFormat": "calendar_sync_retry/s" },
+        { "expr": "sum(rate(outbox_retries_total[5m]))", "legendFormat": "outbox_retry/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sync Failures",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(sync_failure_count[5m]))", "legendFormat": "sync_failure_count/s" },
+        { "expr": "sum(rate(sync_provider_failure_total[5m]))", "legendFormat": "sync.provider.failure/s" },
+        { "expr": "sum(rate(sync_reconcile_errors_total[5m]))", "legendFormat": "reconcile.errors/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox Queue Depth (Proxy)",
+      "description": "Uses lag and retries as practical queue pressure proxy because no direct queue-depth gauge is exposed.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(outbox_lag_milliseconds_bucket[5m])) by (le))", "legendFormat": "outbox lag p95 ms" },
+        { "expr": "sum(rate(outbox_retries_total[5m]))", "legendFormat": "outbox retries/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Sync Latency Percentiles",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(sync_latency_bucket[5m])) by (le))", "legendFormat": "sync_latency p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(calendar_sync_latency_ms_bucket[5m])) by (le))", "legendFormat": "calendar_sync_latency_ms p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(sync_time_to_success_ms_bucket[5m])) by (le))", "legendFormat": "time_to_success p95" }
+      ]
+    }
+  ]
+}

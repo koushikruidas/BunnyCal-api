@@ -1,0 +1,60 @@
+{
+  "id": null,
+  "uid": "booking-lifecycle",
+  "title": "Booking Lifecycle",
+  "tags": ["easyschedule", "booking"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Bookings Completed Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(rate(booking_completed_total[5m]))", "legendFormat": "completed/s" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booking Cancellations Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum by (source) (rate(booking_cancellation_total[5m]))", "legendFormat": "{{source}}" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booking State Transition Rates (Proxy)",
+      "description": "Created approximated by webhook ingestion + sync pipeline. Confirmed/rescheduled inferred via completion/update-related counters available.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(webhook_ingest_total[5m]))", "legendFormat": "created-proxy(webhooks/s)" },
+        { "expr": "sum(rate(booking_completed_total[5m]))", "legendFormat": "confirmed-or-terminal/s" },
+        { "expr": "sum(rate(sync_external_update_convergence_total[5m]))", "legendFormat": "rescheduled-proxy/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Booking Processing Latency",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(booking_completion_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(booking_completion_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed Booking Sync / DLQ",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(booking_failed_total[5m]))", "legendFormat": "booking.failed.total/s" },
+        { "expr": "sum(rate(sync_failure_count[5m]))", "legendFormat": "sync_failure_count/s" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Current Pending Bookings",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [{ "expr": "booking_pending_count", "legendFormat": "pending" }]
+    }
+  ]
+}

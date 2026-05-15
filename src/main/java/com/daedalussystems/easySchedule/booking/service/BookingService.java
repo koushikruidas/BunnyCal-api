@@ -79,6 +79,9 @@ public class BookingService {
     private final Timer completionTimer;
     private final Counter bookingCompletedTotal;
     private final Counter bookingCompletedWithinSloTotal;
+    private final Counter bookingCreatedTotal;
+    private final Counter bookingConfirmedTotal;
+    private final Counter bookingRescheduledTotal;
     private final MeterRegistry meterRegistry;
 
     @Autowired
@@ -118,6 +121,18 @@ public class BookingService {
 
         this.bookingCompletedWithinSloTotal = Counter.builder("booking.completed.within_slo.total")
                 .description("Bookings that reached terminal state within the " + SLO_THRESHOLD_SECONDS + "-second SLO")
+                .register(meterRegistry);
+
+        this.bookingCreatedTotal = Counter.builder("booking.created.total")
+                .description("Total bookings created")
+                .register(meterRegistry);
+
+        this.bookingConfirmedTotal = Counter.builder("booking.confirmed.total")
+                .description("Total bookings confirmed")
+                .register(meterRegistry);
+
+        this.bookingRescheduledTotal = Counter.builder("booking.rescheduled.total")
+                .description("Total bookings rescheduled")
                 .register(meterRegistry);
     }
 
@@ -209,6 +224,7 @@ public class BookingService {
             throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
         }
 
+        bookingCreatedTotal.increment();
         return saved;
     }
 
@@ -332,6 +348,7 @@ public class BookingService {
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        bookingConfirmedTotal.increment();
         assertInvariant("booking_transition_confirmed", id, BookingState.CONFIRMED);
         bookingRepository.findAnyById(id).ifPresent(booking ->
                 outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
@@ -375,6 +392,7 @@ public class BookingService {
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
+        bookingRescheduledTotal.increment();
         assertInvariant("booking_transition_rescheduled", id, BookingState.CONFIRMED);
 
         outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
