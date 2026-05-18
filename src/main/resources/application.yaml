@@ -7,6 +7,36 @@ spring:
     username: myuser
     password: secret
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # Pool sizing — budget for the busiest concurrent paths per JVM:
+      #   - public booking / availability request threads: ~Tomcat threads (default 200)
+      #     but each request typically holds at most one connection, briefly.
+      #   - OutboxWorker poll (1s interval, REQUIRES_NEW tx): 1
+      #   - BookingSyncWorkerScheduler (per-job REQUIRES_NEW after P1): up to batch-size
+      #     concurrent at the worst case, but the scheduler serializes through
+      #     processPending → so practically 1 at a time per pod.
+      #   - CalendarSyncScheduler (per-connection REQUIRES_NEW after P1): 1 at a time.
+      #   - BookingSyncReconciler (per-job REQUIRES_NEW after P1): 1 at a time.
+      #   - IdempotencyService uses up to 3 nested tx per request (REQUIRES_NEW +
+      #     REQUIRED + REQUIRES_NEW for failure caching) → budget 3 per concurrent
+      #     POST /api/bookings or /public/.../book.
+      # 30 is a generous default for a single 2-vCPU pod. Override via env for
+      # larger pods or when scaling Tomcat thread count.
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:30}
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:5}
+      # Fail fast when the pool is exhausted instead of queuing request threads
+      # indefinitely. The default (30s) hides incidents — 5s surfaces them as
+      # 500s with a clear "could not obtain connection" stack.
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT_MS:5000}
+      # Catch leaked connections in dev/staging. 30s is well above any legitimate
+      # transaction after P1 (per-job sync tx ≤ ~2s). Logged as WARN, not fatal.
+      leak-detection-threshold: ${SPRING_DATASOURCE_HIKARI_LEAK_DETECTION_MS:30000}
+      # Close idle connections after 10 min so the pool shrinks back to
+      # minimum-idle during quiet periods.
+      idle-timeout: ${SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT_MS:600000}
+      # Validate connections older than 30 min to avoid silently using stale
+      # ones after Postgres-side reconfiguration or transient network blips.
+      max-lifetime: ${SPRING_DATASOURCE_HIKARI_MAX_LIFETIME_MS:1800000}
 
   data:
     redis:
