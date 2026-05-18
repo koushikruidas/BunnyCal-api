@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.MDC;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
+import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -45,16 +46,19 @@ public class CalendarIntegrationController {
     private final CalendarWebhookIngestionService webhookIngestionService;
     private final GoogleOAuthProperties googleOAuthProperties;
     private final String webhookSharedSecret;
+    private final ProviderCapabilityRegistry capabilityRegistry;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
                                          CalendarWebhookAuthService webhookAuthService,
                                          CalendarWebhookIngestionService webhookIngestionService,
                                          GoogleOAuthProperties googleOAuthProperties,
+                                         ProviderCapabilityRegistry capabilityRegistry,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
         this.webhookAuthService = webhookAuthService;
         this.webhookIngestionService = webhookIngestionService;
         this.googleOAuthProperties = googleOAuthProperties;
+        this.capabilityRegistry = capabilityRegistry;
         this.webhookSharedSecret = webhookSharedSecret;
     }
 
@@ -303,5 +307,36 @@ public class CalendarIntegrationController {
         } catch (RuntimeException ex) {
             return null;
         }
+    }
+
+    @GetMapping("/{provider}/connect")
+    public ResponseEntity<ApiResponse<Map<String, String>>> connectByProvider(@PathVariable("provider") String provider,
+                                                                              Authentication authentication,
+                                                                              @RequestParam(value = "source", required = false) String source,
+                                                                              @RequestParam(value = "returnTo", required = false) String returnTo,
+                                                                              @RequestParam(value = "bookingSessionId", required = false) String bookingSessionId) {
+        if (!GOOGLE_PROVIDER.equalsIgnoreCase(provider)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
+        }
+        return connectGoogle(authentication, source, returnTo, bookingSessionId);
+    }
+
+    @GetMapping("/{provider}/callback")
+    public ResponseEntity<Void> callbackByProvider(@PathVariable("provider") String provider,
+                                                   @RequestParam("code") String code,
+                                                   @RequestParam("state") String state) {
+        if (!GOOGLE_PROVIDER.equalsIgnoreCase(provider)) {
+            return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
+        }
+        return callbackGoogle(code, state);
+    }
+
+    @GetMapping("/status/providers")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> providerAwareStatus(Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+        payload.put("calendar", Map.of("google", oauthService.googleConnectionStatus(userId)));
+        payload.put("capabilities", Map.of("calendar", capabilityRegistry.allCalendar()));
+        return ResponseEntity.ok(ApiResponse.success(payload));
     }
 }

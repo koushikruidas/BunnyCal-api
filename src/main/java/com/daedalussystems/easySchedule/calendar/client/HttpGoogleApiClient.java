@@ -30,6 +30,9 @@ import org.springframework.web.client.RestClientResponseException;
 public class HttpGoogleApiClient implements GoogleApiClient {
     private static final Logger log = LoggerFactory.getLogger(HttpGoogleApiClient.class);
     private static final String CALENDAR_ID = "primary";
+    static final String CREATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events?sendUpdates=all&conferenceDataVersion=1";
+    static final String UPDATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events/{id}?sendUpdates=all&conferenceDataVersion=1";
+    // Back-compat constants retained for tests/diagnostics that reference the primary-calendar URI directly.
     static final String CREATE_EVENT_URI = "/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1";
     static final String UPDATE_EVENT_URI = "/calendar/v3/calendars/primary/events/{id}?sendUpdates=all&conferenceDataVersion=1";
 
@@ -64,7 +67,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     request.startsAt(),
                     request.endsAt());
             ResponseEntity<Map> response = restClient.post()
-                    .uri(CREATE_EVENT_URI)
+                     .uri(CREATE_EVENT_URI_TEMPLATE, effectiveCalendarId(request.targetCalendarId()))
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
@@ -96,7 +99,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     request.startsAt(),
                     request.endsAt());
             ResponseEntity<Map> response = restClient.put()
-                    .uri(UPDATE_EVENT_URI, request.externalEventId())
+                     .uri(UPDATE_EVENT_URI_TEMPLATE, effectiveCalendarId(request.targetCalendarId()), request.externalEventId())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
@@ -515,6 +518,13 @@ public class HttpGoogleApiClient implements GoogleApiClient {
             }
         }
         return null;
+    }
+
+    private static String effectiveCalendarId(String calendarId) {
+        if (calendarId == null || calendarId.isBlank()) {
+            return CALENDAR_ID;
+        }
+        return calendarId.trim();
     }
 
     private static String asStringLoose(Object value) {

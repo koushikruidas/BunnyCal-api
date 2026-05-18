@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.sync.worker;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingOrchestrator;
 import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
@@ -20,6 +21,8 @@ import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -37,6 +40,7 @@ public class BookingSyncWorker {
     private final SyncRetryPolicy retryPolicy;
     private final ConnectionRateLimitBreaker rateLimitBreaker;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
+    private final ConferencingOrchestrator conferencingOrchestrator;
     private final MeterRegistry meterRegistry;
     private final Counter syncSuccessCount;
     private final Counter syncFailureCount;
@@ -45,6 +49,7 @@ public class BookingSyncWorker {
     private final ConcurrentMap<String, Timer> providerLatencyTimers = new ConcurrentHashMap<>();
     private final TransactionTemplate txTemplate;
 
+    @Autowired
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
                              BookingRepository bookingRepository,
                              CalendarService calendarService,
@@ -54,6 +59,45 @@ public class BookingSyncWorker {
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry) {
+        this(syncJobRepository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
+                rateLimitBreaker, idempotencyKeyFactory, new ObjectProvider<>() {
+                    @Override
+                    public ConferencingOrchestrator getObject(Object... args) {
+                        return null;
+                    }
+
+                    @Override
+                    public ConferencingOrchestrator getIfAvailable() {
+                        return null;
+                    }
+
+                    @Override
+                    public ConferencingOrchestrator getIfUnique() {
+                        return null;
+                    }
+
+                    @Override
+                    public ConferencingOrchestrator getObject() {
+                        return null;
+                    }
+
+                    @Override
+                    public java.util.Iterator<ConferencingOrchestrator> iterator() {
+                        return java.util.List.<ConferencingOrchestrator>of().iterator();
+                    }
+                }, transactionManager, meterRegistry);
+    }
+
+    public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
+                             BookingRepository bookingRepository,
+                             CalendarService calendarService,
+                             ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
+                             SyncRetryPolicy retryPolicy,
+                             ConnectionRateLimitBreaker rateLimitBreaker,
+                             IdempotencyKeyFactory idempotencyKeyFactory,
+                             ObjectProvider<ConferencingOrchestrator> conferencingOrchestratorProvider,
+                             PlatformTransactionManager transactionManager,
+                             MeterRegistry meterRegistry) {
         this.syncJobRepository = syncJobRepository;
         this.bookingRepository = bookingRepository;
         this.calendarService = calendarService;
@@ -61,11 +105,8 @@ public class BookingSyncWorker {
         this.retryPolicy = retryPolicy;
         this.rateLimitBreaker = rateLimitBreaker;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
+        this.conferencingOrchestrator = conferencingOrchestratorProvider.getIfAvailable();
         this.meterRegistry = meterRegistry;
-        // Per-job tx boundary. processPending() loop is non-transactional so a slow
-        // provider call holds at most one job's worth of DB connection time, never
-        // the whole batch's. REQUIRES_NEW so each job commits independently of any
-        // ambient transaction at the call site (the scheduler).
         this.txTemplate = new TransactionTemplate(transactionManager);
         this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.syncSuccessCount = meterRegistry.counter("sync_success_count");
@@ -77,17 +118,13 @@ public class BookingSyncWorker {
     }
 
     public int processPending(int batchSize) {
-        // The claim runs in its own short tx (Spring Data wraps @Modifying queries).
         List<UUID> claimedIds = syncJobRepository.claimPendingBatch(Instant.now(), batchSize);
         log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
         for (UUID id : claimedIds) {
             log.info("sync_job_claimed jobId={}", id);
             try {
-                txTemplate.executeWithoutResult(status -> {
-                    syncJobRepository.findById(id).ifPresent(this::processOne);
-                });
+                txTemplate.executeWithoutResult(status -> syncJobRepository.findById(id).ifPresent(this::processOne));
             } catch (RuntimeException ex) {
-                // Per-job tx already rolled back. Don't let one bad job kill the batch.
                 syncFailureCount.increment();
                 log.warn("sync_job_uncaught jobId={}", id, ex);
             }
@@ -106,13 +143,7 @@ public class BookingSyncWorker {
         }
         try {
             if (rateLimitBreaker.isOpen(rateLimitKey(job))) {
-                syncJobRepository.markFailure(
-                        job.getId(),
-                        job.getVersion(),
-                        Instant.now().plusSeconds(300),
-                        "RATE_LIMIT_CIRCUIT_OPEN",
-                        false
-                );
+                syncJobRepository.markFailure(job.getId(), job.getVersion(), Instant.now().plusSeconds(300), "RATE_LIMIT_CIRCUIT_OPEN", false);
                 return;
             }
             log.info("{{\"event\":\"sync_job_processing\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
@@ -137,7 +168,6 @@ public class BookingSyncWorker {
     }
 
     private void processCreate(CalendarSyncJob job) {
-        // Idempotency: if already mapped, no API call.
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
@@ -163,9 +193,9 @@ public class BookingSyncWorker {
                         idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
-        // provider latency is recorded around external provider interactions
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), result.externalEventId());
+            triggerConferencing(job, SyncDesiredAction.CREATE);
             return;
         }
         handleFailure(job, result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode());
@@ -173,7 +203,6 @@ public class BookingSyncWorker {
 
     private void processUpdate(CalendarSyncJob job) {
         if (job.getExternalEventId() == null || job.getExternalEventId().isBlank()) {
-            // Cannot update without existing mapping: fallback to create.
             processCreate(job);
             return;
         }
@@ -187,6 +216,7 @@ public class BookingSyncWorker {
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         syncJobRepository.markSynced(job.getId(), job.getVersion(), externalId);
+        triggerConferencing(job, SyncDesiredAction.UPDATE);
     }
 
     private BookingRepository.BookingStateRow resolveState(CalendarSyncJob job) {
@@ -220,16 +250,20 @@ public class BookingSyncWorker {
         if (idempotentProviderMissing) {
             var result = terminalDeleteConvergenceService.convergeProcessingJob(job, "worker_delete");
             log.info("sync_delete_terminal_promotion syncJobId={} bookingId={} provider={} lifecycleState={} lifecycleRows={} bookingRows={} result={}",
-                    job.getId(),
-                    job.getInternalRefId(),
-                    job.getProvider(),
+                    job.getId(), job.getInternalRefId(), job.getProvider(),
                     ExternalTerminalDeleteConvergenceService.LIFECYCLE_STATE,
-                    result.lifecycleRows(),
-                    result.bookingRows(),
-                    result.result());
+                    result.lifecycleRows(), result.bookingRows(), result.result());
             return;
         }
         syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
+        triggerConferencing(job, SyncDesiredAction.DELETE);
+    }
+
+    private void triggerConferencing(CalendarSyncJob job, SyncDesiredAction action) {
+        if (conferencingOrchestrator == null) {
+            return;
+        }
+        conferencingOrchestrator.afterCalendarSyncSuccess(job, action);
     }
 
     private void handleFailure(CalendarSyncJob job, String errorCode) {
@@ -242,13 +276,7 @@ public class BookingSyncWorker {
         if (!permanent) {
             retryCount.increment();
         }
-        syncJobRepository.markFailure(
-                job.getId(),
-                job.getVersion(),
-                retryPolicy.nextRetryAt(job.getAttemptCount() + 1),
-                code,
-                permanent
-        );
+        syncJobRepository.markFailure(job.getId(), job.getVersion(), retryPolicy.nextRetryAt(job.getAttemptCount() + 1), code, permanent);
         log.warn("{{\"event\":\"sync_job_failure\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"errorCode\":\"{}\",\"permanent\":{}}}",
                 job.getInternalRefId(), job.getProvider(), job.getId(), code, permanent);
         if (permanent) {

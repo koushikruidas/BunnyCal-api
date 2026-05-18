@@ -440,6 +440,21 @@ public class CalendarEventMappingRepository {
         return UUID.fromString(String.valueOf(value));
     }
 
+    @Transactional
+    public int updateConferenceUrl(UUID bookingId, String provider, String conferenceUrl) {
+        return entityManager.createNativeQuery("""
+                UPDATE calendar_event_mappings
+                   SET conference_url = :conferenceUrl,
+                       updated_at = NOW()
+                 WHERE booking_id = :bookingId
+                   AND provider = :provider
+                """)
+                .setParameter("bookingId", bookingId)
+                .setParameter("provider", provider)
+                .setParameter("conferenceUrl", conferenceUrl)
+                .executeUpdate();
+    }
+
     public enum ClaimOutcome {
         CLAIMED,
         REJECTED,

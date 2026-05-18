@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,6 +41,8 @@ public class EventTypeService {
                 .name(request.name().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
+                .conferencingProvider(resolveConferencingProvider(request.conferencingProvider()))
+                .customConferenceUrl(trimToNull(request.customConferenceUrl()))
                 .slug(slug)
                 .duration(Duration.ofMinutes(request.durationMinutes()))
                 .bufferBefore(Duration.ofMinutes(request.bufferBeforeMinutes()))
@@ -128,6 +131,17 @@ public class EventTypeService {
                 eventType.getSlug(),
                 "/public/" + username + "/" + eventType.getSlug()
         );
+    }
+
+    private static ConferencingProviderType resolveConferencingProvider(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return ConferencingProviderType.GOOGLE_MEET;
+        }
+        try {
+            return ConferencingProviderType.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "invalid conferencingProvider");
+        }
     }
 
     private static String trimToNull(String value) {

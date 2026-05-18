@@ -1,0 +1,3 @@
+ALTER TABLE event_types
+    ADD COLUMN IF NOT EXISTS conferencing_provider VARCHAR(32) NOT NULL DEFAULT 'GOOGLE_MEET',
+    ADD COLUMN IF NOT EXISTS custom_conference_url VARCHAR(1024);

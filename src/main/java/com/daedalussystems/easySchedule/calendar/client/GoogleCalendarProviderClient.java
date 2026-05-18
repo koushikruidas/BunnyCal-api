@@ -14,6 +14,7 @@ import com.daedalussystems.easySchedule.calendar.provider.DeleteEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.GoogleCalendarProvider;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionCalendarRepository;
 import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -29,17 +30,20 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;
     private final CalendarConnectionRepository connectionRepository;
+    private final CalendarConnectionCalendarRepository calendarRepository;
     private final GoogleCalendarProvider googleCalendarProvider;
 
     public GoogleCalendarProviderClient(BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
                                         UserRepository userRepository,
                                         CalendarConnectionRepository connectionRepository,
+                                        CalendarConnectionCalendarRepository calendarRepository,
                                         GoogleCalendarProvider googleCalendarProvider) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.connectionRepository = connectionRepository;
+        this.calendarRepository = calendarRepository;
         this.googleCalendarProvider = googleCalendarProvider;
     }
 
@@ -62,8 +66,9 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
         String maskedGuest = maskEmail(attendeeEmail);
-        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId=primary attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
-                booking.getId(), provider, connection.getId(), connection.getProviderUserId(),
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
+                booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId,
                 1, maskedGuest);
         log.info("google_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
                 booking.getId(), provider, booking.getStartTime(), booking.getEndTime(), host.getTimezone());
@@ -79,7 +84,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 host.getEmail(),
                 attendeeEmail,
                 booking.getGuestName(),
-                idempotencyKey
+                idempotencyKey,
+                targetCalendarId
         ));
         String externalEventId = response.externalEventId();
         log.info("google_calendar_event_create_success bookingId={} provider={} externalEventId={}",
@@ -106,8 +112,9 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
         String maskedGuest = maskEmail(attendeeEmail);
-        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId=primary externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
-                booking.getId(), provider, connection.getId(), connection.getProviderUserId(), externalEventId,
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
+                booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId, externalEventId,
                 1, maskedGuest);
         log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
                 booking.getId(), provider, maskedGuest);
@@ -121,7 +128,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 booking.getEndTime(),
                 host.getEmail(),
                 attendeeEmail,
-                booking.getGuestName()
+                booking.getGuestName(),
+                targetCalendarId
         )).externalEventId();
         log.info("google_calendar_event_update_success bookingId={} provider={} externalEventId={}",
                 booking.getId(), provider, updatedExternalId);
@@ -175,6 +183,13 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         } catch (IllegalArgumentException ex) {
             throw new CalendarClientException(400, "unsupported provider: " + provider);
         }
+    }
+
+    private String resolveTargetCalendarId(UUID connectionId) {
+        return calendarRepository.findByConnectionIdAndSelectedTrue(connectionId)
+                .map(c -> c.getExternalCalendarId())
+                .filter(v -> v != null && !v.isBlank())
+                .orElse("primary");
     }
 
     private static String maskEmail(String email) {

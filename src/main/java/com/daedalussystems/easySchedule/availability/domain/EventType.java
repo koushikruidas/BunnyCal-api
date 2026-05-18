@@ -1,7 +1,10 @@
 package com.daedalussystems.easySchedule.availability.domain;
 
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -43,6 +46,14 @@ public class EventType {
 
     @Column(length = 255)
     private String location;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "conferencing_provider", nullable = false, length = 32)
+    private ConferencingProviderType conferencingProvider = ConferencingProviderType.GOOGLE_MEET;
+
+    @Column(name = "custom_conference_url", length = 1024)
+    private String customConferenceUrl;
 
     @Column(nullable = false, length = 120)
     private String slug;

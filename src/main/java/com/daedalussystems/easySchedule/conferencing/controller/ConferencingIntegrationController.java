@@ -1,0 +1,115 @@
+package com.daedalussystems.easySchedule.conferencing.controller;
+
+import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
+import com.daedalussystems.easySchedule.common.api.ApiResponse;
+import com.daedalussystems.easySchedule.common.enums.ErrorCode;
+import com.daedalussystems.easySchedule.common.exception.CustomException;
+import com.daedalussystems.easySchedule.conferencing.service.ZoomConferencingOAuthService;
+import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/integrations/conferencing")
+public class ConferencingIntegrationController {
+    private static final String ZOOM_PROVIDER = "zoom";
+
+    private final ZoomConferencingOAuthService zoomOAuthService;
+    private final ProviderCapabilityRegistry capabilityRegistry;
+    private final String frontendErrorRedirect;
+    private final String frontendSuccessRedirect;
+
+    public ConferencingIntegrationController(ZoomConferencingOAuthService zoomOAuthService,
+                                             ProviderCapabilityRegistry capabilityRegistry,
+                                             @Value("${zoom.oauth.frontend-error-redirect:http://localhost:5173/calendar-error}") String frontendErrorRedirect,
+                                             @Value("${zoom.oauth.frontend-success-redirect:http://localhost:5173/dashboard/integrations}") String frontendSuccessRedirect) {
+        this.zoomOAuthService = zoomOAuthService;
+        this.capabilityRegistry = capabilityRegistry;
+        this.frontendErrorRedirect = frontendErrorRedirect;
+        this.frontendSuccessRedirect = frontendSuccessRedirect;
+    }
+
+    @GetMapping("/{provider}/connect")
+    public ResponseEntity<ApiResponse<Map<String, String>>> connect(@PathVariable("provider") String provider,
+                                                                    Authentication authentication,
+                                                                    @RequestParam(value = "source", required = false) String source,
+                                                                    @RequestParam(value = "returnTo", required = false) String returnTo,
+                                                                    @RequestParam(value = "bookingSessionId", required = false) String bookingSessionId) {
+        UUID userId = extractUserId(authentication);
+        if (!ZOOM_PROVIDER.equalsIgnoreCase(provider)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported conferencing provider"));
+        }
+        String redirectUrl = zoomOAuthService.buildConnectUrl(userId, source, returnTo, bookingSessionId);
+        return ResponseEntity.ok(ApiResponse.success(Map.of("redirectUrl", redirectUrl)));
+    }
+
+    @GetMapping("/{provider}/callback")
+    public ResponseEntity<Void> callback(@PathVariable("provider") String provider,
+                                         @RequestParam("code") String code,
+                                         @RequestParam("state") String state) {
+        if (!ZOOM_PROVIDER.equalsIgnoreCase(provider)) {
+            return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
+        }
+        try {
+            zoomOAuthService.handleCallback(code, state);
+            return ResponseEntity.status(302).location(URI.create(frontendSuccessRedirect + "?integrationSuccess=zoom")).build();
+        } catch (RuntimeException ex) {
+            return ResponseEntity.status(302).location(errorRedirect(mapErrorCode(ex))).build();
+        }
+    }
+
+    @GetMapping("/status")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> status(Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("providers", Map.of("zoom", zoomOAuthService.status(userId)));
+        payload.put("capabilities", Map.of("conferencing", capabilityRegistry.allConferencing()));
+        return ResponseEntity.ok(ApiResponse.success(payload));
+    }
+
+    @DeleteMapping("/{provider}")
+    public ResponseEntity<ApiResponse<Void>> disconnect(@PathVariable("provider") String provider,
+                                                        Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        if (!ZOOM_PROVIDER.equalsIgnoreCase(provider)) {
+            return ResponseEntity.badRequest().body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported conferencing provider"));
+        }
+        zoomOAuthService.disconnect(userId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    private static UUID extractUserId(Authentication authentication) {
+        if (authentication == null || !(authentication.getPrincipal() instanceof UUID userId)) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+        return userId;
+    }
+
+    private URI errorRedirect(String code) {
+        String sep = frontendErrorRedirect.contains("?") ? "&" : "?";
+        String encoded = URLEncoder.encode(code, StandardCharsets.UTF_8);
+        return URI.create(frontendErrorRedirect + sep + "error=" + encoded + "&code=" + encoded);
+    }
+
+    private static String mapErrorCode(RuntimeException ex) {
+        if (ex instanceof OAuthStateException stateException) {
+            return switch (stateException.getReason()) {
+                case EXPIRED -> "oauth_state_expired";
+                case MISSING_USER -> "oauth_user_missing";
+                case INVALID -> "oauth_state_invalid";
+            };
+        }
+        if (ex instanceof IllegalArgumentException) {
+            return "oauth_invalid_response";
+        }
+        return "internal_server_error";
+    }
+}

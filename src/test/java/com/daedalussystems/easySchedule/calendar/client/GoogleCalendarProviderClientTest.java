@@ -39,6 +39,7 @@ class GoogleCalendarProviderClientTest {
     @Mock private EventTypeRepository eventTypeRepository;
     @Mock private UserRepository userRepository;
     @Mock private CalendarConnectionRepository connectionRepository;
+    @Mock private com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionCalendarRepository calendarRepository;
     @Mock private GoogleCalendarProvider googleCalendarProvider;
 
     private GoogleCalendarProviderClient client;
@@ -46,7 +47,7 @@ class GoogleCalendarProviderClientTest {
     @BeforeEach
     void setUp() {
         client = new GoogleCalendarProviderClient(
-                bookingRepository, eventTypeRepository, userRepository, connectionRepository, googleCalendarProvider);
+                bookingRepository, eventTypeRepository, userRepository, connectionRepository, calendarRepository, googleCalendarProvider);
     }
 
     @Test
