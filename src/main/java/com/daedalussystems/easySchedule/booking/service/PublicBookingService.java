@@ -53,6 +53,7 @@ public class PublicBookingService {
     private final BookingLifecycleService bookingLifecycleService;
     private final GuestCapabilityTokenService guestCapabilityTokenService;
     private final Duration guestManageTokenTtl;
+    private final Duration projectionFreshnessSla;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
@@ -68,7 +69,13 @@ public class PublicBookingService {
                                 GuestCapabilityTokenService guestCapabilityTokenService,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 @Value("${booking.public.provider-optional.enabled:false}")
-                                boolean providerOptionalPublicBookingEnabled) {
+                                boolean providerOptionalPublicBookingEnabled,
+                                // P3: projection-first availability. If the connection's last
+                                // successful sync is older than this, surface STALE_CALENDAR_DATA
+                                // so the host UI can flag webhook lag instead of silently serving
+                                // an out-of-date answer. 120s is one polling-fallback cycle + buffer.
+                                @Value("${booking.public.projection-freshness-sla-seconds:120}")
+                                long projectionFreshnessSlaSeconds) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.slotService = slotService;
         this.bookingService = bookingService;
@@ -83,6 +90,7 @@ public class PublicBookingService {
         this.guestCapabilityTokenService = guestCapabilityTokenService;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
+        this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
     }
 
     @Transactional(readOnly = true)
@@ -130,49 +138,42 @@ public class PublicBookingService {
         }
 
         SlotResponse base = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
-        boolean staleCalendarData = status == CalendarConnectionStatus.FAILED || status == CalendarConnectionStatus.ERROR;
-        boolean freeBusyConnected = connection.isPresent()
-                && status != CalendarConnectionStatus.REVOKED
-                && status != CalendarConnectionStatus.DISCONNECTED
-                && status != CalendarConnectionStatus.PENDING
-                && status != CalendarConnectionStatus.SYNCING;
-        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={}",
-                target.userId(), target.eventTypeId(), date, status == null ? "MISSING" : status,
-                staleCalendarData ? "COMPUTE_DEGRADED" : "COMPUTE_NORMAL",
-                base.version(), base.slots().size());
-        try {
-            if (!freeBusyConnected) {
-                AvailabilityStatus responseStatus = base.slots().isEmpty()
-                        ? AvailabilityStatus.NO_SLOTS_AVAILABLE
-                        : AvailabilityStatus.AVAILABLE;
-                return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
-                        base.version(), base.generatedAt(), true, base.slots(), responseStatus);
-            }
-            Instant dayStart = timeConversionService.dayStartUtc(date, base.timezone());
-            Instant dayEnd = timeConversionService.dayEndUtcExclusive(date, base.timezone());
-            long freeBusyStart = System.nanoTime();
-            List<GoogleFreeBusyService.BusyInterval> busy = freeBusyService.busyIntervals(target.userId(), dayStart, dayEnd);
-            log.info("availability_freebusy_done userId={} eventTypeId={} date={} busyIntervals={} elapsedMs={}",
-                    target.userId(), target.eventTypeId(), date, busy.size(),
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - freeBusyStart));
 
-            List<SlotDto> filtered = base.slots().stream()
-                    .filter(slot -> busy.stream().noneMatch(b -> overlaps(slot.start(), slot.end(), b.start(), b.end())))
-                    .toList();
-
-            AvailabilityStatus responseStatus = staleCalendarData
-                    ? AvailabilityStatus.STALE_CALENDAR_DATA
-                    : (filtered.isEmpty() ? AvailabilityStatus.NO_SLOTS_AVAILABLE : AvailabilityStatus.AVAILABLE);
-            return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
-                    base.version(), base.generatedAt(), staleCalendarData || base.degraded(), filtered, responseStatus);
-        } catch (RuntimeException ex) {
-            // Lenient fallback: if Google freebusy fails, return DB-derived availability.
-            AvailabilityStatus responseStatus = staleCalendarData
-                    ? AvailabilityStatus.STALE_CALENDAR_DATA
-                    : (base.slots().isEmpty() ? AvailabilityStatus.NO_SLOTS_AVAILABLE : AvailabilityStatus.AVAILABLE);
-            return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
-                    base.version(), base.generatedAt(), true, base.slots(), responseStatus);
+        // P3: projection-first. The DB-side calendar_events projection is the system
+        // of record for busy time. We no longer hit Google live on the read path —
+        // it added 200–500ms of provider latency on every public page load and
+        // created a TOCTOU race that conflicted with the eventually-consistent
+        // webhook ingestion model. Instead we classify the response by projection
+        // freshness so the UI can flag a degraded view explicitly.
+        Instant lastSyncedAt = connection.map(CalendarConnection::getLastSyncedAt).orElse(null);
+        boolean stale = isProjectionStale(status, lastSyncedAt);
+        AvailabilityStatus responseStatus;
+        if (stale) {
+            responseStatus = AvailabilityStatus.STALE_CALENDAR_DATA;
+        } else if (base.slots().isEmpty()) {
+            responseStatus = AvailabilityStatus.NO_SLOTS_AVAILABLE;
+        } else {
+            responseStatus = AvailabilityStatus.AVAILABLE;
         }
+        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={} lastSyncedAt={} stale={} elapsedMs={}",
+                target.userId(), target.eventTypeId(), date, status == null ? "MISSING" : status,
+                stale ? "PROJECTION_STALE" : "PROJECTION_FRESH",
+                base.version(), base.slots().size(), lastSyncedAt, stale,
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+        return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
+                base.version(), base.generatedAt(), stale || base.degraded(), base.slots(), responseStatus);
+    }
+
+    private boolean isProjectionStale(CalendarConnectionStatus status, Instant lastSyncedAt) {
+        if (status == CalendarConnectionStatus.FAILED || status == CalendarConnectionStatus.ERROR) {
+            return true;
+        }
+        if (lastSyncedAt == null) {
+            // Never synced — treat as stale. Webhook initial-fetch path sets this
+            // on first successful ingestion.
+            return true;
+        }
+        return Duration.between(lastSyncedAt, Instant.now()).compareTo(projectionFreshnessSla) > 0;
     }
 
     @Transactional
