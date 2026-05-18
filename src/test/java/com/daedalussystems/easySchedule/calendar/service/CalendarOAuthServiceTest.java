@@ -22,6 +22,7 @@ import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -73,6 +74,7 @@ class CalendarOAuthServiceTest {
         stateService = new OAuthStateService(securityProperties, new ObjectMapper());
         service = new CalendarOAuthService(
                 repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClient, slotCacheVersionService, connectionWriteService,
+                new SimpleMeterRegistry(),
                 "http://localhost:8080/integrations/calendar/webhooks/google", "secret");
         when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));

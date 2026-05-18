@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.calendar.repository;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -17,6 +18,10 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
                                                                   CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByUserIdAndStatus(UUID userId, CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByStatus(CalendarConnectionStatus status);
+    java.util.List<CalendarConnection> findByProviderAndWebhookChannelExpiresAtBefore(
+            CalendarProviderType provider,
+            Instant expiresAt);
+    java.util.List<CalendarConnection> findByProviderAndWebhookChannelExpiresAtIsNotNull(CalendarProviderType provider);
     Optional<CalendarConnection> findByWebhookChannelId(String webhookChannelId);
 
     @Query(value = """

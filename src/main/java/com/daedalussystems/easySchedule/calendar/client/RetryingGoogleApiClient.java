@@ -82,6 +82,22 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
         return withRetry(() -> delegate.watchEvents(accessToken, webhookUrl, channelToken));
     }
 
+    @Override
+    public void stopWatchChannel(String accessToken, String channelId, String resourceId) {
+        withRetry(() -> {
+            delegate.stopWatchChannel(accessToken, channelId, resourceId);
+            return null;
+        });
+    }
+
+    @Override
+    public void revokeToken(String token) {
+        withRetry(() -> {
+            delegate.revokeToken(token);
+            return null;
+        });
+    }
+
     private interface Call<T> { T invoke(); }
 
     private <T> T withRetry(Call<T> call) {

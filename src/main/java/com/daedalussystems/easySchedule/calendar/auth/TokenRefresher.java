@@ -12,9 +12,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,19 +30,21 @@ public class TokenRefresher {
     private final TokenCipher tokenCipher;
     private final GoogleApiClient googleApiClient;
     private final CalendarConnectionWriteService connectionWriteService;
+    private final AccessTokenCache accessTokenCache;
     private final Counter tokenRefreshFailureCount;
     private final Counter tokenRefreshSuccessCount;
-    private final Map<UUID, CachedAccessToken> accessTokenCache = new ConcurrentHashMap<>();
 
     public TokenRefresher(CalendarConnectionRepository connectionRepository,
                           TokenCipher tokenCipher,
                           GoogleApiClient googleApiClient,
                           CalendarConnectionWriteService connectionWriteService,
+                          AccessTokenCache accessTokenCache,
                           MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.tokenCipher = tokenCipher;
         this.googleApiClient = googleApiClient;
         this.connectionWriteService = connectionWriteService;
+        this.accessTokenCache = accessTokenCache;
         this.tokenRefreshFailureCount = meterRegistry.counter("token_refresh_failures_count");
         this.tokenRefreshSuccessCount = meterRegistry.counter("token_refresh_success_count");
     }
@@ -88,7 +88,7 @@ public class TokenRefresher {
         if (connection.getLastTokenExpiresAt() == null || connection.getLastTokenExpiresAt().minus(REFRESH_SKEW).isBefore(now)) {
             return refreshConnectionToken(connection);
         }
-        CachedAccessToken cached = accessTokenCache.get(connection.getId());
+        AccessTokenCache.CachedToken cached = accessTokenCache.get(connection.getId()).orElse(null);
         if (cached == null || cached.expiresAt().minus(REFRESH_SKEW).isBefore(now)) {
             return refreshConnectionToken(connection);
         }
@@ -100,7 +100,7 @@ public class TokenRefresher {
         try {
             TokenRefreshResult refresh = googleApiClient.refreshAccessToken(refreshToken);
             String token = saveRefreshedToken(connection.getId(), refresh.accessToken(), refresh.expiresAt(), connection.getLastSyncedAt());
-            accessTokenCache.put(connection.getId(), new CachedAccessToken(token, refresh.expiresAt()));
+            accessTokenCache.put(connection.getId(), token, refresh.expiresAt());
             tokenRefreshSuccessCount.increment();
             log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\"}}", connection.getId());
             return token;
@@ -149,6 +149,4 @@ public class TokenRefresher {
         String message = ex.getMessage();
         return message != null && message.toLowerCase(Locale.ROOT).contains("invalid_grant");
     }
-
-    private record CachedAccessToken(String accessToken, Instant expiresAt) {}
 }

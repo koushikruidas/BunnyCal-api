@@ -39,14 +39,17 @@ class TokenRefresherTest {
     private GoogleApiClient googleApiClient;
     @Mock
     private CalendarConnectionWriteService connectionWriteService;
+    @Mock
+    private AccessTokenCache accessTokenCache;
 
     private TokenRefresher tokenRefresher;
 
     @BeforeEach
     void setUp() {
-        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, connectionWriteService, new SimpleMeterRegistry());
+        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, connectionWriteService, accessTokenCache, new SimpleMeterRegistry());
         lenient().when(connectionWriteService.markActive(any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         lenient().when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
+        lenient().when(accessTokenCache.get(any())).thenReturn(Optional.empty());
     }
 
     @Test
@@ -72,6 +75,9 @@ class TokenRefresherTest {
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
         when(googleApiClient.refreshAccessToken("refresh"))
                 .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+        when(accessTokenCache.get(id))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(new AccessTokenCache.CachedToken("new-token", Instant.now().plusSeconds(3600))));
 
         String first = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
         String second = tokenRefresher.executeWithValidToken(id, token -> "ok2:" + token);
@@ -80,6 +86,7 @@ class TokenRefresherTest {
         assertEquals("ok2:new-token", second);
         verify(googleApiClient, times(1)).refreshAccessToken("refresh");
         verify(connectionWriteService, times(1)).markActive(any(), any(), any(), any());
+        verify(accessTokenCache, times(1)).put(any(), any(), any());
         verifyNoMoreInteractions(googleApiClient);
     }
 

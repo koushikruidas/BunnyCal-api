@@ -7,12 +7,14 @@ import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.OAuthTokenExchangeResult;
+import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -38,6 +40,7 @@ public class CalendarOAuthService {
     private final ExternalCalendarSyncClient syncClient;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
+    private final MeterRegistry meterRegistry;
     private final String googleWebhookAddress;
     private final String googleWebhookToken;
 
@@ -50,6 +53,7 @@ public class CalendarOAuthService {
                                 ExternalCalendarSyncClient syncClient,
                                 SlotCacheVersionService slotCacheVersionService,
                                 CalendarConnectionWriteService connectionWriteService,
+                                MeterRegistry meterRegistry,
                                 @Value("${calendar.webhook.google.address:http://localhost:8080/integrations/calendar/webhooks/google}") String googleWebhookAddress,
                                 @Value("${calendar.webhook.shared-secret:}") String googleWebhookToken) {
         this.repository = repository;
@@ -61,6 +65,7 @@ public class CalendarOAuthService {
         this.syncClient = syncClient;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
+        this.meterRegistry = meterRegistry;
         this.googleWebhookAddress = googleWebhookAddress;
         this.googleWebhookToken = googleWebhookToken;
     }
@@ -193,6 +198,27 @@ public class CalendarOAuthService {
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
         if (existing.isPresent()) {
             CalendarConnection connection = existing.get();
+            try {
+                String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
+                googleApiClient.revokeToken(refreshToken);
+            } catch (RuntimeException ex) {
+                meterRegistry.counter("oauth_revoke_failure_total", "provider", "google", "errorCode", "revoke_failed")
+                        .increment();
+                log.warn("google_oauth_revoke_failed connectionId={} userId={}", connection.getId(), userId, ex);
+            }
+            if (connection.getWebhookChannelId() != null && !connection.getWebhookChannelId().isBlank()
+                    && connection.getWebhookResourceId() != null && !connection.getWebhookResourceId().isBlank()) {
+                try {
+                    String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
+                    TokenRefreshResult refreshed = googleApiClient.refreshAccessToken(refreshToken);
+                    googleApiClient.stopWatchChannel(
+                            refreshed.accessToken(),
+                            connection.getWebhookChannelId(),
+                            connection.getWebhookResourceId());
+                } catch (RuntimeException ex) {
+                    log.warn("google_watch_stop_on_disconnect_failed connectionId={} userId={}", connection.getId(), userId, ex);
+                }
+            }
             connectionWriteService.markFailure(connection.getId(),
                     CalendarConnectionStatus.REVOKED,
                     connection.getLastErrorCode(),

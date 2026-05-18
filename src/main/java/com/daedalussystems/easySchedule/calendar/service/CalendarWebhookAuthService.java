@@ -24,7 +24,7 @@ public class CalendarWebhookAuthService {
     private final long maxSkewSeconds;
 
     public CalendarWebhookAuthService(MeterRegistry meterRegistry,
-                                      @Value("${calendar.webhook.auth.require-signature:false}") boolean requireSignature,
+                                      @Value("${calendar.webhook.auth.require-signature:true}") boolean requireSignature,
                                       @Value("${calendar.webhook.auth.max-skew-seconds:300}") long maxSkewSeconds) {
         this.meterRegistry = meterRegistry;
         this.clock = Clock.systemUTC();

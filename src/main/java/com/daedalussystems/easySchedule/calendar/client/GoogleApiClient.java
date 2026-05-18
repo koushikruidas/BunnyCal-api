@@ -28,6 +28,10 @@ public interface GoogleApiClient {
 
     WatchChannel watchEvents(String accessToken, String webhookUrl, String channelToken);
 
+    void stopWatchChannel(String accessToken, String channelId, String resourceId);
+
+    void revokeToken(String token);
+
     record GoogleEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {}
 
     record BusyInterval(Instant start, Instant end) {}

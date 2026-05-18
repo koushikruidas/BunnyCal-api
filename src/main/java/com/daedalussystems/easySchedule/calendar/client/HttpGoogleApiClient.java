@@ -316,6 +316,43 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         }
     }
 
+    @Override
+    public void stopWatchChannel(String accessToken, String channelId, String resourceId) {
+        if (channelId == null || channelId.isBlank() || resourceId == null || resourceId.isBlank()) {
+            return;
+        }
+        try {
+            restClient.post()
+                    .uri("/calendar/v3/channels/stop")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "id", channelId,
+                            "resourceId", resourceId
+                    ))
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
+    public void revokeToken(String token) {
+        if (token == null || token.isBlank()) {
+            return;
+        }
+        try {
+            restClient.post()
+                    .uri("https://oauth2.googleapis.com/revoke?token={token}", token)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
     private SyncWindow listEvents(String accessToken, String syncCursor) {
         try {
             List<CalendarEventObservation> observations = new ArrayList<>();

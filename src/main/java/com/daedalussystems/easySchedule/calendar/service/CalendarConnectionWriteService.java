@@ -53,7 +53,7 @@ public class CalendarConnectionWriteService {
             if (expiresAt != null) {
                 latest.setLastTokenExpiresAt(expiresAt);
             }
-            if (lastSyncedAt != null) {
+            if (shouldAdvanceLastSyncedAt(latest.getLastSyncedAt(), lastSyncedAt)) {
                 latest.setLastSyncedAt(lastSyncedAt);
             }
             return latest;
@@ -78,6 +78,20 @@ public class CalendarConnectionWriteService {
     public CalendarConnection updateLastSyncedAt(UUID connectionId, Instant lastSyncedAt, String context) {
         return withRetry(connectionId, context, latest -> {
             latest.setLastSyncedAt(lastSyncedAt);
+            return latest;
+        });
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CalendarConnection updateWebhookChannel(UUID connectionId,
+                                                   String channelId,
+                                                   String resourceId,
+                                                   Instant channelExpiresAt,
+                                                   String context) {
+        return withRetry(connectionId, context, latest -> {
+            latest.setWebhookChannelId(channelId);
+            latest.setWebhookResourceId(resourceId);
+            latest.setWebhookChannelExpiresAt(channelExpiresAt);
             return latest;
         });
     }
@@ -167,5 +181,12 @@ public class CalendarConnectionWriteService {
     private static boolean equalsNullable(String a, String b) {
         if (a == null) return b == null;
         return a.equals(b);
+    }
+
+    private static boolean shouldAdvanceLastSyncedAt(Instant current, Instant candidate) {
+        if (candidate == null) {
+            return false;
+        }
+        return current == null || candidate.isAfter(current);
     }
 }

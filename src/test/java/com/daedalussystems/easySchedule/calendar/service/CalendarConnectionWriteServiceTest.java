@@ -71,6 +71,21 @@ class CalendarConnectionWriteServiceTest {
     }
 
     @Test
+    void markActive_doesNotMoveLastSyncedAtBackwards() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        Instant current = Instant.parse("2026-05-18T08:40:00Z");
+        Instant staleCandidate = Instant.parse("2026-05-18T08:35:00Z");
+        latest.setLastSyncedAt(current);
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markActive(id, null, staleCandidate, "test");
+
+        assertEquals(current, saved.getLastSyncedAt());
+    }
+
+    @Test
     void saveSnapshot_withNullId_createsWithoutFindById() {
         CalendarConnection candidate = new CalendarConnection();
         candidate.setUserId(UUID.randomUUID());
