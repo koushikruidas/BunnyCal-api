@@ -99,7 +99,9 @@ public class BookingNotificationService {
             return;
         }
 
-        Optional<Booking> maybeBooking = bookingRepository.findAnyById(event.getAggregateId());
+        Optional<Booking> maybeBooking = event.getPartitionKey() == null
+                ? bookingRepository.findAnyById(event.getAggregateId())
+                : bookingRepository.findAnyByIdAndHostId(event.getAggregateId(), event.getPartitionKey());
         if (maybeBooking.isEmpty()) {
             log.warn("booking_notification_skip_missing_booking bookingId={} eventType={}",
                     event.getAggregateId(), event.getEventType());

@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class MeetingQueryService {
     private static final Logger log = LoggerFactory.getLogger(MeetingQueryService.class);
+    private static final String DEFAULT_PROVIDER = "google";
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
 
@@ -28,8 +29,8 @@ public class MeetingQueryService {
     public List<MeetingSummaryResponse> listHostMeetings(UUID hostId, Boolean upcomingOnly, Integer limit) {
         int safeLimit = sanitizeLimit(limit);
         List<BookingRepository.MeetingRow> rows = Boolean.TRUE.equals(upcomingOnly)
-                ? bookingRepository.findUpcomingMeetingsForHost(hostId, timeSource.now(), safeLimit)
-                : bookingRepository.findMeetingsForHost(hostId, safeLimit);
+                ? bookingRepository.findUpcomingMeetingsForHost(hostId, DEFAULT_PROVIDER, timeSource.now(), safeLimit)
+                : bookingRepository.findMeetingsForHost(hostId, DEFAULT_PROVIDER, safeLimit);
         return rows.stream()
                 .map(this::toDto)
                 .toList();

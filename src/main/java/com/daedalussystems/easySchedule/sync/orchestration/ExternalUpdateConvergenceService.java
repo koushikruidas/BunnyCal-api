@@ -85,7 +85,7 @@ public class ExternalUpdateConvergenceService {
         int updated = bookingRepository.projectExternalActiveWindow(bookingId, startsAt, endsAt);
         if (updated == 0) {
             metric(source, "cas_miss_or_state_drift");
-            var after = bookingRepository.findWindowStateById(bookingId).orElse(null);
+            var after = bookingRepository.findWindowStateByIdAndHostId(bookingId, state.getHostId()).orElse(null);
             log.info("external_update_projection_noop bookingId={} provider={} source={} externalEventId={} reason=cas_miss_or_state_drift statusAfter={} startAfter={} endAfter={}",
                     bookingId,
                     provider,

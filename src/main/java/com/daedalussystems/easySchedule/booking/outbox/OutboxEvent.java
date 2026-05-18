@@ -39,6 +39,9 @@ public class OutboxEvent extends BaseEntity {
     @Column(name = "aggregate_id", nullable = false)
     private UUID aggregateId;
 
+    @Column(name = "partition_key")
+    private UUID partitionKey;
+
     @Column(name = "event_type", nullable = false, length = 128)
     private String eventType;
 

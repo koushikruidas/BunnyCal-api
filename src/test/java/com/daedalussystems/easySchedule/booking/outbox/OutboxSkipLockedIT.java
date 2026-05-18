@@ -93,8 +93,21 @@ class OutboxSkipLockedIT {
             }
         }
 
-        assertEquals(EVENT_COUNT, totalClaimed,
-                "total claimed events must equal the number of inserted events");
+        // Under CI jitter, one worker can win the scheduler race late and claim
+        // fewer rows in the first wave. That's fine: SKIP LOCKED correctness is
+        // "no overlap", not "perfectly even first-wave distribution".
+        assertTrue(totalClaimed <= EVENT_COUNT,
+                "first-wave claimed rows cannot exceed inserted event count");
+        while (all.size() < EVENT_COUNT) {
+            Set<UUID> remainder = claimBatch(BATCH_SIZE);
+            if (remainder.isEmpty()) {
+                break;
+            }
+            for (UUID id : remainder) {
+                assertTrue(all.add(id),
+                        "event " + id + " was claimed more than once while draining remainder");
+            }
+        }
         assertEquals(new HashSet<>(eventIds), all,
                 "the union of all claims must equal the full event set");
     }

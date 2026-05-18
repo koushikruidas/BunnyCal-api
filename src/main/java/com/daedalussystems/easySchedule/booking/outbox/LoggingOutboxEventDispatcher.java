@@ -71,13 +71,20 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                             event.getAggregateId(), provider, desiredAction);
                     return;
                 }
+                UUID partitionKey = event.getPartitionKey();
+                if (partitionKey == null) {
+                    partitionKey = bookingRepository.findAnyById(event.getAggregateId())
+                            .map(booking -> booking.getHostId())
+                            .orElse(null);
+                }
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
                         event.getAggregateId(),
                         provider,
                         desiredAction,
-                        null
+                        null,
+                        partitionKey
                 );
                 log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
                         event.getId(), event.getAggregateId(), provider, desiredAction);
@@ -104,6 +111,11 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         CalendarProviderType providerType = parseProviderType(provider);
         if (providerType == null) {
             return false;
+        }
+        if (event.getPartitionKey() != null) {
+            return calendarConnectionRepository
+                    .findByUserIdAndProviderAndStatus(event.getPartitionKey(), providerType, CalendarConnectionStatus.ACTIVE)
+                    .isEmpty();
         }
         return bookingRepository.findAnyById(event.getAggregateId())
                 .map(booking -> calendarConnectionRepository

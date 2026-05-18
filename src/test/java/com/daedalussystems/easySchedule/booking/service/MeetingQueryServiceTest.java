@@ -36,27 +36,27 @@ class MeetingQueryServiceTest {
         UUID hostId = UUID.randomUUID();
         Instant now = Instant.parse("2026-05-09T12:00:00Z");
         when(timeSource.now()).thenReturn(now);
-        when(bookingRepository.findUpcomingMeetingsForHost(hostId, now, 50)).thenReturn(List.of());
+        when(bookingRepository.findUpcomingMeetingsForHost(hostId, "google", now, 50)).thenReturn(List.of());
 
         service.listHostMeetings(hostId, true, null);
 
-        verify(bookingRepository).findUpcomingMeetingsForHost(hostId, now, 50);
+        verify(bookingRepository).findUpcomingMeetingsForHost(hostId, "google", now, 50);
     }
 
     @Test
     void nonUpcoming_usesGeneralQuery() {
         UUID hostId = UUID.randomUUID();
-        when(bookingRepository.findMeetingsForHost(hostId, 25)).thenReturn(List.of());
+        when(bookingRepository.findMeetingsForHost(hostId, "google", 25)).thenReturn(List.of());
 
         service.listHostMeetings(hostId, false, 25);
 
-        verify(bookingRepository).findMeetingsForHost(hostId, 25);
+        verify(bookingRepository).findMeetingsForHost(hostId, "google", 25);
     }
 
     @Test
     void mapsBookingStatusFromRow() {
         UUID hostId = UUID.randomUUID();
-        when(bookingRepository.findMeetingsForHost(hostId, 10)).thenReturn(List.of(meetingRow));
+        when(bookingRepository.findMeetingsForHost(hostId, "google", 10)).thenReturn(List.of(meetingRow));
         when(meetingRow.getBookingId()).thenReturn(UUID.randomUUID());
         when(meetingRow.getEventTypeId()).thenReturn(UUID.randomUUID());
         when(meetingRow.getEventTypeName()).thenReturn("30 min Intro");

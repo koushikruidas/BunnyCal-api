@@ -130,6 +130,9 @@ public class PersistedReconcileSnapshotAssembler {
     }
 
     private BookingRepository.BookingStateRow loadBookingStateRow(CalendarSyncJob job) {
+        if (job.getPartitionKey() != null) {
+            return bookingRepository.findStateByIdAndHostId(job.getInternalRefId(), job.getPartitionKey()).orElse(null);
+        }
         return bookingRepository.findStateById(job.getInternalRefId()).orElse(null);
     }
 

@@ -51,6 +51,7 @@ public class ExternalTerminalDeleteConvergenceService {
                 LIFECYCLE_STATE);
         return convergeBooking(
                 job.getInternalRefId(),
+                job.getPartitionKey(),
                 job.getProvider(),
                 job.getExternalEventId(),
                 job.getId(),
@@ -68,6 +69,7 @@ public class ExternalTerminalDeleteConvergenceService {
                 LIFECYCLE_STATE);
         return convergeBooking(
                 job.getInternalRefId(),
+                job.getPartitionKey(),
                 job.getProvider(),
                 job.getExternalEventId(),
                 job.getId(),
@@ -89,6 +91,7 @@ public class ExternalTerminalDeleteConvergenceService {
                 LIFECYCLE_STATE);
         return convergeBooking(
                 bookingId,
+                null,
                 provider,
                 externalEventId,
                 null,
@@ -98,13 +101,16 @@ public class ExternalTerminalDeleteConvergenceService {
     }
 
     private ConvergenceResult convergeBooking(UUID bookingId,
+                                              UUID hostId,
                                               String provider,
                                               String externalEventId,
                                               UUID syncJobId,
                                               String source,
                                               int lifecycleRows,
                                               String lifecyclePath) {
-        var before = bookingRepository.findProjectionStateById(bookingId).orElse(null);
+        var before = hostId != null
+                ? bookingRepository.findProjectionStateByIdAndHostId(bookingId, hostId).orElse(null)
+                : bookingRepository.findProjectionStateById(bookingId).orElse(null);
         String beforeStatus = before == null ? "MISSING" : before.getStatus();
         boolean terminalBefore = isTerminalStatus(beforeStatus);
         log.info("authoritative_terminal_projection_guard bookingId={} provider={} source={} syncJobId={} externalEventId={} lifecycleState={} lifecycleRows={} lifecyclePath={} lookupFound={} statusBefore={} terminalBefore={} availabilityReleasedAtBefore={}",
@@ -143,7 +149,9 @@ public class ExternalTerminalDeleteConvergenceService {
 
         int projected = bookingRepository.projectExternalTerminalToCancelled(bookingId);
         if (projected == 0) {
-            var afterNoop = bookingRepository.findProjectionStateById(bookingId).orElse(null);
+            var afterNoop = hostId != null
+                    ? bookingRepository.findProjectionStateByIdAndHostId(bookingId, hostId).orElse(null)
+                    : bookingRepository.findProjectionStateById(bookingId).orElse(null);
             metric(source, "state_drift_noop");
             log.info("authoritative_terminal_projection_noop bookingId={} provider={} source={} lifecycleState={} reason=cas_miss_or_state_drift lifecycleRows={} rowsUpdated=0 statusAfter={} availabilityReleasedAtAfter={}",
                     bookingId,
@@ -156,7 +164,9 @@ public class ExternalTerminalDeleteConvergenceService {
             return new ConvergenceResult(lifecycleRows, 0, "cas_miss_or_state_drift");
         }
 
-        var after = bookingRepository.findProjectionStateById(bookingId).orElse(null);
+        var after = hostId != null
+                ? bookingRepository.findProjectionStateByIdAndHostId(bookingId, hostId).orElse(null)
+                : bookingRepository.findProjectionStateById(bookingId).orElse(null);
         if (after != null) {
             slotCacheVersionService.bumpVersion(after.getHostId());
             meterRegistry.counter("sync.external_terminal_slot_release.total", "source", safeSource(source)).increment();

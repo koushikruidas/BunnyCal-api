@@ -43,7 +43,7 @@ public class OutboxPublisher {
      */
     @Deprecated(forRemoval = false)
     public void publish(String aggregateType, UUID aggregateId, String eventType, Object payload) {
-        publish(aggregateType, aggregateId, new OutboxPayloadEnvelope(
+        persistOutboxEvent(aggregateType, aggregateId, null, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(), eventType, 1, payload));
     }
 
@@ -52,11 +52,19 @@ public class OutboxPublisher {
      */
     @Deprecated(forRemoval = false)
     public void publish(String aggregateType, UUID aggregateId, String eventType, int version, Object payload) {
-        publish(aggregateType, aggregateId, new OutboxPayloadEnvelope(
+        persistOutboxEvent(aggregateType, aggregateId, null, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(), eventType, version, payload));
     }
 
     public void publish(String aggregateType, UUID aggregateId, OutboxPayloadEnvelope envelope) {
+        persistOutboxEvent(aggregateType, aggregateId, null, envelope);
+    }
+
+    public void publish(String aggregateType, UUID aggregateId, UUID partitionKey, OutboxPayloadEnvelope envelope) {
+        persistOutboxEvent(aggregateType, aggregateId, partitionKey, envelope);
+    }
+
+    private void persistOutboxEvent(String aggregateType, UUID aggregateId, UUID partitionKey, OutboxPayloadEnvelope envelope) {
         String payloadJson;
         try {
             payloadJson = objectMapper.writeValueAsString(envelope);
@@ -69,6 +77,7 @@ public class OutboxPublisher {
                 .id(UUID.randomUUID())
                 .aggregateType(aggregateType)
                 .aggregateId(aggregateId)
+                .partitionKey(partitionKey)
                 .eventType(envelope.type())
                 .payload(payloadJson)
                 .status(OutboxEventStatus.PENDING)

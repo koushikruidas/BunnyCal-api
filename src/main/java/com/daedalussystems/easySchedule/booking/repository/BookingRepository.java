@@ -223,6 +223,9 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     @Query(value = "SELECT created_at FROM bookings WHERE id = :id LIMIT 1", nativeQuery = true)
     java.util.Optional<java.time.Instant> findCreatedAtById(@Param("id") UUID id);
 
+    @Query(value = "SELECT created_at FROM bookings WHERE id = :id AND host_id = :hostId LIMIT 1", nativeQuery = true)
+    java.util.Optional<java.time.Instant> findCreatedAtByIdAndHostId(@Param("id") UUID id, @Param("hostId") UUID hostId);
+
     @Modifying(clearAutomatically = true)
     @Query(value = """
             UPDATE bookings
@@ -242,12 +245,31 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingStateRow> findStateById(@Param("id") UUID id);
 
     @Query(value = """
+            SELECT id, host_id, status, version, expires_at
+                   , terminal_intent_epoch
+            FROM bookings
+            WHERE id = :id
+              AND host_id = :hostId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingStateRow> findStateByIdAndHostId(@Param("id") UUID id, @Param("hostId") UUID hostId);
+
+    @Query(value = """
             SELECT id, host_id, status, availability_released_at
             FROM bookings
             WHERE id = :id
             LIMIT 1
             """, nativeQuery = true)
     Optional<BookingProjectionRow> findProjectionStateById(@Param("id") UUID id);
+
+    @Query(value = """
+            SELECT id, host_id, status, availability_released_at
+            FROM bookings
+            WHERE id = :id
+              AND host_id = :hostId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingProjectionRow> findProjectionStateByIdAndHostId(@Param("id") UUID id, @Param("hostId") UUID hostId);
 
     @Query(value = """
             SELECT id, host_id, status, start_time AS startTime, end_time AS endTime
@@ -258,12 +280,30 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<BookingWindowStateRow> findWindowStateById(@Param("id") UUID id);
 
     @Query(value = """
+            SELECT id, host_id, status, start_time AS startTime, end_time AS endTime
+            FROM bookings
+            WHERE id = :id
+              AND host_id = :hostId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingWindowStateRow> findWindowStateByIdAndHostId(@Param("id") UUID id, @Param("hostId") UUID hostId);
+
+    @Query(value = """
             SELECT *
             FROM bookings
             WHERE id = :id
             LIMIT 1
             """, nativeQuery = true)
     Optional<Booking> findAnyById(@Param("id") UUID id);
+
+    @Query(value = """
+            SELECT *
+            FROM bookings
+            WHERE id = :id
+              AND host_id = :hostId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<Booking> findAnyByIdAndHostId(@Param("id") UUID id, @Param("hostId") UUID hostId);
 
     @Query(value = """
             SELECT id, version
@@ -378,13 +418,13 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
-               AND cem.provider = 'google'
+               AND cem.provider = :provider
             LEFT JOIN LATERAL (
                 SELECT j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
-                  AND j.provider = 'google'
+                  AND j.provider = :provider
                 ORDER BY j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
@@ -392,7 +432,9 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             ORDER BY b.start_time DESC
             LIMIT :limit
             """, nativeQuery = true)
-    List<MeetingRow> findMeetingsForHost(@Param("hostId") UUID hostId, @Param("limit") int limit);
+    List<MeetingRow> findMeetingsForHost(@Param("hostId") UUID hostId,
+                                         @Param("provider") String provider,
+                                         @Param("limit") int limit);
 
     @Query(value = """
             SELECT
@@ -429,13 +471,13 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
-               AND cem.provider = 'google'
+               AND cem.provider = :provider
             LEFT JOIN LATERAL (
                 SELECT j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
-                  AND j.provider = 'google'
+                  AND j.provider = :provider
                 ORDER BY j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
@@ -447,6 +489,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LIMIT :limit
             """, nativeQuery = true)
     List<MeetingRow> findUpcomingMeetingsForHost(@Param("hostId") UUID hostId,
+                                                 @Param("provider") String provider,
                                                  @Param("now") Instant now,
                                                  @Param("limit") int limit);
 }

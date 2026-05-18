@@ -20,7 +20,6 @@ import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
 import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
@@ -73,6 +72,8 @@ public class BookingService {
     private final TimeSource timeSource;
     @Nullable
     private final SyncInvariantMonitor invariantMonitor;
+    @Nullable
+    private final BookingPendingCounter pendingCounter;
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     private final Counter conflictCounter;
@@ -92,22 +93,18 @@ public class BookingService {
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry,
-            @Nullable SyncInvariantMonitor invariantMonitor) {
+            @Nullable SyncInvariantMonitor invariantMonitor,
+            @Nullable BookingPendingCounter pendingCounter) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
         this.meterRegistry = meterRegistry;
         this.invariantMonitor = invariantMonitor;
+        this.pendingCounter = pendingCounter;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
-                .register(meterRegistry);
-
-        // Gauge is pull-based: supplier is called at scrape time, not on every request.
-        Gauge.builder("booking.pending.count", bookingRepository,
-                        repo -> (double) repo.countByStatus("PENDING"))
-                .description("Number of bookings currently in PENDING state")
                 .register(meterRegistry);
 
         // publishPercentileHistogram() emits _bucket series required by histogram_quantile.
@@ -152,7 +149,7 @@ public class BookingService {
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry) {
-        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null);
+        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null);
     }
 
     /**
@@ -220,7 +217,7 @@ public class BookingService {
                     .guestName(guestName)
                     .build());
 
-            outboxPublisher.publish("Booking", saved.getId(), new OutboxPayloadEnvelope(
+            outboxPublisher.publish("Booking", saved.getId(), hostId, new OutboxPayloadEnvelope(
                     UUID.randomUUID().toString(),
                     "BOOKING_CREATED",
                     1,
@@ -235,6 +232,9 @@ public class BookingService {
         }
 
         bookingCreatedTotal.increment();
+        if (pendingCounter != null) {
+            pendingCounter.increment();
+        }
         return saved;
     }
 
@@ -359,9 +359,12 @@ public class BookingService {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
         bookingConfirmedTotal.increment();
+        if (pendingCounter != null) {
+            pendingCounter.decrement();
+        }
         assertInvariant("booking_transition_confirmed", id, BookingState.CONFIRMED);
         bookingRepository.findAnyById(id).ifPresent(booking ->
-                outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+                outboxPublisher.publish("Booking", id, booking.getHostId(), new OutboxPayloadEnvelope(
                         UUID.randomUUID().toString(),
                         "BOOKING_CONFIRMED",
                         1,
@@ -371,6 +374,9 @@ public class BookingService {
     @Transactional
     public void cancelPendingBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.PENDING, version, BookingState.CANCELLED);
+        if (pendingCounter != null) {
+            pendingCounter.decrement();
+        }
     }
 
     @Transactional
@@ -387,6 +393,9 @@ public class BookingService {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
         recordCompletionLatency(id);
+        if (pendingCounter != null) {
+            pendingCounter.decrement();
+        }
     }
 
     @Transactional
@@ -405,7 +414,7 @@ public class BookingService {
         bookingRescheduledTotal.increment();
         assertInvariant("booking_transition_rescheduled", id, BookingState.CONFIRMED);
 
-        outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+        outboxPublisher.publish("Booking", id, hostId, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(),
                 "BOOKING_UPDATED",
                 1,
@@ -425,12 +434,16 @@ public class BookingService {
 
         int updated = bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(
                 id, BookingState.PENDING.name(), BookingState.CANCELLED.name(), version);
+        boolean wasPendingTransition = updated > 0;
         if (updated == 0) {
             updated = bookingRepository.updateStatusAndCalendarSequenceAndIntentEpoch(
                     id, BookingState.CONFIRMED.name(), BookingState.CANCELLED.name(), version);
         }
         if (updated == 0) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
+        }
+        if (wasPendingTransition && pendingCounter != null) {
+            pendingCounter.decrement();
         }
         assertInvariant("booking_transition_cancelled", id, BookingState.CANCELLED);
 
@@ -441,7 +454,7 @@ public class BookingService {
         metadata.put("correlationId", null);
         metadata.put("causationId", null);
 
-        outboxPublisher.publish("Booking", id, new OutboxPayloadEnvelope(
+        outboxPublisher.publish("Booking", id, hostId, new OutboxPayloadEnvelope(
                 UUID.randomUUID().toString(),
                 "BOOKING_CANCELLED",
                 1,

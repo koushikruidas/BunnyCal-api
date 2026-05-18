@@ -68,6 +68,7 @@ class LoggingOutboxEventDispatcherTest {
                 eq(bookingId),
                 eq("google"),
                 eq("CREATE"),
+                eq(null),
                 eq(null));
     }
 
@@ -111,6 +112,7 @@ class LoggingOutboxEventDispatcherTest {
                 org.mockito.ArgumentMatchers.any(UUID.class),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
     }
 
@@ -154,7 +156,8 @@ class LoggingOutboxEventDispatcherTest {
                 eq(bookingId),
                 eq("google"),
                 eq("CREATE"),
-                eq(null));
+                eq(null),
+                eq(hostId));
     }
 
     @Test
@@ -177,6 +180,7 @@ class LoggingOutboxEventDispatcherTest {
                 org.mockito.ArgumentMatchers.any(UUID.class),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
     }
 }

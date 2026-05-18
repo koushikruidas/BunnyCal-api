@@ -2,6 +2,8 @@ package com.daedalussystems.easySchedule.booking.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -9,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
+import com.daedalussystems.easySchedule.booking.outbox.OutboxPayloadEnvelope;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -82,7 +85,8 @@ class BookingConflictMetricsTest {
         assertEquals(1.0, counter.count(), 0.001,
                 "booking.conflicts.total must increment exactly once per conflict");
         // publish() must NOT be called when saveAndFlush() throws first
-        Mockito.verify(publisher, Mockito.never()).publish(any(), any(), any());
+        Mockito.verify(publisher, Mockito.never()).publish(
+                any(String.class), nullable(UUID.class), any(UUID.class), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
@@ -120,7 +124,8 @@ class BookingConflictMetricsTest {
 
         InOrder inOrder = Mockito.inOrder(bookingRepo, publisher);
         inOrder.verify(bookingRepo).saveAndFlush(any());
-        inOrder.verify(publisher).publish(any(), any(), any());
+        inOrder.verify(publisher).publish(
+                any(String.class), nullable(UUID.class), eq(hostId), any(OutboxPayloadEnvelope.class));
         Mockito.verify(bookingRepo, Mockito.never()).save(any());
     }
 }

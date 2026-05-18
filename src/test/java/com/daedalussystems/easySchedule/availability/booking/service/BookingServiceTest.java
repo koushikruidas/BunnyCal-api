@@ -92,7 +92,7 @@ class BookingServiceTest {
 
         verify(userRepository, times(1)).findByIdForUpdate(userId);
         verify(bookingRepository, times(1)).saveAndFlush(any(Booking.class));
-        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(saved.getId()), any(OutboxPayloadEnvelope.class));
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(saved.getId()), eq(userId), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
@@ -107,7 +107,7 @@ class BookingServiceTest {
         bookingService.updateBooking(bookingId, hostId, start, end, 3L);
 
         verify(bookingRepository, times(1)).updateWindowAndCalendarSequence(bookingId, hostId, start, end, 3L);
-        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), eq(hostId), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
@@ -120,7 +120,7 @@ class BookingServiceTest {
         bookingService.cancelBooking(bookingId, hostId, 4L);
 
         verify(bookingRepository, times(1)).updateStatusAndCalendarSequenceAndIntentEpoch(bookingId, "PENDING", "CANCELLED", 4L);
-        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), eq(hostId), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
@@ -133,7 +133,7 @@ class BookingServiceTest {
 
         org.mockito.ArgumentCaptor<OutboxPayloadEnvelope> captor =
                 org.mockito.ArgumentCaptor.forClass(OutboxPayloadEnvelope.class);
-        verify(outboxPublisher).publish(eq("Booking"), eq(bookingId), captor.capture());
+        verify(outboxPublisher).publish(eq("Booking"), eq(bookingId), eq(hostId), captor.capture());
         OutboxPayloadEnvelope envelope = captor.getValue();
         Map<String, Object> metadata = envelope.metadata();
         org.junit.jupiter.api.Assertions.assertNotNull(metadata);
@@ -153,7 +153,7 @@ class BookingServiceTest {
 
         bookingService.cancelBookingAsHost(bookingId, hostId, null);
 
-        verify(outboxPublisher, never()).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+        verify(outboxPublisher, never()).publish(eq("Booking"), eq(bookingId), any(UUID.class), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
@@ -189,7 +189,7 @@ class BookingServiceTest {
         f2.get();
         executor.shutdownNow();
 
-        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), any(OutboxPayloadEnvelope.class));
+        verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(bookingId), eq(hostId), any(OutboxPayloadEnvelope.class));
     }
 
     @Test
