@@ -80,7 +80,7 @@ class BookingServiceTest {
                         .timezone("UTC")
                         .build()));
 
-        when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> {
+        when(bookingRepository.saveAndFlush(any(Booking.class))).thenAnswer(invocation -> {
             Booking b = invocation.getArgument(0);
             b.setId(UUID.randomUUID());
             return b;
@@ -91,7 +91,7 @@ class BookingServiceTest {
         assertNotNull(saved.getId());
 
         verify(userRepository, times(1)).findByIdForUpdate(userId);
-        verify(bookingRepository, times(1)).save(any(Booking.class));
+        verify(bookingRepository, times(1)).saveAndFlush(any(Booking.class));
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(saved.getId()), any(OutboxPayloadEnvelope.class));
     }
 
@@ -229,7 +229,7 @@ class BookingServiceTest {
         when(bookingRepository.countOverlappingPending(any(), any(), any()))
                 .thenReturn(0L);
 
-        when(bookingRepository.save(any()))
+        when(bookingRepository.saveAndFlush(any()))
                 .thenThrow(new DataIntegrityViolationException(
                         "overlap",
                         new SQLException("bookings_no_overlap violation", "23P01")
@@ -264,14 +264,14 @@ class BookingServiceTest {
         SQLException psqlCause = new SQLException(
                 "ERROR: conflicting key value violates exclusion constraint \"bookings_no_overlap\"",
                 "23P01");
-        when(bookingRepository.save(any(Booking.class)))
+        when(bookingRepository.saveAndFlush(any(Booking.class)))
                 .thenThrow(new DataIntegrityViolationException("constraint violation", psqlCause));
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> bookingService.createBooking(hostId, eventTypeId, start, end));
 
         assertEquals(ErrorCode.SLOT_ALREADY_BOOKED, ex.getErrorCode());
-        verify(bookingRepository, times(1)).save(any(Booking.class));
+        verify(bookingRepository, times(1)).saveAndFlush(any(Booking.class));
     }
 
     @Test
@@ -292,7 +292,7 @@ class BookingServiceTest {
         AtomicBoolean first = new AtomicBoolean(true);
         List<Booking> persisted = new CopyOnWriteArrayList<>();
 
-        when(bookingRepository.save(any(Booking.class))).thenAnswer(invocation -> {
+        when(bookingRepository.saveAndFlush(any(Booking.class))).thenAnswer(invocation -> {
             if (first.getAndSet(false)) {
                 Booking b = invocation.getArgument(0);
                 b.setId(UUID.randomUUID());

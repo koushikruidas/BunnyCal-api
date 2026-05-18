@@ -196,7 +196,12 @@ public class BookingService {
         // ─────────────────────────────────────────────────────────
         Booking saved;
         try {
-            saved = bookingRepository.save(Booking.builder()
+            // saveAndFlush() (not save()) forces the INSERT to run NOW, inside the
+            // repository proxy, so any EXCLUDE constraint violation surfaces here as a
+            // translated DataIntegrityViolationException — deterministic, regardless of
+            // what outboxPublisher.publish() does internally. Future refactors of
+            // OutboxPublisher must not silently break overlap detection.
+            saved = bookingRepository.saveAndFlush(Booking.builder()
                     .hostId(hostId)
                     .eventTypeId(eventTypeId)
                     .startTime(requestedStart)
@@ -205,11 +210,6 @@ public class BookingService {
                     .guestName(guestName)
                     .build());
 
-            // outboxPublisher.publish() invokes timeSource.now() which executes
-            // SELECT now() — that DB read triggers Hibernate auto-flush, which is
-            // when the deferred booking INSERT actually runs. The EXCLUDE constraint
-            // violation therefore surfaces from inside publish(), not from save().
-            // The catch must enclose this call so the violation can be translated.
             outboxPublisher.publish("Booking", saved.getId(), new OutboxPayloadEnvelope(
                     UUID.randomUUID().toString(),
                     "BOOKING_CREATED",
