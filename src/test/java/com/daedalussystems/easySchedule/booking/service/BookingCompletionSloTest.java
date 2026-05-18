@@ -112,6 +112,32 @@ class BookingCompletionSloTest {
     }
 
     // ─────────────────────────────────────────────────────────────
+    // P16: silent SLO recording failures are now counted, not just logged
+    // ─────────────────────────────────────────────────────────────
+
+    @Test
+    void completionLatencyFailureCounter_incrementsWhenRepoThrows() {
+        UUID id = UUID.randomUUID();
+        when(bookingRepo.updateStatus(eq(id), eq("CONFIRMED"), eq("COMPLETED"), anyLong()))
+                .thenReturn(1);
+        // Simulate a transient DB error during the created_at lookup. The terminal
+        // CAS has already happened, so the business operation must still succeed —
+        // but the failure must be visible via the counter so SLO breakage doesn't
+        // hide behind broken instrumentation.
+        when(bookingRepo.findCreatedAtById(id))
+                .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("simulated DB blip"));
+
+        service.completeBooking(id, 0L);
+
+        Counter failures = registry.find("booking.completion.latency.record.failed.total").counter();
+        assertEquals(1.0, failures.count(), 0.001,
+                "failure counter must increment when the SLO record path throws");
+        Timer timer = registry.find("booking.completion.latency.seconds").timer();
+        assertEquals(0, timer.count(),
+                "timer must not record when the upstream read failed");
+    }
+
+    // ─────────────────────────────────────────────────────────────
     // CAS miss → exception thrown before any metric is recorded
     // ─────────────────────────────────────────────────────────────
 

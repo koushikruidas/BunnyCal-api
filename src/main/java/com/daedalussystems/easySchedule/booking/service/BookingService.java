@@ -82,6 +82,7 @@ public class BookingService {
     private final Counter bookingCreatedTotal;
     private final Counter bookingConfirmedTotal;
     private final Counter bookingRescheduledTotal;
+    private final Counter completionLatencyRecordingFailedTotal;
     private final MeterRegistry meterRegistry;
 
     @Autowired
@@ -133,6 +134,15 @@ public class BookingService {
 
         this.bookingRescheduledTotal = Counter.builder("booking.rescheduled.total")
                 .description("Total bookings rescheduled")
+                .register(meterRegistry);
+
+        // Visibility for silent SLO instrumentation failures. recordCompletionLatency
+        // intentionally swallows exceptions so a flaky DB read can't roll back a
+        // successful terminal CAS — but until P16 those failures were invisible.
+        // Alert on rate > 0 to catch broken SLO recording before it hides
+        // production regressions.
+        this.completionLatencyRecordingFailedTotal = Counter.builder("booking.completion.latency.record.failed.total")
+                .description("Times recordCompletionLatency swallowed an exception")
                 .register(meterRegistry);
     }
 
@@ -455,7 +465,9 @@ public class BookingService {
     // to compute true end-to-end duration (includes outbox lag and retries).
     // Uses timeSource.now() for clock consistency with the rest of the system.
     // Negative duration guard defends against DB/app clock skew.
-    // Wrapped in try-catch: metric failure must never abort the business transaction.
+    // Wrapped in try-catch: metric failure must never abort the business transaction
+    // (the terminal CAS has already happened). The failure counter makes silent
+    // breakage visible so SLO regressions don't hide behind broken instrumentation.
     private void recordCompletionLatency(UUID id) {
         try {
             Instant createdAt = bookingRepository.findCreatedAtById(id).orElse(null);
@@ -468,7 +480,9 @@ public class BookingService {
                 bookingCompletedWithinSloTotal.increment();
             }
         } catch (Exception ex) {
-            log.warn("booking.completion.latency.record.failed id={}", id, ex);
+            completionLatencyRecordingFailedTotal.increment();
+            log.warn("booking.completion.latency.record.failed id={} exceptionClass={}",
+                    id, ex.getClass().getName(), ex);
         }
     }
 
