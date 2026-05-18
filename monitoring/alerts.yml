@@ -153,3 +153,44 @@ groups:
             Booking completion SLI violated: success rate below 99.9%.
             Check: same as BookingSLOViolation — both alerts fire together under
             sustained degradation; SLI alert may lag due to counter accumulation.
+
+  - name: easyschedule.calendar.webhooks
+    rules:
+
+      - alert: WebhookRenewalFailureRateHigh
+        expr: >
+          (
+            rate(webhook_renewal_attempts_total{provider="google",outcome="failure"}[1h])
+            /
+            clamp_min(rate(webhook_renewal_attempts_total{provider="google",outcome="attempt"}[1h]), 1e-9)
+          ) > 0.10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Google webhook renewal failure rate high"
+          description: >
+            Renewal failure ratio for Google watch channels exceeded 10% over the
+            last hour. Check OAuth/token refresh health and Google API errors.
+
+      - alert: WebhookChannelNearingExpiry
+        expr: webhook_channel_age_seconds{provider="google"} > 561600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Google webhook channel nearing expiry"
+          description: >
+            At least one Google watch channel is near or beyond expected lifetime
+            (age > 6.5 days). Renewal may be failing for one or more connections.
+
+      - alert: WebhookDeliveryStale
+        expr: webhook_seconds_since_last_delivery{provider="google"} > 600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Google webhook delivery is stale"
+          description: >
+            No webhook delivery observed for more than 10 minutes on at least one
+            active Google connection. Check channel health and ingestion pipeline.

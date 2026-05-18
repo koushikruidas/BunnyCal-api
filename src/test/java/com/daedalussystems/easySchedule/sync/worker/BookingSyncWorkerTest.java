@@ -47,6 +47,8 @@ class BookingSyncWorkerTest {
     @Mock
     private SyncRetryPolicy retryPolicy;
     @Mock
+    private ConnectionRateLimitBreaker rateLimitBreaker;
+    @Mock
     private IdempotencyKeyFactory idempotencyKeyFactory;
     @Mock
     private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
@@ -59,7 +61,9 @@ class BookingSyncWorkerTest {
         PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
-                repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy, idempotencyKeyFactory, txManager, new SimpleMeterRegistry());
+                repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
+                rateLimitBreaker, idempotencyKeyFactory, txManager, new SimpleMeterRegistry());
+        when(rateLimitBreaker.isOpen(any())).thenReturn(false);
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
             public UUID getId() { return UUID.randomUUID(); }

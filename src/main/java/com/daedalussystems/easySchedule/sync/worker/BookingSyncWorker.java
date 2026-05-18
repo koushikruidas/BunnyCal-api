@@ -35,6 +35,7 @@ public class BookingSyncWorker {
     private final CalendarService calendarService;
     private final ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
     private final SyncRetryPolicy retryPolicy;
+    private final ConnectionRateLimitBreaker rateLimitBreaker;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
     private final MeterRegistry meterRegistry;
     private final Counter syncSuccessCount;
@@ -49,6 +50,7 @@ public class BookingSyncWorker {
                              CalendarService calendarService,
                              ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
                              SyncRetryPolicy retryPolicy,
+                             ConnectionRateLimitBreaker rateLimitBreaker,
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry) {
@@ -57,6 +59,7 @@ public class BookingSyncWorker {
         this.calendarService = calendarService;
         this.terminalDeleteConvergenceService = terminalDeleteConvergenceService;
         this.retryPolicy = retryPolicy;
+        this.rateLimitBreaker = rateLimitBreaker;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.meterRegistry = meterRegistry;
         // Per-job tx boundary. processPending() loop is non-transactional so a slow
@@ -102,6 +105,16 @@ public class BookingSyncWorker {
             MDC.put("bookingId", job.getInternalRefId().toString());
         }
         try {
+            if (rateLimitBreaker.isOpen(rateLimitKey(job))) {
+                syncJobRepository.markFailure(
+                        job.getId(),
+                        job.getVersion(),
+                        Instant.now().plusSeconds(300),
+                        "RATE_LIMIT_CIRCUIT_OPEN",
+                        false
+                );
+                return;
+            }
             log.info("{{\"event\":\"sync_job_processing\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
                     job.getInternalRefId(), job.getProvider(), correlationId, job.getDesiredAction());
             switch (job.getDesiredAction()) {
@@ -129,7 +142,7 @@ public class BookingSyncWorker {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
         }
-        var state = bookingRepository.findStateById(job.getInternalRefId()).orElse(null);
+        var state = resolveState(job);
         if (state == null || !BOOKING_CONFIRMED.equals(state.getStatus())) {
             log.warn("sync_job_skipped_non_confirmed syncJobId={} bookingId={} desiredAction={} bookingStatus={} externalEventId={}",
                     job.getId(), job.getInternalRefId(), job.getDesiredAction(),
@@ -176,6 +189,13 @@ public class BookingSyncWorker {
         syncJobRepository.markSynced(job.getId(), job.getVersion(), externalId);
     }
 
+    private BookingRepository.BookingStateRow resolveState(CalendarSyncJob job) {
+        if (job.getPartitionKey() != null) {
+            return bookingRepository.findStateByIdAndHostId(job.getInternalRefId(), job.getPartitionKey()).orElse(null);
+        }
+        return bookingRepository.findStateById(job.getInternalRefId()).orElse(null);
+    }
+
     private void processDelete(CalendarSyncJob job) {
         boolean idempotentProviderMissing = false;
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
@@ -214,6 +234,9 @@ public class BookingSyncWorker {
 
     private void handleFailure(CalendarSyncJob job, String errorCode) {
         String code = errorCode == null ? "PROVIDER_ERROR" : errorCode;
+        if ("RATE_LIMIT".equals(code)) {
+            rateLimitBreaker.recordRateLimit(job.getProvider(), rateLimitKey(job));
+        }
         boolean permanent = isPermanent(code) || retryPolicy.isRetryExhausted(job.getAttemptCount() + 1);
         syncFailureCount.increment();
         if (!permanent) {
@@ -229,6 +252,7 @@ public class BookingSyncWorker {
         log.warn("{{\"event\":\"sync_job_failure\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"errorCode\":\"{}\",\"permanent\":{}}}",
                 job.getInternalRefId(), job.getProvider(), job.getId(), code, permanent);
         if (permanent) {
+            meterRegistry.counter("sync_dead_letter_total", "provider", job.getProvider(), "errorCode", code).increment();
             log.warn("sync job permanently failed jobId={} code={}", job.getId(), code);
         }
     }
@@ -257,5 +281,12 @@ public class BookingSyncWorker {
     private static boolean isDeleteAlreadyConverged(CalendarClientException ex) {
         int status = ex.getStatusCode();
         return status == 404 || status == 410;
+    }
+
+    private static String rateLimitKey(CalendarSyncJob job) {
+        if (job.getPartitionKey() != null) {
+            return job.getPartitionKey().toString();
+        }
+        return job.getInternalRefId().toString();
     }
 }

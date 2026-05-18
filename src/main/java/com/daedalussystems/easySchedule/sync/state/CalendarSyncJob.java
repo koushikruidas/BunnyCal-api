@@ -39,6 +39,9 @@ public class CalendarSyncJob extends BaseEntity {
     @Column(name = "internal_ref_id", nullable = false)
     private UUID internalRefId;
 
+    @Column(name = "partition_key")
+    private UUID partitionKey;
+
     @Column(nullable = false, length = 32)
     private String provider;
 

@@ -22,27 +22,48 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Query(value = """
             INSERT INTO calendar_sync_jobs (
                 id, internal_ref_type, internal_ref_id, provider, desired_action,
-                status, external_event_id, attempt_count, next_retry_at, version, last_error
+                status, external_event_id, attempt_count, next_retry_at, version, last_error, partition_key
             )
             VALUES (
                 :id, :internalRefType, :internalRefId, :provider, :desiredAction,
-                'PENDING', :externalEventId, 0, NOW(), 0, NULL
+                'PENDING', :externalEventId, 0, NOW(), 0, NULL, :partitionKey
             )
             ON CONFLICT (internal_ref_type, internal_ref_id, provider)
             DO UPDATE
             SET desired_action   = EXCLUDED.desired_action,
                 status           = 'PENDING',
                 external_event_id = COALESCE(EXCLUDED.external_event_id, calendar_sync_jobs.external_event_id),
+                partition_key    = COALESCE(EXCLUDED.partition_key, calendar_sync_jobs.partition_key),
                 next_retry_at    = NOW(),
                 last_error       = NULL
             """, nativeQuery = true)
-    int upsertPendingJob(
+    int upsertPendingJobInternal(
             @Param("id") UUID id,
             @Param("internalRefType") String internalRefType,
             @Param("internalRefId") UUID internalRefId,
             @Param("provider") String provider,
             @Param("desiredAction") String desiredAction,
-            @Param("externalEventId") String externalEventId);
+            @Param("externalEventId") String externalEventId,
+            @Param("partitionKey") UUID partitionKey);
+
+    default int upsertPendingJob(UUID id,
+                                 String internalRefType,
+                                 UUID internalRefId,
+                                 String provider,
+                                 String desiredAction,
+                                 String externalEventId) {
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId, null);
+    }
+
+    default int upsertPendingJob(UUID id,
+                                 String internalRefType,
+                                 UUID internalRefId,
+                                 String provider,
+                                 String desiredAction,
+                                 String externalEventId,
+                                 UUID partitionKey) {
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId, partitionKey);
+    }
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -158,6 +179,22 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Query(value = """
             SELECT *
             FROM calendar_sync_jobs
+            WHERE status = 'FAILED'
+              AND provider = :provider
+              AND updated_at < NOW() - INTERVAL '1 hour'
+              AND (last_error IS NULL OR last_error NOT IN (
+                  'TERMINAL_EXTERNAL_DELETE',
+                  'EXTERNAL_ACTION_REQUIRED',
+                  'PROVIDER_STATE_ORPHANED'
+              ))
+            ORDER BY updated_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<CalendarSyncJob> findDeadLetters(@Param("provider") String provider, @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT *
+            FROM calendar_sync_jobs
             WHERE status = 'SYNCED'
               AND (last_error IS NULL OR last_error NOT IN (
                   'TERMINAL_EXTERNAL_DELETE',
@@ -200,4 +237,17 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     int markFailedPermanent(@Param("id") UUID id,
                             @Param("version") long version,
                             @Param("lastError") String lastError);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'PENDING',
+                attempt_count = 0,
+                next_retry_at = NOW(),
+                last_error = NULL,
+                version = version + 1
+            WHERE id = :id
+              AND status = 'FAILED'
+            """, nativeQuery = true)
+    int requeueFailedById(@Param("id") UUID id);
 }
