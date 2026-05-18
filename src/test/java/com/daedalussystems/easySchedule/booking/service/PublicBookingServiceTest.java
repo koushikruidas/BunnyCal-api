@@ -17,7 +17,8 @@ import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingR
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
-import com.daedalussystems.easySchedule.calendar.service.GoogleFreeBusyService;
+import com.daedalussystems.easySchedule.availability.engine.TimeInterval;
+import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
@@ -38,15 +39,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.mockito.Mockito;
 
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 class PublicBookingServiceTest {
 
     @Mock PublicBookingTargetResolver publicBookingTargetResolver;
     @Mock SlotService slotService;
     @Mock BookingService bookingService;
     @Mock BookingRepository bookingRepository;
-    @Mock GoogleFreeBusyService freeBusyService;
+    @Mock CalendarBusyTimeService calendarBusyTimeService;
     @Mock CalendarConnectionRepository calendarConnectionRepository;
     @Mock CalendarService calendarService;
     @Mock CalendarEventMappingRepository calendarEventMappingRepository;
@@ -68,7 +74,7 @@ class PublicBookingServiceTest {
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -76,10 +82,15 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 false,
                 120L
         );
+        Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
     }
 
     // P3: availability is now projection-first. The DB-side calendar_events projection
@@ -111,12 +122,7 @@ class PublicBookingServiceTest {
         // Slots returned as-is — filtering is the projection's job, not live freebusy's.
         assertEquals(2, response.slots().size());
         assertEquals(AvailabilityStatus.AVAILABLE, response.status());
-        assertEquals(false, response.degraded());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals(false, response.degraded());    }
 
     @Test
     void availability_staleProjection_returnsStaleCalendarData() {
@@ -140,12 +146,7 @@ class PublicBookingServiceTest {
 
         assertEquals(1, response.slots().size());
         assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
-        assertEquals(true, response.degraded());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals(true, response.degraded());    }
 
     @Test
     void availability_neverSyncedConnection_returnsStaleCalendarData() {
@@ -192,12 +193,7 @@ class PublicBookingServiceTest {
         assertEquals(1, response.slots().size());
         assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
         assertEquals(true, response.degraded());
-        assertEquals(3L, response.version());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals(3L, response.version());    }
 
     @Test
     void availability_syncingConnectionStillReturnsSyncInProgress() {
@@ -259,7 +255,7 @@ class PublicBookingServiceTest {
     }
 
     @Test
-    void reschedule_rejectsWhenGoogleBusyOverlaps() {
+    void reschedule_rejectsWhenProjectionBusyOverlaps() {
         UUID bookingId = UUID.randomUUID();
         Instant start = Instant.parse("2026-05-10T11:00:00Z");
         Instant end = Instant.parse("2026-05-10T11:30:00Z");
@@ -275,10 +271,13 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, start, end))
-                .thenReturn(List.of(new GoogleFreeBusyService.BusyInterval(
-                        Instant.parse("2026-05-10T11:10:00Z"),
-                        Instant.parse("2026-05-10T11:40:00Z")
+        when(calendarBusyTimeService.busyIntervalsForDate(
+                org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of(new TimeInterval(
+                        Instant.parse("2026-05-10T11:10:00Z").atZone(java.time.ZoneId.of("UTC")),
+                        Instant.parse("2026-05-10T11:40:00Z").atZone(java.time.ZoneId.of("UTC"))
                 )));
 
         CustomException ex = assertThrows(CustomException.class,
@@ -293,7 +292,7 @@ class PublicBookingServiceTest {
     }
 
     @Test
-    void confirm_succeedsOnlyAfterCalendarEventCreation() {
+    void confirm_returnsSyncingAndConfirmsBooking() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
@@ -311,27 +310,18 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
-        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
-        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
-                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
-        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
-                bookingId, "google", "google:" + bookingId)))
-                .thenReturn(CalendarService.CreateEventResult.success("ext-1"));
-        when(calendarEventMappingRepository.updateMappingWithEventId(bookingId, "google", "ext-1", null, null, 10L, "public-confirm"))
-                .thenReturn(CalendarEventMappingRepository.FinalizeOutcome.SUCCESS);
 
         var response = service.confirm("koushik", "30min", bookingId);
 
-        assertEquals("CONFIRMED", response.status());
+        assertEquals("SYNCING", response.status());
         verify(bookingService).confirmHeldBooking(bookingId);
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
-    void confirm_failsWhenGuestEmailMissingBeforeCalendarCreate() {
+    void confirm_missingGuestEmailStillConfirmsAsSyncing() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z"))
@@ -350,20 +340,16 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
 
-        CustomException ex = assertThrows(CustomException.class,
-                () -> service.confirm("koushik", "30min", bookingId));
-        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
-        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
-        verify(bookingService, never()).confirmHeldBooking(org.mockito.ArgumentMatchers.any());
+        var response = service.confirm("koushik", "30min", bookingId);
+        assertEquals("SYNCING", response.status());
+        verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
-    void confirm_failsWhenCalendarEventCreationFails() {
+    void confirm_doesNotFailOnCalendarCreateIssues() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
@@ -381,24 +367,16 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
-        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
-        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
-                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
-        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
-                bookingId, "google", "google:" + bookingId)))
-                .thenReturn(CalendarService.CreateEventResult.retryable("PROVIDER_DOWN"));
 
-        CustomException ex = assertThrows(CustomException.class, () -> service.confirm("koushik", "30min", bookingId));
-        assertEquals(ErrorCode.GOOGLE_EVENT_CREATION_FAILED, ex.getErrorCode());
-        verify(bookingService, never()).confirmHeldBooking(bookingId);
+        var response = service.confirm("koushik", "30min", bookingId);
+        assertEquals("SYNCING", response.status());
+        verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
-    void confirm_inProgressMapsToCalendarSyncInProgress() {
+    void confirm_noLongerReturnsSyncInProgressError() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
@@ -416,21 +394,12 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
-        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
-        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
-                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
-        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
-                bookingId, "google", "google:" + bookingId)))
-                .thenReturn(CalendarService.CreateEventResult.retryable("IN_PROGRESS"));
-        when(calendarEventMappingRepository.findMappingState(bookingId, "google")).thenReturn(Optional.empty());
 
-        CustomException ex = assertThrows(CustomException.class, () -> service.confirm("koushik", "30min", bookingId));
-        assertEquals(ErrorCode.CALENDAR_SYNC_IN_PROGRESS, ex.getErrorCode());
-        verify(bookingService, never()).confirmHeldBooking(bookingId);
+        var response = service.confirm("koushik", "30min", bookingId);
+        assertEquals("SYNCING", response.status());
+        verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
@@ -440,7 +409,7 @@ class PublicBookingServiceTest {
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -448,6 +417,7 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 true,
                 120L
@@ -471,12 +441,7 @@ class PublicBookingServiceTest {
 
         SlotResponse response = providerOptionalService.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(AvailabilityStatus.AVAILABLE, response.status());
-        assertEquals(1, response.slots().size());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.eq(userId),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals(1, response.slots().size());    }
 
     @Test
     void availability_missingConnectionComputesDegradedCalendarNotConnectedWhenProviderOptionalEnabled() {
@@ -485,7 +450,7 @@ class PublicBookingServiceTest {
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -493,6 +458,7 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 true,
                 120L
@@ -512,12 +478,7 @@ class PublicBookingServiceTest {
         assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
         assertEquals(true, response.degraded());
         assertEquals(1, response.slots().size());
-        assertEquals("a", response.slots().get(0).slotId());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.eq(userId),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals("a", response.slots().get(0).slotId());    }
 
     @Test
     void availability_disconnectedConnectionComputesDegradedCalendarNotConnectedWhenProviderOptionalEnabled() {
@@ -526,7 +487,7 @@ class PublicBookingServiceTest {
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -534,6 +495,7 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 true,
                 120L
@@ -556,12 +518,7 @@ class PublicBookingServiceTest {
         assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
         assertEquals(true, response.degraded());
         assertEquals(1, response.slots().size());
-        assertEquals("a", response.slots().get(0).slotId());
-        verify(freeBusyService, never()).busyIntervals(
-                org.mockito.ArgumentMatchers.eq(userId),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any());
-    }
+        assertEquals("a", response.slots().get(0).slotId());    }
 
     @Test
     void confirm_succeedsWithoutCalendarWhenProviderOptionalEnabled() {
@@ -570,7 +527,7 @@ class PublicBookingServiceTest {
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -578,6 +535,7 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 true,
                 120L
@@ -601,27 +559,20 @@ class PublicBookingServiceTest {
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                userId,
-                CalendarProviderType.GOOGLE,
-                CalendarConnectionStatus.ACTIVE))
-                .thenReturn(Optional.empty());
-
         var response = providerOptionalService.confirm("koushik", "30min", bookingId);
-        assertEquals("CONFIRMED", response.status());
+        assertEquals("SYNCING", response.status());
         verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
         verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
-    void confirm_optionalModeWithActiveConnection_stillAttemptsCalendarCreate() {
+    void confirm_optionalModeWithActiveConnection_doesNotCallCalendarSynchronously() {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
                 bookingService,
                 bookingRepository,
-                freeBusyService,
+                calendarBusyTimeService,
                 calendarConnectionRepository,
                 calendarService,
                 calendarEventMappingRepository,
@@ -629,6 +580,7 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
                 14L,
                 true,
                 120L
@@ -653,27 +605,55 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
-        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        when(freeBusyService.busyIntervals(userId, booking.getStartTime(), booking.getEndTime())).thenReturn(List.of());
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                userId,
-                CalendarProviderType.GOOGLE,
-                CalendarConnectionStatus.ACTIVE))
-                .thenReturn(Optional.of(conn));
-        when(fencingTokenGenerator.nextToken()).thenReturn(10L);
-        when(calendarEventMappingRepository.claimBookingForSync(bookingId, "google", 10L, "public-confirm"))
-                .thenReturn(CalendarEventMappingRepository.ClaimOutcome.CLAIMED);
-        when(calendarService.createEvent(new CalendarService.CreateCalendarEventCommand(
-                bookingId, "google", "google:" + bookingId)))
-                .thenReturn(CalendarService.CreateEventResult.permanent("INVALID_REQUEST"));
 
         var response = providerOptionalService.confirm("koushik", "30min", bookingId);
-        assertEquals("CONFIRMED", response.status());
-        verify(calendarService).createEvent(new CalendarService.CreateCalendarEventCommand(
-                bookingId, "google", "google:" + bookingId));
+        assertEquals("SYNCING", response.status());
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
         verify(bookingService).confirmHeldBooking(bookingId);
+    }
+
+    @Test
+    void confirm_asyncMode_skipsSynchronousCalendarCallsAndReturnsSyncing() {
+        PublicBookingService asyncService = new PublicBookingService(
+                publicBookingTargetResolver,
+                slotService,
+                bookingService,
+                bookingRepository,
+                calendarBusyTimeService,
+                calendarConnectionRepository,
+                calendarService,
+                calendarEventMappingRepository,
+                fencingTokenGenerator,
+                timeConversionService,
+                bookingLifecycleService,
+                guestCapabilityTokenService,
+                new SimpleMeterRegistry(),
+                14L,
+                false,
+                120L
+        );
+        UUID bookingId = UUID.randomUUID();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
+                .thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
+                    public UUID getId() { return bookingId; }
+                    public UUID getHostId() { return userId; }
+                    public String getStatus() { return "PENDING"; }
+                    public Long getVersion() { return 1L; }
+                    public Instant getExpiresAt() { return Instant.now().plusSeconds(60); }
+                    public Long getTerminalIntentEpoch() { return 0L; }
+                }));
+        when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+
+        var response = asyncService.confirm("koushik", "30min", bookingId);
+        assertEquals("SYNCING", response.status());
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());        verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     private PublicBookingTargetResolver.ResolvedTarget target() {

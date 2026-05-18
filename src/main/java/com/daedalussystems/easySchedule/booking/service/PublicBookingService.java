@@ -14,7 +14,7 @@ import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
-import com.daedalussystems.easySchedule.calendar.service.GoogleFreeBusyService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
@@ -27,14 +27,15 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.UUID;
+import java.time.ZoneId;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @Service
 public class PublicBookingService {
@@ -43,7 +44,7 @@ public class PublicBookingService {
     private final SlotService slotService;
     private final BookingService bookingService;
     private final BookingRepository bookingRepository;
-    private final GoogleFreeBusyService freeBusyService;
+    private final CalendarBusyTimeService calendarBusyTimeService;
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final CalendarService calendarService;
     private final CalendarEventMappingRepository calendarEventMappingRepository;
@@ -54,12 +55,13 @@ public class PublicBookingService {
     private final GuestCapabilityTokenService guestCapabilityTokenService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
+    private final MeterRegistry meterRegistry;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
                                 BookingService bookingService,
                                 BookingRepository bookingRepository,
-                                GoogleFreeBusyService freeBusyService,
+                                CalendarBusyTimeService calendarBusyTimeService,
                                 CalendarConnectionRepository calendarConnectionRepository,
                                 CalendarService calendarService,
                                 CalendarEventMappingRepository calendarEventMappingRepository,
@@ -67,6 +69,7 @@ public class PublicBookingService {
                                 TimeConversionService timeConversionService,
                                 BookingLifecycleService bookingLifecycleService,
                                 GuestCapabilityTokenService guestCapabilityTokenService,
+                                MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 @Value("${booking.public.provider-optional.enabled:false}")
                                 boolean providerOptionalPublicBookingEnabled,
@@ -80,7 +83,7 @@ public class PublicBookingService {
         this.slotService = slotService;
         this.bookingService = bookingService;
         this.bookingRepository = bookingRepository;
-        this.freeBusyService = freeBusyService;
+        this.calendarBusyTimeService = calendarBusyTimeService;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.calendarService = calendarService;
         this.calendarEventMappingRepository = calendarEventMappingRepository;
@@ -88,6 +91,7 @@ public class PublicBookingService {
         this.timeConversionService = timeConversionService;
         this.bookingLifecycleService = bookingLifecycleService;
         this.guestCapabilityTokenService = guestCapabilityTokenService;
+        this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
@@ -110,7 +114,6 @@ public class PublicBookingService {
 
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
-        long startedNanos = System.nanoTime();
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         java.util.Optional<CalendarConnection> connection =
                 calendarConnectionRepository.findByUserIdAndProvider(target.userId(), CalendarProviderType.GOOGLE);
@@ -118,10 +121,6 @@ public class PublicBookingService {
                 || connection.get().getStatus() == CalendarConnectionStatus.REVOKED
                 || connection.get().getStatus() == CalendarConnectionStatus.DISCONNECTED;
         if (!providerOptionalPublicBookingEnabled && missingOrDisconnected) {
-            log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision=SHORT_CIRCUIT_NOT_CONNECTED elapsedMs={}",
-                    target.userId(), target.eventTypeId(), date,
-                    connection.map(c -> c.getStatus().name()).orElse("MISSING"),
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
             return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
         }
         if (providerOptionalPublicBookingEnabled && missingOrDisconnected) {
@@ -131,9 +130,6 @@ public class PublicBookingService {
         }
         CalendarConnectionStatus status = connection.map(CalendarConnection::getStatus).orElse(null);
         if (!providerOptionalPublicBookingEnabled && (status == CalendarConnectionStatus.SYNCING || status == CalendarConnectionStatus.PENDING)) {
-            log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision=SHORT_CIRCUIT_SYNCING elapsedMs={}",
-                    target.userId(), target.eventTypeId(), date, status,
-                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
             return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS);
         }
 
@@ -155,11 +151,10 @@ public class PublicBookingService {
         } else {
             responseStatus = AvailabilityStatus.AVAILABLE;
         }
-        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={} lastSyncedAt={} stale={} elapsedMs={}",
+        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={} lastSyncedAt={} stale={}",
                 target.userId(), target.eventTypeId(), date, status == null ? "MISSING" : status,
                 stale ? "PROJECTION_STALE" : "PROJECTION_FRESH",
-                base.version(), base.slots().size(), lastSyncedAt, stale,
-                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+                base.version(), base.slots().size(), lastSyncedAt, stale);
         return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
                 base.version(), base.generatedAt(), stale || base.degraded(), base.slots(), responseStatus);
     }
@@ -231,26 +226,11 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        List<GoogleFreeBusyService.BusyInterval> busy;
-        try {
-            busy = freeBusyService.busyIntervals(target.userId(), start, end);
-        } catch (RuntimeException ex) {
-            log.error(ex.getMessage());
-            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
-        }
-        boolean hasBusy = busy.stream().anyMatch(b -> overlaps(start, end, b.start(), b.end()));
-        if (hasBusy) {
+        boolean hasProjectionBusy = hasProjectionBusyConflict(target.userId(), target.timezone(), start, end);
+        if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        if (!providerOptionalPublicBookingEnabled) {
-            ensureCalendarEventCreated(bookingId);
-        } else if (hasActiveGoogleConnection(target.userId())) {
-            tryEnsureCalendarEventCreatedBestEffort(bookingId);
-        } else {
-            log.info("booking_confirm_calendar_skipped_no_active_provider bookingId={} userId={} eventTypeId={} provider=google",
-                    bookingId, target.userId(), target.eventTypeId());
-        }
         bookingService.confirmHeldBooking(bookingId);
         String manageToken = guestCapabilityTokenService.issueToken(
                 bookingId,
@@ -259,7 +239,7 @@ public class PublicBookingService {
                 guestManageTokenTtl,
                 TokenCreatorType.SYSTEM
         );
-        return new PublicConfirmResponse(bookingId, "CONFIRMED", manageToken);
+        return new PublicConfirmResponse(bookingId, "SYNCING", manageToken);
     }
 
     @Transactional
@@ -296,14 +276,7 @@ public class PublicBookingService {
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
-        List<GoogleFreeBusyService.BusyInterval> busy;
-        try {
-            busy = freeBusyService.busyIntervals(target.userId(), start, end);
-        } catch (RuntimeException ex) {
-            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
-        }
-        boolean hasBusy = busy.stream().anyMatch(b -> overlaps(start, end, b.start(), b.end()));
-        if (hasBusy) {
+        if (hasProjectionBusyConflict(target.userId(), target.timezone(), start, end)) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
@@ -319,6 +292,17 @@ public class PublicBookingService {
 
     private static boolean overlaps(Instant aStart, Instant aEnd, Instant bStart, Instant bEnd) {
         return aStart.isBefore(bEnd) && aEnd.isAfter(bStart);
+    }
+
+    private boolean hasProjectionBusyConflict(UUID userId, String timezone, Instant start, Instant end) {
+        ZoneId zoneId = timeConversionService.resolveZone(timezone);
+        LocalDate date = start.atZone(zoneId).toLocalDate();
+        return calendarBusyTimeService.busyIntervalsForDate(userId, date, zoneId).stream()
+                .anyMatch(interval -> overlaps(
+                        start,
+                        end,
+                        interval.start().toInstant(),
+                        interval.end().toInstant()));
     }
 
     private static String normalizeGuestEmail(String value) {
@@ -352,103 +336,13 @@ public class PublicBookingService {
         return new SlotResponse(userId, eventTypeId, date, timezone, 0L, Instant.now(), true, List.of(), status);
     }
 
-    private void ensureCalendarEventCreated(UUID bookingId) {
-        String provider = "google";
-        var booking = bookingRepository.findAnyById(bookingId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
-        if (booking.getGuestEmail() == null || booking.getGuestEmail().isBlank()) {
-            log.warn("booking_confirm_missing_guest_email bookingId={} provider={} validationCode=MISSING_GUEST_EMAIL",
-                    bookingId, provider);
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Guest email is required for calendar invitation delivery (MISSING_GUEST_EMAIL).");
-        }
-        long token = fencingTokenGenerator.nextToken();
-        String claimedBy = "public-confirm";
-        CalendarEventMappingRepository.ClaimOutcome claimOutcome =
-                calendarEventMappingRepository.claimBookingForSync(bookingId, provider, token, claimedBy);
-        if (claimOutcome == CalendarEventMappingRepository.ClaimOutcome.ALREADY_DONE) {
-            return;
-        }
-        if (claimOutcome != CalendarEventMappingRepository.ClaimOutcome.CLAIMED) {
-            if (awaitMappingCreated(bookingId, provider, 5000)) {
-                return;
-            }
-            throw new CustomException(ErrorCode.CALENDAR_SYNC_IN_PROGRESS,
-                    "Calendar sync is already in progress for this booking.");
-        }
-
-        CalendarService.CreateEventResult result = calendarService.createEvent(
-                new CalendarService.CreateCalendarEventCommand(bookingId, provider, provider + ":" + bookingId));
-        if (result.status() == CalendarService.CreateEventStatus.SUCCESS && result.externalEventId() != null) {
-            CalendarEventMappingRepository.FinalizeOutcome finalizeOutcome =
-                    calendarEventMappingRepository.updateMappingWithEventId(
-                            bookingId, provider, result.externalEventId(),
-                            result.providerEventUrl(), result.conferenceUrl(),
-                            token, claimedBy);
-            if (finalizeOutcome == CalendarEventMappingRepository.FinalizeOutcome.SUCCESS
-                    || finalizeOutcome == CalendarEventMappingRepository.FinalizeOutcome.ALREADY_COMPLETED) {
-                log.info("booking_confirm_calendar_created bookingId={} provider={} externalEventId={}",
-                        bookingId, provider, result.externalEventId());
-                return;
-            }
-            throw new CustomException(ErrorCode.GOOGLE_EVENT_CREATION_FAILED,
-                    "Calendar event creation finalized with an inconsistent state.");
-        }
-
-        String errorCode = result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode();
-        if ("IN_PROGRESS".equals(errorCode)) {
-            if (awaitMappingCreated(bookingId, provider, 5000)) {
-                return;
-            }
-            throw new CustomException(ErrorCode.CALENDAR_SYNC_IN_PROGRESS,
-                    "Calendar sync is still in progress. Please retry shortly.");
-        }
-        calendarEventMappingRepository.markFailed(
-                bookingId, provider, claimedBy, errorCode, token, Instant.now().plusSeconds(5));
-        log.warn("booking_confirm_calendar_failed bookingId={} provider={} errorCode={} status={}",
-                bookingId, provider, errorCode, result.status());
-        throw new CustomException(ErrorCode.GOOGLE_EVENT_CREATION_FAILED,
-                "Unable to create Google Calendar event. Please try again.");
-    }
-
-    private void tryEnsureCalendarEventCreatedBestEffort(UUID bookingId) {
-        try {
-            ensureCalendarEventCreated(bookingId);
-        } catch (CustomException ex) {
-            log.info("booking_confirm_calendar_optional_skip bookingId={} code={} message={}",
-                    bookingId, ex.getErrorCode().getCode(), ex.getMessage());
-        } catch (RuntimeException ex) {
-            log.warn("booking_confirm_calendar_optional_runtime_skip bookingId={}", bookingId, ex);
-        }
-    }
-
-    private boolean hasActiveGoogleConnection(UUID userId) {
+    private java.util.Optional<CalendarConnection> resolveActiveCalendarConnection(UUID userId) {
         return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
-                .isPresent();
+                .findByUserIdAndProviderAndStatus(userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE);
     }
 
-    private boolean awaitMappingCreated(UUID bookingId, String provider, long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            var state = calendarEventMappingRepository.findMappingState(bookingId, provider);
-            if (state.isPresent()) {
-                String status = state.get().status();
-                if ("CREATED".equals(status) && state.get().externalEventId() != null) {
-                    return true;
-                }
-                if ("FAILED_PERMANENT".equals(status)) {
-                    throw new CustomException(ErrorCode.GOOGLE_EVENT_CREATION_FAILED,
-                            "Calendar event creation failed permanently.");
-                }
-            }
-            try {
-                Thread.sleep(250);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        return false;
+    private java.util.Optional<CalendarProviderType> resolveActiveCalendarProvider(UUID userId) {
+        return resolveActiveCalendarConnection(userId).map(CalendarConnection::getProvider);
     }
+
 }
