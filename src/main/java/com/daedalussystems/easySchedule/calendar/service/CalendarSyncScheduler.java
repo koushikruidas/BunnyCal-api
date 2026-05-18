@@ -13,7 +13,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 public class CalendarSyncScheduler {
@@ -24,12 +26,14 @@ public class CalendarSyncScheduler {
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final MeterRegistry meterRegistry;
+    private final TransactionTemplate txTemplate;
 
     public CalendarSyncScheduler(CalendarConnectionRepository connectionRepository,
                                  CalendarEventIngestionService ingestionService,
                                  ExternalCalendarSyncClient syncClient,
                                  SlotCacheVersionService slotCacheVersionService,
                                  CalendarConnectionWriteService connectionWriteService,
+                                 PlatformTransactionManager transactionManager,
                                  MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.ingestionService = ingestionService;
@@ -37,10 +41,15 @@ public class CalendarSyncScheduler {
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.meterRegistry = meterRegistry;
+        // Per-connection tx boundary. Outer sync() loop is non-transactional so a slow
+        // provider call on connection N never holds a DB connection across the entire
+        // candidate list. REQUIRES_NEW because the scheduler runs outside any tx and we
+        // want each connection's progress committed independently.
+        this.txTemplate = new TransactionTemplate(transactionManager);
+        this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Scheduled(fixedDelayString = "${calendar.sync.fixed-delay-ms:30000}")
-    @Transactional
     public void sync() {
         long started = System.nanoTime();
         java.util.List<CalendarConnection> candidates = new java.util.ArrayList<>();
@@ -51,10 +60,22 @@ public class CalendarSyncScheduler {
         log.info("calendar_sync_scheduler_start candidateCount={} elapsedMs={}",
                 candidates.size(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
         for (CalendarConnection connection : candidates) {
-            long connectionStart = System.nanoTime();
-            CalendarConnectionStatus previousStatus = connection.getStatus();
-            String expectedCursor = connection.getProviderSyncCursor();
             try {
+                txTemplate.executeWithoutResult(status -> syncOne(connection));
+            } catch (RuntimeException ex) {
+                // Per-connection tx already rolled back; markFailure was attempted inside.
+                // Don't let one bad connection abort the whole sweep.
+                log.warn("calendar_sync_scheduler_connection_uncaught connectionId={} userId={}",
+                        connection.getId(), connection.getUserId(), ex);
+            }
+        }
+    }
+
+    private void syncOne(CalendarConnection connection) {
+        long connectionStart = System.nanoTime();
+        CalendarConnectionStatus previousStatus = connection.getStatus();
+        String expectedCursor = connection.getProviderSyncCursor();
+        try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
                 ingestionService.upsertEvents(connection.getId(), batch.events(), SyncSourceAttribution.PULL_SYNC);
@@ -110,6 +131,5 @@ public class CalendarSyncScheduler {
                         connection.getId(), connection.getUserId(), previousStatus,
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart), ex);
             }
-        }
     }
 }

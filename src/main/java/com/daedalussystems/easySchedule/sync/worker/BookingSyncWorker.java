@@ -21,7 +21,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class BookingSyncWorker {
@@ -40,6 +42,7 @@ public class BookingSyncWorker {
     private final Counter retryCount;
     private final Timer syncLatency;
     private final ConcurrentMap<String, Timer> providerLatencyTimers = new ConcurrentHashMap<>();
+    private final TransactionTemplate txTemplate;
 
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
                              BookingRepository bookingRepository,
@@ -47,6 +50,7 @@ public class BookingSyncWorker {
                              ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
                              SyncRetryPolicy retryPolicy,
                              IdempotencyKeyFactory idempotencyKeyFactory,
+                             PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry) {
         this.syncJobRepository = syncJobRepository;
         this.bookingRepository = bookingRepository;
@@ -55,6 +59,12 @@ public class BookingSyncWorker {
         this.retryPolicy = retryPolicy;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.meterRegistry = meterRegistry;
+        // Per-job tx boundary. processPending() loop is non-transactional so a slow
+        // provider call holds at most one job's worth of DB connection time, never
+        // the whole batch's. REQUIRES_NEW so each job commits independently of any
+        // ambient transaction at the call site (the scheduler).
+        this.txTemplate = new TransactionTemplate(transactionManager);
+        this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.syncSuccessCount = meterRegistry.counter("sync_success_count");
         this.syncFailureCount = meterRegistry.counter("sync_failure_count");
         this.retryCount = meterRegistry.counter("retry_count");
@@ -63,13 +73,21 @@ public class BookingSyncWorker {
                 .register(meterRegistry);
     }
 
-    @Transactional
     public int processPending(int batchSize) {
+        // The claim runs in its own short tx (Spring Data wraps @Modifying queries).
         List<UUID> claimedIds = syncJobRepository.claimPendingBatch(Instant.now(), batchSize);
         log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
         for (UUID id : claimedIds) {
             log.info("sync_job_claimed jobId={}", id);
-            syncJobRepository.findById(id).ifPresent(this::processOne);
+            try {
+                txTemplate.executeWithoutResult(status -> {
+                    syncJobRepository.findById(id).ifPresent(this::processOne);
+                });
+            } catch (RuntimeException ex) {
+                // Per-job tx already rolled back. Don't let one bad job kill the batch.
+                syncFailureCount.increment();
+                log.warn("sync_job_uncaught jobId={}", id, ex);
+            }
         }
         return claimedIds.size();
     }

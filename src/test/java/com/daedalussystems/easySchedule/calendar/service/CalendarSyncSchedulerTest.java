@@ -19,6 +19,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 @ExtendWith(MockitoExtension.class)
 class CalendarSyncSchedulerTest {
@@ -38,12 +40,15 @@ class CalendarSyncSchedulerTest {
 
     @BeforeEach
     void setUp() {
+        PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         scheduler = new CalendarSyncScheduler(
                 connectionRepository,
                 ingestionService,
                 syncClient,
                 slotCacheVersionService,
                 connectionWriteService,
+                txManager,
                 new SimpleMeterRegistry());
     }
 

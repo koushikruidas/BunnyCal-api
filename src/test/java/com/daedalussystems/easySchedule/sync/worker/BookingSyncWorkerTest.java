@@ -29,6 +29,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class BookingSyncWorkerTest {
 
@@ -54,8 +56,10 @@ class BookingSyncWorkerTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
-                repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy, idempotencyKeyFactory, new SimpleMeterRegistry());
+                repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy, idempotencyKeyFactory, txManager, new SimpleMeterRegistry());
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
             public UUID getId() { return UUID.randomUUID(); }

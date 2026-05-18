@@ -26,7 +26,9 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class BookingSyncReconciler {
@@ -54,6 +56,7 @@ public class BookingSyncReconciler {
     private final MeterRegistry meterRegistry;
     private final Timer convergenceLatency;
     private final boolean externalLifecycleSemanticsEnabled;
+    private final TransactionTemplate txTemplate;
 
     public BookingSyncReconciler(CalendarSyncJobRepository repository,
                                  CalendarService calendarService,
@@ -64,6 +67,7 @@ public class BookingSyncReconciler {
                                  PersistedReconcileSnapshotAssembler snapshotAssembler,
                                  SyncReconcileDecisionLogRepository decisionLogRepository,
                                  ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
+                                 PlatformTransactionManager transactionManager,
                                  @Value("${sync.reconcile.throttle-ms:25}") long throttleDelayMs,
                                  @Value("${sync.reconcile.external-lifecycle.enabled:false}") boolean externalLifecycleSemanticsEnabled,
                                  MeterRegistry meterRegistry) {
@@ -91,21 +95,44 @@ public class BookingSyncReconciler {
         this.convergenceLatency = Timer.builder("sync.convergence.latency.ms")
                 .publishPercentileHistogram()
                 .register(meterRegistry);
+        // Per-job tx boundary. Outer reconcile() loop is non-transactional so a slow
+        // external observe call holds at most ONE DB connection (the current job's),
+        // never the whole batch's. REQUIRES_NEW because callers may run reconcile()
+        // from a non-tx context (scheduler) and we want each job committed independently.
+        this.txTemplate = new TransactionTemplate(transactionManager);
+        this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    @Transactional
     public int reconcile(int batchSize) {
         List<CalendarSyncJob> jobs = repository.findSyncedCandidates(batchSize);
-        for (CalendarSyncJob job : jobs) {
-            MDC.put("correlationId", job.getId().toString());
-            MDC.put("provider", job.getProvider());
-            MDC.put("internalRefId", job.getInternalRefId().toString());
-            MDC.put("bookingId", job.getInternalRefId().toString());
+        for (int i = 0; i < jobs.size(); i++) {
+            CalendarSyncJob job = jobs.get(i);
+            try {
+                txTemplate.executeWithoutResult(status -> processOne(job));
+            } catch (RuntimeException ex) {
+                // Per-job tx already rolled back. Don't let one bad job abort the batch.
+                errorCounter.increment();
+                log.warn("reconcile_job_failed jobId={} provider={} internalRefId={}",
+                        job.getId(), job.getProvider(), job.getInternalRefId(), ex);
+            }
+            // Throttle BETWEEN jobs (outside any DB transaction). Skip after last job.
+            if (i < jobs.size() - 1) {
+                rateLimit(throttleDelayMs);
+            }
+        }
+        return jobs.size();
+    }
+
+    private void processOne(CalendarSyncJob job) {
+        MDC.put("correlationId", job.getId().toString());
+        MDC.put("provider", job.getProvider());
+        MDC.put("internalRefId", job.getInternalRefId().toString());
+        MDC.put("bookingId", job.getInternalRefId().toString());
+        try {
             checkedCounter.increment();
             if (job.getExternalEventId() == null) {
                 noopCounter.increment();
-                clearMdc();
-                continue;
+                return;
             }
             CalendarService.ObserveEventResult observed = calendarService.observeEvent(
                     new CalendarService.ObserveEventCommand(
@@ -113,7 +140,6 @@ public class BookingSyncReconciler {
                             job.getProvider(),
                             job.getExternalEventId(),
                             idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())));
-            rateLimit(throttleDelayMs);
             ReconcileInputSnapshot snapshot = new ReconcileInputSnapshot(
                     job.getId(),
                     job.getInternalRefId(),
@@ -175,8 +201,7 @@ public class BookingSyncReconciler {
 
             if (externalLifecycleSemanticsEnabled) {
                 applyDecision(job, observed, shadowDecision);
-                clearMdc();
-                continue;
+                return;
             }
 
             switch (observed.status()) {
@@ -214,9 +239,9 @@ public class BookingSyncReconciler {
                     repairFailureCount.increment();
                 }
             }
+        } finally {
             clearMdc();
         }
-        return jobs.size();
     }
 
     private void applyDecision(CalendarSyncJob job,

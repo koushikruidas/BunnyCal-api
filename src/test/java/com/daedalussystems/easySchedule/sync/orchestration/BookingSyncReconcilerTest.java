@@ -25,6 +25,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class BookingSyncReconcilerTest {
 
@@ -53,8 +55,10 @@ class BookingSyncReconcilerTest {
         evaluator = new DeterministicReconcileEvaluator();
         parityClassifier = new ReconcileShadowParityClassifier();
         canonicalizer = new ReconcileSnapshotCanonicalizer();
+        PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
+        when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         reconciler = new BookingSyncReconciler(
-                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, terminalDeleteConvergenceService, 0L, true, new SimpleMeterRegistry());
+                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, terminalDeleteConvergenceService, txManager, 0L, true, new SimpleMeterRegistry());
 
         when(snapshotAssembler.assembleAndPersist(any(), any(), any())).thenAnswer(invocation -> {
             var runtime = invocation.getArgument(2, com.daedalussystems.easySchedule.sync.reconcile.ReconcileInputSnapshot.class);
