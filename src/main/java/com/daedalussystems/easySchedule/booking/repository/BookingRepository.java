@@ -492,4 +492,59 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                                  @Param("provider") String provider,
                                                  @Param("now") Instant now,
                                                  @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT
+                b.id AS bookingId,
+                b.event_type_id AS eventTypeId,
+                et.name AS eventTypeName,
+                b.start_time AS startTime,
+                b.end_time AS endTime,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'CANCELLED'
+                    ELSE b.status
+                END AS bookingStatus,
+                b.guest_email AS guestEmail,
+                b.guest_name AS guestName,
+                cem.provider AS provider,
+                cem.status AS calendarSyncStatus,
+                cem.external_event_id AS externalEventId,
+                cem.provider_event_url AS providerEventUrl,
+                cem.conference_url AS conferenceUrl,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
+                    WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
+                    WHEN csj.last_error = 'PROVIDER_STATE_ORPHANED' THEN 'PROVIDER_STATE_ORPHANED'
+                    WHEN csj.last_error LIKE 'DRIFT_%' THEN 'ACTIVE_DRIFT'
+                    ELSE 'STABLE'
+                END AS externalLifecycleState,
+                csj.last_error AS externalLifecycleReason,
+                CASE
+                    WHEN csj.last_error IN ('TERMINAL_EXTERNAL_DELETE', 'EXTERNAL_ACTION_REQUIRED', 'PROVIDER_STATE_ORPHANED')
+                    THEN TRUE
+                    ELSE FALSE
+                END AS reconcileSuppressed
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            LEFT JOIN calendar_event_mappings cem
+                ON cem.booking_id = b.id
+               AND cem.provider = :provider
+            LEFT JOIN LATERAL (
+                SELECT j.last_error
+                FROM calendar_sync_jobs j
+                WHERE j.internal_ref_type = 'BOOKING'
+                  AND j.internal_ref_id = b.id
+                  AND j.provider = :provider
+                ORDER BY j.created_at DESC, j.id DESC
+                LIMIT 1
+            ) csj ON TRUE
+            WHERE b.id = :bookingId
+              AND b.host_id = :hostId
+              AND b.event_type_id = :eventTypeId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<MeetingRow> findManageRow(@Param("bookingId") UUID bookingId,
+                                       @Param("hostId") UUID hostId,
+                                       @Param("eventTypeId") UUID eventTypeId,
+                                       @Param("provider") String provider);
 }

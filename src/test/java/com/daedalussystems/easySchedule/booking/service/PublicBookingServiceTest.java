@@ -255,6 +255,81 @@ class PublicBookingServiceTest {
     }
 
     @Test
+    void manageView_returnsBookingDetails_whenTokenValid() {
+        UUID bookingId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        Instant end = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+                .thenReturn(Optional.of(new BookingRepository.MeetingRow() {
+                    public UUID getBookingId() { return bookingId; }
+                    public UUID getEventTypeId() { return eventTypeId; }
+                    public String getEventTypeName() { return "30 Minute Meeting"; }
+                    public Instant getStartTime() { return start; }
+                    public Instant getEndTime() { return end; }
+                    public String getBookingStatus() { return "CONFIRMED"; }
+                    public String getGuestEmail() { return "guest@example.com"; }
+                    public String getGuestName() { return "Guest"; }
+                    public String getProvider() { return "google"; }
+                    public String getCalendarSyncStatus() { return "SYNCED"; }
+                    public String getExternalEventId() { return "evt-1"; }
+                    public String getProviderEventUrl() { return "https://example.com/evt-1"; }
+                    public String getConferenceUrl() { return "https://meet.example.com/abc"; }
+                    public String getExternalLifecycleState() { return "STABLE"; }
+                    public String getExternalLifecycleReason() { return null; }
+                    public Boolean getReconcileSuppressed() { return false; }
+                }));
+
+        var response = service.manageView("koushik", "30min", bookingId, "tok-123");
+
+        verify(bookingLifecycleService).authorizeGuestManageView(bookingId, userId, eventTypeId, "tok-123");
+        assertEquals(bookingId, response.bookingId());
+        assertEquals("30 Minute Meeting", response.eventTitle());
+        assertEquals(30L, response.durationMinutes());
+        assertEquals(start, response.startTime());
+        assertEquals(end, response.endTime());
+        assertEquals("Host Name", response.hostName());
+        assertEquals("koushik", response.hostUsername());
+        assertEquals("guest@example.com", response.attendeeEmail());
+        assertEquals("Guest", response.attendeeName());
+        assertEquals("https://meet.example.com/abc", response.conferenceUrl());
+        assertEquals("CONFIRMED", response.status());
+        assertEquals("STABLE", response.externalLifecycleState());
+        assertEquals("UTC", response.timezone());
+    }
+
+    @Test
+    void manageView_propagatesForbidden_whenTokenInvalid() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        Mockito.doThrow(new CustomException(ErrorCode.FORBIDDEN, "Guest capability token is required."))
+                .when(bookingLifecycleService)
+                .authorizeGuestManageView(bookingId, userId, eventTypeId, "bad-token");
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.manageView("koushik", "30min", bookingId, "bad-token"));
+        assertEquals(ErrorCode.FORBIDDEN, ex.getErrorCode());
+        verify(bookingRepository, never()).findManageRow(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void manageView_returnsNotFound_whenBookingMissing() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+                .thenReturn(Optional.empty());
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.manageView("koushik", "30min", bookingId, "tok"));
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, ex.getErrorCode());
+    }
+
+    @Test
     void reschedule_rejectsWhenProjectionBusyOverlaps() {
         UUID bookingId = UUID.randomUUID();
         Instant start = Instant.parse("2026-05-10T11:00:00Z");
@@ -664,6 +739,7 @@ class PublicBookingServiceTest {
                 "koushik",
                 "UTC",
                 "host@example.com",
+                null,
                 "30 Minute Meeting",
                 "desc",
                 "location",

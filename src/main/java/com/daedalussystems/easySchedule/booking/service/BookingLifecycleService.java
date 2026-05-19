@@ -49,6 +49,13 @@ public class BookingLifecycleService {
         enforceGuestCapabilityOrFallback(booking, token, BookingActionType.RESCHEDULE);
     }
 
+    @Transactional(readOnly = true)
+    public Booking authorizeGuestManageView(UUID bookingId, UUID hostId, UUID eventTypeId, String token) {
+        Booking booking = requireBookingOwnership(bookingId, hostId, eventTypeId);
+        enforceGuestCapabilityOrFallback(booking, token, BookingActionType.MANAGE_BOOKING);
+        return booking;
+    }
+
     private Booking requireBookingOwnership(UUID bookingId, UUID hostId, UUID eventTypeId) {
         bookingRepository.findStateByIdAndHostAndEventType(bookingId, hostId, eventTypeId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));

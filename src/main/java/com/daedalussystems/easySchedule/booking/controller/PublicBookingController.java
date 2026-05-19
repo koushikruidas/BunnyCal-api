@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicConfirmResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
 import com.daedalussystems.easySchedule.booking.dto.PublicEventInfoResponse;
+import com.daedalussystems.easySchedule.booking.dto.PublicManageBookingResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyOutcome;
 import com.daedalussystems.easySchedule.booking.idempotency.IdempotencyRoutes;
@@ -109,6 +110,17 @@ public class PublicBookingController {
         );
 
         return outcome.toResponseEntity(objectMapper);
+    }
+
+    @GetMapping("/{username}/{eventTypeSlug}/book/{bookingId}")
+    public ResponseEntity<ApiResponse<PublicManageBookingResponse>> manageView(
+            @PathVariable String username,
+            @PathVariable String eventTypeSlug,
+            @PathVariable String bookingId,
+            @RequestParam(value = "token", required = false) String guestCapabilityToken) {
+        PublicManageBookingResponse response = publicBookingService.manageView(
+                username, eventTypeSlug, java.util.UUID.fromString(bookingId), guestCapabilityToken);
+        return ResponseEntity.ok(ApiResponse.success(response));
     }
 
     @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/confirm")

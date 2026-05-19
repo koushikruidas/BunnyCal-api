@@ -11,6 +11,7 @@ public interface PublicBookingTargetResolver {
                           String hostUsername,
                           String timezone,
                           String hostEmail,
+                          String hostAvatarUrl,
                           String eventName,
                           String eventDescription,
                           String eventLocation,

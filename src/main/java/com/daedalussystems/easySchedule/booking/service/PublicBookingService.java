@@ -10,6 +10,7 @@ import com.daedalussystems.easySchedule.booking.dto.PublicBookingStatusResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
 import com.daedalussystems.easySchedule.booking.dto.PublicEventInfoResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicHoldResponse;
+import com.daedalussystems.easySchedule.booking.dto.PublicManageBookingResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicRescheduleRequest;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
@@ -108,7 +109,7 @@ public class PublicBookingService {
                 target.hostUsername(),
                 target.eventDescription(),
                 target.eventLocation(),
-                null
+                target.hostAvatarUrl()
         );
     }
 
@@ -240,6 +241,37 @@ public class PublicBookingService {
                 TokenCreatorType.SYSTEM
         );
         return new PublicConfirmResponse(bookingId, "SYNCING", manageToken);
+    }
+
+    @Transactional(readOnly = true)
+    public PublicManageBookingResponse manageView(String username,
+                                                  String eventTypeSlug,
+                                                  UUID bookingId,
+                                                  String guestCapabilityToken) {
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        bookingLifecycleService.authorizeGuestManageView(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
+
+        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId(), "google")
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+
+        String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
+        return new PublicManageBookingResponse(
+                row.getBookingId(),
+                eventTitle,
+                target.duration().toMinutes(),
+                row.getStartTime(),
+                row.getEndTime(),
+                target.hostName(),
+                target.hostUsername(),
+                target.hostAvatarUrl(),
+                row.getGuestName(),
+                row.getGuestEmail(),
+                row.getConferenceUrl(),
+                row.getBookingStatus(),
+                row.getExternalLifecycleState(),
+                row.getExternalLifecycleReason(),
+                target.timezone()
+        );
     }
 
     @Transactional
