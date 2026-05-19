@@ -15,6 +15,7 @@ import com.daedalussystems.easySchedule.calendar.provider.GoogleCalendarProvider
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionCalendarRepository;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -48,7 +49,10 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey) {
+    public CreateEventDetails createEvent(UUID internalId,
+                                          String provider,
+                                          String idempotencyKey,
+                                          ConferencingInstruction conferencingInstruction) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
@@ -67,9 +71,12 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         }
         String maskedGuest = maskEmail(attendeeEmail);
         String targetCalendarId = resolveTargetCalendarId(connection.getId());
-        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
+        ConferencingInstruction instruction = conferencingInstruction == null
+                ? ConferencingInstruction.none()
+                : conferencingInstruction;
+        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId,
-                1, maskedGuest);
+                1, maskedGuest, instruction.mode(), instruction.providerType());
         log.info("google_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
                 booking.getId(), provider, booking.getStartTime(), booking.getEndTime(), host.getTimezone());
         log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
@@ -85,7 +92,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 attendeeEmail,
                 booking.getGuestName(),
                 idempotencyKey,
-                targetCalendarId
+                targetCalendarId,
+                instruction
         ));
         String externalEventId = response.externalEventId();
         log.info("google_calendar_event_create_success bookingId={} provider={} externalEventId={}",
@@ -94,7 +102,11 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public String updateEvent(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
+    public String updateEvent(UUID internalId,
+                              String provider,
+                              String externalEventId,
+                              String idempotencyKey,
+                              ConferencingInstruction conferencingInstruction) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
@@ -113,9 +125,12 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         }
         String maskedGuest = maskEmail(attendeeEmail);
         String targetCalendarId = resolveTargetCalendarId(connection.getId());
-        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferenceDataVersion=1 conferenceRequested=true",
+        ConferencingInstruction instruction = conferencingInstruction == null
+                ? ConferencingInstruction.none()
+                : conferencingInstruction;
+        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId, externalEventId,
-                1, maskedGuest);
+                1, maskedGuest, instruction.mode(), instruction.providerType());
         log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
                 booking.getId(), provider, maskedGuest);
 
@@ -129,7 +144,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 host.getEmail(),
                 attendeeEmail,
                 booking.getGuestName(),
-                targetCalendarId
+                targetCalendarId,
+                instruction
         )).externalEventId();
         log.info("google_calendar_event_update_success bookingId={} provider={} externalEventId={}",
                 booking.getId(), provider, updatedExternalId);

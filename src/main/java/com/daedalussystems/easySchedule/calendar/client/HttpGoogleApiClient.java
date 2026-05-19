@@ -3,6 +3,7 @@ package com.daedalussystems.easySchedule.calendar.client;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -561,33 +562,64 @@ public class HttpGoogleApiClient implements GoogleApiClient {
 
     static Map<String, Object> buildCreateEventBody(CreateEventRequest request) {
         Map<String, Object> body = new HashMap<>();
+        ConferencingInstruction instruction = instructionOrNone(request.conferencingInstruction());
         body.put("summary", request.title());
-        body.put("description", request.description());
+        body.put("description", appendConferenceUrl(request.description(), instruction));
         body.put("start", Map.of("dateTime", request.startsAt().toString()));
         body.put("end", Map.of("dateTime", request.endsAt().toString()));
         body.put("extendedProperties", Map.of("private", Map.of("idempotencyKey", request.idempotencyKey())));
-        body.put("conferenceData", Map.of(
-                "createRequest", Map.of(
-                        "requestId", request.idempotencyKey(),
-                        "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
-                )));
+        if (instruction.requestsNativeMeet()) {
+            body.put("conferenceData", Map.of(
+                    "createRequest", Map.of(
+                            "requestId", request.idempotencyKey(),
+                            "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
+                    )));
+        }
+        if (instruction.embedsExternalUrl()) {
+            body.put("location", instruction.joinUrl());
+        }
         body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
     }
 
     static Map<String, Object> buildUpdateEventBody(UpdateEventRequest request) {
         Map<String, Object> body = new HashMap<>();
+        ConferencingInstruction instruction = instructionOrNone(request.conferencingInstruction());
         body.put("summary", request.title());
-        body.put("description", request.description());
+        body.put("description", appendConferenceUrl(request.description(), instruction));
         body.put("start", Map.of("dateTime", request.startsAt().toString()));
         body.put("end", Map.of("dateTime", request.endsAt().toString()));
-        body.put("conferenceData", Map.of(
-                "createRequest", Map.of(
-                        "requestId", request.externalEventId(),
-                        "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
-                )));
+        if (instruction.requestsNativeMeet()) {
+            body.put("conferenceData", Map.of(
+                    "createRequest", Map.of(
+                            "requestId", request.externalEventId(),
+                            "conferenceSolutionKey", Map.of("type", "hangoutsMeet")
+                    )));
+        }
+        if (instruction.embedsExternalUrl()) {
+            body.put("location", instruction.joinUrl());
+        }
         body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
+    }
+
+    private static ConferencingInstruction instructionOrNone(ConferencingInstruction instruction) {
+        return instruction == null ? ConferencingInstruction.none() : instruction;
+    }
+
+    private static String appendConferenceUrl(String description, ConferencingInstruction instruction) {
+        String base = description == null ? "" : description.trim();
+        if (!instruction.embedsExternalUrl()) {
+            return base;
+        }
+        String joinLine = "conferenceUrl=" + instruction.joinUrl();
+        if (base.isBlank()) {
+            return joinLine;
+        }
+        if (base.contains(joinLine)) {
+            return base;
+        }
+        return base + "\n" + joinLine;
     }
 
     static List<Map<String, Object>> attendees(String attendeeEmail, String attendeeName) {

@@ -54,7 +54,11 @@ public class DefaultCalendarService implements CalendarService {
 
         CalendarProviderClient.CreateEventDetails created;
         try {
-            created = providerClient.createEvent(command.internalId(), command.provider(), command.idempotencyKey());
+            created = providerClient.createEvent(
+                    command.internalId(),
+                    command.provider(),
+                    command.idempotencyKey(),
+                    command.conferencingInstruction());
         } catch (CalendarClientException ex) {
             log.warn("calendar_create_provider_failure internalId={} provider={} idempotencyKey={} statusCode={}",
                     command.internalId(), command.provider(), command.idempotencyKey(), ex.getStatusCode(), ex);
@@ -92,7 +96,8 @@ public class DefaultCalendarService implements CalendarService {
                 command.internalId(),
                 command.provider(),
                 command.externalEventId(),
-                command.idempotencyKey());
+                command.idempotencyKey(),
+                command.conferencingInstruction());
     }
 
     @Override

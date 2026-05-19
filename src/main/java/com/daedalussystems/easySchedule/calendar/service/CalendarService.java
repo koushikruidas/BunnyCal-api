@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.UUID;
 
 public interface CalendarService {
@@ -13,13 +14,33 @@ public interface CalendarService {
 
     record CreateCalendarEventCommand(UUID internalId,
                                       String provider,
-                                      String idempotencyKey) {
+                                      String idempotencyKey,
+                                      ConferencingInstruction conferencingInstruction) {
+        public CreateCalendarEventCommand {
+            if (conferencingInstruction == null) {
+                conferencingInstruction = ConferencingInstruction.none();
+            }
+        }
+
+        public CreateCalendarEventCommand(UUID internalId, String provider, String idempotencyKey) {
+            this(internalId, provider, idempotencyKey, ConferencingInstruction.none());
+        }
     }
 
     record UpdateCalendarEventCommand(UUID internalId,
                                       String provider,
                                       String externalEventId,
-                                      String idempotencyKey) {
+                                      String idempotencyKey,
+                                      ConferencingInstruction conferencingInstruction) {
+        public UpdateCalendarEventCommand {
+            if (conferencingInstruction == null) {
+                conferencingInstruction = ConferencingInstruction.none();
+            }
+        }
+
+        public UpdateCalendarEventCommand(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
+            this(internalId, provider, externalEventId, idempotencyKey, ConferencingInstruction.none());
+        }
     }
 
     record DeleteCalendarEventCommand(UUID internalId,

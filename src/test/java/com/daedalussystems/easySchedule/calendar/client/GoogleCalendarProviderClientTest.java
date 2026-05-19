@@ -23,6 +23,7 @@ import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventResponse;
 import com.daedalussystems.easySchedule.calendar.provider.DeleteEventRequest;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -77,7 +78,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
         when(googleCalendarProvider.createEvent(any())).thenReturn(new CreateEventResponse("ext-1", "https://calendar.google.com/event?eid=1", "https://meet.google.com/a"));
 
-        var created = client.createEvent(bookingId, "google", "idem-1");
+        var created = client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none());
         assertEquals("ext-1", created.externalEventId());
         assertEquals("https://calendar.google.com/event?eid=1", created.providerEventUrl());
         assertEquals("https://meet.google.com/a", created.conferenceUrl());
@@ -86,6 +87,7 @@ class GoogleCalendarProviderClientTest {
         CreateEventRequest sent = requestCaptor.getValue();
         assertEquals("host@example.com", sent.organizerEmail());
         assertEquals("guest@example.com", sent.attendeeEmail());
+        assertEquals(ConferencingInstruction.none(), sent.conferencingInstruction());
     }
 
     @Test
@@ -114,7 +116,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
 
         CalendarClientException ex = assertThrows(CalendarClientException.class,
-                () -> client.createEvent(bookingId, "google", "idem-1"));
+                () -> client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none()));
         assertEquals(400, ex.getStatusCode());
     }
 
@@ -145,7 +147,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
         when(googleCalendarProvider.updateEvent(any())).thenReturn(new UpdateEventResponse("ext-2", "https://calendar.google.com/event?eid=2", "https://meet.google.com/b"));
 
-        String externalId = client.updateEvent(bookingId, "google", "ext-1", "idem-1");
+        String externalId = client.updateEvent(bookingId, "google", "ext-1", "idem-1", ConferencingInstruction.none());
         assertEquals("ext-2", externalId);
 
         ArgumentCaptor<UpdateEventRequest> requestCaptor = ArgumentCaptor.forClass(UpdateEventRequest.class);

@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.calendar.client;
 
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,16 +14,26 @@ public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     private final Map<String, String> eventsByExternalId = new ConcurrentHashMap<>();
 
     @Override
-    public CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey) {
+    public CreateEventDetails createEvent(UUID internalId,
+                                          String provider,
+                                          String idempotencyKey,
+                                          ConferencingInstruction conferencingInstruction) {
         String externalId = eventsByIdempotency.computeIfAbsent(
                 provider + ":" + idempotencyKey,
                 ignored -> provider + "-" + internalId);
         eventsByExternalId.put(externalId, externalId);
-        return new CreateEventDetails(externalId, null, null);
+        String conferenceUrl = conferencingInstruction != null && conferencingInstruction.embedsExternalUrl()
+                ? conferencingInstruction.joinUrl()
+                : null;
+        return new CreateEventDetails(externalId, null, conferenceUrl);
     }
 
     @Override
-    public String updateEvent(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
+    public String updateEvent(UUID internalId,
+                              String provider,
+                              String externalEventId,
+                              String idempotencyKey,
+                              ConferencingInstruction conferencingInstruction) {
         if (externalEventId == null || !eventsByExternalId.containsKey(externalEventId)) {
             throw new CalendarClientException(404, "event not found");
         }

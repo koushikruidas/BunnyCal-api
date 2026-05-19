@@ -396,11 +396,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                cem.provider AS provider,
+                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
                 cem.status AS calendarSyncStatus,
                 cem.external_event_id AS externalEventId,
                 cem.provider_event_url AS providerEventUrl,
-                cem.conference_url AS conferenceUrl,
+                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -419,6 +419,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
                AND cem.provider = :provider
+            LEFT JOIN LATERAL (
+                SELECT m.provider, m.join_url
+                FROM conferencing_event_mappings m
+                WHERE m.booking_id = b.id
+                  AND m.status = 'ACTIVE'
+                ORDER BY m.updated_at DESC
+                LIMIT 1
+            ) conf ON TRUE
             LEFT JOIN LATERAL (
                 SELECT j.last_error
                 FROM calendar_sync_jobs j
@@ -449,11 +457,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                cem.provider AS provider,
+                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
                 cem.status AS calendarSyncStatus,
                 cem.external_event_id AS externalEventId,
                 cem.provider_event_url AS providerEventUrl,
-                cem.conference_url AS conferenceUrl,
+                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -472,6 +480,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
                AND cem.provider = :provider
+            LEFT JOIN LATERAL (
+                SELECT m.provider, m.join_url
+                FROM conferencing_event_mappings m
+                WHERE m.booking_id = b.id
+                  AND m.status = 'ACTIVE'
+                ORDER BY m.updated_at DESC
+                LIMIT 1
+            ) conf ON TRUE
             LEFT JOIN LATERAL (
                 SELECT j.last_error
                 FROM calendar_sync_jobs j
@@ -506,11 +522,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                cem.provider AS provider,
+                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
                 cem.status AS calendarSyncStatus,
                 cem.external_event_id AS externalEventId,
                 cem.provider_event_url AS providerEventUrl,
-                cem.conference_url AS conferenceUrl,
+                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -529,6 +545,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
                AND cem.provider = :provider
+            LEFT JOIN LATERAL (
+                SELECT m.provider, m.join_url
+                FROM conferencing_event_mappings m
+                WHERE m.booking_id = b.id
+                  AND m.status = 'ACTIVE'
+                ORDER BY m.updated_at DESC
+                LIMIT 1
+            ) conf ON TRUE
             LEFT JOIN LATERAL (
                 SELECT j.last_error
                 FROM calendar_sync_jobs j
