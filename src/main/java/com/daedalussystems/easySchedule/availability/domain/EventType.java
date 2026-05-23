@@ -47,6 +47,12 @@ public class EventType {
     @Column(length = 255)
     private String location;
 
+    @Column(name = "organizer_calendar_connection_id")
+    private UUID organizerCalendarConnectionId;
+
+    @Column(name = "availability_calendars_json", columnDefinition = "TEXT")
+    private String availabilityCalendarsJson;
+
     @Builder.Default
     @Enumerated(EnumType.STRING)
     @Column(name = "conferencing_provider", nullable = false, length = 32)

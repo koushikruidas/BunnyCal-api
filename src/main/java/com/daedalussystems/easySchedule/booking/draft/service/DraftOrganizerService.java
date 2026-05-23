@@ -5,6 +5,8 @@ import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.availability.domain.AvailabilityOverride;
 import com.daedalussystems.easySchedule.availability.domain.AvailabilityRule;
 import com.daedalussystems.easySchedule.availability.domain.EventType;
+import com.daedalussystems.easySchedule.availability.service.EventTypeOrchestrationJsonCodec;
+import com.daedalussystems.easySchedule.availability.service.EventTypeOrchestrationNormalizer;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityOverrideCreateRequest;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityRuleRequest;
 import com.daedalussystems.easySchedule.availability.repository.AvailabilityOverrideRepository;
@@ -41,6 +43,8 @@ public class DraftOrganizerService {
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
     private final BookingRepository bookingRepository;
+    private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
+    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final Duration ttl;
 
     public DraftOrganizerService(HostDraftRepository hostDraftRepository,
@@ -49,6 +53,8 @@ public class DraftOrganizerService {
                                  AvailabilityRuleRepository availabilityRuleRepository,
                                  AvailabilityOverrideRepository availabilityOverrideRepository,
                                  BookingRepository bookingRepository,
+                                 EventTypeOrchestrationNormalizer orchestrationNormalizer,
+                                 EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                                  @Value("${draft.ttl.days:21}") long ttlDays) {
         this.hostDraftRepository = hostDraftRepository;
         this.userRepository = userRepository;
@@ -56,6 +62,8 @@ public class DraftOrganizerService {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.bookingRepository = bookingRepository;
+        this.orchestrationNormalizer = orchestrationNormalizer;
+        this.orchestrationJsonCodec = orchestrationJsonCodec;
         this.ttl = Duration.ofDays(Math.max(1, ttlDays));
     }
 
@@ -74,11 +82,29 @@ public class DraftOrganizerService {
                 .status(UserStatus.ACTIVE)
                 .build());
 
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration =
+                orchestrationNormalizer.normalizeForDraftMutation(
+                        shadowUser.getId(),
+                        null,
+                        request.organizerCalendarConnectionId(),
+                        request.orchestrationProvider(),
+                        request.calendarProvider(),
+                        request.availabilityCalendars(),
+                        request.conference(),
+                        request.conferencingProvider(),
+                        request.customConferenceUrl(),
+                        List.of(),
+                        true);
+
         EventType eventType = eventTypeRepository.save(EventType.builder()
                 .userId(shadowUser.getId())
                 .name(request.eventName().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
+                .organizerCalendarConnectionId(orchestration.authoritativeConnectionId())
+                .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
+                .conferencingProvider(orchestration.conferencing().provider())
+                .customConferenceUrl(orchestration.conferencing().customUrl())
                 .slug(slug)
                 .duration(Duration.ofMinutes(request.durationMinutes()))
                 .bufferBefore(Duration.ZERO)
@@ -145,6 +171,19 @@ public class DraftOrganizerService {
 
         EventType eventType = eventTypeRepository.findByIdAndUserId(draft.getShadowEventTypeId(), draft.getShadowUserId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Draft shadow event type missing."));
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration =
+                orchestrationNormalizer.normalizeForDraftMutation(
+                        draft.getShadowUserId(),
+                        eventType,
+                        request.organizerCalendarConnectionId(),
+                        request.orchestrationProvider(),
+                        request.calendarProvider(),
+                        request.availabilityCalendars(),
+                        request.conference(),
+                        request.conferencingProvider(),
+                        request.customConferenceUrl(),
+                        orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()),
+                        true);
         eventType.setName(draft.getEventName());
         if (request.description() != null) {
             eventType.setDescription(trimToNull(request.description()));
@@ -159,6 +198,10 @@ public class DraftOrganizerService {
         if (request.holdDurationMinutes() != null && request.holdDurationMinutes() > 0) {
             eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
         }
+        eventType.setOrganizerCalendarConnectionId(orchestration.authoritativeConnectionId());
+        eventType.setAvailabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()));
+        eventType.setConferencingProvider(orchestration.conferencing().provider());
+        eventType.setCustomConferenceUrl(orchestration.conferencing().customUrl());
         eventTypeRepository.save(eventType);
         replaceRulesAndOverrides(draft.getShadowUserId(), request.rules(), request.overrides());
 

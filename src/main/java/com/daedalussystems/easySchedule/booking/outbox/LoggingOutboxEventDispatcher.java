@@ -1,5 +1,6 @@
 package com.daedalussystems.easySchedule.booking.outbox;
 
+import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
@@ -33,6 +34,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     private final CalendarSyncJobRepository calendarSyncJobRepository;
     private final BookingRepository bookingRepository;
+    private final EventTypeRepository eventTypeRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
@@ -42,6 +44,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
                                         BookingRepository bookingRepository,
+                                        EventTypeRepository eventTypeRepository,
                                         CalendarConnectionRepository calendarConnectionRepository,
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         SyncInvariantMonitor invariantMonitor,
@@ -50,6 +53,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         boolean providerOptionalPublicBookingEnabled) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
         this.bookingRepository = bookingRepository;
+        this.eventTypeRepository = eventTypeRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingNotificationService = bookingNotificationService;
         this.invariantMonitor = invariantMonitor;
@@ -77,7 +81,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                             .map(booking -> booking.getHostId())
                             .orElse(null);
                 }
-                UUID schedulingConnectionId = resolveSchedulingConnectionId(partitionKey);
+                UUID schedulingConnectionId = resolveSchedulingConnectionId(event.getAggregateId(), partitionKey);
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
@@ -138,7 +142,14 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     }
 
     @Nullable
-    private UUID resolveSchedulingConnectionId(@Nullable UUID hostId) {
+    private UUID resolveSchedulingConnectionId(UUID bookingId, @Nullable UUID hostId) {
+        UUID eventTypeConnectionId = bookingRepository.findAnyById(bookingId)
+                .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
+                .map(eventType -> eventType.getOrganizerCalendarConnectionId())
+                .orElse(null);
+        if (eventTypeConnectionId != null) {
+            return eventTypeConnectionId;
+        }
         if (hostId == null) {
             return null;
         }

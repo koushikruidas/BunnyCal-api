@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.availability.domain.EventType;
 import com.daedalussystems.easySchedule.availability.dto.CreateEventTypeRequest;
 import com.daedalussystems.easySchedule.availability.dto.EventTypeSummaryResponse;
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
+import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import java.time.Duration;
@@ -20,11 +21,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class EventTypeService {
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;
+    private final CalendarConnectionRepository calendarConnectionRepository;
+    private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
+    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
-                            UserRepository userRepository) {
+                            UserRepository userRepository,
+                            CalendarConnectionRepository calendarConnectionRepository,
+                            EventTypeOrchestrationNormalizer orchestrationNormalizer,
+                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
+        this.orchestrationNormalizer = orchestrationNormalizer;
+        this.orchestrationJsonCodec = orchestrationJsonCodec;
     }
 
     @Transactional
@@ -35,14 +45,17 @@ public class EventTypeService {
 
         String username = ensureUsername(user);
         String slug = uniqueSlug(userId, requestedOrDerivedSlug(request));
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration = orchestrationNormalizer.normalize(userId, request);
 
         EventType eventType = EventType.builder()
                 .userId(userId)
                 .name(request.name().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .conferencingProvider(resolveConferencingProvider(request.conferencingProvider()))
-                .customConferenceUrl(trimToNull(request.customConferenceUrl()))
+                .organizerCalendarConnectionId(orchestration.authoritativeConnectionId())
+                .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
+                .conferencingProvider(orchestration.conferencing().provider())
+                .customConferenceUrl(orchestration.conferencing().customUrl())
                 .slug(slug)
                 .duration(Duration.ofMinutes(request.durationMinutes()))
                 .bufferBefore(Duration.ofMinutes(request.bufferBeforeMinutes()))
@@ -124,24 +137,34 @@ public class EventTypeService {
         return "user-" + id.toString().substring(0, 8);
     }
 
-    private static EventTypeSummaryResponse toSummary(EventType eventType, String username) {
+    private EventTypeSummaryResponse toSummary(EventType eventType, String username) {
+        List<EventTypeSummaryResponse.AvailabilityCalendarResponse> availability =
+                orchestrationJsonCodec.toAvailabilityResponse(eventType.getAvailabilityCalendarsJson());
+        EventTypeSummaryResponse.ConferenceResponse conference = new EventTypeSummaryResponse.ConferenceResponse(
+                eventType.getConferencingProvider() != ConferencingProviderType.NONE,
+                eventType.getConferencingProvider().name(),
+                eventType.getCustomConferenceUrl()
+        );
+        EventTypeSummaryResponse.OrchestrationResponse orchestration = new EventTypeSummaryResponse.OrchestrationResponse(
+                eventType.getOrganizerCalendarConnectionId(),
+                availability,
+                conference
+        );
+        String calendarProvider = eventType.getOrganizerCalendarConnectionId() == null ? null
+                : calendarConnectionRepository.findById(eventType.getOrganizerCalendarConnectionId())
+                        .map(connection -> connection.getProvider().name())
+                        .orElse(null);
         return new EventTypeSummaryResponse(
                 eventType.getId(),
                 eventType.getName(),
                 eventType.getSlug(),
-                "/public/" + username + "/" + eventType.getSlug()
+                "/public/" + username + "/" + eventType.getSlug(),
+                orchestration,
+                null,
+                calendarProvider,
+                eventType.getConferencingProvider().name(),
+                eventType.getCustomConferenceUrl()
         );
-    }
-
-    private static ConferencingProviderType resolveConferencingProvider(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return ConferencingProviderType.GOOGLE_MEET;
-        }
-        try {
-            return ConferencingProviderType.valueOf(raw.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "invalid conferencingProvider");
-        }
     }
 
     private static String trimToNull(String value) {
