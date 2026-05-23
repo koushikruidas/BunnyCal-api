@@ -48,6 +48,7 @@ class CalendarWebhookIngestionServiceTest {
                 slotCacheVersionService,
                 new SimpleMeterRegistry(),
                 true,
+                true,
                 true
         );
     }

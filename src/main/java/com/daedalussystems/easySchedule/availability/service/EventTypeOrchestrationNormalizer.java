@@ -82,6 +82,7 @@ public class EventTypeOrchestrationNormalizer {
             return new NormalizedOrchestration(null, null, availabilityBindings, conferencing);
         }
         CalendarConnection authoritative = requireActiveOwnedConnection(userId, authoritativeConnectionId, "authoritative scheduling connection is invalid.");
+        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -96,6 +97,7 @@ public class EventTypeOrchestrationNormalizer {
 
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, availabilityCalendars);
         ConferencingConfig conferencing = normalizeConference(conference, conferencingProvider, customConferenceUrl);
+        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -207,6 +209,20 @@ public class EventTypeOrchestrationNormalizer {
         if (value == null) return null;
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static void validateNativeConferenceCompatibility(CalendarProviderType authoritativeProvider,
+                                                              ConferencingProviderType conferenceProvider) {
+        if (conferenceProvider == ConferencingProviderType.GOOGLE_MEET
+                && authoritativeProvider != CalendarProviderType.GOOGLE) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "conference.provider GOOGLE_MEET requires a Google authoritative scheduling connection.");
+        }
+        if (conferenceProvider == ConferencingProviderType.MICROSOFT_TEAMS
+                && authoritativeProvider != CalendarProviderType.MICROSOFT) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "conference.provider MICROSOFT_TEAMS requires a Microsoft authoritative scheduling connection.");
+        }
     }
 
     public record AvailabilityBinding(UUID connectionId, String provider, String externalCalendarId) {}

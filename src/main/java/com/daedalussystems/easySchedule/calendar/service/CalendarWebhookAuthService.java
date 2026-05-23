@@ -85,6 +85,19 @@ public class CalendarWebhookAuthService {
         meterRegistry.counter("calendar.webhook.auth.success.total", "mode", "google_watch").increment();
     }
 
+    public void verifyMicrosoftNotification(String configuredSecret, String clientState) {
+        if (configuredSecret == null || configuredSecret.isBlank()) {
+            reject("missing_secret_config", ErrorCode.FORBIDDEN, "Webhook shared secret is not configured.");
+        }
+        if (clientState == null || clientState.isBlank()) {
+            reject("microsoft_client_state_missing", ErrorCode.UNAUTHORIZED, "Missing Microsoft webhook client state.");
+        }
+        if (!configuredSecret.equals(clientState)) {
+            reject("microsoft_client_state_mismatch", ErrorCode.UNAUTHORIZED, "Invalid Microsoft webhook client state.");
+        }
+        meterRegistry.counter("calendar.webhook.auth.success.total", "mode", "microsoft_client_state").increment();
+    }
+
     private void reject(String reason, ErrorCode code, String message) {
         meterRegistry.counter("calendar.webhook.auth.failure.total", "reason", reason).increment();
         throw new CustomException(code, message);

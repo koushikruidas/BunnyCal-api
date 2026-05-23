@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.time.Instant;
 import java.util.List;
@@ -87,7 +88,7 @@ class HttpGoogleApiClientTest {
                 "Guest User",
                 "google:1",
                 "primary",
-                ConferencingInstruction.requestNativeMeet());
+                ConferencingInstruction.requestNativeMeet(ConferencingProviderType.GOOGLE_MEET));
 
         Map<String, Object> body = HttpGoogleApiClient.buildCreateEventBody(request);
         assertTrue(body.containsKey("conferenceData"));

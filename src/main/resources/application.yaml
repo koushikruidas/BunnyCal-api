@@ -127,6 +127,10 @@ calendar:
       google:
         enabled: ${CALENDAR_WEBHOOK_PROVIDER_GOOGLE_ENABLED:true}
         address: ${GOOGLE_WEBHOOK:https://dvbsf-203-163-244-176.run.pinggy-free.link/integrations/calendar/webhooks/google}
+      microsoft:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_ENABLED:true}
+        address: ${MICROSOFT_WEBHOOK:http://localhost:8080/integrations/calendar/webhooks/microsoft}
+        ttl-seconds: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_TTL_SECONDS:7200}
     shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET:askjdfhiasuhjuisdfjhfiwuehsjdfbkawdkfhaisuebfkjadsfhailsduh11!#%kjdfha@+=}
   google:
     diagnostics:
@@ -160,6 +164,26 @@ google:
       - profile
       - https://www.googleapis.com/auth/calendar.events
       - https://www.googleapis.com/auth/calendar.readonly
+
+microsoft:
+  oauth:
+    client-id: ${MICROSOFT_CLIENT_ID:}
+    client-secret: ${MICROSOFT_CLIENT_SECRET:}
+    tenant-id: ${MICROSOFT_TENANT_ID:common}
+    redirect-uri: ${MICROSOFT_REDIRECT_URI:http://localhost:8080/integrations/calendar/microsoft/callback}
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+    frontend-success-path: ${MICROSOFT_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${MICROSOFT_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${MICROSOFT_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${MICROSOFT_FRONTEND_ERROR_REDIRECT:}
+    scopes:
+      - openid
+      - profile
+      - email
+      - offline_access
+      - User.Read
+      - Calendars.ReadWrite
+      - Calendars.Read
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}

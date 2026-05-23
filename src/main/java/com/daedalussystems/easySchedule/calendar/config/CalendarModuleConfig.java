@@ -6,7 +6,8 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @EnableConfigurationProperties({
         CalendarSecurityProperties.class,
-        GoogleOAuthProperties.class
+        GoogleOAuthProperties.class,
+        MicrosoftOAuthProperties.class
 })
 public class CalendarModuleConfig {
 }

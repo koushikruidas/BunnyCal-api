@@ -9,10 +9,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
+import com.daedalussystems.easySchedule.calendar.config.MicrosoftOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.replay.WebhookDeliveryMetadata;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
+import com.daedalussystems.easySchedule.calendar.service.MicrosoftCalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
@@ -37,6 +39,8 @@ class CalendarIntegrationControllerTest {
     @Mock
     private CalendarOAuthService oauthService;
     @Mock
+    private MicrosoftCalendarOAuthService microsoftOAuthService;
+    @Mock
     private CalendarWebhookIngestionService webhookIngestionService;
     @Mock
     private CalendarWebhookAuthService webhookAuthService;
@@ -45,16 +49,20 @@ class CalendarIntegrationControllerTest {
 
     private CalendarIntegrationController controller;
     private GoogleOAuthProperties properties;
+    private MicrosoftOAuthProperties microsoftProperties;
     private ProviderCapabilityRegistry capabilityRegistry;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
         properties = new GoogleOAuthProperties();
+        microsoftProperties = new MicrosoftOAuthProperties();
         capabilityRegistry = new ProviderCapabilityRegistry();
         properties.setFrontendSuccessRedirect("http://localhost:3000/success");
         properties.setFrontendErrorRedirect("http://localhost:3000/error");
-        controller = new CalendarIntegrationController(oauthService, webhookAuthService, webhookIngestionService, properties, capabilityRegistry, providerCatalogService, "secret");
+        microsoftProperties.setFrontendSuccessRedirect("http://localhost:3000/success");
+        microsoftProperties.setFrontendErrorRedirect("http://localhost:3000/error");
+        controller = new CalendarIntegrationController(oauthService, microsoftOAuthService, webhookAuthService, webhookIngestionService, properties, microsoftProperties, capabilityRegistry, providerCatalogService, "secret");
     }
 
     @Test
@@ -109,11 +117,13 @@ class CalendarIntegrationControllerTest {
         UUID userId = UUID.randomUUID();
         Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
         when(oauthService.googleConnectionStatus(userId)).thenReturn("CONNECTED");
+        when(microsoftOAuthService.microsoftConnectionStatus(userId)).thenReturn("NOT_CONNECTED");
 
         ApiResponse<Map<String, String>> body = controller.status(auth).getBody();
 
         assertEquals(true, body.isSuccess());
         assertEquals("CONNECTED", body.getData().get("google"));
+        assertEquals("NOT_CONNECTED", body.getData().get("microsoft"));
     }
 
     @Test
@@ -187,6 +197,7 @@ class CalendarIntegrationControllerTest {
         UUID userId = UUID.randomUUID();
         Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
         when(oauthService.googleConnectionStatus(userId)).thenReturn("CONNECTED");
+        when(microsoftOAuthService.microsoftConnectionStatus(userId)).thenReturn("NOT_CONNECTED");
         ProviderCatalogResponse catalogResponse = new ProviderCatalogResponse(
                 "v1alpha-provider-catalog",
                 List.of(),

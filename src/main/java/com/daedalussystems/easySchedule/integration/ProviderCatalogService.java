@@ -27,6 +27,7 @@ public class ProviderCatalogService {
     private static final String MICROSOFT = "microsoft";
     private static final String ZOOM = "zoom";
     private static final String GOOGLE_MEET = "google_meet";
+    private static final String MICROSOFT_TEAMS = "microsoft_teams";
     private static final String CUSTOM_URL = "custom_url";
 
     private final CalendarConnectionRepository calendarConnectionRepository;
@@ -71,6 +72,7 @@ public class ProviderCatalogService {
         providers.add(calendarProviderDescriptor(userId, CalendarProviderType.MICROSOFT, authoritySummary));
         providers.add(zoomDescriptor(zoomStatus, authoritySummary));
         providers.add(googleMeetDescriptor(authoritySummary));
+        providers.add(microsoftTeamsDescriptor(authoritySummary));
         providers.add(customUrlDescriptor(authoritySummary));
 
         return new ProviderCatalogResponse(VERSION, providers, authoritySummary);
@@ -107,12 +109,12 @@ public class ProviderCatalogService {
                     true, true, true, true, true, false, true, true, false, true, true
             );
             case MICROSOFT -> new ProviderCapabilityFlags(
-                    true, true, true, false, true, false, false, false, false, true, false
+                    true, true, true, true, true, false, true, true, true, true, true
             );
         };
         ProviderLifecycleSourceOfTruth lifecycleSourceOfTruth = providerType == CalendarProviderType.GOOGLE
                 ? ProviderLifecycleSourceOfTruth.WEBHOOK_AND_POLL
-                : ProviderLifecycleSourceOfTruth.NONE;
+                : ProviderLifecycleSourceOfTruth.WEBHOOK_AND_POLL;
         ProviderRoleAssignments roles = new ProviderRoleAssignments(
                 providerId.equals(authoritySummary.identityProvider()),
                 authoritySummary.availabilityProviders().contains(providerId),
@@ -178,6 +180,21 @@ public class ProviderCatalogService {
                 new ProviderStatusView(null, false, false),
                 new ProviderRoleAssignments(false, false, false, authoritySummary.conferencingProviders().contains(CUSTOM_URL)),
                 Map.of("conferencingProviderType", ConferencingProviderType.CUSTOM_URL.name())
+        );
+    }
+
+    private static ProviderDescriptor microsoftTeamsDescriptor(ProviderAuthoritySummary authoritySummary) {
+        ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
+                false, false, false, true, false, false, false, false, true, false, false
+        );
+        return new ProviderDescriptor(
+                MICROSOFT_TEAMS,
+                ProviderType.CONFERENCING,
+                flags,
+                ProviderLifecycleSourceOfTruth.NONE,
+                new ProviderStatusView(null, false, false),
+                new ProviderRoleAssignments(false, false, false, authoritySummary.conferencingProviders().contains(MICROSOFT_TEAMS)),
+                Map.of("conferencingProviderType", ConferencingProviderType.MICROSOFT_TEAMS.name())
         );
     }
 

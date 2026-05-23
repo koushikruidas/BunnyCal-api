@@ -568,7 +568,8 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         body.put("start", Map.of("dateTime", request.startsAt().toString()));
         body.put("end", Map.of("dateTime", request.endsAt().toString()));
         body.put("extendedProperties", Map.of("private", Map.of("idempotencyKey", request.idempotencyKey())));
-        if (instruction.requestsNativeMeet()) {
+        if (instruction.requestsNativeMeet()
+                && instruction.providerType() == com.daedalussystems.easySchedule.common.enums.ConferencingProviderType.GOOGLE_MEET) {
             body.put("conferenceData", Map.of(
                     "createRequest", Map.of(
                             "requestId", request.idempotencyKey(),
@@ -589,7 +590,8 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         body.put("description", appendConferenceUrl(request.description(), instruction));
         body.put("start", Map.of("dateTime", request.startsAt().toString()));
         body.put("end", Map.of("dateTime", request.endsAt().toString()));
-        if (instruction.requestsNativeMeet()) {
+        if (instruction.requestsNativeMeet()
+                && instruction.providerType() == com.daedalussystems.easySchedule.common.enums.ConferencingProviderType.GOOGLE_MEET) {
             body.put("conferenceData", Map.of(
                     "createRequest", Map.of(
                             "requestId", request.externalEventId(),

@@ -26,8 +26,8 @@ public record ConferencingInstruction(
         return new ConferencingInstruction(providerType, Mode.URL_EMBEDDED, joinUrl, hostUrl, meetingId);
     }
 
-    public static ConferencingInstruction requestNativeMeet() {
-        return new ConferencingInstruction(ConferencingProviderType.GOOGLE_MEET, Mode.REQUEST_NATIVE_MEET, null, null, null);
+    public static ConferencingInstruction requestNativeMeet(ConferencingProviderType providerType) {
+        return new ConferencingInstruction(providerType, Mode.REQUEST_NATIVE_MEET, null, null, null);
     }
 
     public boolean requestsNativeMeet() {

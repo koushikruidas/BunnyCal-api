@@ -63,9 +63,9 @@ public class ConferencingCoordinator {
                 yield ConferencingInstruction.none();
             }
             case CUSTOM_URL -> instructionFromCustomUrl(eventType);
-            case GOOGLE_MEET -> {
+            case GOOGLE_MEET, MICROSOFT_TEAMS -> {
                 log.info("conferencing_prepare_native_meet bookingId={} hostId={}", bookingId, booking.getHostId());
-                yield ConferencingInstruction.requestNativeMeet();
+                yield ConferencingInstruction.requestNativeMeet(providerType);
             }
             case ZOOM -> createExternalMeeting(booking, eventType, providerType);
         };
@@ -82,7 +82,7 @@ public class ConferencingCoordinator {
         return switch (providerType) {
             case NONE -> ConferencingInstruction.none();
             case CUSTOM_URL -> instructionFromCustomUrl(eventType);
-            case GOOGLE_MEET -> ConferencingInstruction.requestNativeMeet();
+            case GOOGLE_MEET, MICROSOFT_TEAMS -> ConferencingInstruction.requestNativeMeet(providerType);
             case ZOOM -> updateExternalMeeting(booking, eventType, providerType);
         };
     }
@@ -96,7 +96,8 @@ public class ConferencingCoordinator {
         for (ConferencingProviderType providerType : ConferencingProviderType.values()) {
             if (providerType == ConferencingProviderType.NONE
                     || providerType == ConferencingProviderType.CUSTOM_URL
-                    || providerType == ConferencingProviderType.GOOGLE_MEET) {
+                    || providerType == ConferencingProviderType.GOOGLE_MEET
+                    || providerType == ConferencingProviderType.MICROSOFT_TEAMS) {
                 continue;
             }
             mappingRepository.findByBookingIdAndProvider(booking.getId(), providerType)

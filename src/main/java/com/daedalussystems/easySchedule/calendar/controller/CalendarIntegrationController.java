@@ -1,11 +1,14 @@
 package com.daedalussystems.easySchedule.calendar.controller;
 
 import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
+import com.daedalussystems.easySchedule.calendar.service.MicrosoftCalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.replay.WebhookDeliveryMetadata;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
+import com.daedalussystems.easySchedule.calendar.config.MicrosoftOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
+import com.daedalussystems.easySchedule.calendar.dto.MicrosoftWebhookNotificationRequest;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -29,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.MDC;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
@@ -40,27 +44,34 @@ import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
 public class CalendarIntegrationController {
     private static final Logger log = LoggerFactory.getLogger(CalendarIntegrationController.class);
     private static final String GOOGLE_PROVIDER = "google";
+    private static final String MICROSOFT_PROVIDER = "microsoft";
     private static final String DASHBOARD_FALLBACK_RETURN_TO = "/dashboard/integrations";
     private static final String PUBLIC_FALLBACK_RETURN_TO = "/";
     private final CalendarOAuthService oauthService;
+    private final MicrosoftCalendarOAuthService microsoftOAuthService;
     private final CalendarWebhookAuthService webhookAuthService;
     private final CalendarWebhookIngestionService webhookIngestionService;
     private final GoogleOAuthProperties googleOAuthProperties;
+    private final MicrosoftOAuthProperties microsoftOAuthProperties;
     private final String webhookSharedSecret;
     private final ProviderCapabilityRegistry capabilityRegistry;
     private final ProviderCatalogService providerCatalogService;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
+                                         MicrosoftCalendarOAuthService microsoftOAuthService,
                                          CalendarWebhookAuthService webhookAuthService,
                                          CalendarWebhookIngestionService webhookIngestionService,
                                          GoogleOAuthProperties googleOAuthProperties,
+                                         MicrosoftOAuthProperties microsoftOAuthProperties,
                                          ProviderCapabilityRegistry capabilityRegistry,
                                          ProviderCatalogService providerCatalogService,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
+        this.microsoftOAuthService = microsoftOAuthService;
         this.webhookAuthService = webhookAuthService;
         this.webhookIngestionService = webhookIngestionService;
         this.googleOAuthProperties = googleOAuthProperties;
+        this.microsoftOAuthProperties = microsoftOAuthProperties;
         this.capabilityRegistry = capabilityRegistry;
         this.providerCatalogService = providerCatalogService;
         this.webhookSharedSecret = webhookSharedSecret;
@@ -125,7 +136,9 @@ public class CalendarIntegrationController {
     @GetMapping("/status")
     public ResponseEntity<ApiResponse<Map<String, String>>> status(Authentication authentication) {
         UUID userId = extractUserId(authentication);
-        return ResponseEntity.ok(ApiResponse.success(Map.of("google", oauthService.googleConnectionStatus(userId))));
+        return ResponseEntity.ok(ApiResponse.success(Map.of(
+                "google", oauthService.googleConnectionStatus(userId),
+                "microsoft", microsoftOAuthService.microsoftConnectionStatus(userId))));
     }
 
     @DeleteMapping("/{provider}")
@@ -133,8 +146,12 @@ public class CalendarIntegrationController {
                                                         Authentication authentication) {
         UUID userId = extractUserId(authentication);
         if (!GOOGLE_PROVIDER.equalsIgnoreCase(provider)) {
-            return ResponseEntity.badRequest()
-                    .body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
+            if (!MICROSOFT_PROVIDER.equalsIgnoreCase(provider)) {
+                return ResponseEntity.badRequest()
+                        .body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
+            }
+            microsoftOAuthService.disconnectMicrosoft(userId);
+            return ResponseEntity.ok(ApiResponse.success(null));
         }
         oauthService.disconnectGoogle(userId);
         return ResponseEntity.ok(ApiResponse.success(null));
@@ -218,6 +235,62 @@ public class CalendarIntegrationController {
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
+    @RequestMapping(value = "/webhooks/microsoft", method = RequestMethod.GET, produces = "text/plain")
+    public ResponseEntity<String> verifyMicrosoftWebhook(
+            @RequestParam(value = "validationToken", required = false) String validationToken) {
+        if (validationToken == null || validationToken.isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "validationToken is required.");
+        }
+        return ResponseEntity.ok(validationToken);
+    }
+
+    @PostMapping("/webhooks/microsoft")
+    public ResponseEntity<ApiResponse<Void>> ingestMicrosoftWebhook(
+            @RequestHeader(value = "X-Webhook-Delivery-Id", required = false) String deliveryId,
+            @RequestHeader(value = "X-Provider-Updated-At", required = false) String providerUpdatedAtHeader,
+            @RequestHeader(value = "X-Provider-Etag", required = false) String providerEtag,
+            @RequestHeader(value = "X-Provider-Sequence", required = false) String providerSequenceHeader,
+            @RequestBody(required = false) MicrosoftWebhookNotificationRequest request) {
+        if (request == null || request.value() == null || request.value().isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Webhook payload is required.");
+        }
+        for (MicrosoftWebhookNotificationRequest.Notification notification : request.value()) {
+            webhookAuthService.verifyMicrosoftNotification(webhookSharedSecret, notification.clientState());
+            UUID connectionId = microsoftOAuthService.findMicrosoftConnectionIdByWebhookChannel(notification.subscriptionId())
+                    .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection for Microsoft subscription not found."));
+            String providerEventId = notification.resourceDataId();
+            if ((providerEventId == null || providerEventId.isBlank()) && notification.resourceData() != null) {
+                Object fromData = notification.resourceData().get("id");
+                providerEventId = fromData == null ? null : String.valueOf(fromData);
+            }
+            if (providerEventId == null || providerEventId.isBlank()) {
+                providerEventId = "microsoft_notification_signal";
+            }
+            String rawPayload = "changeType=" + (notification.changeType() == null ? "" : notification.changeType())
+                    + "|resource=" + (notification.resource() == null ? "" : notification.resource())
+                    + "|subscriptionId=" + (notification.subscriptionId() == null ? "" : notification.subscriptionId());
+            String correlationId = deliveryId == null || deliveryId.isBlank() ? UUID.randomUUID().toString() : deliveryId;
+            MDC.put("correlationId", correlationId);
+            MDC.put("causationId", providerEventId);
+            try {
+                webhookIngestionService.ingestMicrosoft(
+                        connectionId,
+                        providerEventId,
+                        rawPayload,
+                        new WebhookDeliveryMetadata(
+                                parseInstantOrNull(providerUpdatedAtHeader),
+                                providerEtag,
+                                parseLongOrNull(providerSequenceHeader),
+                                deliveryId,
+                                SyncSourceAttribution.WEBHOOK));
+            } finally {
+                MDC.remove("causationId");
+                MDC.remove("correlationId");
+            }
+        }
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
     ResponseEntity<ApiResponse<Void>> ingestGoogleWebhook(
             String webhookSecret,
             GoogleWebhookRequest request) {
@@ -240,6 +313,15 @@ public class CalendarIntegrationController {
         return URI.create(googleOAuthProperties.getFrontendErrorRedirect() + sep + "error=" + encoded + "&code=" + encoded);
     }
 
+    private URI errorRedirect(String provider, String code) {
+        if (MICROSOFT_PROVIDER.equalsIgnoreCase(provider)) {
+            String sep = microsoftOAuthProperties.getFrontendErrorRedirect().contains("?") ? "&" : "?";
+            String encoded = encode(code);
+            return URI.create(microsoftOAuthProperties.getFrontendErrorRedirect() + sep + "error=" + encoded + "&code=" + encoded);
+        }
+        return errorRedirect(code);
+    }
+
     private static String mapErrorCode(RuntimeException ex) {
         if (ex instanceof OAuthStateException stateException) {
             return switch (stateException.getReason()) {
@@ -255,6 +337,17 @@ public class CalendarIntegrationController {
     }
 
     private URI resolveSuccessRedirect(CalendarOAuthService.OAuthCallbackResult result) {
+        return resolveSuccessRedirect(result, GOOGLE_PROVIDER);
+    }
+
+    private URI resolveSuccessRedirect(CalendarOAuthService.OAuthCallbackResult result, String provider) {
+        if (MICROSOFT_PROVIDER.equalsIgnoreCase(provider)) {
+            URI success = URI.create(microsoftOAuthProperties.getFrontendSuccessRedirect());
+            String origin = success.getScheme() + "://" + success.getAuthority();
+            String returnTo = resolveReturnTo(result);
+            String target = appendQueryParam(returnTo, "integrationSuccess", MICROSOFT_PROVIDER);
+            return URI.create(origin + target);
+        }
         URI success = URI.create(googleOAuthProperties.getFrontendSuccessRedirect());
         String origin = success.getScheme() + "://" + success.getAuthority();
 
@@ -320,7 +413,12 @@ public class CalendarIntegrationController {
                                                                               @RequestParam(value = "returnTo", required = false) String returnTo,
                                                                               @RequestParam(value = "bookingSessionId", required = false) String bookingSessionId) {
         if (!GOOGLE_PROVIDER.equalsIgnoreCase(provider)) {
-            return ResponseEntity.badRequest().body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
+            if (!MICROSOFT_PROVIDER.equalsIgnoreCase(provider)) {
+                return ResponseEntity.badRequest().body(ApiResponse.error(ErrorCode.VALIDATION_ERROR, "Unsupported provider"));
+            }
+            UUID userId = extractUserId(authentication);
+            String redirectUrl = microsoftOAuthService.buildMicrosoftConnectUrl(userId, source, normalizeReturnTo(returnTo), bookingSessionId);
+            return ResponseEntity.ok(ApiResponse.success(Map.of("redirectUrl", redirectUrl)));
         }
         return connectGoogle(authentication, source, returnTo, bookingSessionId);
     }
@@ -330,7 +428,18 @@ public class CalendarIntegrationController {
                                                    @RequestParam("code") String code,
                                                    @RequestParam("state") String state) {
         if (!GOOGLE_PROVIDER.equalsIgnoreCase(provider)) {
-            return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
+            if (!MICROSOFT_PROVIDER.equalsIgnoreCase(provider)) {
+                return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
+            }
+            if (code == null || code.isBlank() || state == null || state.isBlank()) {
+                return ResponseEntity.status(302).location(errorRedirect(provider, "VALIDATION_ERROR")).build();
+            }
+            try {
+                CalendarOAuthService.OAuthCallbackResult result = microsoftOAuthService.handleMicrosoftCallback(code, state);
+                return ResponseEntity.status(302).location(resolveSuccessRedirect(result, provider)).build();
+            } catch (RuntimeException ex) {
+                return ResponseEntity.status(302).location(errorRedirect(provider, mapErrorCode(ex))).build();
+            }
         }
         return callbackGoogle(code, state);
     }
@@ -339,7 +448,9 @@ public class CalendarIntegrationController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> providerAwareStatus(Authentication authentication) {
         UUID userId = extractUserId(authentication);
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
-        payload.put("calendar", Map.of("google", oauthService.googleConnectionStatus(userId)));
+        payload.put("calendar", Map.of(
+                "google", oauthService.googleConnectionStatus(userId),
+                "microsoft", microsoftOAuthService.microsoftConnectionStatus(userId)));
         payload.put("capabilities", Map.of("calendar", capabilityRegistry.allCalendar()));
         var catalog = providerCatalogService.catalogForUser(userId);
         payload.put("providerCatalog", providerCatalogService.calendarProviderSubset(userId));

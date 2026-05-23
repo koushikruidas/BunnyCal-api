@@ -14,12 +14,13 @@ public class ProviderCapabilityRegistry {
     public ProviderCapabilityRegistry() {
         EnumMap<CalendarProviderType, ProviderCapabilities> calendar = new EnumMap<>(CalendarProviderType.class);
         calendar.put(CalendarProviderType.GOOGLE, new ProviderCapabilities(true, true, true, true, true));
-        calendar.put(CalendarProviderType.MICROSOFT, new ProviderCapabilities(true, false, true, false, true));
+        calendar.put(CalendarProviderType.MICROSOFT, new ProviderCapabilities(true, true, true, true, true));
         this.calendarCapabilities = Map.copyOf(calendar);
 
         EnumMap<ConferencingProviderType, ProviderCapabilities> conferencing = new EnumMap<>(ConferencingProviderType.class);
         conferencing.put(ConferencingProviderType.NONE, new ProviderCapabilities(false, false, false, false, false));
         conferencing.put(ConferencingProviderType.GOOGLE_MEET, new ProviderCapabilities(false, true, false, false, false));
+        conferencing.put(ConferencingProviderType.MICROSOFT_TEAMS, new ProviderCapabilities(false, true, false, false, false));
         conferencing.put(ConferencingProviderType.ZOOM, new ProviderCapabilities(false, true, false, false, false));
         conferencing.put(ConferencingProviderType.CUSTOM_URL, new ProviderCapabilities(false, true, false, false, false));
         this.conferencingCapabilities = Map.copyOf(conferencing);
