@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -42,10 +44,12 @@ class CalendarSyncSchedulerTest {
     void setUp() {
         PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        lenient().when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
+        CalendarSyncClientRegistry registry = new CalendarSyncClientRegistry(List.of(syncClient));
         scheduler = new CalendarSyncScheduler(
                 connectionRepository,
                 ingestionService,
-                syncClient,
+                registry,
                 slotCacheVersionService,
                 connectionWriteService,
                 txManager,
@@ -73,6 +77,7 @@ class CalendarSyncSchedulerTest {
     private static CalendarConnection connection(UUID id, UUID userId, CalendarConnectionStatus status) {
         CalendarConnection connection = new CalendarConnection();
         connection.setUserId(userId);
+        connection.setProvider(CalendarProviderType.GOOGLE);
         connection.setStatus(status);
         connection.setLastTokenExpiresAt(Instant.now().plusSeconds(600));
         connection.setLastSyncedAt(Instant.now());

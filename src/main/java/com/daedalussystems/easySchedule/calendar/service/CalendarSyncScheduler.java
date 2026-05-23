@@ -22,7 +22,7 @@ public class CalendarSyncScheduler {
     private static final Logger log = LoggerFactory.getLogger(CalendarSyncScheduler.class);
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventIngestionService ingestionService;
-    private final ExternalCalendarSyncClient syncClient;
+    private final CalendarSyncClientRegistry syncClientRegistry;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final MeterRegistry meterRegistry;
@@ -30,14 +30,14 @@ public class CalendarSyncScheduler {
 
     public CalendarSyncScheduler(CalendarConnectionRepository connectionRepository,
                                  CalendarEventIngestionService ingestionService,
-                                 ExternalCalendarSyncClient syncClient,
+                                 CalendarSyncClientRegistry syncClientRegistry,
                                  SlotCacheVersionService slotCacheVersionService,
                                  CalendarConnectionWriteService connectionWriteService,
                                  PlatformTransactionManager transactionManager,
                                  MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.ingestionService = ingestionService;
-        this.syncClient = syncClient;
+        this.syncClientRegistry = syncClientRegistry;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.meterRegistry = meterRegistry;
@@ -75,12 +75,14 @@ public class CalendarSyncScheduler {
         long connectionStart = System.nanoTime();
         CalendarConnectionStatus previousStatus = connection.getStatus();
         String expectedCursor = connection.getProviderSyncCursor();
+        ExternalCalendarSyncClient syncClient = syncClientRegistry.clientFor(connection);
+        String providerTag = connection.getProvider() == null ? "unknown" : connection.getProvider().name().toLowerCase();
         try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
                 ingestionService.upsertEvents(connection.getId(), batch.events(), SyncSourceAttribution.PULL_SYNC);
                 if (batch.events().isEmpty()) {
-                    meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", "google", "source", "PULL_SYNC")
+                    meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", providerTag, "source", "PULL_SYNC")
                             .increment();
                 }
                 if (batch.nextCursor() != null) {

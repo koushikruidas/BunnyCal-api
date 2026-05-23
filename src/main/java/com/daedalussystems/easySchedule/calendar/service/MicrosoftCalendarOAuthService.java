@@ -35,7 +35,7 @@ public class MicrosoftCalendarOAuthService {
     private final OAuthStateService stateService;
     private final TokenCipher tokenCipher;
     private final CalendarEventIngestionService ingestionService;
-    private final ExternalCalendarSyncClient syncClient;
+    private final CalendarSyncClientRegistry syncClientRegistry;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final String webhookAddress;
@@ -48,7 +48,7 @@ public class MicrosoftCalendarOAuthService {
                                          OAuthStateService stateService,
                                          TokenCipher tokenCipher,
                                          CalendarEventIngestionService ingestionService,
-                                         ExternalCalendarSyncClient syncClient,
+                                         CalendarSyncClientRegistry syncClientRegistry,
                                          SlotCacheVersionService slotCacheVersionService,
                                          CalendarConnectionWriteService connectionWriteService,
                                          @Value("${calendar.webhook.provider.microsoft.address:http://localhost:8080/integrations/calendar/webhooks/microsoft}") String webhookAddress,
@@ -60,7 +60,7 @@ public class MicrosoftCalendarOAuthService {
         this.stateService = stateService;
         this.tokenCipher = tokenCipher;
         this.ingestionService = ingestionService;
-        this.syncClient = syncClient;
+        this.syncClientRegistry = syncClientRegistry;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.webhookAddress = webhookAddress;
@@ -127,6 +127,7 @@ public class MicrosoftCalendarOAuthService {
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
+            ExternalCalendarSyncClient syncClient = syncClientRegistry.clientFor(saved);
             ExternalCalendarSyncClient.SyncBatch fullBatch =
                     syncClient.fetchFull(saved, SyncSourceAttribution.USER_ACTION);
             ingestionService.upsertEvents(saved.getId(), fullBatch.events(), SyncSourceAttribution.USER_ACTION);

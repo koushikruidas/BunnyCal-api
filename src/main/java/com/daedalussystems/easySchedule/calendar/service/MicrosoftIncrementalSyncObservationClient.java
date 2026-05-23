@@ -3,15 +3,14 @@ package com.daedalussystems.easySchedule.calendar.service;
 import com.daedalussystems.easySchedule.calendar.auth.TokenRefresher;
 import com.daedalussystems.easySchedule.calendar.client.MicrosoftApiClient;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.List;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "microsoft")
 public class MicrosoftIncrementalSyncObservationClient implements ExternalCalendarSyncClient {
     private final MicrosoftApiClient microsoftApiClient;
     private final TokenRefresher tokenRefresher;
@@ -23,6 +22,11 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
         this.microsoftApiClient = microsoftApiClient;
         this.tokenRefresher = tokenRefresher;
         this.meterRegistry = meterRegistry;
+    }
+
+    @Override
+    public CalendarProviderType provider() {
+        return CalendarProviderType.MICROSOFT;
     }
 
     @Override

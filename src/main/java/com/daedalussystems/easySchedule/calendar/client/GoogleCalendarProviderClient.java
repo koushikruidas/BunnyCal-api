@@ -20,12 +20,16 @@ import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "google", matchIfMissing = true)
 public class GoogleCalendarProviderClient implements CalendarProviderClient {
+
+    @Override
+    public CalendarProviderType providerType() {
+        return CalendarProviderType.GOOGLE;
+    }
+
     private static final Logger log = LoggerFactory.getLogger(GoogleCalendarProviderClient.class);
     private final BookingRepository bookingRepository;
     private final EventTypeRepository eventTypeRepository;

@@ -25,7 +25,7 @@ public class CalendarWebhookIngestionService {
 
     private final CalendarWebhookDedupService dedupService;
     private final CalendarConnectionRepository connectionRepository;
-    private final ExternalCalendarSyncClient syncClient;
+    private final CalendarSyncClientRegistry syncClientRegistry;
     private final CalendarEventIngestionService ingestionService;
     private final CalendarWebhookReplayCaptureService replayCaptureService;
     private final CalendarConnectionWriteService connectionWriteService;
@@ -41,7 +41,7 @@ public class CalendarWebhookIngestionService {
     public CalendarWebhookIngestionService(
             CalendarWebhookDedupService dedupService,
             CalendarConnectionRepository connectionRepository,
-            ExternalCalendarSyncClient syncClient,
+            CalendarSyncClientRegistry syncClientRegistry,
             CalendarEventIngestionService ingestionService,
             CalendarWebhookReplayCaptureService replayCaptureService,
             CalendarConnectionWriteService connectionWriteService,
@@ -52,7 +52,7 @@ public class CalendarWebhookIngestionService {
             @Value("${calendar.webhook.provider.microsoft.enabled:false}") boolean microsoftWebhookEnabled) {
         this.dedupService = dedupService;
         this.connectionRepository = connectionRepository;
-        this.syncClient = syncClient;
+        this.syncClientRegistry = syncClientRegistry;
         this.ingestionService = ingestionService;
         this.replayCaptureService = replayCaptureService;
         this.connectionWriteService = connectionWriteService;
@@ -134,6 +134,7 @@ public class CalendarWebhookIngestionService {
                     .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection not found."));
             CalendarConnectionStatus prevStatus = connection.getStatus();
             String expectedCursor = connection.getProviderSyncCursor();
+            ExternalCalendarSyncClient syncClient = syncClientRegistry.clientFor(connection);
             try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.WEBHOOK);

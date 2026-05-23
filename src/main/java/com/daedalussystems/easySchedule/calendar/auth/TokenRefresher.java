@@ -1,10 +1,10 @@
 package com.daedalussystems.easySchedule.calendar.auth;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
-import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.calendar.service.CalendarConnectionWriteService;
 import io.micrometer.core.instrument.Counter;
@@ -28,7 +28,7 @@ public class TokenRefresher {
 
     private final CalendarConnectionRepository connectionRepository;
     private final TokenCipher tokenCipher;
-    private final GoogleApiClient googleApiClient;
+    private final CalendarTokenClientRegistry tokenClientRegistry;
     private final CalendarConnectionWriteService connectionWriteService;
     private final AccessTokenCache accessTokenCache;
     private final Counter tokenRefreshFailureCount;
@@ -36,13 +36,13 @@ public class TokenRefresher {
 
     public TokenRefresher(CalendarConnectionRepository connectionRepository,
                           TokenCipher tokenCipher,
-                          GoogleApiClient googleApiClient,
+                          CalendarTokenClientRegistry tokenClientRegistry,
                           CalendarConnectionWriteService connectionWriteService,
                           AccessTokenCache accessTokenCache,
                           MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.tokenCipher = tokenCipher;
-        this.googleApiClient = googleApiClient;
+        this.tokenClientRegistry = tokenClientRegistry;
         this.connectionWriteService = connectionWriteService;
         this.accessTokenCache = accessTokenCache;
         this.tokenRefreshFailureCount = meterRegistry.counter("token_refresh_failures_count");
@@ -96,17 +96,25 @@ public class TokenRefresher {
     }
 
     private String refreshConnectionToken(CalendarConnection connection) {
+        CalendarProviderType provider = connection.getProvider();
+        if (provider == null) {
+            throw new IllegalStateException(
+                    "Calendar connection " + connection.getId() + " is missing provider; cannot refresh token");
+        }
+        CalendarTokenClient tokenClient = tokenClientRegistry.clientFor(provider);
         String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
         try {
-            TokenRefreshResult refresh = googleApiClient.refreshAccessToken(refreshToken);
+            TokenRefreshResult refresh = tokenClient.refreshAccessToken(refreshToken);
             String token = saveRefreshedToken(connection.getId(), refresh.accessToken(), refresh.expiresAt(), connection.getLastSyncedAt());
             accessTokenCache.put(connection.getId(), token, refresh.expiresAt());
             tokenRefreshSuccessCount.increment();
-            log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\"}}", connection.getId());
+            log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\",\"provider\":\"{}\"}}",
+                    connection.getId(), provider);
             return token;
         } catch (RuntimeException ex) {
             tokenRefreshFailureCount.increment();
-            log.warn("{{\"event\":\"token_refresh_failure\",\"connectionId\":\"{}\"}}", connection.getId(), ex);
+            log.warn("{{\"event\":\"token_refresh_failure\",\"connectionId\":\"{}\",\"provider\":\"{}\"}}",
+                    connection.getId(), provider, ex);
             markFailed(connection, resolveErrorCode(ex), isRevokedError(ex));
             throw ex;
         }

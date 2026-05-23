@@ -89,6 +89,8 @@ public class SecurityConfig {
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/oauth2/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers("/auth/providers", "/auth/refresh").permitAll()
+                        .requestMatchers("/auth/logout", "/auth/session").authenticated()
                         .requestMatchers("/integrations/calendar/google/callback").permitAll()
                         .requestMatchers("/integrations/calendar/*/callback").permitAll()
                         .requestMatchers("/integrations/conferencing/*/callback").permitAll()

@@ -50,10 +50,25 @@ public class BookingController {
 
     @GetMapping("/hosts/{hostId}/meetings")
     public ResponseEntity<ApiResponse<List<MeetingSummaryResponse>>> listHostMeetings(
+            Authentication authentication,
             @PathVariable UUID hostId,
             @RequestParam(name = "upcomingOnly", defaultValue = "true") boolean upcomingOnly,
             @RequestParam(name = "limit", required = false) Integer limit) {
+        UUID authenticatedUserId = extractUserId(authentication);
+        if (!authenticatedUserId.equals(hostId)) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
         List<MeetingSummaryResponse> meetings = meetingQueryService.listHostMeetings(hostId, upcomingOnly, limit);
+        return ResponseEntity.ok(ApiResponse.success(meetings));
+    }
+
+    @GetMapping("/me/meetings")
+    public ResponseEntity<ApiResponse<List<MeetingSummaryResponse>>> listMyMeetings(
+            Authentication authentication,
+            @RequestParam(name = "upcomingOnly", defaultValue = "true") boolean upcomingOnly,
+            @RequestParam(name = "limit", required = false) Integer limit) {
+        UUID authenticatedUserId = extractUserId(authentication);
+        List<MeetingSummaryResponse> meetings = meetingQueryService.listHostMeetings(authenticatedUserId, upcomingOnly, limit);
         return ResponseEntity.ok(ApiResponse.success(meetings));
     }
 

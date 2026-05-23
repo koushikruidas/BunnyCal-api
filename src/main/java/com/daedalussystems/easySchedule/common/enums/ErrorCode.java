@@ -36,7 +36,9 @@ public enum ErrorCode {
     TOO_MANY_PENDING_BOOKINGS("TOO_MANY_PENDING_BOOKINGS",
             "Too many pending bookings overlap this time window. Try again later."),
     INVALID_STATE_TRANSITION("INVALID_STATE_TRANSITION",
-            "Booking is not in the expected state or version — concurrent update may have occurred.");
+            "Booking is not in the expected state or version — concurrent update may have occurred."),
+    CONFERENCING_DISCONNECT_NOT_SUPPORTED("CONFERENCING_DISCONNECT_NOT_SUPPORTED",
+            "This conferencing provider cannot be disconnected on its own.");
 
     private final String code;
     private final String message;

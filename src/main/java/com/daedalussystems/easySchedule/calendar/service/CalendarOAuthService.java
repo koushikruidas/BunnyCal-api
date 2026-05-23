@@ -37,7 +37,7 @@ public class CalendarOAuthService {
     private final OAuthStateService stateService;
     private final TokenCipher tokenCipher;
     private final CalendarEventIngestionService ingestionService;
-    private final ExternalCalendarSyncClient syncClient;
+    private final CalendarSyncClientRegistry syncClientRegistry;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final MeterRegistry meterRegistry;
@@ -50,7 +50,7 @@ public class CalendarOAuthService {
                                 OAuthStateService stateService,
                                 TokenCipher tokenCipher,
                                 CalendarEventIngestionService ingestionService,
-                                ExternalCalendarSyncClient syncClient,
+                                CalendarSyncClientRegistry syncClientRegistry,
                                 SlotCacheVersionService slotCacheVersionService,
                                 CalendarConnectionWriteService connectionWriteService,
                                 MeterRegistry meterRegistry,
@@ -62,7 +62,7 @@ public class CalendarOAuthService {
         this.stateService = stateService;
         this.tokenCipher = tokenCipher;
         this.ingestionService = ingestionService;
-        this.syncClient = syncClient;
+        this.syncClientRegistry = syncClientRegistry;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.meterRegistry = meterRegistry;
@@ -140,6 +140,7 @@ public class CalendarOAuthService {
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
+            ExternalCalendarSyncClient syncClient = syncClientRegistry.clientFor(saved);
             ExternalCalendarSyncClient.SyncBatch fullBatch =
                     syncClient.fetchFull(saved, SyncSourceAttribution.USER_ACTION);
             ingestionService.upsertEvents(saved.getId(), fullBatch.events(), SyncSourceAttribution.USER_ACTION);

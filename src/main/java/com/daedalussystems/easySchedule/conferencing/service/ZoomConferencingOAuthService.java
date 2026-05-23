@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStatePayload;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
 import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import com.daedalussystems.easySchedule.conferencing.client.ZoomApiClient;
 import com.daedalussystems.easySchedule.conferencing.domain.ConferencingConnectionStatus;
 import com.daedalussystems.easySchedule.conferencing.domain.ZoomConferencingConnection;
@@ -19,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 
 @Service
-public class ZoomConferencingOAuthService {
+public class ZoomConferencingOAuthService implements ConferencingOAuthService {
     private final ZoomConferencingConnectionRepository repository;
     private final ZoomApiClient zoomApiClient;
     private final OAuthStateService stateService;
@@ -44,6 +45,17 @@ public class ZoomConferencingOAuthService {
         this.redirectUri = redirectUri;
     }
 
+    @Override
+    public ConferencingProviderType providerType() {
+        return ConferencingProviderType.ZOOM;
+    }
+
+    @Override
+    public ConferencingProviderCapabilities capabilities() {
+        return ConferencingProviderCapabilities.standalone();
+    }
+
+    @Override
     public String buildConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
         Assert.hasText(clientId, "Zoom clientId must not be empty");
         String state = stateService.generate(userId,
@@ -57,8 +69,9 @@ public class ZoomConferencingOAuthService {
                 + "&state=" + enc(state);
     }
 
+    @Override
     @Transactional
-    public OAuthCallbackResult handleCallback(String code, String state) {
+    public CallbackResult handleCallback(String code, String state) {
         OAuthStatePayload payload = stateService.validateAndExtract(state);
         UUID userId = payload.userId();
         if (userId == null) {
@@ -76,9 +89,10 @@ public class ZoomConferencingOAuthService {
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
         repository.save(connection);
-        return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
+        return new CallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
+    @Override
     @Transactional(readOnly = true)
     public String status(UUID userId) {
         return repository.findByUserId(userId)
@@ -90,6 +104,7 @@ public class ZoomConferencingOAuthService {
                 .orElse("NOT_CONNECTED");
     }
 
+    @Override
     @Transactional
     public void disconnect(UUID userId) {
         Optional<ZoomConferencingConnection> existing = repository.findByUserId(userId);
@@ -105,8 +120,6 @@ public class ZoomConferencingOAuthService {
         connection.setStatus(ConferencingConnectionStatus.REVOKED);
         repository.save(connection);
     }
-
-    public record OAuthCallbackResult(String source, String returnTo, String bookingSessionId) {}
 
     private static String enc(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);

@@ -10,8 +10,8 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.UUID;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
@@ -20,7 +20,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String AUTHORIZATION_HEADER = "Authorization";
@@ -28,6 +27,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String ACCESS_TOKEN_COOKIE = "accessToken";
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final boolean cookieFallbackEnabled;
+
+    public JwtAuthenticationFilter(
+            JwtTokenProvider jwtTokenProvider,
+            @Value("${auth.access-token.cookie-fallback-enabled:false}") boolean cookieFallbackEnabled
+    ) {
+        this.jwtTokenProvider = jwtTokenProvider;
+        this.cookieFallbackEnabled = cookieFallbackEnabled;
+    }
 
     @Override
     protected void doFilterInternal(
@@ -90,8 +98,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             }
         }
 
-        // 🔹 2. Fallback to HttpOnly cookie
-        return getCookieValue(request, ACCESS_TOKEN_COOKIE);
+        // 🔹 2. Optional fallback to HttpOnly cookie (temporary transition mode)
+        if (cookieFallbackEnabled) {
+            return getCookieValue(request, ACCESS_TOKEN_COOKIE);
+        }
+        return null;
     }
 
     private String getCookieValue(HttpServletRequest request, String name) {

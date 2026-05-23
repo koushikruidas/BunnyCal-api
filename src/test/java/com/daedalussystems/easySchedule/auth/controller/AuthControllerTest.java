@@ -9,8 +9,9 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.auth.domain.token.RefreshToken;
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.dto.AuthResponse;
-import com.daedalussystems.easySchedule.auth.dto.LogoutRequest;
 import com.daedalussystems.easySchedule.auth.dto.RefreshRequest;
+import com.daedalussystems.easySchedule.auth.repository.AuthIdentityRepository;
+import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.auth.security.jwt.JwtTokenProvider;
 import com.daedalussystems.easySchedule.auth.service.RefreshTokenService;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
@@ -22,6 +23,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 
 class AuthControllerTest {
 
@@ -31,12 +34,23 @@ class AuthControllerTest {
     @Mock
     private JwtTokenProvider jwtTokenProvider;
 
+    @Mock
+    private UserRepository userRepository;
+
+    @Mock
+    private AuthIdentityRepository authIdentityRepository;
+
     private AuthController authController;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        authController = new AuthController(refreshTokenService, jwtTokenProvider);
+        authController = new AuthController(
+                refreshTokenService,
+                jwtTokenProvider,
+                userRepository,
+                authIdentityRepository
+        );
     }
 
     @Test
@@ -71,21 +85,16 @@ class AuthControllerTest {
     @Test
     void logoutRevokesTokensAndDeletesCookies() {
         UUID userId = UUID.randomUUID();
+        Authentication authentication = new UsernamePasswordAuthenticationToken(userId, null);
 
-        // 🔥 mock response
         HttpServletResponse responseMock = org.mockito.Mockito.mock(HttpServletResponse.class);
 
-        ApiResponse<Void> response = authController.logout(
-                responseMock,
-                LogoutRequest.builder().userId(userId).build()
-        );
+        ApiResponse<Void> response = authController.logout(authentication, responseMock);
 
         assertEquals(true, response.isSuccess());
 
-        // ✅ verify DB cleanup
         verify(refreshTokenService, times(1)).deleteByUserId(userId);
 
-        // ✅ verify cookie deletion
         verify(refreshTokenService, times(1))
                 .deleteCookie(responseMock, "refreshToken", "/");
 

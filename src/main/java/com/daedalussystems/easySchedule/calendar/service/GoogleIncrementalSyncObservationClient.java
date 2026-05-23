@@ -4,17 +4,16 @@ import com.daedalussystems.easySchedule.calendar.auth.TokenRefresher;
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "google", matchIfMissing = true)
 public class GoogleIncrementalSyncObservationClient implements ExternalCalendarSyncClient {
     private final GoogleApiClient googleApiClient;
     private final TokenRefresher tokenRefresher;
@@ -35,6 +34,11 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
         this.incrementalEnabled = incrementalEnabled;
         this.shadowMode = shadowMode;
         this.staleCursorMaxAge = Duration.ofHours(Math.max(1, staleCursorMaxAgeHours));
+    }
+
+    @Override
+    public CalendarProviderType provider() {
+        return CalendarProviderType.GOOGLE;
     }
 
     @Override

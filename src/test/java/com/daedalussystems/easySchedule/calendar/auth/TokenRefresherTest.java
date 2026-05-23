@@ -6,19 +6,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.eq;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
-import com.daedalussystems.easySchedule.calendar.client.GoogleApiClient;
 import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.calendar.service.CalendarConnectionWriteService;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -36,7 +36,7 @@ class TokenRefresherTest {
     @Mock
     private TokenCipher tokenCipher;
     @Mock
-    private GoogleApiClient googleApiClient;
+    private CalendarTokenClient googleTokenClient;
     @Mock
     private CalendarConnectionWriteService connectionWriteService;
     @Mock
@@ -46,7 +46,9 @@ class TokenRefresherTest {
 
     @BeforeEach
     void setUp() {
-        tokenRefresher = new TokenRefresher(repository, tokenCipher, googleApiClient, connectionWriteService, accessTokenCache, new SimpleMeterRegistry());
+        lenient().when(googleTokenClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
+        CalendarTokenClientRegistry registry = new CalendarTokenClientRegistry(List.of(googleTokenClient));
+        tokenRefresher = new TokenRefresher(repository, tokenCipher, registry, connectionWriteService, accessTokenCache, new SimpleMeterRegistry());
         lenient().when(connectionWriteService.markActive(any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         lenient().when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         lenient().when(accessTokenCache.get(any())).thenReturn(Optional.empty());
@@ -58,7 +60,7 @@ class TokenRefresherTest {
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
         when(repository.findById(id)).thenReturn(Optional.of(conn));
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
-        when(googleApiClient.refreshAccessToken("refresh"))
+        when(googleTokenClient.refreshAccessToken("refresh"))
                 .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
 
         String result = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
@@ -73,7 +75,7 @@ class TokenRefresherTest {
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.ACTIVE);
         when(repository.findById(id)).thenReturn(Optional.of(conn));
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
-        when(googleApiClient.refreshAccessToken("refresh"))
+        when(googleTokenClient.refreshAccessToken("refresh"))
                 .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
         when(accessTokenCache.get(id))
                 .thenReturn(Optional.empty())
@@ -84,10 +86,10 @@ class TokenRefresherTest {
 
         assertEquals("ok:new-token", first);
         assertEquals("ok2:new-token", second);
-        verify(googleApiClient, times(1)).refreshAccessToken("refresh");
+        verify(googleTokenClient, times(1)).refreshAccessToken("refresh");
         verify(connectionWriteService, times(1)).markActive(any(), any(), any(), any());
         verify(accessTokenCache, times(1)).put(any(), any(), any());
-        verifyNoMoreInteractions(googleApiClient);
+        verify(googleTokenClient, times(1)).refreshAccessToken(any());
     }
 
     @Test
@@ -97,7 +99,7 @@ class TokenRefresherTest {
 
         when(repository.findById(id)).thenReturn(Optional.of(conn));
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
-        when(googleApiClient.refreshAccessToken("refresh"))
+        when(googleTokenClient.refreshAccessToken("refresh"))
                 .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
 
         final int[] attempts = {0};
@@ -120,7 +122,7 @@ class TokenRefresherTest {
 
         when(repository.findById(id)).thenReturn(Optional.of(conn));
         when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
-        when(googleApiClient.refreshAccessToken("refresh"))
+        when(googleTokenClient.refreshAccessToken("refresh"))
                 .thenThrow(new RuntimeException("refresh failed"));
 
         assertThrows(RuntimeException.class,
@@ -138,7 +140,7 @@ class TokenRefresherTest {
         assertThrows(IllegalStateException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> token));
 
-        verify(googleApiClient, never()).refreshAccessToken(any());
+        verify(googleTokenClient, never()).refreshAccessToken(any());
     }
 
     @Test
@@ -151,11 +153,12 @@ class TokenRefresherTest {
         assertThrows(IllegalStateException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> token));
 
-        verify(googleApiClient, never()).refreshAccessToken(any());
+        verify(googleTokenClient, never()).refreshAccessToken(any());
     }
 
     private static CalendarConnection connection(UUID id, Instant expiresAt, CalendarConnectionStatus status) {
         CalendarConnection conn = new CalendarConnection();
+        conn.setProvider(CalendarProviderType.GOOGLE);
         conn.setLastTokenExpiresAt(expiresAt);
         conn.setStatus(status);
         conn.setRefreshTokenCiphertext("cipher");

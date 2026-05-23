@@ -2,6 +2,7 @@ package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.client.CalendarProviderClient;
+import com.daedalussystems.easySchedule.calendar.client.CalendarProviderClientRegistry;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarOperationStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderOperation;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
@@ -18,12 +19,12 @@ public class DefaultCalendarService implements CalendarService {
     private static final Duration CREATING_STALE_TIMEOUT = Duration.ofSeconds(30);
     private static final Logger log = LoggerFactory.getLogger(DefaultCalendarService.class);
 
-    private final CalendarProviderClient providerClient;
+    private final CalendarProviderClientRegistry providerClientRegistry;
     private final CalendarProviderOperationRepository operationRepository;
 
-    public DefaultCalendarService(CalendarProviderClient providerClient,
+    public DefaultCalendarService(CalendarProviderClientRegistry providerClientRegistry,
                                   CalendarProviderOperationRepository operationRepository) {
-        this.providerClient = providerClient;
+        this.providerClientRegistry = providerClientRegistry;
         this.operationRepository = operationRepository;
     }
 
@@ -54,6 +55,7 @@ public class DefaultCalendarService implements CalendarService {
 
         CalendarProviderClient.CreateEventDetails created;
         try {
+            CalendarProviderClient providerClient = providerClientRegistry.clientFor(provider);
             created = providerClient.createEvent(
                     command.internalId(),
                     command.provider(),
@@ -92,6 +94,7 @@ public class DefaultCalendarService implements CalendarService {
 
     @Override
     public String updateEvent(UpdateCalendarEventCommand command) {
+        CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
         return providerClient.updateEvent(
                 command.internalId(),
                 command.provider(),
@@ -102,12 +105,14 @@ public class DefaultCalendarService implements CalendarService {
 
     @Override
     public void deleteEvent(DeleteCalendarEventCommand command) {
+        CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
         providerClient.deleteEvent(command.internalId(), command.provider(), command.externalEventId());
     }
 
     @Override
     public ObserveEventResult observeEvent(ObserveEventCommand command) {
         try {
+            CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
             boolean exists = providerClient.eventExists(
                     command.internalId(),
                     command.provider(),

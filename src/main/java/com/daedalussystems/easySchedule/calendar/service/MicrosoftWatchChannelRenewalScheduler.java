@@ -1,8 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
-import com.daedalussystems.easySchedule.calendar.auth.TokenCipher;
+import com.daedalussystems.easySchedule.calendar.auth.TokenRefresher;
 import com.daedalussystems.easySchedule.calendar.client.MicrosoftApiClient;
-import com.daedalussystems.easySchedule.calendar.client.TokenRefreshResult;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
@@ -26,7 +25,7 @@ public class MicrosoftWatchChannelRenewalScheduler {
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarConnectionWriteService connectionWriteService;
     private final MicrosoftApiClient microsoftApiClient;
-    private final TokenCipher tokenCipher;
+    private final TokenRefresher tokenRefresher;
     private final MeterRegistry meterRegistry;
     private final String webhookClientState;
     private final String webhookAddress;
@@ -36,7 +35,7 @@ public class MicrosoftWatchChannelRenewalScheduler {
     public MicrosoftWatchChannelRenewalScheduler(CalendarConnectionRepository connectionRepository,
                                                  CalendarConnectionWriteService connectionWriteService,
                                                  MicrosoftApiClient microsoftApiClient,
-                                                 TokenCipher tokenCipher,
+                                                 TokenRefresher tokenRefresher,
                                                  MeterRegistry meterRegistry,
                                                  @Value("${calendar.webhook.shared-secret:}") String webhookClientState,
                                                  @Value("${calendar.webhook.provider.microsoft.address:http://localhost:8080/integrations/calendar/webhooks/microsoft}") String webhookAddress,
@@ -45,7 +44,7 @@ public class MicrosoftWatchChannelRenewalScheduler {
         this.connectionRepository = connectionRepository;
         this.connectionWriteService = connectionWriteService;
         this.microsoftApiClient = microsoftApiClient;
-        this.tokenCipher = tokenCipher;
+        this.tokenRefresher = tokenRefresher;
         this.meterRegistry = meterRegistry;
         this.webhookClientState = webhookClientState;
         this.webhookAddress = webhookAddress;
@@ -67,8 +66,15 @@ public class MicrosoftWatchChannelRenewalScheduler {
                 continue;
             }
             try {
-                String accessToken = refreshAccessToken(connection);
-                renewOrCreate(accessToken, connection);
+                MicrosoftApiClient.WebhookSubscription subscription = tokenRefresher.executeWithValidToken(
+                        connection.getId(),
+                        accessToken -> renewOrCreate(accessToken, connection));
+                connectionWriteService.updateWebhookChannel(
+                        connection.getId(),
+                        subscription.subscriptionId(),
+                        subscription.resourceId(),
+                        subscription.expiresAt(),
+                        "microsoft_webhook_renewal");
                 meterRegistry.counter("webhook_renewal_attempts_total", "provider", "microsoft", "outcome", "success").increment();
             } catch (RuntimeException ex) {
                 meterRegistry.counter("webhook_renewal_attempts_total", "provider", "microsoft", "outcome", "failure").increment();
@@ -77,31 +83,12 @@ public class MicrosoftWatchChannelRenewalScheduler {
         }
     }
 
-    private void renewOrCreate(String accessToken, CalendarConnection connection) {
+    private MicrosoftApiClient.WebhookSubscription renewOrCreate(String accessToken, CalendarConnection connection) {
         Instant expiresAt = Instant.now().plusSeconds(ttlSeconds);
         String subscriptionId = connection.getWebhookChannelId();
-        MicrosoftApiClient.WebhookSubscription subscription;
         if (subscriptionId != null && !subscriptionId.isBlank()) {
-            subscription = microsoftApiClient.renewEventSubscription(accessToken, subscriptionId, expiresAt);
-        } else {
-            subscription = microsoftApiClient.createEventSubscription(accessToken, webhookAddress, webhookClientState, expiresAt);
+            return microsoftApiClient.renewEventSubscription(accessToken, subscriptionId, expiresAt);
         }
-        connectionWriteService.updateWebhookChannel(
-                connection.getId(),
-                subscription.subscriptionId(),
-                subscription.resourceId(),
-                subscription.expiresAt(),
-                "microsoft_webhook_renewal");
-    }
-
-    private String refreshAccessToken(CalendarConnection connection) {
-        String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
-        TokenRefreshResult refreshResult = microsoftApiClient.refreshAccessToken(refreshToken);
-        connectionWriteService.markActive(
-                connection.getId(),
-                refreshResult.expiresAt(),
-                connection.getLastSyncedAt(),
-                "microsoft_webhook_renewal_token_refresh");
-        return refreshResult.accessToken();
+        return microsoftApiClient.createEventSubscription(accessToken, webhookAddress, webhookClientState, expiresAt);
     }
 }

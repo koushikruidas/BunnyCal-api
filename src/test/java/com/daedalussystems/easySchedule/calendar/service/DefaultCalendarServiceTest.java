@@ -1,16 +1,19 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.calendar.client.CalendarProviderClient;
+import com.daedalussystems.easySchedule.calendar.client.CalendarProviderClientRegistry;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarOperationStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderOperation;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarProviderOperationRepository;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.time.Instant;
@@ -31,7 +34,9 @@ class DefaultCalendarServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new DefaultCalendarService(providerClient, operationRepository);
+        lenient().when(providerClient.providerType()).thenReturn(CalendarProviderType.GOOGLE);
+        CalendarProviderClientRegistry registry = new CalendarProviderClientRegistry(List.of(providerClient));
+        service = new DefaultCalendarService(registry, operationRepository);
     }
 
     @Test

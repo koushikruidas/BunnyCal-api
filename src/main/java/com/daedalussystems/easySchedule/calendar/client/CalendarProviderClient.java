@@ -1,9 +1,12 @@
 package com.daedalussystems.easySchedule.calendar.client;
 
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.UUID;
 
 public interface CalendarProviderClient {
+    CalendarProviderType providerType();
+
     CreateEventDetails createEvent(UUID internalId,
                                    String provider,
                                    String idempotencyKey,

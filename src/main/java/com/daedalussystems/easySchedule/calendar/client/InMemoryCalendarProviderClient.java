@@ -1,17 +1,24 @@
 package com.daedalussystems.easySchedule.calendar.client;
 
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
 
-@Component
-@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "in-memory")
 public class InMemoryCalendarProviderClient implements CalendarProviderClient {
+    private final CalendarProviderType providerType;
     private final Map<String, String> eventsByIdempotency = new ConcurrentHashMap<>();
     private final Map<String, String> eventsByExternalId = new ConcurrentHashMap<>();
+
+    public InMemoryCalendarProviderClient(CalendarProviderType providerType) {
+        this.providerType = providerType;
+    }
+
+    @Override
+    public CalendarProviderType providerType() {
+        return providerType;
+    }
 
     @Override
     public CreateEventDetails createEvent(UUID internalId,

@@ -18,12 +18,16 @@ import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRe
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Locale;
 import java.util.UUID;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "calendar.provider.mode", havingValue = "microsoft")
 public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
+
+    @Override
+    public CalendarProviderType providerType() {
+        return CalendarProviderType.MICROSOFT;
+    }
+
     private final BookingRepository bookingRepository;
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;

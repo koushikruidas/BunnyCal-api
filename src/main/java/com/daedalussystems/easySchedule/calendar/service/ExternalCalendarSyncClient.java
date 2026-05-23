@@ -1,10 +1,13 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import java.util.List;
 
 public interface ExternalCalendarSyncClient {
+    CalendarProviderType provider();
+
     SyncBatch fetchIncremental(CalendarConnection connection, SyncSourceAttribution sourceAttribution)
             throws SyncTokenInvalidException;
 

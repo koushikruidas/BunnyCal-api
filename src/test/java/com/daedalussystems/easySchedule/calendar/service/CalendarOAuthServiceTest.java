@@ -72,8 +72,10 @@ class CalendarOAuthServiceTest {
         securityProperties = new CalendarSecurityProperties();
         securityProperties.setOauthStateSecret("state-secret");
         stateService = new OAuthStateService(securityProperties, new ObjectMapper());
+        when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
+        CalendarSyncClientRegistry syncClientRegistry = new CalendarSyncClientRegistry(List.of(syncClient));
         service = new CalendarOAuthService(
-                repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClient, slotCacheVersionService, connectionWriteService,
+                repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClientRegistry, slotCacheVersionService, connectionWriteService,
                 new SimpleMeterRegistry(),
                 "http://localhost:8080/integrations/calendar/webhooks/google", "secret");
         when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
