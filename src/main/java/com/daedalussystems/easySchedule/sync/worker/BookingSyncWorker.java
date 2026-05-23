@@ -15,10 +15,13 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -50,6 +53,7 @@ public class BookingSyncWorker {
     private final Timer syncLatency;
     private final ConcurrentMap<String, Timer> providerLatencyTimers = new ConcurrentHashMap<>();
     private final TransactionTemplate txTemplate;
+    private final ObjectMapper objectMapper;
 
     @Autowired
     public BookingSyncWorker(CalendarSyncJobRepository syncJobRepository,
@@ -61,7 +65,8 @@ public class BookingSyncWorker {
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              ObjectProvider<ConferencingCoordinator> conferencingCoordinatorProvider,
                              PlatformTransactionManager transactionManager,
-                             MeterRegistry meterRegistry) {
+                             MeterRegistry meterRegistry,
+                             ObjectMapper objectMapper) {
         this.syncJobRepository = syncJobRepository;
         this.bookingRepository = bookingRepository;
         this.calendarService = calendarService;
@@ -73,6 +78,7 @@ public class BookingSyncWorker {
         log.info("conferencing_coordinator_injection coordinatorAvailable={}",
                 this.conferencingCoordinator != null);
         this.meterRegistry = meterRegistry;
+        this.objectMapper = objectMapper;
         this.txTemplate = new TransactionTemplate(transactionManager);
         this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.syncSuccessCount = meterRegistry.counter("sync_success_count");
@@ -91,10 +97,11 @@ public class BookingSyncWorker {
                       ConnectionRateLimitBreaker rateLimitBreaker,
                       IdempotencyKeyFactory idempotencyKeyFactory,
                       PlatformTransactionManager transactionManager,
-                      MeterRegistry meterRegistry) {
+                      MeterRegistry meterRegistry,
+                      ObjectMapper objectMapper) {
         this(syncJobRepository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
                 rateLimitBreaker, idempotencyKeyFactory, new DefaultListableBeanFactory().getBeanProvider(ConferencingCoordinator.class),
-                transactionManager, meterRegistry);
+                transactionManager, meterRegistry, objectMapper);
     }
 
     public int processPending(int batchSize) {
@@ -176,7 +183,14 @@ public class BookingSyncWorker {
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
-            syncJobRepository.markSynced(job.getId(), job.getVersion(), result.externalEventId());
+            syncJobRepository.markSyncedWithMetadata(
+                    job.getId(),
+                    job.getVersion(),
+                    result.externalEventId(),
+                    result.providerEventUrl(),
+                    resolveConferenceUrl(result, instruction),
+                    resolveConferenceProvider(instruction),
+                    toConferenceMetadataJson(instruction));
             return;
         }
         handleFailure(job, result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode());
@@ -198,7 +212,14 @@ public class BookingSyncWorker {
                         instruction
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
-        syncJobRepository.markSynced(job.getId(), job.getVersion(), externalId);
+        syncJobRepository.markSyncedWithMetadata(
+                job.getId(),
+                job.getVersion(),
+                externalId,
+                job.getProviderEventUrl(),
+                resolveConferenceUrl(null, instruction),
+                resolveConferenceProvider(instruction),
+                toConferenceMetadataJson(instruction));
     }
 
     private BookingRepository.BookingStateRow resolveState(CalendarSyncJob job) {
@@ -268,6 +289,41 @@ public class BookingSyncWorker {
         log.info("conferencing_instruction_resolved bookingId={} action=CREATE provider={} mode={} hasJoinUrl={}",
                 job.getInternalRefId(), instruction.providerType(), instruction.mode(), instruction.embedsExternalUrl());
         return instruction;
+    }
+
+    private static String resolveConferenceProvider(ConferencingInstruction instruction) {
+        if (instruction == null || instruction.providerType() == null) {
+            return null;
+        }
+        return instruction.providerType().name();
+    }
+
+    private static String resolveConferenceUrl(CalendarService.CreateEventResult result,
+                                               ConferencingInstruction instruction) {
+        if (result != null && result.conferenceUrl() != null && !result.conferenceUrl().isBlank()) {
+            return result.conferenceUrl();
+        }
+        if (instruction != null && instruction.joinUrl() != null && !instruction.joinUrl().isBlank()) {
+            return instruction.joinUrl();
+        }
+        return null;
+    }
+
+    private String toConferenceMetadataJson(ConferencingInstruction instruction) {
+        if (instruction == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "mode", String.valueOf(instruction.mode()),
+                    "meetingId", instruction.meetingId() == null ? "" : instruction.meetingId(),
+                    "hostUrl", instruction.hostUrl() == null ? "" : instruction.hostUrl()
+            ));
+        } catch (JsonProcessingException ex) {
+            log.warn("sync_job_conference_metadata_serialize_failed bookingId={} message={}",
+                    MDC.get("bookingId"), ex.getMessage());
+            return null;
+        }
     }
 
     private ConferencingInstruction resolveConferencingInstructionForUpdate(CalendarSyncJob job) {

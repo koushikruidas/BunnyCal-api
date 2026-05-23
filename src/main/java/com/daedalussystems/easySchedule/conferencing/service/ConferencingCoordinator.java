@@ -12,7 +12,10 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Owns the conferencing lifecycle for a booking. Runs BEFORE calendar sync so the
@@ -31,15 +34,19 @@ public class ConferencingCoordinator {
     private final EventTypeRepository eventTypeRepository;
     private final ConferencingProviderRegistry providerRegistry;
     private final ConferencingEventMappingRepository mappingRepository;
+    private final TransactionTemplate requiresNew;
 
     public ConferencingCoordinator(BookingRepository bookingRepository,
                                    EventTypeRepository eventTypeRepository,
                                    ConferencingProviderRegistry providerRegistry,
-                                   ConferencingEventMappingRepository mappingRepository) {
+                                   ConferencingEventMappingRepository mappingRepository,
+                                   PlatformTransactionManager transactionManager) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.providerRegistry = providerRegistry;
         this.mappingRepository = mappingRepository;
+        this.requiresNew = new TransactionTemplate(transactionManager);
+        this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Transactional
@@ -100,34 +107,37 @@ public class ConferencingCoordinator {
     private ConferencingInstruction createExternalMeeting(Booking booking,
                                                           EventType eventType,
                                                           ConferencingProviderType providerType) {
-        ConferencingEventMapping mapping = mappingRepository
-                .findByBookingIdAndProvider(booking.getId(), providerType)
-                .orElseGet(() -> newMapping(booking, providerType));
+        ConferencingInstruction instruction = requiresNew.execute(status -> {
+            ConferencingEventMapping mapping = mappingRepository
+                    .findByBookingIdAndProvider(booking.getId(), providerType)
+                    .orElseGet(() -> newMapping(booking, providerType));
 
-        if ("ACTIVE".equals(mapping.getStatus()) && mapping.getJoinUrl() != null) {
-            log.info("conferencing_prepare_existing bookingId={} provider={} meetingId={}",
-                    booking.getId(), providerType, mapping.getMeetingId());
-            return ConferencingInstruction.urlEmbedded(providerType, mapping.getJoinUrl(),
-                    mapping.getHostUrl(), mapping.getMeetingId());
-        }
+            if ("ACTIVE".equals(mapping.getStatus()) && mapping.getJoinUrl() != null) {
+                log.info("conferencing_prepare_existing bookingId={} provider={} meetingId={}",
+                        booking.getId(), providerType, mapping.getMeetingId());
+                return ConferencingInstruction.urlEmbedded(providerType, mapping.getJoinUrl(),
+                        mapping.getHostUrl(), mapping.getMeetingId());
+            }
 
-        ConferencingProvider provider = providerRegistry.resolve(providerType);
-        String topic = eventType.getName();
-        log.info("conferencing_create_meeting_invoking bookingId={} provider={} hostId={} topic={} start={} end={}",
-                booking.getId(), providerType, booking.getHostId(), topic, booking.getStartTime(), booking.getEndTime());
-        ConferencingProvider.MeetingDetails details = provider.createMeeting(
-                booking.getId(),
-                booking.getHostId(),
-                topic,
-                booking.getStartTime(),
-                booking.getEndTime());
+            ConferencingProvider provider = providerRegistry.resolve(providerType);
+            String topic = eventType.getName();
+            log.info("conferencing_create_meeting_invoking bookingId={} provider={} hostId={} topic={} start={} end={}",
+                    booking.getId(), providerType, booking.getHostId(), topic, booking.getStartTime(), booking.getEndTime());
+            ConferencingProvider.MeetingDetails details = provider.createMeeting(
+                    booking.getId(),
+                    booking.getHostId(),
+                    topic,
+                    booking.getStartTime(),
+                    booking.getEndTime());
 
-        persistMapping(mapping, providerType, details, "ACTIVE", null);
-        log.info("conferencing_prepare_created bookingId={} provider={} meetingId={} joinUrl={} hostUrlPresent={}",
-                booking.getId(), providerType, details.meetingId(), details.joinUrl(),
-                details.hostUrl() != null && !details.hostUrl().isBlank());
-        return ConferencingInstruction.urlEmbedded(providerType, details.joinUrl(),
-                details.hostUrl(), details.meetingId());
+            persistMapping(mapping, providerType, details, "ACTIVE", null);
+            log.info("conferencing_prepare_created bookingId={} provider={} meetingId={} joinUrl={} hostUrlPresent={}",
+                    booking.getId(), providerType, details.meetingId(), details.joinUrl(),
+                    details.hostUrl() != null && !details.hostUrl().isBlank());
+            return ConferencingInstruction.urlEmbedded(providerType, details.joinUrl(),
+                    details.hostUrl(), details.meetingId());
+        });
+        return instruction == null ? ConferencingInstruction.none() : instruction;
     }
 
     private ConferencingInstruction updateExternalMeeting(Booking booking,

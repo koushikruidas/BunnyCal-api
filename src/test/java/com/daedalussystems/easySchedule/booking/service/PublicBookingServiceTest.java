@@ -85,7 +85,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 false,
-                120L
+                120L,
+                "google"
         );
         Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
                 org.mockito.ArgumentMatchers.any(),
@@ -495,7 +496,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L
+                120L,
+                "google"
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -536,7 +538,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L
+                120L,
+                "google"
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -573,7 +576,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L
+                120L,
+                "google"
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -613,7 +617,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L
+                120L,
+                "google"
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
@@ -658,7 +663,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L
+                120L,
+                "google"
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
@@ -707,7 +713,8 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 false,
-                120L
+                120L,
+                "google"
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)

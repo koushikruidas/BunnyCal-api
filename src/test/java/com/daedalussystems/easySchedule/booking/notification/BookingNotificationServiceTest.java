@@ -10,6 +10,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
@@ -30,6 +32,7 @@ import jakarta.mail.internet.MimeMultipart;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
@@ -54,6 +57,7 @@ class BookingNotificationServiceTest {
     @Mock private GuestCapabilityTokenService guestCapabilityTokenService;
     @Mock private NotificationRecipientResolver recipientResolver;
     @Mock private EmailDeliverabilityPolicy deliverabilityPolicy;
+    @Mock private NotificationSendDedupService notificationSendDedupService;
 
     @Captor private ArgumentCaptor<MimeMessage> messageCaptor;
 
@@ -72,6 +76,7 @@ class BookingNotificationServiceTest {
                 guestCapabilityTokenService,
                 recipientResolver,
                 deliverabilityPolicy,
+                notificationSendDedupService,
                 true,
                 "no-reply@example.com",
                 "calendar@example.com",
@@ -82,6 +87,7 @@ class BookingNotificationServiceTest {
                 .thenReturn("token-abc");
         lenient().when(bookingManageLinkService.build(any(), any(), any(), any()))
                 .thenReturn("https://app.example.com/manage/booking?token=token-abc&u=host-user&e=discovery-call");
+        lenient().when(notificationSendDedupService.claim(any(), any(), any())).thenReturn(true);
     }
 
     @Test
@@ -250,6 +256,36 @@ class BookingNotificationServiceTest {
         assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
     }
 
+    @Test
+    void attendeeFailure_releasesClaimAndPropagatesForRetry() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 6L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        AtomicInteger sendCount = new AtomicInteger();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (sendCount.incrementAndGet() == 2) {
+                throw new RuntimeException("smtp fail for attendee");
+            }
+            return null;
+        }).when(mailSender).send(any(MimeMessage.class));
+
+        assertThrows(IllegalStateException.class, () -> service.handleOutboxEvent(event));
+
+        verify(notificationSendDedupService).release(event.getId(), "guest@example.com", "BOOKING_CONFIRMED");
+    }
+
     private static Booking booking(UUID bookingId, UUID hostId, String guestEmail, String guestName, long sequence) {
         return Booking.builder()
                 .id(bookingId)
@@ -265,6 +301,7 @@ class BookingNotificationServiceTest {
 
     private static OutboxEvent outboxEvent(UUID bookingId, String eventType) {
         OutboxEvent event = new OutboxEvent();
+        event.setId(UUID.randomUUID());
         event.setAggregateType("Booking");
         event.setAggregateId(bookingId);
         event.setEventType(eventType);

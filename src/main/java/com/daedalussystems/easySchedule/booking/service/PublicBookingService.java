@@ -57,6 +57,7 @@ public class PublicBookingService {
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
+    private final String schedulingProvider;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
@@ -79,7 +80,8 @@ public class PublicBookingService {
                                 // so the host UI can flag webhook lag instead of silently serving
                                 // an out-of-date answer. 120s is one polling-fallback cycle + buffer.
                                 @Value("${booking.public.projection-freshness-sla-seconds:120}")
-                                long projectionFreshnessSlaSeconds) {
+                                long projectionFreshnessSlaSeconds,
+                                @Value("${sync.provider.default:google}") String schedulingProvider) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.slotService = slotService;
         this.bookingService = bookingService;
@@ -96,6 +98,7 @@ public class PublicBookingService {
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
+        this.schedulingProvider = schedulingProvider;
     }
 
     @Transactional(readOnly = true)
@@ -251,7 +254,7 @@ public class PublicBookingService {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         bookingLifecycleService.authorizeGuestManageView(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
 
-        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId(), "google")
+        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId(), schedulingProvider)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();

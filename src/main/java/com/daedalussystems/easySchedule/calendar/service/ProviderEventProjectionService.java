@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.calendar.domain.ProviderEventProjection;
 import com.daedalussystems.easySchedule.calendar.repository.ProviderEventProjectionRepository;
 import com.daedalussystems.easySchedule.booking.contract.BookingState;
 import com.daedalussystems.easySchedule.booking.repository.CalendarEventMappingRepository;
+import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassifier;
 import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
 import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
@@ -38,6 +39,7 @@ public class ProviderEventProjectionService {
     private final TransactionTemplate txTemplate;
     private final SyncInvariantMonitor invariantMonitor;
     private final CalendarEventMappingRepository mappingRepository;
+    private final CalendarSyncJobRepository syncJobRepository;
     private final ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
     private final ExternalUpdateConvergenceService externalUpdateConvergenceService;
     private final boolean acceptAmbiguous;
@@ -48,6 +50,7 @@ public class ProviderEventProjectionService {
                                           PlatformTransactionManager transactionManager,
                                           SyncInvariantMonitor invariantMonitor,
                                           CalendarEventMappingRepository mappingRepository,
+                                          CalendarSyncJobRepository syncJobRepository,
                                           ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
                                           ExternalUpdateConvergenceService externalUpdateConvergenceService,
                                           @Value("${sync.projection.accept-ambiguous:true}") boolean acceptAmbiguous) {
@@ -57,6 +60,7 @@ public class ProviderEventProjectionService {
         this.txTemplate = new TransactionTemplate(transactionManager);
         this.invariantMonitor = invariantMonitor;
         this.mappingRepository = mappingRepository;
+        this.syncJobRepository = syncJobRepository;
         this.terminalDeleteConvergenceService = terminalDeleteConvergenceService;
         this.externalUpdateConvergenceService = externalUpdateConvergenceService;
         this.acceptAmbiguous = acceptAmbiguous;
@@ -249,6 +253,20 @@ public class ProviderEventProjectionService {
         if (existing.isPresent() && existing.get().getBookingId() != null) {
             counter("sync.projection.booking_linkage.total", provider, "result", "existing").increment();
             return existing.get().getBookingId();
+        }
+        var syncCandidates = syncJobRepository.findBookingCandidatesForExternalEvent(connectionId, provider, externalEventId);
+        if (syncCandidates.size() == 1) {
+            UUID bookingId = syncCandidates.get(0).getBookingId();
+            counter("sync.projection.booking_linkage.total", provider, "result", "linked_sync_job").increment();
+            log.info("provider_event_booking_linked provider={} connectionId={} externalEventId={} bookingId={} reason=sync_job",
+                    provider, connectionId, externalEventId, bookingId);
+            return bookingId;
+        }
+        if (syncCandidates.size() > 1) {
+            counter("sync.projection.booking_linkage.total", provider, "result", "ambiguous_sync_job").increment();
+            log.warn("provider_event_booking_ambiguous provider={} connectionId={} externalEventId={} reason=sync_job matches={}",
+                    provider, connectionId, externalEventId, syncCandidates.size());
+            return null;
         }
         CalendarEventMappingRepository.BookingLinkageResult linkage =
                 mappingRepository.findUniqueBookingForProviderEvent(connectionId, provider, externalEventId);

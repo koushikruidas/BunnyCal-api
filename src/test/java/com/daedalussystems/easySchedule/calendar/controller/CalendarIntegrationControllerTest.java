@@ -19,7 +19,11 @@ import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
+import com.daedalussystems.easySchedule.integration.ProviderAuthoritySummary;
+import com.daedalussystems.easySchedule.integration.ProviderCatalogResponse;
+import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +40,8 @@ class CalendarIntegrationControllerTest {
     private CalendarWebhookIngestionService webhookIngestionService;
     @Mock
     private CalendarWebhookAuthService webhookAuthService;
+    @Mock
+    private ProviderCatalogService providerCatalogService;
 
     private CalendarIntegrationController controller;
     private GoogleOAuthProperties properties;
@@ -48,7 +54,7 @@ class CalendarIntegrationControllerTest {
         capabilityRegistry = new ProviderCapabilityRegistry();
         properties.setFrontendSuccessRedirect("http://localhost:3000/success");
         properties.setFrontendErrorRedirect("http://localhost:3000/error");
-        controller = new CalendarIntegrationController(oauthService, webhookAuthService, webhookIngestionService, properties, capabilityRegistry, "secret");
+        controller = new CalendarIntegrationController(oauthService, webhookAuthService, webhookIngestionService, properties, capabilityRegistry, providerCatalogService, "secret");
     }
 
     @Test
@@ -174,5 +180,24 @@ class CalendarIntegrationControllerTest {
                 eq("google_channel_signal"),
                 any(),
                 any(WebhookDeliveryMetadata.class));
+    }
+
+    @Test
+    void providerAwareStatus_includesAuthorityAndCatalogBlocks() {
+        UUID userId = UUID.randomUUID();
+        Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
+        when(oauthService.googleConnectionStatus(userId)).thenReturn("CONNECTED");
+        ProviderCatalogResponse catalogResponse = new ProviderCatalogResponse(
+                "v1alpha-provider-catalog",
+                List.of(),
+                new ProviderAuthoritySummary("google", List.of("google"), "google", List.of("zoom")));
+        when(providerCatalogService.catalogForUser(userId)).thenReturn(catalogResponse);
+        when(providerCatalogService.calendarProviderSubset(userId)).thenReturn(Map.of());
+
+        ApiResponse<Map<String, Object>> body = controller.providerAwareStatus(auth).getBody();
+
+        assertEquals(true, body.isSuccess());
+        assertNotNull(body.getData().get("providerCatalog"));
+        assertNotNull(body.getData().get("authority"));
     }
 }

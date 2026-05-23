@@ -20,6 +20,7 @@ import com.daedalussystems.easySchedule.sync.state.CalendarSyncJob;
 import com.daedalussystems.easySchedule.sync.state.InternalRefType;
 import com.daedalussystems.easySchedule.sync.state.SyncDesiredAction;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -62,7 +63,7 @@ class BookingSyncWorkerTest {
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
                 repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
-                rateLimitBreaker, idempotencyKeyFactory, txManager, new SimpleMeterRegistry());
+                rateLimitBreaker, idempotencyKeyFactory, txManager, new SimpleMeterRegistry(), new ObjectMapper());
         when(rateLimitBreaker.isOpen(any())).thenReturn(false);
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
@@ -92,7 +93,7 @@ class BookingSyncWorkerTest {
         int processed = worker.processPending(10);
 
         assertEquals(1, processed);
-        verify(repository).markSynced(id, 7L, "ext-1");
+        verify(repository).markSyncedWithMetadata(eq(id), eq(7L), eq("ext-1"), any(), any(), any(), any());
     }
 
     @Test

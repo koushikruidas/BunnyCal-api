@@ -14,6 +14,9 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob, UUID> {
+    interface ExternalEventBookingRow {
+        UUID getBookingId();
+    }
 
     Optional<CalendarSyncJob> findByInternalRefTypeAndInternalRefIdAndProvider(
             InternalRefType internalRefType, UUID internalRefId, String provider);
@@ -22,11 +25,12 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Query(value = """
             INSERT INTO calendar_sync_jobs (
                 id, internal_ref_type, internal_ref_id, provider, desired_action,
-                status, external_event_id, attempt_count, next_retry_at, version, last_error, partition_key
+                status, external_event_id, attempt_count, next_retry_at, version, last_error, partition_key,
+                scheduling_connection_id
             )
             VALUES (
                 :id, :internalRefType, :internalRefId, :provider, :desiredAction,
-                'PENDING', :externalEventId, 0, NOW(), 0, NULL, :partitionKey
+                'PENDING', :externalEventId, 0, NOW(), 0, NULL, :partitionKey, :schedulingConnectionId
             )
             ON CONFLICT (internal_ref_type, internal_ref_id, provider)
             DO UPDATE
@@ -34,6 +38,7 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                 status           = 'PENDING',
                 external_event_id = COALESCE(EXCLUDED.external_event_id, calendar_sync_jobs.external_event_id),
                 partition_key    = COALESCE(EXCLUDED.partition_key, calendar_sync_jobs.partition_key),
+                scheduling_connection_id = COALESCE(EXCLUDED.scheduling_connection_id, calendar_sync_jobs.scheduling_connection_id),
                 next_retry_at    = NOW(),
                 last_error       = NULL
             """, nativeQuery = true)
@@ -44,7 +49,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             @Param("provider") String provider,
             @Param("desiredAction") String desiredAction,
             @Param("externalEventId") String externalEventId,
-            @Param("partitionKey") UUID partitionKey);
+            @Param("partitionKey") UUID partitionKey,
+            @Param("schedulingConnectionId") UUID schedulingConnectionId);
 
     default int upsertPendingJob(UUID id,
                                  String internalRefType,
@@ -52,7 +58,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                                  String provider,
                                  String desiredAction,
                                  String externalEventId) {
-        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId, null);
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
+                null, null);
     }
 
     default int upsertPendingJob(UUID id,
@@ -62,7 +69,20 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                                  String desiredAction,
                                  String externalEventId,
                                  UUID partitionKey) {
-        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId, partitionKey);
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
+                partitionKey, null);
+    }
+
+    default int upsertPendingJob(UUID id,
+                                 String internalRefType,
+                                 UUID internalRefId,
+                                 String provider,
+                                 String desiredAction,
+                                 String externalEventId,
+                                 UUID partitionKey,
+                                 UUID schedulingConnectionId) {
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
+                partitionKey, schedulingConnectionId);
     }
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
@@ -99,6 +119,30 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             @Param("id") UUID id,
             @Param("version") long version,
             @Param("externalEventId") String externalEventId);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'SYNCED',
+                external_event_id = :externalEventId,
+                provider_event_url = :providerEventUrl,
+                conference_url = :conferenceUrl,
+                conference_provider = :conferenceProvider,
+                conference_metadata_json = :conferenceMetadataJson,
+                last_error = NULL,
+                version = version + 1
+            WHERE id = :id
+              AND status = 'PROCESSING'
+              AND version = :version
+            """, nativeQuery = true)
+    int markSyncedWithMetadata(
+            @Param("id") UUID id,
+            @Param("version") long version,
+            @Param("externalEventId") String externalEventId,
+            @Param("providerEventUrl") String providerEventUrl,
+            @Param("conferenceUrl") String conferenceUrl,
+            @Param("conferenceProvider") String conferenceProvider,
+            @Param("conferenceMetadataJson") String conferenceMetadataJson);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -175,6 +219,23 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
 
     @Query("select j from CalendarSyncJob j where j.status = :status")
     List<CalendarSyncJob> findByStatus(@Param("status") SyncJobStatus status);
+
+    @Query(value = """
+            SELECT DISTINCT j.internal_ref_id AS bookingId
+            FROM calendar_sync_jobs j
+            WHERE j.internal_ref_type = 'BOOKING'
+              AND LOWER(j.provider) = LOWER(:provider)
+              AND j.external_event_id = :externalEventId
+              AND (
+                    j.scheduling_connection_id = :connectionId
+                    OR j.scheduling_connection_id IS NULL
+                  )
+            ORDER BY j.internal_ref_id
+            LIMIT 2
+            """, nativeQuery = true)
+    List<ExternalEventBookingRow> findBookingCandidatesForExternalEvent(@Param("connectionId") UUID connectionId,
+                                                                        @Param("provider") String provider,
+                                                                        @Param("externalEventId") String externalEventId);
 
     @Query(value = """
             SELECT *

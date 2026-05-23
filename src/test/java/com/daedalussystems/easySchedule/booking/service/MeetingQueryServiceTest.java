@@ -28,7 +28,7 @@ class MeetingQueryServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new MeetingQueryService(bookingRepository, timeSource);
+        service = new MeetingQueryService(bookingRepository, timeSource, "google");
     }
 
     @Test

@@ -42,6 +42,9 @@ public class CalendarSyncJob extends BaseEntity {
     @Column(name = "partition_key")
     private UUID partitionKey;
 
+    @Column(name = "scheduling_connection_id")
+    private UUID schedulingConnectionId;
+
     @Column(nullable = false, length = 32)
     private String provider;
 
@@ -55,6 +58,18 @@ public class CalendarSyncJob extends BaseEntity {
 
     @Column(name = "external_event_id", length = 255)
     private String externalEventId;
+
+    @Column(name = "provider_event_url", columnDefinition = "TEXT")
+    private String providerEventUrl;
+
+    @Column(name = "conference_url", columnDefinition = "TEXT")
+    private String conferenceUrl;
+
+    @Column(name = "conference_provider", length = 64)
+    private String conferenceProvider;
+
+    @Column(name = "conference_metadata_json", columnDefinition = "TEXT")
+    private String conferenceMetadataJson;
 
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount;

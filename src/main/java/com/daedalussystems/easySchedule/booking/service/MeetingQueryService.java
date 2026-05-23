@@ -7,30 +7,34 @@ import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class MeetingQueryService {
     private static final Logger log = LoggerFactory.getLogger(MeetingQueryService.class);
-    private static final String DEFAULT_PROVIDER = "google";
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
 
     private final BookingRepository bookingRepository;
     private final TimeSource timeSource;
+    private final String schedulingProvider;
 
-    public MeetingQueryService(BookingRepository bookingRepository, TimeSource timeSource) {
+    public MeetingQueryService(BookingRepository bookingRepository,
+                               TimeSource timeSource,
+                               @Value("${sync.provider.default:google}") String schedulingProvider) {
         this.bookingRepository = bookingRepository;
         this.timeSource = timeSource;
+        this.schedulingProvider = schedulingProvider;
     }
 
     @Transactional(readOnly = true)
     public List<MeetingSummaryResponse> listHostMeetings(UUID hostId, Boolean upcomingOnly, Integer limit) {
         int safeLimit = sanitizeLimit(limit);
         List<BookingRepository.MeetingRow> rows = Boolean.TRUE.equals(upcomingOnly)
-                ? bookingRepository.findUpcomingMeetingsForHost(hostId, DEFAULT_PROVIDER, timeSource.now(), safeLimit)
-                : bookingRepository.findMeetingsForHost(hostId, DEFAULT_PROVIDER, safeLimit);
+                ? bookingRepository.findUpcomingMeetingsForHost(hostId, schedulingProvider, timeSource.now(), safeLimit)
+                : bookingRepository.findMeetingsForHost(hostId, schedulingProvider, safeLimit);
         return rows.stream()
                 .map(this::toDto)
                 .toList();

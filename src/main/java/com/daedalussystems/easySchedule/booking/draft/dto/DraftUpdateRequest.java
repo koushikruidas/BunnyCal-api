@@ -1,9 +1,12 @@
 package com.daedalussystems.easySchedule.booking.draft.dto;
 
+import com.daedalussystems.easySchedule.common.api.ForwardCompatibleRequest;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityOverrideCreateRequest;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityRuleRequest;
 import java.util.List;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record DraftUpdateRequest(
         String displayName,
         String timezone,
@@ -15,5 +18,5 @@ public record DraftUpdateRequest(
         Integer holdDurationMinutes,
         List<AvailabilityRuleRequest> rules,
         List<AvailabilityOverrideCreateRequest> overrides
-) {
+ ) implements ForwardCompatibleRequest {
 }

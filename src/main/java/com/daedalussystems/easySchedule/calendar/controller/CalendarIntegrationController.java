@@ -33,6 +33,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.MDC;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
+import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -47,18 +48,21 @@ public class CalendarIntegrationController {
     private final GoogleOAuthProperties googleOAuthProperties;
     private final String webhookSharedSecret;
     private final ProviderCapabilityRegistry capabilityRegistry;
+    private final ProviderCatalogService providerCatalogService;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
                                          CalendarWebhookAuthService webhookAuthService,
                                          CalendarWebhookIngestionService webhookIngestionService,
                                          GoogleOAuthProperties googleOAuthProperties,
                                          ProviderCapabilityRegistry capabilityRegistry,
+                                         ProviderCatalogService providerCatalogService,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
         this.webhookAuthService = webhookAuthService;
         this.webhookIngestionService = webhookIngestionService;
         this.googleOAuthProperties = googleOAuthProperties;
         this.capabilityRegistry = capabilityRegistry;
+        this.providerCatalogService = providerCatalogService;
         this.webhookSharedSecret = webhookSharedSecret;
     }
 
@@ -337,6 +341,13 @@ public class CalendarIntegrationController {
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("calendar", Map.of("google", oauthService.googleConnectionStatus(userId)));
         payload.put("capabilities", Map.of("calendar", capabilityRegistry.allCalendar()));
+        var catalog = providerCatalogService.catalogForUser(userId);
+        payload.put("providerCatalog", providerCatalogService.calendarProviderSubset(userId));
+        payload.put("authority", Map.of(
+                "availabilityProviders", catalog.authority().availabilityProviders(),
+                "authoritativeSchedulingProvider", catalog.authority().authoritativeSchedulingProvider(),
+                "identityProvider", catalog.authority().identityProvider()
+        ));
         return ResponseEntity.ok(ApiResponse.success(payload));
     }
 }

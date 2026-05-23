@@ -77,6 +77,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                             .map(booking -> booking.getHostId())
                             .orElse(null);
                 }
+                UUID schedulingConnectionId = resolveSchedulingConnectionId(partitionKey);
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
@@ -84,7 +85,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                         provider,
                         desiredAction,
                         null,
-                        partitionKey
+                        partitionKey,
+                        schedulingConnectionId
                 );
                 log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
                         event.getId(), event.getAggregateId(), provider, desiredAction);
@@ -133,6 +135,21 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         } catch (IllegalArgumentException ex) {
             return null;
         }
+    }
+
+    @Nullable
+    private UUID resolveSchedulingConnectionId(@Nullable UUID hostId) {
+        if (hostId == null) {
+            return null;
+        }
+        CalendarProviderType providerType = parseProviderType(provider);
+        if (providerType == null) {
+            return null;
+        }
+        return calendarConnectionRepository
+                .findByUserIdAndProviderAndStatus(hostId, providerType, CalendarConnectionStatus.ACTIVE)
+                .map(connection -> connection.getId())
+                .orElse(null);
     }
 
     private static String mapDesiredAction(String eventType) {

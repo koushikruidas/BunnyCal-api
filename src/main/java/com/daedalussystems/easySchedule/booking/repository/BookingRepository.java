@@ -396,11 +396,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
-                cem.status AS calendarSyncStatus,
-                cem.external_event_id AS externalEventId,
-                cem.provider_event_url AS providerEventUrl,
-                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(LOWER(csj.provider), LOWER(conf.provider::text), cem.provider) AS provider,
+                COALESCE(csj.status, cem.status) AS calendarSyncStatus,
+                COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
+                COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
+                COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -428,12 +428,17 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 LIMIT 1
             ) conf ON TRUE
             LEFT JOIN LATERAL (
-                SELECT j.last_error
+                SELECT j.provider,
+                       j.status,
+                       j.external_event_id,
+                       j.provider_event_url,
+                       j.conference_url,
+                       j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
                   AND j.provider = :provider
-                ORDER BY j.created_at DESC, j.id DESC
+                ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
             WHERE b.host_id = :hostId
@@ -457,11 +462,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
-                cem.status AS calendarSyncStatus,
-                cem.external_event_id AS externalEventId,
-                cem.provider_event_url AS providerEventUrl,
-                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(LOWER(csj.provider), LOWER(conf.provider::text), cem.provider) AS provider,
+                COALESCE(csj.status, cem.status) AS calendarSyncStatus,
+                COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
+                COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
+                COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -489,12 +494,17 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 LIMIT 1
             ) conf ON TRUE
             LEFT JOIN LATERAL (
-                SELECT j.last_error
+                SELECT j.provider,
+                       j.status,
+                       j.external_event_id,
+                       j.provider_event_url,
+                       j.conference_url,
+                       j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
                   AND j.provider = :provider
-                ORDER BY j.created_at DESC, j.id DESC
+                ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
             WHERE b.host_id = :hostId
@@ -522,11 +532,11 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 END AS bookingStatus,
                 b.guest_email AS guestEmail,
                 b.guest_name AS guestName,
-                COALESCE(cem.provider, LOWER(conf.provider::text)) AS provider,
-                cem.status AS calendarSyncStatus,
-                cem.external_event_id AS externalEventId,
-                cem.provider_event_url AS providerEventUrl,
-                COALESCE(NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(LOWER(csj.provider), LOWER(conf.provider::text), cem.provider) AS provider,
+                COALESCE(csj.status, cem.status) AS calendarSyncStatus,
+                COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
+                COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
+                COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -554,12 +564,17 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 LIMIT 1
             ) conf ON TRUE
             LEFT JOIN LATERAL (
-                SELECT j.last_error
+                SELECT j.provider,
+                       j.status,
+                       j.external_event_id,
+                       j.provider_event_url,
+                       j.conference_url,
+                       j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
                   AND j.provider = :provider
-                ORDER BY j.created_at DESC, j.id DESC
+                ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
             WHERE b.id = :bookingId

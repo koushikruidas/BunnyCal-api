@@ -1,5 +1,7 @@
 package com.daedalussystems.easySchedule.availability.dto;
 
+import com.daedalussystems.easySchedule.common.api.ForwardCompatibleRequest;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import lombok.AllArgsConstructor;
@@ -13,8 +15,8 @@ import lombok.Setter;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AvailabilityOverrideCreateRequest {
-
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AvailabilityOverrideCreateRequest implements ForwardCompatibleRequest {
     private LocalDate date;
     private boolean isAvailable;
     private LocalTime startTime;

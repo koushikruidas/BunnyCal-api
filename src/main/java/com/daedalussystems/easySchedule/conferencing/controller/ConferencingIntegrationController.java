@@ -6,6 +6,7 @@ import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.conferencing.service.ZoomConferencingOAuthService;
 import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
+import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -24,15 +25,18 @@ public class ConferencingIntegrationController {
 
     private final ZoomConferencingOAuthService zoomOAuthService;
     private final ProviderCapabilityRegistry capabilityRegistry;
+    private final ProviderCatalogService providerCatalogService;
     private final String frontendErrorRedirect;
     private final String frontendSuccessRedirect;
 
     public ConferencingIntegrationController(ZoomConferencingOAuthService zoomOAuthService,
                                              ProviderCapabilityRegistry capabilityRegistry,
+                                             ProviderCatalogService providerCatalogService,
                                              @Value("${zoom.oauth.frontend-error-redirect:http://localhost:5173/calendar-error}") String frontendErrorRedirect,
                                              @Value("${zoom.oauth.frontend-success-redirect:http://localhost:5173/dashboard/integrations}") String frontendSuccessRedirect) {
         this.zoomOAuthService = zoomOAuthService;
         this.capabilityRegistry = capabilityRegistry;
+        this.providerCatalogService = providerCatalogService;
         this.frontendErrorRedirect = frontendErrorRedirect;
         this.frontendSuccessRedirect = frontendSuccessRedirect;
     }
@@ -72,6 +76,12 @@ public class ConferencingIntegrationController {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("providers", Map.of("zoom", zoomOAuthService.status(userId)));
         payload.put("capabilities", Map.of("conferencing", capabilityRegistry.allConferencing()));
+        var catalog = providerCatalogService.catalogForUser(userId);
+        payload.put("providerCatalog", providerCatalogService.conferencingProviderSubset(userId));
+        payload.put("authority", Map.of(
+                "conferencingProviders", catalog.authority().conferencingProviders(),
+                "identityProvider", catalog.authority().identityProvider()
+        ));
         return ResponseEntity.ok(ApiResponse.success(payload));
     }
 

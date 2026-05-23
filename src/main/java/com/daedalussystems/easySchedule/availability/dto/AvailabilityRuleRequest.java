@@ -1,5 +1,7 @@
 package com.daedalussystems.easySchedule.availability.dto;
 
+import com.daedalussystems.easySchedule.common.api.ForwardCompatibleRequest;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.time.DayOfWeek;
 import java.time.LocalTime;
 import lombok.AllArgsConstructor;
@@ -13,8 +15,8 @@ import lombok.Setter;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AvailabilityRuleRequest {
-
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class AvailabilityRuleRequest implements ForwardCompatibleRequest {
     private DayOfWeek dayOfWeek;
     private LocalTime startTime;
     private LocalTime endTime;
