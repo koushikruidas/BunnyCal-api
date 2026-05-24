@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.availability.dto.SlotDto;
 import com.daedalussystems.easySchedule.availability.dto.SlotRequest;
 import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
 import com.daedalussystems.easySchedule.availability.service.SlotService;
+import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.booking.dto.PublicConfirmResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookingStatusResponse;
 import com.daedalussystems.easySchedule.booking.dto.PublicBookRequest;
@@ -37,12 +38,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
+import com.daedalussystems.easySchedule.availability.domain.EventType;
 
 @Service
 public class PublicBookingService {
     private static final Logger log = LoggerFactory.getLogger(PublicBookingService.class);
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
+    private final EventTypeRepository eventTypeRepository;
     private final BookingService bookingService;
     private final BookingRepository bookingRepository;
     private final CalendarBusyTimeService calendarBusyTimeService;
@@ -57,10 +60,10 @@ public class PublicBookingService {
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
-    private final String schedulingProvider;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
+                                EventTypeRepository eventTypeRepository,
                                 BookingService bookingService,
                                 BookingRepository bookingRepository,
                                 CalendarBusyTimeService calendarBusyTimeService,
@@ -80,10 +83,10 @@ public class PublicBookingService {
                                 // so the host UI can flag webhook lag instead of silently serving
                                 // an out-of-date answer. 120s is one polling-fallback cycle + buffer.
                                 @Value("${booking.public.projection-freshness-sla-seconds:120}")
-                                long projectionFreshnessSlaSeconds,
-                                @Value("${sync.provider.default:google}") String schedulingProvider) {
+                                long projectionFreshnessSlaSeconds) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.slotService = slotService;
+        this.eventTypeRepository = eventTypeRepository;
         this.bookingService = bookingService;
         this.bookingRepository = bookingRepository;
         this.calendarBusyTimeService = calendarBusyTimeService;
@@ -98,7 +101,6 @@ public class PublicBookingService {
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
-        this.schedulingProvider = schedulingProvider;
     }
 
     @Transactional(readOnly = true)
@@ -119,8 +121,7 @@ public class PublicBookingService {
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
-        java.util.Optional<CalendarConnection> connection =
-                calendarConnectionRepository.findByUserIdAndProvider(target.userId(), CalendarProviderType.GOOGLE);
+        java.util.Optional<CalendarConnection> connection = resolveActiveCalendarConnection(target.userId(), target.eventTypeId());
         boolean missingOrDisconnected = connection.isEmpty()
                 || connection.get().getStatus() == CalendarConnectionStatus.REVOKED
                 || connection.get().getStatus() == CalendarConnectionStatus.DISCONNECTED;
@@ -254,7 +255,7 @@ public class PublicBookingService {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         bookingLifecycleService.authorizeGuestManageView(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
 
-        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId(), schedulingProvider)
+        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
@@ -371,13 +372,23 @@ public class PublicBookingService {
         return new SlotResponse(userId, eventTypeId, date, timezone, 0L, Instant.now(), true, List.of(), status);
     }
 
-    private java.util.Optional<CalendarConnection> resolveActiveCalendarConnection(UUID userId) {
-        return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE);
+    private java.util.Optional<CalendarConnection> resolveActiveCalendarConnection(UUID userId, UUID eventTypeId) {
+        EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, userId).orElse(null);
+        if (eventType != null && eventType.getOrganizerCalendarConnectionId() != null) {
+            return calendarConnectionRepository.findById(eventType.getOrganizerCalendarConnectionId());
+        }
+        for (CalendarProviderType provider : CalendarProviderType.values()) {
+            java.util.Optional<CalendarConnection> conn =
+                    calendarConnectionRepository.findByUserIdAndProvider(userId, provider);
+            if (conn.isPresent()) {
+                return conn;
+            }
+        }
+        return java.util.Optional.empty();
     }
 
-    private java.util.Optional<CalendarProviderType> resolveActiveCalendarProvider(UUID userId) {
-        return resolveActiveCalendarConnection(userId).map(CalendarConnection::getProvider);
+    private java.util.Optional<CalendarProviderType> resolveActiveCalendarProvider(UUID userId, UUID eventTypeId) {
+        return resolveActiveCalendarConnection(userId, eventTypeId).map(CalendarConnection::getProvider);
     }
 
 }

@@ -82,7 +82,7 @@ public class EventTypeOrchestrationNormalizer {
             return new NormalizedOrchestration(null, null, availabilityBindings, conferencing);
         }
         CalendarConnection authoritative = requireActiveOwnedConnection(userId, authoritativeConnectionId, "authoritative scheduling connection is invalid.");
-        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
+        validateNativeConferenceCompatibility(authoritative, conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -97,7 +97,7 @@ public class EventTypeOrchestrationNormalizer {
 
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, availabilityCalendars);
         ConferencingConfig conferencing = normalizeConference(conference, conferencingProvider, customConferenceUrl);
-        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
+        validateNativeConferenceCompatibility(authoritative, conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -211,17 +211,31 @@ public class EventTypeOrchestrationNormalizer {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private static void validateNativeConferenceCompatibility(CalendarProviderType authoritativeProvider,
+    private static void validateNativeConferenceCompatibility(CalendarConnection authoritative,
                                                               ConferencingProviderType conferenceProvider) {
+        CalendarProviderType authoritativeProvider = authoritative.getProvider();
         if (conferenceProvider == ConferencingProviderType.GOOGLE_MEET
                 && authoritativeProvider != CalendarProviderType.GOOGLE) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "conference.provider GOOGLE_MEET requires a Google authoritative scheduling connection.");
         }
-        if (conferenceProvider == ConferencingProviderType.MICROSOFT_TEAMS
-                && authoritativeProvider != CalendarProviderType.MICROSOFT) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "conference.provider MICROSOFT_TEAMS requires a Microsoft authoritative scheduling connection.");
+        if (conferenceProvider == ConferencingProviderType.MICROSOFT_TEAMS) {
+            if (authoritativeProvider != CalendarProviderType.MICROSOFT) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "conference.provider MICROSOFT_TEAMS requires a Microsoft authoritative scheduling connection.");
+            }
+            // MSA mailboxes (consumer outlook.com / hotmail / live) cannot host
+            // Teams meetings via Graph — the API silently downgrades the event to
+            // a plain calendar block with no join URL. Reject at save time so
+            // hosts can't create a misconfigured event type they'd then unknowingly
+            // serve to attendees. The runtime path also defensively downgrades
+            // (ConferencingCoordinator) in case a connection's tier changes later.
+            if ("PERSONAL_MSA".equalsIgnoreCase(authoritative.getAccountClassification())) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Microsoft Teams meetings require a Microsoft 365 (work or school) account. "
+                                + "Personal Outlook.com / Hotmail / Live accounts cannot host Teams meetings via the API. "
+                                + "Choose Zoom, Google Meet, a custom conference URL, or no conferencing instead.");
+            }
         }
     }
 

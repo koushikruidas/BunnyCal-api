@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityStatus;
 import com.daedalussystems.easySchedule.availability.dto.SlotDto;
 import com.daedalussystems.easySchedule.availability.dto.SlotResponse;
+import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.availability.service.SlotService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.domain.BookingId;
@@ -50,6 +51,7 @@ class PublicBookingServiceTest {
 
     @Mock PublicBookingTargetResolver publicBookingTargetResolver;
     @Mock SlotService slotService;
+    @Mock EventTypeRepository eventTypeRepository;
     @Mock BookingService bookingService;
     @Mock BookingRepository bookingRepository;
     @Mock CalendarBusyTimeService calendarBusyTimeService;
@@ -72,6 +74,7 @@ class PublicBookingServiceTest {
         service = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -85,13 +88,15 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 false,
-                120L,
-                "google"
+                120L
         );
         Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        Mockito.lenient().when(eventTypeRepository.findByIdAndUserId(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(Optional.empty());
     }
 
     // P3: availability is now projection-first. The DB-side calendar_events projection
@@ -262,7 +267,7 @@ class PublicBookingServiceTest {
         Instant end = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId))
                 .thenReturn(Optional.of(new BookingRepository.MeetingRow() {
                     public UUID getBookingId() { return bookingId; }
                     public UUID getEventTypeId() { return eventTypeId; }
@@ -314,7 +319,6 @@ class PublicBookingServiceTest {
         verify(bookingRepository, never()).findManageRow(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
     }
 
@@ -322,7 +326,7 @@ class PublicBookingServiceTest {
     void manageView_returnsNotFound_whenBookingMissing() {
         UUID bookingId = UUID.randomUUID();
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId))
                 .thenReturn(Optional.empty());
 
         CustomException ex = assertThrows(CustomException.class,
@@ -483,6 +487,7 @@ class PublicBookingServiceTest {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -496,8 +501,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L,
-                "google"
+                120L
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -525,6 +529,7 @@ class PublicBookingServiceTest {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -538,8 +543,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L,
-                "google"
+                120L
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -563,6 +567,7 @@ class PublicBookingServiceTest {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -576,8 +581,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L,
-                "google"
+                120L
         );
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
@@ -604,6 +608,7 @@ class PublicBookingServiceTest {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -617,8 +622,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L,
-                "google"
+                120L
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
@@ -650,6 +654,7 @@ class PublicBookingServiceTest {
         PublicBookingService providerOptionalService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -663,8 +668,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 true,
-                120L,
-                "google"
+                120L
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
@@ -700,6 +704,7 @@ class PublicBookingServiceTest {
         PublicBookingService asyncService = new PublicBookingService(
                 publicBookingTargetResolver,
                 slotService,
+                eventTypeRepository,
                 bookingService,
                 bookingRepository,
                 calendarBusyTimeService,
@@ -713,8 +718,7 @@ class PublicBookingServiceTest {
                 new SimpleMeterRegistry(),
                 14L,
                 false,
-                120L,
-                "google"
+                120L
         );
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)

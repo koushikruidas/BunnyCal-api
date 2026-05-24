@@ -137,6 +137,11 @@ public class CalendarOAuthService {
         connection.setStatus(CalendarConnectionStatus.SYNCING);
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
+        // Google authoritative ALWAYS dispatches the organizer invite mail
+        // (calendar API call carries ?sendUpdates=all). Stamp uniformly so the
+        // notification gate doesn't depend on provider-specific defaults.
+        connection.setAccountClassification("GOOGLE");
+        connection.setOrganizerInviteDelivery("PROVIDER_NATIVE");
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
@@ -268,6 +273,8 @@ public class CalendarOAuthService {
         copy.setWebhookChannelId(existing.getWebhookChannelId());
         copy.setWebhookResourceId(existing.getWebhookResourceId());
         copy.setWebhookChannelExpiresAt(existing.getWebhookChannelExpiresAt());
+        copy.setAccountClassification(existing.getAccountClassification());
+        copy.setOrganizerInviteDelivery(existing.getOrganizerInviteDelivery());
         return copy;
     }
 

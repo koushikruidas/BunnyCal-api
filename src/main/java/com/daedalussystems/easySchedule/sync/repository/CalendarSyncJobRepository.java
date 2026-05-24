@@ -311,4 +311,15 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
               AND status = 'FAILED'
             """, nativeQuery = true)
     int requeueFailedById(@Param("id") UUID id);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'PENDING',
+                next_retry_at = NOW(),
+                version = version + 1
+            WHERE status = 'PROCESSING'
+              AND updated_at < :staleThreshold
+            """, nativeQuery = true)
+    int reclaimStuckProcessingJobs(@Param("staleThreshold") java.time.Instant staleThreshold);
 }

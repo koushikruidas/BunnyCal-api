@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
+import com.daedalussystems.easySchedule.calendar.auth.MicrosoftAccountClassifier;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStatePayload;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateService;
@@ -99,10 +100,17 @@ public class MicrosoftCalendarOAuthService {
         if (token.accessToken() == null || token.expiresAt() == null) {
             throw new IllegalArgumentException("Invalid token response from provider");
         }
-        String providerUserId = microsoftApiClient.fetchProviderUserId(token.accessToken());
+        MicrosoftApiClient.ProviderUserProfile profile = microsoftApiClient.fetchProviderUserProfile(token.accessToken());
+        String providerUserId = profile == null ? null : profile.id();
         if (providerUserId == null || providerUserId.isBlank()) {
             throw new IllegalArgumentException("Provider user id missing");
         }
+        // Classify on the OAuth-callback path so the very first booking after a fresh
+        // connect already sees the right invite_delivery capability. The post-CREATE
+        // path remains as a backstop to correct any mailbox we couldn't classify here.
+        String identityForClassification = firstNonBlank(profile.userPrincipalName(), profile.mail());
+        MicrosoftAccountClassifier.Classification classification =
+                MicrosoftAccountClassifier.classifyByEmail(identityForClassification);
 
         CalendarConnection base = existing.orElse(null);
         CalendarConnection connection = base == null ? new CalendarConnection() : copyForUpdate(base);
@@ -124,6 +132,13 @@ public class MicrosoftCalendarOAuthService {
         connection.setStatus(CalendarConnectionStatus.SYNCING);
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
+        // Stamp capability in the same snapshot — atomic with the connection's initial
+        // persistence, so no booking can ever see a row with classification=null.
+        connection.setAccountClassification(classification.accountClassification());
+        connection.setOrganizerInviteDelivery(classification.organizerInviteDelivery());
+        log.info("microsoft_oauth_account_capability_classified userId={} classification={} inviteDelivery={} identitySource={}",
+                userId, classification.accountClassification(), classification.organizerInviteDelivery(),
+                profile.userPrincipalName() != null ? "userPrincipalName" : (profile.mail() != null ? "mail" : "[absent]"));
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
@@ -211,6 +226,12 @@ public class MicrosoftCalendarOAuthService {
         return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) return a;
+        if (b != null && !b.isBlank()) return b;
+        return null;
+    }
+
     private static String mapPublicConnectionStatus(CalendarConnectionStatus status) {
         if (status == CalendarConnectionStatus.ACTIVE) {
             return "CONNECTED";
@@ -246,6 +267,8 @@ public class MicrosoftCalendarOAuthService {
         copy.setWebhookChannelId(existing.getWebhookChannelId());
         copy.setWebhookResourceId(existing.getWebhookResourceId());
         copy.setWebhookChannelExpiresAt(existing.getWebhookChannelExpiresAt());
+        copy.setAccountClassification(existing.getAccountClassification());
+        copy.setOrganizerInviteDelivery(existing.getOrganizerInviteDelivery());
         return copy;
     }
 }

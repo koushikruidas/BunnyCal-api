@@ -13,15 +13,20 @@ import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.DeleteEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.MicrosoftCalendarProvider;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
+import com.daedalussystems.easySchedule.calendar.auth.MicrosoftAccountClassifier;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionCalendarRepository;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.calendar.service.CalendarConnectionWriteService;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Locale;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
+    private static final Logger log = LoggerFactory.getLogger(MicrosoftCalendarProviderClient.class);
 
     @Override
     public CalendarProviderType providerType() {
@@ -34,19 +39,22 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarConnectionCalendarRepository calendarRepository;
     private final MicrosoftCalendarProvider microsoftCalendarProvider;
+    private final CalendarConnectionWriteService connectionWriteService;
 
     public MicrosoftCalendarProviderClient(BookingRepository bookingRepository,
                                            EventTypeRepository eventTypeRepository,
                                            UserRepository userRepository,
                                            CalendarConnectionRepository connectionRepository,
                                            CalendarConnectionCalendarRepository calendarRepository,
-                                           MicrosoftCalendarProvider microsoftCalendarProvider) {
+                                           MicrosoftCalendarProvider microsoftCalendarProvider,
+                                           CalendarConnectionWriteService connectionWriteService) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.connectionRepository = connectionRepository;
         this.calendarRepository = calendarRepository;
         this.microsoftCalendarProvider = microsoftCalendarProvider;
+        this.connectionWriteService = connectionWriteService;
     }
 
     @Override
@@ -66,6 +74,14 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         if (attendeeEmail == null) {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
+        String maskedGuest = maskEmail(attendeeEmail);
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        ConferencingInstruction instruction = conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction;
+        log.info("microsoft_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} conferencingMode={} conferencingProvider={}",
+                booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId,
+                1, maskedGuest, instruction.mode(), instruction.providerType());
+        log.info("microsoft_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
+                booking.getId(), provider, booking.getStartTime(), booking.getEndTime(), host.getTimezone());
         var response = microsoftCalendarProvider.createEvent(new CreateEventRequest(
                 connection.getId(),
                 title,
@@ -76,9 +92,13 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 attendeeEmail,
                 booking.getGuestName(),
                 idempotencyKey,
-                resolveTargetCalendarId(connection.getId()),
-                conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
+                targetCalendarId,
+                instruction
         ));
+        log.info("microsoft_calendar_event_create_success bookingId={} provider={} externalEventId={} conferenceUrl={}",
+                booking.getId(), provider, response.externalEventId(),
+                response.conferenceUrl() != null && !response.conferenceUrl().isBlank() ? "[present]" : "[absent]");
+        stampAccountCapabilityFromOrganizer(connection.getId(), response.organizerEmail());
         return new CreateEventDetails(response.externalEventId(), response.providerEventUrl(), response.conferenceUrl());
     }
 
@@ -99,6 +119,12 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         if (attendeeEmail == null) {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
+        String maskedGuest = maskEmail(attendeeEmail);
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        ConferencingInstruction instruction = conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction;
+        log.info("microsoft_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} conferencingMode={} conferencingProvider={}",
+                booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId, externalEventId,
+                1, maskedGuest, instruction.mode(), instruction.providerType());
         String updated = microsoftCalendarProvider.updateEvent(new UpdateEventRequest(
                 connection.getId(),
                 externalEventId,
@@ -109,9 +135,11 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 host.getEmail(),
                 attendeeEmail,
                 booking.getGuestName(),
-                resolveTargetCalendarId(connection.getId()),
-                conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
+                targetCalendarId,
+                instruction
         )).externalEventId();
+        log.info("microsoft_calendar_event_update_success bookingId={} provider={} externalEventId={}",
+                booking.getId(), provider, updated);
         return updated;
     }
 
@@ -120,7 +148,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         CalendarConnection connection = resolveAnyConnection(booking.getHostId(), provider);
-        microsoftCalendarProvider.deleteEvent(new DeleteEventRequest(connection.getId(), externalEventId));
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        microsoftCalendarProvider.deleteEvent(new DeleteEventRequest(connection.getId(), externalEventId, targetCalendarId));
     }
 
     @Override
@@ -131,7 +160,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         CalendarConnection connection = resolveAnyConnection(booking.getHostId(), provider);
-        return microsoftCalendarProvider.eventExists(new DeleteEventRequest(connection.getId(), externalEventId));
+        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        return microsoftCalendarProvider.eventExists(new DeleteEventRequest(connection.getId(), externalEventId, targetCalendarId));
     }
 
     @Override
@@ -166,7 +196,48 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         return calendarRepository.findByConnectionIdAndSelectedTrue(connectionId)
                 .map(c -> c.getExternalCalendarId())
                 .filter(v -> v != null && !v.isBlank())
-                .orElse("primary");
+                .orElse(null);
+    }
+
+    // Classifies the organizer mailbox from the Graph response and stamps the connection.
+    // Uses MicrosoftAccountClassifier so the OAuth-callback path and the per-CREATE path
+    // share identical classification rules.
+    private void stampAccountCapabilityFromOrganizer(UUID connectionId, String organizerEmail) {
+        if (connectionWriteService == null || connectionId == null) {
+            return;
+        }
+        MicrosoftAccountClassifier.Classification classification =
+                MicrosoftAccountClassifier.classifyByEmail(organizerEmail);
+        try {
+            boolean changed = connectionWriteService.stampAccountCapability(
+                    connectionId,
+                    classification.accountClassification(),
+                    classification.organizerInviteDelivery(),
+                    "microsoft_create_event_organizer_classified");
+            if (changed) {
+                String normalized = organizerEmail == null ? "" : organizerEmail.trim().toLowerCase(Locale.ROOT);
+                log.info("microsoft_account_capability_stamped connectionId={} classification={} inviteDelivery={} organizerDomain={}",
+                        connectionId,
+                        classification.accountClassification(),
+                        classification.organizerInviteDelivery(),
+                        normalized.contains("@") ? normalized.substring(normalized.indexOf('@') + 1) : "[absent]");
+            }
+        } catch (RuntimeException ex) {
+            // Stamping is observational; failure must not break the booking lifecycle.
+            log.warn("microsoft_account_capability_stamp_failed connectionId={} classification={}",
+                    connectionId, classification.accountClassification(), ex);
+        }
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null || email.isBlank()) {
+            return "";
+        }
+        int at = email.indexOf('@');
+        if (at <= 1) {
+            return "***";
+        }
+        return email.charAt(0) + "***" + email.substring(at);
     }
 
     private static String normalizeAttendeeEmail(String email) {

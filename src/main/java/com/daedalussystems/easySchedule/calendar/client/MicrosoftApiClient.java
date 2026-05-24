@@ -20,6 +20,8 @@ public interface MicrosoftApiClient {
 
     String fetchProviderUserId(String accessToken);
 
+    ProviderUserProfile fetchProviderUserProfile(String accessToken);
+
     List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end);
 
     SyncWindow listEventsFull(String accessToken);
@@ -41,9 +43,20 @@ public interface MicrosoftApiClient {
 
     void deleteEventSubscription(String accessToken, String subscriptionId);
 
-    record MicrosoftEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {}
+    record MicrosoftEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl, String organizerEmail) {
+        public MicrosoftEventDetails(String externalEventId, String providerEventUrl, String conferenceUrl) {
+            this(externalEventId, providerEventUrl, conferenceUrl, null);
+        }
+    }
 
     record BusyInterval(Instant start, Instant end) {}
+
+    /**
+     * Identity-side snapshot from Graph /me. Used at OAuth-callback time to
+     * classify the mailbox tier (consumer MSA vs AAD/Exchange Online) and
+     * stamp invite-delivery capability on the calendar connection.
+     */
+    record ProviderUserProfile(String id, String userPrincipalName, String mail) {}
 
     record SyncWindow(List<CalendarEventObservation> events, String nextDeltaCursor) {}
 

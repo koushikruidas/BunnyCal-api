@@ -4,7 +4,9 @@ import com.daedalussystems.easySchedule.availability.repository.EventTypeReposit
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
+import com.daedalussystems.easySchedule.availability.domain.EventType;
 import com.daedalussystems.easySchedule.booking.contract.BookingState;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
@@ -70,9 +72,10 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (isBookingSyncCandidate(event)) {
             String desiredAction = mapDesiredAction(event.getEventType());
             if (desiredAction != null) {
-                if (shouldSkipProviderSync(event)) {
+                DispatchRouting routing = resolveDispatchRouting(event.getAggregateId(), event.getPartitionKey());
+                if (shouldSkipProviderSync(event, routing.provider())) {
                     log.info("outbox.sync_job_skipped_no_active_provider bookingId={} provider={} action={}",
-                            event.getAggregateId(), provider, desiredAction);
+                            event.getAggregateId(), routing.provider(), desiredAction);
                     return;
                 }
                 UUID partitionKey = event.getPartitionKey();
@@ -81,19 +84,19 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                             .map(booking -> booking.getHostId())
                             .orElse(null);
                 }
-                UUID schedulingConnectionId = resolveSchedulingConnectionId(event.getAggregateId(), partitionKey);
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
                         event.getAggregateId(),
-                        provider,
+                        routing.provider(),
                         desiredAction,
                         null,
                         partitionKey,
-                        schedulingConnectionId
+                        routing.schedulingConnectionId()
                 );
+                bookingRepository.stampSchedulingProvider(event.getAggregateId(), routing.provider());
                 log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
-                        event.getId(), event.getAggregateId(), provider, desiredAction);
+                        event.getId(), event.getAggregateId(), routing.provider(), desiredAction);
                 emitSyncEnqueueInvariant(event, desiredAction);
                 return;
             }
@@ -110,11 +113,11 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 && event.getAggregateId() != null;
     }
 
-    private boolean shouldSkipProviderSync(OutboxEvent event) {
+    private boolean shouldSkipProviderSync(OutboxEvent event, String resolvedProvider) {
         if (!providerOptionalPublicBookingEnabled) {
             return false;
         }
-        CalendarProviderType providerType = parseProviderType(provider);
+        CalendarProviderType providerType = parseProviderType(resolvedProvider);
         if (providerType == null) {
             return false;
         }
@@ -128,6 +131,18 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                         .findByUserIdAndProviderAndStatus(booking.getHostId(), providerType, CalendarConnectionStatus.ACTIVE)
                         .isEmpty())
                 .orElse(false);
+    }
+
+    private DispatchRouting resolveDispatchRouting(UUID bookingId, @Nullable UUID hostId) {
+        UUID schedulingConnectionId = resolveSchedulingConnectionId(bookingId, hostId);
+        if (schedulingConnectionId == null) {
+            return new DispatchRouting(provider, null);
+        }
+        CalendarConnection connection = calendarConnectionRepository.findById(schedulingConnectionId).orElse(null);
+        if (connection == null || connection.getProvider() == null) {
+            return new DispatchRouting(provider, schedulingConnectionId);
+        }
+        return new DispatchRouting(connection.getProvider().name().toLowerCase(Locale.ROOT), schedulingConnectionId);
     }
 
     private static CalendarProviderType parseProviderType(String provider) {
@@ -145,7 +160,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private UUID resolveSchedulingConnectionId(UUID bookingId, @Nullable UUID hostId) {
         UUID eventTypeConnectionId = bookingRepository.findAnyById(bookingId)
                 .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
-                .map(eventType -> eventType.getOrganizerCalendarConnectionId())
+                .map(EventType::getOrganizerCalendarConnectionId)
                 .orElse(null);
         if (eventTypeConnectionId != null) {
             return eventTypeConnectionId;
@@ -153,14 +168,14 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (hostId == null) {
             return null;
         }
-        CalendarProviderType providerType = parseProviderType(provider);
-        if (providerType == null) {
-            return null;
+        for (CalendarProviderType pt : CalendarProviderType.values()) {
+            java.util.Optional<CalendarConnection> conn =
+                    calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, pt, CalendarConnectionStatus.ACTIVE);
+            if (conn.isPresent()) {
+                return conn.get().getId();
+            }
         }
-        return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(hostId, providerType, CalendarConnectionStatus.ACTIVE)
-                .map(connection -> connection.getId())
-                .orElse(null);
+        return null;
     }
 
     private static String mapDesiredAction(String eventType) {
@@ -175,6 +190,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         }
         return null;
     }
+
+    private record DispatchRouting(String provider, @Nullable UUID schedulingConnectionId) {}
 
     private void emitSyncEnqueueInvariant(OutboxEvent event, String desiredAction) {
         BookingState bookingState = switch (desiredAction) {

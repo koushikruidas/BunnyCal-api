@@ -10,9 +10,13 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.booking.service.BookingActionType;
 import com.daedalussystems.easySchedule.booking.service.GuestCapabilityTokenService;
 import com.daedalussystems.easySchedule.booking.service.TokenCreatorType;
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -25,6 +29,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.internet.MimeMultipart;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
@@ -33,6 +40,8 @@ import org.springframework.stereotype.Service;
 @ConditionalOnProperty(name = "booking.notifications.enabled", havingValue = "true")
 public class BookingNotificationService {
     private static final Logger log = LoggerFactory.getLogger(BookingNotificationService.class);
+    private static final DateTimeFormatter EMAIL_TIME_FMT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'").withZone(ZoneOffset.UTC);
 
     private static final Set<String> SUPPORTED_EVENTS = Set.of(
             "BOOKING_CONFIRMED",
@@ -159,9 +168,18 @@ public class BookingNotificationService {
                 attendee.isPresent(),
                 recipients.size());
 
-        boolean providerConnected = calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(host.getId(), CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
-                .isPresent();
+        CalendarProviderType authoritativeProvider = resolveAuthoritativeProvider(booking, eventType, host.getId());
+        Optional<CalendarConnection> authoritativeConnection = authoritativeProvider == null
+                ? Optional.empty()
+                : calendarConnectionRepository.findByUserIdAndProviderAndStatus(host.getId(), authoritativeProvider, CalendarConnectionStatus.ACTIVE);
+        boolean providerConnected = authoritativeConnection.isPresent();
+        // BACKEND_ICS_FALLBACK is stamped on connections whose provider will NOT
+        // dispatch the organizer-side invite mail (today: consumer MSA Outlook.com).
+        // In that case we still treat the calendar as connected for organizer-identity
+        // purposes (host is the meeting owner), but we attach an ICS METHOD:REQUEST
+        // to the notification so the attendee actually receives a real invite.
+        boolean providerWillDispatchInvite = providerConnected
+                && !"BACKEND_ICS_FALLBACK".equalsIgnoreCase(authoritativeConnection.map(CalendarConnection::getOrganizerInviteDelivery).orElse(null));
         String organizer = providerConnected ? hostRecipient.orElse(fromAddress) : calendarOrganizerEmail;
         String organizerName = providerConnected ? host.getName() : calendarOrganizerName;
         String attendeeName = booking.getGuestName();
@@ -170,6 +188,7 @@ public class BookingNotificationService {
         String hostName = host.getName();
         String hostUsername = host.getUsername();
         String eventTypeSlug = eventType != null ? eventType.getSlug() : null;
+        String conferenceUrl = resolveConferenceUrl(booking.getId(), booking.getHostId(), booking.getEventTypeId(), authoritativeProvider);
         int sequence = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, booking.getCalendarSequence()));
         String eventMethod = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
         boolean includeManageLink = "BOOKING_CONFIRMED".equals(event.getEventType())
@@ -177,7 +196,7 @@ public class BookingNotificationService {
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
                 && eventTypeSlug != null && !eventTypeSlug.isBlank();
-        String standaloneIcs = providerConnected ? null : ("CANCEL".equals(eventMethod)
+        String standaloneIcs = "CANCEL".equals(eventMethod)
                 ? icsInviteGenerator.buildStandaloneCancel(
                 booking.getId(),
                 summary,
@@ -203,12 +222,14 @@ public class BookingNotificationService {
                 hostEmail,
                 attendeeName,
                 attendeeEmail,
-                sequence));
-        log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} providerConnected={} hasAttachment={} method={} attendeesInIcs={}",
+                sequence);
+        log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} providerConnected={} providerWillDispatchInvite={} inviteDelivery={} hasAttachment={} method={} attendeesInIcs={}",
                 booking.getId(),
                 event.getId(),
                 event.getEventType(),
                 providerConnected,
+                providerWillDispatchInvite,
+                authoritativeConnection.map(CalendarConnection::getOrganizerInviteDelivery).orElse("[none]"),
                 standaloneIcs != null,
                 eventMethod,
                 countIcsAttendees(standaloneIcs));
@@ -242,13 +263,19 @@ public class BookingNotificationService {
                 );
             }
             try {
-                if (providerConnected) {
-                    sendMail(recipient, summary, event.getEventType(), null, null, manageLink);
+                boolean forceIcsForMicrosoftZoom = authoritativeProvider == CalendarProviderType.MICROSOFT
+                        && eventType != null
+                        && eventType.getConferencingProvider() == ConferencingProviderType.ZOOM;
+                boolean attachStandaloneIcs = !providerWillDispatchInvite || forceIcsForMicrosoftZoom;
+                if (!attachStandaloneIcs) {
+                    sendMail(recipient, summary, event.getEventType(), null, null, manageLink,
+                            booking.getStartTime(), booking.getEndTime(), conferenceUrl);
                 } else {
-                    sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink);
+                    sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink,
+                            booking.getStartTime(), booking.getEndTime(), conferenceUrl);
                 }
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
-                        event.getId(), booking.getId(), recipient, role, event.getEventType(), standaloneIcs != null);
+                        event.getId(), booking.getId(), recipient, role, event.getEventType(), attachStandaloneIcs);
             } catch (Exception ex) {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={} message={}",
@@ -258,18 +285,66 @@ public class BookingNotificationService {
         }
     }
 
-    private void sendMail(String to, String summary, String eventType, String ics, String method, String manageLink) throws Exception {
+    private void sendMail(String to,
+                          String summary,
+                          String eventType,
+                          String ics,
+                          String method,
+                          String manageLink,
+                          java.time.Instant startTime,
+                          java.time.Instant endTime,
+                          String conferenceUrl) throws Exception {
         var message = mailSender.createMimeMessage();
-        var helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
-        helper.setFrom(fromAddress);
-        helper.setTo(to);
-        helper.setSubject(subject(summary, eventType));
-        helper.setText(body(summary, eventType, manageLink), false);
-        if (ics != null && method != null) {
-            helper.addAttachment("invite.ics",
-                    new org.springframework.core.io.ByteArrayResource(ics.getBytes(StandardCharsets.UTF_8)),
-                    "text/calendar; method=" + method + "; charset=UTF-8");
+        String subjectLine = subject(summary, eventType);
+        String bodyText = body(summary, eventType, manageLink, startTime, endTime, conferenceUrl);
+        if (ics == null || method == null) {
+            // Informational-only message; provider dispatches the real invite.
+            // Single text/plain body, no multipart wrapping.
+            MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
+            helper.setFrom(fromAddress);
+            helper.setTo(to);
+            helper.setSubject(subjectLine);
+            helper.setText(bodyText, false);
+            mailSender.send(message);
+            return;
         }
+
+        // Calendar-invitation message. Per RFC 6047 + Outlook/Gmail/Apple Mail
+        // interop conventions, the ICS must be a sibling part of the text body
+        // inside a multipart/alternative — NOT a multipart/mixed attachment.
+        // Otherwise mailbox clients treat the calendar payload as a download
+        // rather than auto-importing it as a meeting invite.
+        message.setFrom(new InternetAddress(fromAddress));
+        message.setRecipients(jakarta.mail.Message.RecipientType.TO,
+                new InternetAddress[] { new InternetAddress(to) });
+        message.setSubject(subjectLine, StandardCharsets.UTF_8.name());
+
+        MimeBodyPart textPart = new MimeBodyPart();
+        textPart.setText(bodyText, StandardCharsets.UTF_8.name(), "plain");
+
+        MimeBodyPart calendarPart = new MimeBodyPart();
+        // Set the body content first, then override the Content-Type so the
+        // method parameter survives. Outlook in particular requires the method
+        // parameter on the part's Content-Type or it won't auto-process.
+        calendarPart.setText(ics, StandardCharsets.UTF_8.name());
+        calendarPart.setHeader("Content-Type",
+                "text/calendar; charset=UTF-8; method=" + method);
+        // 7bit is safe because the ICS body is pure ASCII (escaped) and lines
+        // are CRLF-bounded ≤ 75 octets by the generator. Avoiding base64 lets
+        // every mailbox importer parse the part directly.
+        calendarPart.setHeader("Content-Transfer-Encoding", "7bit");
+        // Inline disposition is the canonical interop pattern — "attachment"
+        // makes Gmail/Outlook offer a download instead of auto-import.
+        calendarPart.setDisposition(MimeBodyPart.INLINE);
+
+        MimeMultipart alternative = new MimeMultipart("alternative");
+        alternative.addBodyPart(textPart);
+        alternative.addBodyPart(calendarPart);
+        message.setContent(alternative);
+        // Also mark the top-level message with the method so Exchange/Outlook
+        // pre-screens correctly — Spring's helper doesn't do this for us.
+        message.setHeader("Content-Class", "urn:content-classes:calendarmessage");
+        message.saveChanges();
         mailSender.send(message);
     }
 
@@ -324,16 +399,67 @@ public class BookingNotificationService {
         return lifecycleText;
     }
 
-    private static String body(String summary, String eventType, String manageLink) {
+    private static String body(String summary,
+                               String eventType,
+                               String manageLink,
+                               java.time.Instant startTime,
+                               java.time.Instant endTime,
+                               String conferenceUrl) {
         String base = body(summary, eventType);
+        StringBuilder details = new StringBuilder(base);
+        if (startTime != null && endTime != null) {
+            details.append("\n\nWhen: ")
+                    .append(EMAIL_TIME_FMT.format(startTime))
+                    .append(" to ")
+                    .append(EMAIL_TIME_FMT.format(endTime));
+        }
+        if (conferenceUrl != null && !conferenceUrl.isBlank()) {
+            details.append("\nJoin link: ").append(conferenceUrl);
+        }
         if (manageLink == null || manageLink.isBlank()
                 || "BOOKING_CANCELLED".equals(eventType)
                 || "BOOKING_EXTERNAL_TERMINATED".equals(eventType)) {
-            return base;
+            return details.toString();
         }
         if ("BOOKING_UPDATED".equals(eventType)) {
-            return base + "\n\nNeed to cancel or reschedule?\nManage your booking:\n" + manageLink;
+            return details + "\n\nNeed to cancel or reschedule?\nManage your booking:\n" + manageLink;
         }
-        return base + "\n\nManage your booking:\n" + manageLink;
+        return details + "\n\nManage your booking:\n" + manageLink;
+    }
+
+    private CalendarProviderType resolveAuthoritativeProvider(Booking booking, EventType eventType, UUID hostId) {
+        // Primary: canonical provider stamped at sync-job dispatch time
+        if (booking.getSchedulingProvider() != null && !booking.getSchedulingProvider().isBlank()) {
+            try {
+                return CalendarProviderType.valueOf(booking.getSchedulingProvider().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // unrecognized value — fall through to connection-based resolution
+            }
+        }
+        // Secondary: event-type-pinned connection
+        if (eventType != null && eventType.getOrganizerCalendarConnectionId() != null) {
+            CalendarConnection connection = calendarConnectionRepository
+                    .findById(eventType.getOrganizerCalendarConnectionId())
+                    .orElse(null);
+            if (connection != null && connection.getProvider() != null) {
+                return connection.getProvider();
+            }
+        }
+        // Tertiary: first active connection (legacy / migration path for rows without scheduling_provider)
+        for (CalendarProviderType provider : CalendarProviderType.values()) {
+            Optional<CalendarConnection> conn = calendarConnectionRepository
+                    .findByUserIdAndProviderAndStatus(hostId, provider, CalendarConnectionStatus.ACTIVE);
+            if (conn.isPresent()) {
+                return conn.get().getProvider();
+            }
+        }
+        return null;
+    }
+
+    private String resolveConferenceUrl(UUID bookingId, UUID hostId, UUID eventTypeId, CalendarProviderType provider) {
+        return bookingRepository.findManageRow(bookingId, hostId, eventTypeId)
+                .map(row -> row.getConferenceUrl())
+                .filter(v -> v != null && !v.isBlank())
+                .orElse(null);
     }
 }

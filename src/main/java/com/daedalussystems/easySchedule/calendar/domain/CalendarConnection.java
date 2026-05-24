@@ -80,6 +80,12 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "webhook_channel_expires_at")
     private Instant webhookChannelExpiresAt;
 
+    @Column(name = "account_classification", length = 32)
+    private String accountClassification;
+
+    @Column(name = "organizer_invite_delivery", length = 32)
+    private String organizerInviteDelivery;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -117,6 +123,10 @@ public class CalendarConnection extends BaseEntity {
     public void setWebhookResourceId(String webhookResourceId) { this.webhookResourceId = webhookResourceId; }
     public Instant getWebhookChannelExpiresAt() { return webhookChannelExpiresAt; }
     public void setWebhookChannelExpiresAt(Instant webhookChannelExpiresAt) { this.webhookChannelExpiresAt = webhookChannelExpiresAt; }
+    public String getAccountClassification() { return accountClassification; }
+    public void setAccountClassification(String accountClassification) { this.accountClassification = accountClassification; }
+    public String getOrganizerInviteDelivery() { return organizerInviteDelivery; }
+    public void setOrganizerInviteDelivery(String organizerInviteDelivery) { this.organizerInviteDelivery = organizerInviteDelivery; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }

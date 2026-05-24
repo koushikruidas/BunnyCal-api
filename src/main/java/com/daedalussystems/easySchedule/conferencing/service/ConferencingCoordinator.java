@@ -34,17 +34,20 @@ public class ConferencingCoordinator {
     private final EventTypeRepository eventTypeRepository;
     private final ConferencingProviderRegistry providerRegistry;
     private final ConferencingEventMappingRepository mappingRepository;
+    private final com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository calendarConnectionRepository;
     private final TransactionTemplate requiresNew;
 
     public ConferencingCoordinator(BookingRepository bookingRepository,
                                    EventTypeRepository eventTypeRepository,
                                    ConferencingProviderRegistry providerRegistry,
                                    ConferencingEventMappingRepository mappingRepository,
+                                   com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository calendarConnectionRepository,
                                    PlatformTransactionManager transactionManager) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.providerRegistry = providerRegistry;
         this.mappingRepository = mappingRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -54,6 +57,7 @@ public class ConferencingCoordinator {
         Booking booking = loadBooking(bookingId, hostId);
         EventType eventType = loadEventType(booking);
         ConferencingProviderType providerType = resolveProviderType(eventType);
+        providerType = applyRuntimeCapabilityDowngrade(booking.getHostId(), providerType, "CREATE", bookingId);
         log.info("conferencing_provider_resolved bookingId={} action=CREATE eventTypeId={} provider={}",
                 bookingId, booking.getEventTypeId(), providerType);
 
@@ -76,6 +80,7 @@ public class ConferencingCoordinator {
         Booking booking = loadBooking(bookingId, hostId);
         EventType eventType = loadEventType(booking);
         ConferencingProviderType providerType = resolveProviderType(eventType);
+        providerType = applyRuntimeCapabilityDowngrade(booking.getHostId(), providerType, "UPDATE", bookingId);
         log.info("conferencing_provider_resolved bookingId={} action=UPDATE eventTypeId={} provider={}",
                 bookingId, booking.getEventTypeId(), providerType);
 
@@ -85,6 +90,33 @@ public class ConferencingCoordinator {
             case GOOGLE_MEET, MICROSOFT_TEAMS -> ConferencingInstruction.requestNativeMeet(providerType);
             case ZOOM -> updateExternalMeeting(booking, eventType, providerType);
         };
+    }
+
+    // Defense-in-depth: an event type configured at save time may stop being
+    // compatible later (host disconnects + reconnects with a different MS
+    // mailbox tier). If the live capability says native Teams can't dispatch
+    // a real meeting, downgrade to NONE so we don't silently emit a fake
+    // online-meeting flag that Graph drops on the floor.
+    private ConferencingProviderType applyRuntimeCapabilityDowngrade(java.util.UUID hostId,
+                                                                     ConferencingProviderType providerType,
+                                                                     String action,
+                                                                     java.util.UUID bookingId) {
+        if (providerType != ConferencingProviderType.MICROSOFT_TEAMS) {
+            return providerType;
+        }
+        java.util.Optional<com.daedalussystems.easySchedule.calendar.domain.CalendarConnection> conn =
+                calendarConnectionRepository.findByUserIdAndProvider(
+                        hostId, com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.MICROSOFT);
+        if (conn.isEmpty()) {
+            return providerType;
+        }
+        String classification = conn.get().getAccountClassification();
+        if ("PERSONAL_MSA".equalsIgnoreCase(classification)) {
+            log.warn("conferencing_downgrade_msa_teams_unsupported bookingId={} hostId={} action={} configuredProvider=MICROSOFT_TEAMS downgradedTo=NONE reason=consumer_msa_cannot_host_teams",
+                    bookingId, hostId, action);
+            return ConferencingProviderType.NONE;
+        }
+        return providerType;
     }
 
     @Transactional

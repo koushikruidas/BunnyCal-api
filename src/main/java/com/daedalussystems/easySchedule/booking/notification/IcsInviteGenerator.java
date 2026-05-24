@@ -83,7 +83,7 @@ public class IcsInviteGenerator {
         String dtEnd = ICS_TIME.format(end);
         String escapedSummary = escape(summary == null ? "Scheduled Meeting" : summary);
         String escapedDescription = escape(description == null ? "" : description);
-        String organizerDisplayName = escape(organizerName == null || organizerName.isBlank() ? "easySchedule" : organizerName.trim());
+        String organizerDisplayName = paramQuote(organizerName == null || organizerName.isBlank() ? "easySchedule" : organizerName.trim());
         String organizer = normalizeEmail(organizerEmail);
 
         StringBuilder builder = new StringBuilder();
@@ -95,6 +95,11 @@ public class IcsInviteGenerator {
         builder.append("BEGIN:VEVENT\r\n");
         builder.append("UID:").append(uid).append("\r\n");
         builder.append("DTSTAMP:").append(dtStamp).append("\r\n");
+        appendLine(builder, "CREATED:" + dtStamp);
+        // LAST-MODIFIED tracks server-side mutation; Outlook/Apple Mail use it to
+        // distinguish redundant REQUESTs from real updates and avoid duplicate calendar
+        // entries when the same event is sent twice.
+        appendLine(builder, "LAST-MODIFIED:" + dtStamp);
         builder.append("DTSTART:").append(dtStart).append("\r\n");
         builder.append("DTEND:").append(dtEnd).append("\r\n");
         appendLine(builder, "SUMMARY:" + escapedSummary);
@@ -102,11 +107,16 @@ public class IcsInviteGenerator {
         appendLine(builder, "TRANSP:OPAQUE");
         appendLine(builder, "CLASS:PUBLIC");
         appendLine(builder, "PRIORITY:5");
-        appendLine(builder, "ORGANIZER;CN=" + organizerDisplayName + ":mailto:" + organizer);
+        // CUTYPE=INDIVIDUAL and ROLE=CHAIR are not strictly required by RFC 5545 but
+        // Outlook/Exchange-based clients render the invite more reliably when both
+        // sides have explicit roles.
+        appendLine(builder, "ORGANIZER;CN=" + organizerDisplayName + ":MAILTO:" + organizer);
         for (Participant attendee : attendees) {
             String attendeeLine = includeRsvpSemantics
-                    ? "ATTENDEE;CN=" + attendee.displayName + ";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:" + attendee.email
-                    : "ATTENDEE;CN=" + attendee.displayName + ":mailto:" + attendee.email;
+                    ? "ATTENDEE;CN=" + attendee.displayName
+                      + ";CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:MAILTO:" + attendee.email
+                    : "ATTENDEE;CN=" + attendee.displayName
+                      + ";CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT:MAILTO:" + attendee.email;
             appendLine(builder, attendeeLine);
         }
         appendLine(builder, "SEQUENCE:" + Math.max(0, sequence));
@@ -159,17 +169,29 @@ public class IcsInviteGenerator {
         if (normalizedEmail.equals("no-reply@localhost") || normalizedEmail.equals(organizer)) {
             return;
         }
-        String normalizedName = escape(name == null || name.isBlank() ? normalizedEmail : name.trim());
+        String normalizedName = paramQuote(name == null || name.isBlank() ? normalizedEmail : name.trim());
         deduped.put(normalizedEmail.toLowerCase(Locale.ROOT), new Participant(normalizedName, normalizedEmail));
     }
 
     private record Participant(String displayName, String email) {}
 
     private static String escape(String value) {
+        // Order matters: backslash first, then list separators, then line breaks.
+        // CRLF is normalised to a single \n escape so a single CR doesn't leak through.
         return value
                 .replace("\\", "\\\\")
                 .replace(",", "\\,")
                 .replace(";", "\\;")
-                .replace("\n", "\\n");
+                .replace("\r\n", "\\n")
+                .replace("\n", "\\n")
+                .replace("\r", "\\n");
+    }
+
+    private static String paramQuote(String value) {
+        String v = value == null ? "" : value.trim();
+        String escaped = v
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"");
+        return "\"" + escaped + "\"";
     }
 }

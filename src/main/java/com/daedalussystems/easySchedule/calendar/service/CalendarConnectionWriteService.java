@@ -118,6 +118,28 @@ public class CalendarConnectionWriteService {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean stampAccountCapability(UUID connectionId,
+                                          String accountClassification,
+                                          String organizerInviteDelivery,
+                                          String context) {
+        if (connectionId == null || accountClassification == null || organizerInviteDelivery == null) {
+            return false;
+        }
+        return withRetry(connectionId, context, latest -> {
+            boolean classificationUnchanged = accountClassification.equals(latest.getAccountClassification());
+            boolean deliveryUnchanged = organizerInviteDelivery.equals(latest.getOrganizerInviteDelivery());
+            if (classificationUnchanged && deliveryUnchanged) {
+                return null;
+            }
+            latest.setAccountClassification(accountClassification);
+            latest.setOrganizerInviteDelivery(organizerInviteDelivery);
+            log.info("calendar_connection_capability_stamped connectionId={} accountClassification={} organizerInviteDelivery={} context={}",
+                    connectionId, accountClassification, organizerInviteDelivery, context);
+            return latest;
+        }) != null;
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public CalendarConnection invalidateProviderCursor(UUID connectionId, Instant invalidatedAt, String context) {
         return withRetry(connectionId, context, latest -> {
             latest.setProviderSyncCursor(null);
@@ -176,6 +198,8 @@ public class CalendarConnectionWriteService {
         target.setWebhookChannelId(source.getWebhookChannelId());
         target.setWebhookResourceId(source.getWebhookResourceId());
         target.setWebhookChannelExpiresAt(source.getWebhookChannelExpiresAt());
+        target.setAccountClassification(source.getAccountClassification());
+        target.setOrganizerInviteDelivery(source.getOrganizerInviteDelivery());
     }
 
     private static boolean equalsNullable(String a, String b) {

@@ -20,7 +20,7 @@ public class MicrosoftCalendarProvider implements CalendarProvider {
                 request.connectionId(),
                 token -> microsoftApiClient.createEvent(token, request)
         );
-        return new CreateEventResponse(details.externalEventId(), details.providerEventUrl(), details.conferenceUrl());
+        return new CreateEventResponse(details.externalEventId(), details.providerEventUrl(), details.conferenceUrl(), details.organizerEmail());
     }
 
     @Override
@@ -37,7 +37,7 @@ public class MicrosoftCalendarProvider implements CalendarProvider {
         tokenRefresher.executeWithValidToken(
                 request.connectionId(),
                 token -> {
-                    microsoftApiClient.deleteEvent(token, "primary", request.externalEventId());
+                    microsoftApiClient.deleteEvent(token, request.targetCalendarId(), request.externalEventId());
                     return null;
                 }
         );
@@ -46,7 +46,7 @@ public class MicrosoftCalendarProvider implements CalendarProvider {
     public boolean eventExists(DeleteEventRequest request) {
         return tokenRefresher.executeWithValidToken(
                 request.connectionId(),
-                token -> microsoftApiClient.eventExists(token, "primary", request.externalEventId())
+                token -> microsoftApiClient.eventExists(token, request.targetCalendarId(), request.externalEventId())
         );
     }
 }

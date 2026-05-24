@@ -104,6 +104,11 @@ public class BookingSyncWorker {
                 transactionManager, meterRegistry, objectMapper);
     }
 
+    public int reclaimStuckJobs(Instant staleThreshold) {
+        return txTemplate.execute(status ->
+                syncJobRepository.reclaimStuckProcessingJobs(staleThreshold));
+    }
+
     public int processPending(int batchSize) {
         List<UUID> claimedIds = syncJobRepository.claimPendingBatch(Instant.now(), batchSize);
         log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());

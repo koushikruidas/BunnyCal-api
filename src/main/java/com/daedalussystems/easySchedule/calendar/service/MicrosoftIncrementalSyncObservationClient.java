@@ -1,6 +1,7 @@
 package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.calendar.auth.TokenRefresher;
+import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.client.MicrosoftApiClient;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
@@ -36,11 +37,20 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
             SyncBatch full = fetchFull(connection, sourceAttribution);
             return new SyncBatch(full.events(), full.nextCursor(), true, true, "missing_cursor_full_recovery");
         }
-        MicrosoftApiClient.SyncWindow window = tokenRefresher.executeWithValidToken(
-                connection.getId(),
-                token -> microsoftApiClient.listEventsIncremental(token, cursor));
-        meterRegistry.counter("calendar.sync.incremental.total", "provider", "microsoft").increment();
-        return new SyncBatch(toIncoming(window.events()), normalize(window.nextDeltaCursor()), false, false, "incremental");
+        try {
+            MicrosoftApiClient.SyncWindow window = tokenRefresher.executeWithValidToken(
+                    connection.getId(),
+                    token -> microsoftApiClient.listEventsIncremental(token, cursor));
+            meterRegistry.counter("calendar.sync.incremental.total", "provider", "microsoft").increment();
+            return new SyncBatch(toIncoming(window.events()), normalize(window.nextDeltaCursor()), false, false, "incremental");
+        } catch (CalendarClientException ex) {
+            // 410 = guardrail tripped (oversized cursor) OR Graph returned Gone for an invalidated delta link
+            if (ex.getStatusCode() == 410) {
+                meterRegistry.counter("calendar.sync.cursor_invalidated.total", "provider", "microsoft").increment();
+                throw new SyncTokenInvalidException("Microsoft sync cursor invalidated: full resync required");
+            }
+            throw ex;
+        }
     }
 
     @Override

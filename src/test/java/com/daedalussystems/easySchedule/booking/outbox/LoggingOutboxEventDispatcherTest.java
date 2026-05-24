@@ -241,4 +241,59 @@ class LoggingOutboxEventDispatcherTest {
                 eq(hostId),
                 eq(authoritativeConnectionId));
     }
+
+    @Test
+    void dispatch_bookingConfirmed_usesAuthoritativeProviderFromConnection() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID authoritativeConnectionId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Booking")
+                .aggregateId(bookingId)
+                .eventType("BOOKING_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+        when(bookingRepository.findAnyById(bookingId))
+                .thenReturn(java.util.Optional.of(Booking.builder()
+                        .id(bookingId)
+                        .hostId(hostId)
+                        .eventTypeId(eventTypeId)
+                        .build()));
+        EventType configured = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Test")
+                .slug("test")
+                .duration(java.time.Duration.ofMinutes(30))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofMinutes(30))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(5))
+                .organizerCalendarConnectionId(authoritativeConnectionId)
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
+                .thenReturn(java.util.Optional.of(configured));
+        CalendarConnection msConnection = new CalendarConnection();
+        msConnection.setProvider(com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.MICROSOFT);
+        when(calendarConnectionRepository.findById(authoritativeConnectionId))
+                .thenReturn(java.util.Optional.of(msConnection));
+
+        dispatcher.dispatch(event);
+
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                eq("BOOKING"),
+                eq(bookingId),
+                eq("microsoft"),
+                eq("CREATE"),
+                eq(null),
+                eq(hostId),
+                eq(authoritativeConnectionId));
+    }
 }
