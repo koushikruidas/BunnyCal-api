@@ -13,10 +13,13 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.stereotype.Component;
@@ -24,6 +27,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccessHandler {
 
     private final IdentityLinkingService identityLinkingService;
@@ -44,12 +48,40 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     ) throws IOException, ServletException {
 
         OAuth2User oauth2User = (OAuth2User) authentication.getPrincipal();
+        Map<String, Object> attributes = oauth2User.getAttributes();
+        String registrationId = (authentication instanceof OAuth2AuthenticationToken token)
+                ? token.getAuthorizedClientRegistrationId()
+                : null;
 
-        String providerStr = oauth2User.getAttribute("provider");
-        String providerUserId = oauth2User.getAttribute("providerUserId");
-        String email = oauth2User.getAttribute("email");
-        String name = oauth2User.getAttribute("name");
+        String providerStr = firstNonBlank(
+                oauth2User.getAttribute("provider"),
+                registrationId
+        );
+        String providerUserId = firstNonBlank(
+                oauth2User.getAttribute("providerUserId"),
+                extractProviderUserId(attributes)
+        );
+        String email = firstNonBlank(
+                oauth2User.getAttribute("email"),
+                oauth2User.getAttribute("userPrincipalName"),
+                oauth2User.getAttribute("preferred_username")
+        );
+        String name = firstNonBlank(
+                oauth2User.getAttribute("name"),
+                oauth2User.getAttribute("displayName")
+        );
         String imageUrl = oauth2User.getAttribute("imageUrl");
+
+        log.info(
+                "oauth_success_handler registrationId={} providerAttrPresent={} providerUserIdAttrPresent={} emailAttrPresent={} resolvedProvider={} resolvedProviderUserIdPresent={} resolvedEmailPresent={} attributeKeys={}",
+                registrationId,
+                hasText(oauth2User.getAttribute("provider")),
+                hasText(oauth2User.getAttribute("providerUserId")),
+                hasText(oauth2User.getAttribute("email")),
+                providerStr,
+                hasText(providerUserId),
+                hasText(email),
+                attributes.keySet());
 
         if (providerStr == null || providerStr.trim().isEmpty()) {
             throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
@@ -63,8 +95,9 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
 
         AuthProvider provider;
         try {
-            provider = AuthProvider.valueOf(providerStr);
+            provider = AuthProvider.valueOf(providerStr.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
+            log.warn("oauth_success_handler_invalid_provider registrationId={} providerStr={}", registrationId, providerStr);
             throw new CustomException(ErrorCode.OAUTH_INVALID_RESPONSE);
         }
 
@@ -156,5 +189,30 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
          *
          * response.sendRedirect(frontendUrl + "/dashboard");
          */
+    }
+
+    private static String extractProviderUserId(Map<String, Object> attributes) {
+        if (attributes == null) return null;
+        return firstNonBlank(
+                asString(attributes.get("id")),
+                asString(attributes.get("oid")),
+                asString(attributes.get("sub"))
+        );
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (hasText(value)) return value;
+        }
+        return null;
+    }
+
+    private static String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 }
