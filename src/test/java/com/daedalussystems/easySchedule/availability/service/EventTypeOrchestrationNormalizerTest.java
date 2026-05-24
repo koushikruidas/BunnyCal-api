@@ -31,7 +31,7 @@ class EventTypeOrchestrationNormalizerTest {
 
     @BeforeEach
     void setUp() {
-        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository);
+        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository, false);
     }
 
     @Test
@@ -103,6 +103,52 @@ class EventTypeOrchestrationNormalizerTest {
         );
 
         assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+    }
+
+    @Test
+    void decoupledMode_allowsGoogleMeetWithMicrosoftAuthoritativeConnection() {
+        UUID userId = UUID.randomUUID();
+        UUID schedulerConnectionId = UUID.randomUUID();
+        when(calendarConnectionRepository.findById(schedulerConnectionId))
+                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.MICROSOFT)));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
+                schedulerConnectionId,
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
+                null,
+                null,
+                null,
+                null
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+        assertEquals(ConferencingProviderType.GOOGLE_MEET, normalized.conferencing().provider());
+        assertEquals(CalendarProviderType.MICROSOFT, normalized.authoritativeProvider());
+    }
+
+    @Test
+    void strictCompatibilityMode_rejectsGoogleMeetWithMicrosoftAuthoritativeConnection() {
+        EventTypeOrchestrationNormalizer strictNormalizer =
+                new EventTypeOrchestrationNormalizer(calendarConnectionRepository, true);
+        UUID userId = UUID.randomUUID();
+        UUID schedulerConnectionId = UUID.randomUUID();
+        when(calendarConnectionRepository.findById(schedulerConnectionId))
+                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.MICROSOFT)));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
+                schedulerConnectionId,
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
+                null,
+                null,
+                null,
+                null
+        );
+
+        assertThrows(CustomException.class, () -> strictNormalizer.normalize(userId, request));
     }
 
     private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {

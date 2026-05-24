@@ -4,6 +4,8 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.calendar.client.CalendarClientException;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingCoordinator;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionResult;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
@@ -46,6 +48,7 @@ public class BookingSyncWorker {
     private final ConnectionRateLimitBreaker rateLimitBreaker;
     private final IdempotencyKeyFactory idempotencyKeyFactory;
     private final ConferencingCoordinator conferencingCoordinator;
+    private final ConferencingExecutionPolicy conferencingExecutionPolicy;
     private final MeterRegistry meterRegistry;
     private final Counter syncSuccessCount;
     private final Counter syncFailureCount;
@@ -64,6 +67,7 @@ public class BookingSyncWorker {
                              ConnectionRateLimitBreaker rateLimitBreaker,
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              ObjectProvider<ConferencingCoordinator> conferencingCoordinatorProvider,
+                             ConferencingExecutionPolicy conferencingExecutionPolicy,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry,
                              ObjectMapper objectMapper) {
@@ -75,6 +79,7 @@ public class BookingSyncWorker {
         this.rateLimitBreaker = rateLimitBreaker;
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.conferencingCoordinator = conferencingCoordinatorProvider.getIfAvailable();
+        this.conferencingExecutionPolicy = conferencingExecutionPolicy;
         log.info("conferencing_coordinator_injection coordinatorAvailable={}",
                 this.conferencingCoordinator != null);
         this.meterRegistry = meterRegistry;
@@ -96,11 +101,13 @@ public class BookingSyncWorker {
                       SyncRetryPolicy retryPolicy,
                       ConnectionRateLimitBreaker rateLimitBreaker,
                       IdempotencyKeyFactory idempotencyKeyFactory,
+                      ConferencingExecutionPolicy conferencingExecutionPolicy,
                       PlatformTransactionManager transactionManager,
                       MeterRegistry meterRegistry,
                       ObjectMapper objectMapper) {
         this(syncJobRepository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
                 rateLimitBreaker, idempotencyKeyFactory, new DefaultListableBeanFactory().getBeanProvider(ConferencingCoordinator.class),
+                conferencingExecutionPolicy,
                 transactionManager, meterRegistry, objectMapper);
     }
 
@@ -173,7 +180,8 @@ public class BookingSyncWorker {
             return;
         }
         Instant startedAt = Instant.now();
-        ConferencingInstruction instruction = resolveConferencingInstructionForCreate(job);
+        ConferencingExecutionResult conferencingResult = resolveConferencingInstructionForCreate(job);
+        ConferencingInstruction instruction = conferencingResult.instruction();
         CalendarService.CreateEventResult result = calendarService.createEvent(
                 new CalendarService.CreateCalendarEventCommand(
                         job.getInternalRefId(),
@@ -190,7 +198,7 @@ public class BookingSyncWorker {
                     result.providerEventUrl(),
                     resolveConferenceUrl(result, instruction),
                     resolveConferenceProvider(instruction),
-                    toConferenceMetadataJson(instruction));
+                    toConferenceMetadataJson(instruction, conferencingResult));
             return;
         }
         handleFailure(job, result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode());
@@ -202,7 +210,8 @@ public class BookingSyncWorker {
             return;
         }
         Instant startedAt = Instant.now();
-        ConferencingInstruction instruction = resolveConferencingInstructionForUpdate(job);
+        ConferencingExecutionResult conferencingResult = resolveConferencingInstructionForUpdate(job);
+        ConferencingInstruction instruction = conferencingResult.instruction();
         String externalId = calendarService.updateEvent(
                 new CalendarService.UpdateCalendarEventCommand(
                         job.getInternalRefId(),
@@ -219,7 +228,7 @@ public class BookingSyncWorker {
                 job.getProviderEventUrl(),
                 resolveConferenceUrl(null, instruction),
                 resolveConferenceProvider(instruction),
-                toConferenceMetadataJson(instruction));
+                toConferenceMetadataJson(instruction, conferencingResult));
     }
 
     private BookingRepository.BookingStateRow resolveState(CalendarSyncJob job) {
@@ -273,22 +282,25 @@ public class BookingSyncWorker {
         conferencingCoordinator.cancelForBooking(job.getInternalRefId(), hostId);
     }
 
-    private ConferencingInstruction resolveConferencingInstructionForCreate(CalendarSyncJob job) {
+    private ConferencingExecutionResult resolveConferencingInstructionForCreate(CalendarSyncJob job) {
         if (conferencingCoordinator == null) {
             log.info("conferencing_instruction_fallback_none reason=coordinator_null bookingId={} action=CREATE",
                     job.getInternalRefId());
-            return ConferencingInstruction.none();
+            return ConferencingExecutionResult.degraded(ConferencingInstruction.none(), "coordinator_null");
         }
         UUID hostId = resolveHostId(job);
         if (hostId == null) {
             log.info("conferencing_instruction_fallback_none reason=host_null bookingId={} action=CREATE",
                     job.getInternalRefId());
-            return ConferencingInstruction.none();
+            return ConferencingExecutionResult.degraded(ConferencingInstruction.none(), "host_null");
         }
         ConferencingInstruction instruction = conferencingCoordinator.prepareForCreate(job.getInternalRefId(), hostId);
-        log.info("conferencing_instruction_resolved bookingId={} action=CREATE provider={} mode={} hasJoinUrl={}",
-                job.getInternalRefId(), instruction.providerType(), instruction.mode(), instruction.embedsExternalUrl());
-        return instruction;
+        ConferencingExecutionResult result = conferencingExecutionPolicy.adaptForMirrorProvider(
+                instruction, job.getProvider(), job.getInternalRefId(), "CREATE");
+        log.info("conferencing_instruction_resolved bookingId={} action=CREATE provider={} mode={} hasJoinUrl={} outcome={} reasonCode={}",
+                job.getInternalRefId(), result.instruction().providerType(), result.instruction().mode(),
+                result.instruction().embedsExternalUrl(), result.outcome(), result.reasonCode());
+        return result;
     }
 
     private static String resolveConferenceProvider(ConferencingInstruction instruction) {
@@ -309,7 +321,7 @@ public class BookingSyncWorker {
         return null;
     }
 
-    private String toConferenceMetadataJson(ConferencingInstruction instruction) {
+    private String toConferenceMetadataJson(ConferencingInstruction instruction, ConferencingExecutionResult result) {
         if (instruction == null) {
             return null;
         }
@@ -317,7 +329,9 @@ public class BookingSyncWorker {
             return objectMapper.writeValueAsString(Map.of(
                     "mode", String.valueOf(instruction.mode()),
                     "meetingId", instruction.meetingId() == null ? "" : instruction.meetingId(),
-                    "hostUrl", instruction.hostUrl() == null ? "" : instruction.hostUrl()
+                    "hostUrl", instruction.hostUrl() == null ? "" : instruction.hostUrl(),
+                    "executionOutcome", result == null ? "APPLIED" : result.outcome().name(),
+                    "executionReasonCode", result == null || result.reasonCode() == null ? "" : result.reasonCode()
             ));
         } catch (JsonProcessingException ex) {
             log.warn("sync_job_conference_metadata_serialize_failed bookingId={} message={}",
@@ -326,22 +340,25 @@ public class BookingSyncWorker {
         }
     }
 
-    private ConferencingInstruction resolveConferencingInstructionForUpdate(CalendarSyncJob job) {
+    private ConferencingExecutionResult resolveConferencingInstructionForUpdate(CalendarSyncJob job) {
         if (conferencingCoordinator == null) {
             log.info("conferencing_instruction_fallback_none reason=coordinator_null bookingId={} action=UPDATE",
                     job.getInternalRefId());
-            return ConferencingInstruction.none();
+            return ConferencingExecutionResult.degraded(ConferencingInstruction.none(), "coordinator_null");
         }
         UUID hostId = resolveHostId(job);
         if (hostId == null) {
             log.info("conferencing_instruction_fallback_none reason=host_null bookingId={} action=UPDATE",
                     job.getInternalRefId());
-            return ConferencingInstruction.none();
+            return ConferencingExecutionResult.degraded(ConferencingInstruction.none(), "host_null");
         }
         ConferencingInstruction instruction = conferencingCoordinator.prepareForUpdate(job.getInternalRefId(), hostId);
-        log.info("conferencing_instruction_resolved bookingId={} action=UPDATE provider={} mode={} hasJoinUrl={}",
-                job.getInternalRefId(), instruction.providerType(), instruction.mode(), instruction.embedsExternalUrl());
-        return instruction;
+        ConferencingExecutionResult result = conferencingExecutionPolicy.adaptForMirrorProvider(
+                instruction, job.getProvider(), job.getInternalRefId(), "UPDATE");
+        log.info("conferencing_instruction_resolved bookingId={} action=UPDATE provider={} mode={} hasJoinUrl={} outcome={} reasonCode={}",
+                job.getInternalRefId(), result.instruction().providerType(), result.instruction().mode(),
+                result.instruction().embedsExternalUrl(), result.outcome(), result.reasonCode());
+        return result;
     }
 
     private UUID resolveHostId(CalendarSyncJob job) {

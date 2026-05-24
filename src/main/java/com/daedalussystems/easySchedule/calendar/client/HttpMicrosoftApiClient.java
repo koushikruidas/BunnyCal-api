@@ -335,6 +335,10 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                         "address", attendeeEmail,
                         "name", attendeeName == null || attendeeName.isBlank() ? attendeeEmail : attendeeName),
                 "type", "required")));
+        // App is the canonical organizer and emits its own ICS invites/updates/cancels.
+        // Microsoft Graph remains a silent time-block mirror — it must not dispatch parallel invitation emails.
+        body.put("responseRequested", false);
+        body.put("isReminderOn", false);
         if (instruction != null
                 && instruction.mode() == ConferencingInstruction.Mode.REQUEST_NATIVE_MEET
                 && instruction.providerType() == com.daedalussystems.easySchedule.common.enums.ConferencingProviderType.MICROSOFT_TEAMS) {

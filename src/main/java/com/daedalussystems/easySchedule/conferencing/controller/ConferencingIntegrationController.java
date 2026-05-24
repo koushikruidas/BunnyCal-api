@@ -100,6 +100,7 @@ public class ConferencingIntegrationController {
         payload.put("providerCatalog", providerCatalogService.conferencingProviderSubset(userId));
         payload.put("authority", Map.of(
                 "conferencingProviders", catalog.authority().conferencingProviders(),
+                "lifecycleAuthority", catalog.authority().lifecycleAuthority(),
                 "identityProvider", catalog.authority().identityProvider()
         ));
         return ResponseEntity.ok(ApiResponse.success(payload));

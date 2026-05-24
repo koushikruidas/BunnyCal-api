@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class ProviderCatalogService {
     private static final String VERSION = "v1alpha-provider-catalog";
+    private static final String LIFECYCLE_AUTHORITY_APPLICATION = "application";
     private static final String GOOGLE = "google";
     private static final String MICROSOFT = "microsoft";
     private static final String ZOOM = "zoom";
@@ -63,6 +64,7 @@ public class ProviderCatalogService {
         ProviderAuthoritySummary authoritySummary = new ProviderAuthoritySummary(
                 identityProvider,
                 availabilityProviders,
+                LIFECYCLE_AUTHORITY_APPLICATION,
                 authoritativeSchedulingProvider,
                 conferencingProviders
         );

@@ -34,9 +34,11 @@ public class IcsInviteGenerator {
                                          String hostEmail,
                                          String guestName,
                                          String guestEmail,
-                                         int sequence) {
+                                         int sequence,
+                                         String conferenceJoinUrl) {
         List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
-        return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail, attendees, sequence, true);
+        return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail,
+                attendees, sequence, true, conferenceJoinUrl);
     }
 
     public String buildStandaloneCancel(UUID bookingId,
@@ -50,9 +52,11 @@ public class IcsInviteGenerator {
                                         String hostEmail,
                                         String guestName,
                                         String guestEmail,
-                                        int sequence) {
+                                        int sequence,
+                                        String conferenceJoinUrl) {
         List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
-        return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail, attendees, sequence, true);
+        return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail,
+                attendees, sequence, true, conferenceJoinUrl);
     }
 
     public String buildConnectedSnapshot(UUID bookingId,
@@ -63,7 +67,8 @@ public class IcsInviteGenerator {
                                          String organizerName,
                                          String organizerEmail,
                                          int sequence) {
-        return build("PUBLISH", bookingId, summary, description, start, end, organizerName, organizerEmail, List.of(), sequence, false);
+        return build("PUBLISH", bookingId, summary, description, start, end, organizerName, organizerEmail,
+                List.of(), sequence, false, null);
     }
 
     private String build(String method,
@@ -76,13 +81,20 @@ public class IcsInviteGenerator {
                          String organizerEmail,
                          List<Participant> attendees,
                          int sequence,
-                         boolean includeRsvpSemantics) {
+                         boolean includeRsvpSemantics,
+                         String conferenceJoinUrl) {
         String uid = "booking-" + bookingId + "@" + uidDomain;
         String dtStamp = ICS_TIME.format(Instant.now());
         String dtStart = ICS_TIME.format(start);
         String dtEnd = ICS_TIME.format(end);
         String escapedSummary = escape(summary == null ? "Scheduled Meeting" : summary);
-        String escapedDescription = escape(description == null ? "" : description);
+        String trimmedJoinUrl = conferenceJoinUrl == null ? "" : conferenceJoinUrl.trim();
+        String descriptionWithJoin = trimmedJoinUrl.isEmpty()
+                ? (description == null ? "" : description)
+                : ((description == null || description.isBlank()
+                        ? "Join the meeting"
+                        : description) + "\n\nJoin: " + trimmedJoinUrl);
+        String escapedDescription = escape(descriptionWithJoin);
         String organizerDisplayName = escape(organizerName == null || organizerName.isBlank() ? "easySchedule" : organizerName.trim());
         String organizer = normalizeEmail(organizerEmail);
 
@@ -99,36 +111,56 @@ public class IcsInviteGenerator {
         builder.append("DTEND:").append(dtEnd).append("\r\n");
         appendLine(builder, "SUMMARY:" + escapedSummary);
         appendLine(builder, "DESCRIPTION:" + escapedDescription);
+        if (!trimmedJoinUrl.isEmpty()) {
+            appendLine(builder, "LOCATION:" + escape(trimmedJoinUrl));
+            appendLine(builder, "URL:" + trimmedJoinUrl);
+            appendLine(builder, "X-MICROSOFT-SKYPETEAMSMEETINGURL:" + trimmedJoinUrl);
+            appendLine(builder, "X-GOOGLE-CONFERENCE:" + trimmedJoinUrl);
+        }
         appendLine(builder, "TRANSP:OPAQUE");
         appendLine(builder, "CLASS:PUBLIC");
         appendLine(builder, "PRIORITY:5");
         appendLine(builder, "ORGANIZER;CN=" + organizerDisplayName + ":mailto:" + organizer);
         for (Participant attendee : attendees) {
-            String attendeeLine = includeRsvpSemantics
-                    ? "ATTENDEE;CN=" + attendee.displayName + ";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:" + attendee.email
-                    : "ATTENDEE;CN=" + attendee.displayName + ":mailto:" + attendee.email;
+            String attendeeLine;
+            if (!includeRsvpSemantics) {
+                attendeeLine = "ATTENDEE;CN=" + attendee.displayName + ":mailto:" + attendee.email;
+            } else if (attendee.role == ParticipantRole.HOST) {
+                attendeeLine = "ATTENDEE;CN=" + attendee.displayName
+                        + ";CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:" + attendee.email;
+            } else {
+                attendeeLine = "ATTENDEE;CN=" + attendee.displayName
+                        + ";CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:" + attendee.email;
+            }
             appendLine(builder, attendeeLine);
         }
         appendLine(builder, "SEQUENCE:" + Math.max(0, sequence));
         appendLine(builder, "STATUS:" + ("CANCEL".equals(method) ? "CANCELLED" : "CONFIRMED"));
+        appendLine(builder, "X-MICROSOFT-CDO-BUSYSTATUS:BUSY");
+        appendLine(builder, "X-MICROSOFT-CDO-INTENDEDSTATUS:BUSY");
+        appendLine(builder, "X-MICROSOFT-DISALLOW-COUNTER:FALSE");
         builder.append("END:VEVENT\r\n");
         builder.append("END:VCALENDAR\r\n");
         return builder.toString();
     }
 
     private static void appendLine(StringBuilder builder, String line) {
-        final int max = 73;
-        if (line.length() <= max) {
+        // RFC 5545 §3.1: lines SHOULD NOT exceed 75 octets, excluding the CRLF.
+        // Continuation lines begin with a single leading whitespace octet which
+        // also counts toward the 75-octet budget, so the payload per continuation
+        // is 74 octets.
+        final int firstChunk = 75;
+        final int contChunk = 74;
+        if (line.length() <= firstChunk) {
             builder.append(line).append("\r\n");
             return;
         }
-        int index = 0;
-        builder.append(line, index, max).append("\r\n");
-        index = max;
+        builder.append(line, 0, firstChunk).append("\r\n");
+        int index = firstChunk;
         while (index < line.length()) {
-            int next = Math.min(index + max - 1, line.length());
-            builder.append(' ').append(line, index, next).append("\r\n");
-            index = next;
+            int end = Math.min(index + contChunk, line.length());
+            builder.append(' ').append(line, index, end).append("\r\n");
+            index = end;
         }
     }
 
@@ -145,25 +177,28 @@ public class IcsInviteGenerator {
                                                     String guestEmail,
                                                     String organizerEmail) {
         Map<String, Participant> deduped = new LinkedHashMap<>();
-        addAttendee(deduped, hostName, hostEmail, organizerEmail);
-        addAttendee(deduped, guestName, guestEmail, organizerEmail);
+        addAttendee(deduped, hostName, hostEmail, organizerEmail, ParticipantRole.HOST);
+        addAttendee(deduped, guestName, guestEmail, organizerEmail, ParticipantRole.GUEST);
         return new ArrayList<>(deduped.values());
     }
 
     private static void addAttendee(Map<String, Participant> deduped,
                                     String name,
                                     String email,
-                                    String organizerEmail) {
+                                    String organizerEmail,
+                                    ParticipantRole role) {
         String normalizedEmail = normalizeEmail(email);
         String organizer = normalizeEmail(organizerEmail);
         if (normalizedEmail.equals("no-reply@localhost") || normalizedEmail.equals(organizer)) {
             return;
         }
         String normalizedName = escape(name == null || name.isBlank() ? normalizedEmail : name.trim());
-        deduped.put(normalizedEmail.toLowerCase(Locale.ROOT), new Participant(normalizedName, normalizedEmail));
+        deduped.put(normalizedEmail.toLowerCase(Locale.ROOT), new Participant(normalizedName, normalizedEmail, role));
     }
 
-    private record Participant(String displayName, String email) {}
+    private enum ParticipantRole { HOST, GUEST }
+
+    private record Participant(String displayName, String email, ParticipantRole role) {}
 
     private static String escape(String value) {
         return value

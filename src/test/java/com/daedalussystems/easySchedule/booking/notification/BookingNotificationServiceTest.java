@@ -22,9 +22,11 @@ import com.daedalussystems.easySchedule.booking.outbox.OutboxEvent;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.booking.service.BookingActionType;
 import com.daedalussystems.easySchedule.booking.service.GuestCapabilityTokenService;
-import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
-import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
-import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
+import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
+import com.daedalussystems.easySchedule.conferencing.domain.ConferencingEventMapping;
+import com.daedalussystems.easySchedule.conferencing.repository.ConferencingEventMappingRepository;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingCoordinator;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import jakarta.mail.BodyPart;
 import jakarta.mail.Session;
 import jakarta.mail.internet.MimeMessage;
@@ -51,13 +53,14 @@ class BookingNotificationServiceTest {
     @Mock private BookingRepository bookingRepository;
     @Mock private UserRepository userRepository;
     @Mock private EventTypeRepository eventTypeRepository;
-    @Mock private CalendarConnectionRepository calendarConnectionRepository;
     @Mock private JavaMailSender mailSender;
     @Mock private BookingManageLinkService bookingManageLinkService;
     @Mock private GuestCapabilityTokenService guestCapabilityTokenService;
     @Mock private NotificationRecipientResolver recipientResolver;
     @Mock private EmailDeliverabilityPolicy deliverabilityPolicy;
     @Mock private NotificationSendDedupService notificationSendDedupService;
+    @Mock private ConferencingCoordinator conferencingCoordinator;
+    @Mock private ConferencingEventMappingRepository conferencingEventMappingRepository;
 
     @Captor private ArgumentCaptor<MimeMessage> messageCaptor;
 
@@ -69,7 +72,6 @@ class BookingNotificationServiceTest {
                 bookingRepository,
                 userRepository,
                 eventTypeRepository,
-                calendarConnectionRepository,
                 mailSender,
                 new IcsInviteGenerator("example.com"),
                 bookingManageLinkService,
@@ -77,6 +79,8 @@ class BookingNotificationServiceTest {
                 recipientResolver,
                 deliverabilityPolicy,
                 notificationSendDedupService,
+                conferencingCoordinator,
+                conferencingEventMappingRepository,
                 true,
                 "no-reply@example.com",
                 "calendar@example.com",
@@ -88,6 +92,11 @@ class BookingNotificationServiceTest {
         lenient().when(bookingManageLinkService.build(any(), any(), any(), any()))
                 .thenReturn("https://app.example.com/manage/booking?token=token-abc&u=host-user&e=discovery-call");
         lenient().when(notificationSendDedupService.claim(any(), any(), any())).thenReturn(true);
+        // By default no conferencing provider is configured on the EventType,
+        // so no Zoom URL lookups are expected. Individual tests stub these
+        // explicitly when they exercise conferencing flows.
+        lenient().when(conferencingEventMappingRepository.findByBookingIdAndProvider(any(), any()))
+                .thenReturn(Optional.empty());
     }
 
     @Test
@@ -105,8 +114,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
 
         service.handleOutboxEvent(event);
 
@@ -119,18 +126,14 @@ class BookingNotificationServiceTest {
         String hostIcs = unfold(icsBody(hostMsg));
         assertTrue(hostIcs.contains("METHOD:REQUEST"));
         assertTrue(hostIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
-        assertTrue(hostIcs.contains("ATTENDEE;CN=Host Name;RSVP=TRUE;PARTSTAT=NEEDS-ACTION"));
-        assertTrue(hostIcs.contains("ATTENDEE;CN=Guest Name;RSVP=TRUE;PARTSTAT=NEEDS-ACTION"));
-        assertTrue(hostIcs.contains("mailto:host@example.com"));
-        assertTrue(hostIcs.contains("mailto:guest@example.com"));
+        assertTrue(hostIcs.contains("ATTENDEE;CN=Host Name;CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:host@example.com"));
+        assertTrue(hostIcs.contains("ATTENDEE;CN=Guest Name;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:guest@example.com"));
 
         String attendeeIcs = unfold(icsBody(attendeeMsg));
         assertTrue(attendeeIcs.contains("METHOD:REQUEST"));
         assertTrue(attendeeIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
-        assertTrue(attendeeIcs.contains("ATTENDEE;CN=Host Name;RSVP=TRUE;PARTSTAT=NEEDS-ACTION"));
-        assertTrue(attendeeIcs.contains("ATTENDEE;CN=Guest Name;RSVP=TRUE;PARTSTAT=NEEDS-ACTION"));
-        assertTrue(attendeeIcs.contains("mailto:host@example.com"));
-        assertTrue(attendeeIcs.contains("mailto:guest@example.com"));
+        assertTrue(attendeeIcs.contains("ATTENDEE;CN=Host Name;CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:host@example.com"));
+        assertTrue(attendeeIcs.contains("ATTENDEE;CN=Guest Name;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:guest@example.com"));
         assertTrue(textBody(hostMsg).contains("Manage your booking"));
         assertTrue(textBody(attendeeMsg).contains("Manage your booking"));
     }
@@ -150,8 +153,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
 
         service.handleOutboxEvent(event);
 
@@ -187,8 +188,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("same@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("same@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("same@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
 
         service.handleOutboxEvent(event);
 
@@ -201,7 +200,7 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void connectedProvider_sendsInformationalOnlyWithoutCalendarAttachment() throws Exception {
+    void appCanonical_alwaysAttachesIcsAndKeepsAppOrganizer_regardlessOfProviderState() throws Exception {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 2L);
@@ -215,19 +214,140 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(mockConnection()));
 
         service.handleOutboxEvent(event);
 
         verify(mailSender, times(2)).send(messageCaptor.capture());
         var sent = messageCaptor.getAllValues();
-        assertFalse(hasIcsAttachment(findByRecipient(sent, "host@example.com")));
-        assertFalse(hasIcsAttachment(findByRecipient(sent, "guest@example.com")));
-        assertFalse(hasCalendarMimePart(findByRecipient(sent, "host@example.com")));
-        assertFalse(hasCalendarMimePart(findByRecipient(sent, "guest@example.com")));
-        assertTrue(textBody(findByRecipient(sent, "host@example.com")).contains("Manage your booking"));
-        assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
+        MimeMessage hostMsg = findByRecipient(sent, "host@example.com");
+        MimeMessage attendeeMsg = findByRecipient(sent, "guest@example.com");
+
+        assertTrue(hasIcsAttachment(hostMsg));
+        assertTrue(hasIcsAttachment(attendeeMsg));
+
+        String hostIcs = unfold(icsBody(hostMsg));
+        String attendeeIcs = unfold(icsBody(attendeeMsg));
+        assertTrue(hostIcs.contains("METHOD:REQUEST"));
+        assertTrue(attendeeIcs.contains("METHOD:REQUEST"));
+        assertTrue(hostIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
+        assertTrue(attendeeIcs.contains("ORGANIZER;CN=EasySchedule Calendar:mailto:calendar@example.com"));
+        assertFalse(hostIcs.contains("ORGANIZER;CN=Host Name"));
+        assertFalse(attendeeIcs.contains("ORGANIZER;CN=Host Name"));
+        assertTrue(textBody(hostMsg).contains("Manage your booking"));
+        assertTrue(textBody(attendeeMsg).contains("Manage your booking"));
+    }
+
+    @Test
+    void invite_emitsInlineTextCalendarPartForOutlookAutoRender() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 7L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "host@example.com");
+        MimeMessage attendeeMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+
+        // The Outlook auto-render contract requires an inline text/calendar part
+        // (no attachment disposition) co-equal with the text/plain body inside
+        // a multipart/alternative — without this, Outlook treats the calendar
+        // as a file and demands manual "Add to calendar".
+        String hostInlineIcs = inlineCalendarBody(hostMsg);
+        String attendeeInlineIcs = inlineCalendarBody(attendeeMsg);
+        assertNotNull(hostInlineIcs);
+        assertNotNull(attendeeInlineIcs);
+        assertTrue(unfold(hostInlineIcs).contains("METHOD:REQUEST"));
+        assertTrue(unfold(attendeeInlineIcs).contains("METHOD:REQUEST"));
+
+        // The invite.ics file attachment is preserved as a fallback for clients
+        // that only recognise the attachment form.
+        assertTrue(hasIcsAttachment(hostMsg));
+        assertTrue(hasIcsAttachment(attendeeMsg));
+    }
+
+    @Test
+    void invite_embedsZoomJoinUrlWhenConferencingMappingExists() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 8L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+        String joinUrl = "https://zoom.us/j/9988776655?pwd=secret";
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call")
+                        .slug("discovery-call")
+                        .conferencingProvider(ConferencingProviderType.ZOOM)
+                        .build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
+        when(conferencingCoordinator.prepareForCreate(bookingId, hostId))
+                .thenReturn(ConferencingInstruction.urlEmbedded(ConferencingProviderType.ZOOM, joinUrl, null, "9988776655"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage attendeeMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+
+        String attendeeIcs = unfold(icsBody(attendeeMsg));
+        assertTrue(attendeeIcs.contains("LOCATION:" + joinUrl));
+        assertTrue(attendeeIcs.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + joinUrl));
+        assertTrue(attendeeIcs.contains("Join: " + joinUrl));
+        assertTrue(textBody(attendeeMsg).contains("Join the meeting:\n" + joinUrl));
+    }
+
+    @Test
+    void invite_fallsBackToMappingRepoWhenCoordinatorReturnsNoUrl() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 9L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CANCELLED");
+        String joinUrl = "https://zoom.us/j/7766554433";
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call")
+                        .slug("discovery-call")
+                        .conferencingProvider(ConferencingProviderType.ZOOM)
+                        .build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
+        ConferencingEventMapping mapping = new ConferencingEventMapping();
+        mapping.setBookingId(bookingId);
+        mapping.setProvider(ConferencingProviderType.ZOOM);
+        mapping.setJoinUrl(joinUrl);
+        when(conferencingEventMappingRepository.findByBookingIdAndProvider(bookingId, ConferencingProviderType.ZOOM))
+                .thenReturn(Optional.of(mapping));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage attendeeMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+
+        String attendeeIcs = unfold(icsBody(attendeeMsg));
+        assertTrue(attendeeIcs.contains("METHOD:CANCEL"));
+        // Cancellation surface still reveals the join URL so recipients can
+        // recognise which meeting was cancelled.
+        assertTrue(attendeeIcs.contains("LOCATION:" + joinUrl));
     }
 
     @Test
@@ -245,8 +365,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
 
         service.handleOutboxEvent(event);
 
@@ -271,8 +389,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
         AtomicInteger sendCount = new AtomicInteger();
         org.mockito.Mockito.doAnswer(invocation -> {
             if (sendCount.incrementAndGet() == 2) {
@@ -308,14 +424,6 @@ class BookingNotificationServiceTest {
         return event;
     }
 
-    private static com.daedalussystems.easySchedule.calendar.domain.CalendarConnection mockConnection() {
-        com.daedalussystems.easySchedule.calendar.domain.CalendarConnection connection =
-                new com.daedalussystems.easySchedule.calendar.domain.CalendarConnection();
-        connection.setStatus(com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus.ACTIVE);
-        connection.setProvider(com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.GOOGLE);
-        return connection;
-    }
-
     private static String header(MimeMessage message, String name) throws Exception {
         String[] values = message.getHeader(name);
         assertNotNull(values);
@@ -335,13 +443,11 @@ class BookingNotificationServiceTest {
     private static BodyPart icsPart(MimeMessage message) throws Exception {
         Object content = message.getContent();
         MimeMultipart multipart = (MimeMultipart) content;
-        for (int i = 0; i < multipart.getCount(); i++) {
-            BodyPart part = multipart.getBodyPart(i);
-            if ("invite.ics".equalsIgnoreCase(part.getFileName())) {
-                return part;
-            }
+        BodyPart hit = findIcsAttachmentPart(multipart);
+        if (hit == null) {
+            throw new IllegalStateException("invite.ics attachment not found");
         }
-        throw new IllegalStateException("invite.ics attachment not found");
+        return hit;
     }
 
     private static boolean hasIcsAttachment(MimeMessage message) throws Exception {
@@ -349,34 +455,59 @@ class BookingNotificationServiceTest {
         if (!(content instanceof MimeMultipart multipart)) {
             return false;
         }
-        for (int i = 0; i < multipart.getCount(); i++) {
-            BodyPart part = multipart.getBodyPart(i);
-            if ("invite.ics".equalsIgnoreCase(part.getFileName())) {
-                return true;
-            }
-        }
-        return false;
+        return findIcsAttachmentPart(multipart) != null;
     }
 
-    private static boolean hasCalendarMimePart(MimeMessage message) throws Exception {
-        Object content = message.getContent();
-        if (!(content instanceof MimeMultipart multipart)) {
-            return false;
-        }
+    private static BodyPart findIcsAttachmentPart(MimeMultipart multipart) throws Exception {
         for (int i = 0; i < multipart.getCount(); i++) {
             BodyPart part = multipart.getBodyPart(i);
+            String[] disposition = part.getHeader("Content-Disposition");
+            boolean isAttachment = disposition != null && disposition.length > 0
+                    && disposition[0] != null
+                    && disposition[0].toLowerCase(java.util.Locale.ROOT).contains("attachment");
+            if (isAttachment && "invite.ics".equalsIgnoreCase(part.getFileName())) {
+                return part;
+            }
             String contentType = part.getContentType();
-            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).contains("text/calendar")) {
-                return true;
+            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/")) {
+                Object body = part.getContent();
+                if (body instanceof MimeMultipart nested) {
+                    BodyPart nestedHit = findIcsAttachmentPart(nested);
+                    if (nestedHit != null) {
+                        return nestedHit;
+                    }
+                }
             }
         }
-        return false;
+        return null;
     }
 
     private static String icsBody(MimeMessage message) throws Exception {
         BodyPart part = icsPart(message);
-        try (InputStream in = part.getInputStream()) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        return readPartAsString(part);
+    }
+
+    private static String readPartAsString(BodyPart part) throws Exception {
+        try {
+            Object content = part.getContent();
+            if (content instanceof String s) {
+                return s;
+            }
+            if (content instanceof InputStream in) {
+                try (InputStream stream = in) {
+                    return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            }
+        } catch (jakarta.mail.MessagingException | java.io.IOException ignored) {
+            // Fall through to DataHandler stream below — Jakarta Mail throws for
+            // content types it can't decode (e.g. text/calendar lacking a
+            // registered DataContentHandler).
+        }
+        // The DataHandler always exposes the underlying byte stream, even when
+        // no content handler is registered for the MIME type. Read it directly
+        // so we can inspect the calendar payload in tests.
+        try (InputStream stream = part.getDataHandler().getInputStream()) {
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 
@@ -389,15 +520,76 @@ class BookingNotificationServiceTest {
         if (!(content instanceof MimeMultipart multipart)) {
             throw new IllegalStateException("expected multipart content");
         }
+        String found = findTextPart(multipart);
+        if (found == null) {
+            throw new IllegalStateException("text part not found");
+        }
+        return found;
+    }
+
+    private static String findTextPart(MimeMultipart multipart) throws Exception {
         for (int i = 0; i < multipart.getCount(); i++) {
             BodyPart part = multipart.getBodyPart(i);
-            if (part.getFileName() == null) {
-                try (InputStream in = part.getInputStream()) {
-                    return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            String contentType = part.getContentType();
+            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/")) {
+                Object body = part.getContent();
+                if (body instanceof MimeMultipart nested) {
+                    String nestedHit = findTextPart(nested);
+                    if (nestedHit != null) {
+                        return nestedHit;
+                    }
                 }
+                continue;
+            }
+            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).startsWith("text/plain")) {
+                return readPartAsString(part);
             }
         }
-        throw new IllegalStateException("text part not found");
+        return null;
+    }
+
+    private static String inlineCalendarBody(MimeMessage message) throws Exception {
+        Object content = message.getContent();
+        if (!(content instanceof MimeMultipart multipart)) {
+            return null;
+        }
+        return findInlineCalendarPart(multipart);
+    }
+
+    private static String findInlineCalendarPart(MimeMultipart multipart) throws Exception {
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            String contentType = part.getContentType();
+            String lowerCt = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
+            // Recurse into any nested multipart container, regardless of subtype.
+            if (lowerCt.startsWith("multipart/")) {
+                try {
+                    Object body = part.getContent();
+                    if (body instanceof MimeMultipart nested) {
+                        String nestedHit = findInlineCalendarPart(nested);
+                        if (nestedHit != null) {
+                            return nestedHit;
+                        }
+                    }
+                } catch (jakarta.mail.MessagingException | java.io.IOException ignored) {
+                    // skip
+                }
+                continue;
+            }
+            // The inline calendar part is the one carrying text/calendar that
+            // is NOT marked as an attachment (no Content-Disposition: attachment).
+            if (lowerCt.contains("text/calendar")) {
+                String[] disposition = part.getHeader("Content-Disposition");
+                boolean isAttachment = disposition != null && disposition.length > 0
+                        && disposition[0] != null
+                        && disposition[0].toLowerCase(java.util.Locale.ROOT).contains("attachment");
+                if (isAttachment) {
+                    continue;
+                }
+                return readPartAsString(part);
+            }
+        }
+        return null;
     }
 
 }

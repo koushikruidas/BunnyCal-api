@@ -201,7 +201,7 @@ class CalendarIntegrationControllerTest {
         ProviderCatalogResponse catalogResponse = new ProviderCatalogResponse(
                 "v1alpha-provider-catalog",
                 List.of(),
-                new ProviderAuthoritySummary("google", List.of("google"), "google", List.of("zoom")));
+                new ProviderAuthoritySummary("google", List.of("google"), "application", "google", List.of("zoom")));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(catalogResponse);
         when(providerCatalogService.calendarProviderSubset(userId)).thenReturn(Map.of());
 

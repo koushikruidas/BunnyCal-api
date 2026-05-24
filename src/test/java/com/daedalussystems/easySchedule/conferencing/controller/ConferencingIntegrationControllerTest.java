@@ -166,7 +166,7 @@ class ConferencingIntegrationControllerTest {
         ProviderCatalogResponse response = new ProviderCatalogResponse(
                 "v1alpha-provider-catalog",
                 List.of(),
-                new ProviderAuthoritySummary("google", List.of("google"), "google", List.of("zoom")));
+                new ProviderAuthoritySummary("google", List.of("google"), "application", "google", List.of("zoom")));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(response);
         when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of());
 
@@ -209,7 +209,7 @@ class ConferencingIntegrationControllerTest {
                 .thenReturn(ConferencingProviderCapabilities.managedBy("google_calendar"));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(new ProviderCatalogResponse(
                 "v1alpha-provider-catalog", List.of(),
-                new ProviderAuthoritySummary("google", List.of(), "google", List.of())));
+                new ProviderAuthoritySummary("google", List.of(), "application", "google", List.of())));
         when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of());
 
         @SuppressWarnings("unchecked")

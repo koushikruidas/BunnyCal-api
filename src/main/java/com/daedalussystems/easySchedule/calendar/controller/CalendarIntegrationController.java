@@ -456,6 +456,7 @@ public class CalendarIntegrationController {
         payload.put("providerCatalog", providerCatalogService.calendarProviderSubset(userId));
         payload.put("authority", Map.of(
                 "availabilityProviders", catalog.authority().availabilityProviders(),
+                "lifecycleAuthority", catalog.authority().lifecycleAuthority(),
                 "authoritativeSchedulingProvider", catalog.authority().authoritativeSchedulingProvider(),
                 "identityProvider", catalog.authority().identityProvider()
         ));

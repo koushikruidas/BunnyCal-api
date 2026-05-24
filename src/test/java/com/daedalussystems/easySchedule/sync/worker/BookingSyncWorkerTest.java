@@ -12,6 +12,9 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.cache.SlotCacheVersionService;
 import com.daedalussystems.easySchedule.booking.outbox.OutboxPublisher;
 import com.daedalussystems.easySchedule.calendar.service.CalendarService;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionResult;
+import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import com.daedalussystems.easySchedule.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import com.daedalussystems.easySchedule.sync.orchestration.IdempotencyKeyFactory;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
@@ -53,6 +56,8 @@ class BookingSyncWorkerTest {
     private IdempotencyKeyFactory idempotencyKeyFactory;
     @Mock
     private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
+    @Mock
+    private ConferencingExecutionPolicy conferencingExecutionPolicy;
 
     private BookingSyncWorker worker;
 
@@ -63,9 +68,12 @@ class BookingSyncWorkerTest {
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
                 repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
-                rateLimitBreaker, idempotencyKeyFactory, txManager, new SimpleMeterRegistry(), new ObjectMapper());
+                rateLimitBreaker, idempotencyKeyFactory, conferencingExecutionPolicy, txManager, new SimpleMeterRegistry(), new ObjectMapper());
         when(rateLimitBreaker.isOpen(any())).thenReturn(false);
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
+        when(conferencingExecutionPolicy.adaptForMirrorProvider(any(), any(), any(), any()))
+                .thenAnswer(invocation -> ConferencingExecutionResult.applied(
+                        invocation.getArgument(0, ConferencingInstruction.class)));
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {
             public UUID getId() { return UUID.randomUUID(); }
             public UUID getHostId() { return UUID.randomUUID(); }

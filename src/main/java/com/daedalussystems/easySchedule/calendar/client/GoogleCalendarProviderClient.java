@@ -78,7 +78,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
-        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferencingMode={} conferencingProvider={}",
+        log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=none conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId,
                 1, maskedGuest, instruction.mode(), instruction.providerType());
         log.info("google_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
@@ -132,7 +132,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
-        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=all conferencingMode={} conferencingProvider={}",
+        log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=none conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId, externalEventId,
                 1, maskedGuest, instruction.mode(), instruction.providerType());
         log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",

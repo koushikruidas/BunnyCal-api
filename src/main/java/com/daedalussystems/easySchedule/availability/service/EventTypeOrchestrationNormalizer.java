@@ -16,15 +16,25 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
 public class EventTypeOrchestrationNormalizer {
 
     private final CalendarConnectionRepository calendarConnectionRepository;
+    // TEMP MIGRATION ROLLBACK FLAG.
+    // Sunset plan: remove after Phase-1 decoupling stabilization once all clients
+    // stop depending on provider-authoritative conference/provider matching.
+    // Target removal: next architecture-convergence release train.
+    private final boolean enforceNativeConferenceProviderMatch;
 
-    public EventTypeOrchestrationNormalizer(CalendarConnectionRepository calendarConnectionRepository) {
+    public EventTypeOrchestrationNormalizer(
+            CalendarConnectionRepository calendarConnectionRepository,
+            @Value("${orchestration.validation.enforce-native-conference-provider-match:false}")
+            boolean enforceNativeConferenceProviderMatch) {
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.enforceNativeConferenceProviderMatch = enforceNativeConferenceProviderMatch;
     }
 
     public NormalizedOrchestration normalize(UUID userId, CreateEventTypeRequest request) {
@@ -82,7 +92,7 @@ public class EventTypeOrchestrationNormalizer {
             return new NormalizedOrchestration(null, null, availabilityBindings, conferencing);
         }
         CalendarConnection authoritative = requireActiveOwnedConnection(userId, authoritativeConnectionId, "authoritative scheduling connection is invalid.");
-        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
+        validateNativeConferenceCompatibilityIfEnabled(authoritative.getProvider(), conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -97,7 +107,7 @@ public class EventTypeOrchestrationNormalizer {
 
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, availabilityCalendars);
         ConferencingConfig conferencing = normalizeConference(conference, conferencingProvider, customConferenceUrl);
-        validateNativeConferenceCompatibility(authoritative.getProvider(), conferencing.provider());
+        validateNativeConferenceCompatibilityIfEnabled(authoritative.getProvider(), conferencing.provider());
         return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
     }
 
@@ -211,8 +221,11 @@ public class EventTypeOrchestrationNormalizer {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private static void validateNativeConferenceCompatibility(CalendarProviderType authoritativeProvider,
-                                                              ConferencingProviderType conferenceProvider) {
+    private void validateNativeConferenceCompatibilityIfEnabled(CalendarProviderType authoritativeProvider,
+                                                                ConferencingProviderType conferenceProvider) {
+        if (!enforceNativeConferenceProviderMatch) {
+            return;
+        }
         if (conferenceProvider == ConferencingProviderType.GOOGLE_MEET
                 && authoritativeProvider != CalendarProviderType.GOOGLE) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,

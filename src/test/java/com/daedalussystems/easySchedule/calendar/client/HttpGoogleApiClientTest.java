@@ -42,7 +42,7 @@ class HttpGoogleApiClientTest {
         assertEquals("guest@example.com", attendees.get(0).get("email"));
         assertEquals("Guest User", attendees.get(0).get("displayName"));
         assertFalse(body.containsKey("conferenceData"));
-        assertEquals("/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1",
+        assertEquals("/calendar/v3/calendars/primary/events?sendUpdates=none&conferenceDataVersion=1",
                 HttpGoogleApiClient.CREATE_EVENT_URI);
     }
 
@@ -71,7 +71,7 @@ class HttpGoogleApiClientTest {
         assertEquals(1, attendees.size());
         assertEquals("guest@example.com", attendees.get(0).get("email"));
         assertFalse(body.containsKey("conferenceData"));
-        assertEquals("/calendar/v3/calendars/primary/events/{id}?sendUpdates=all&conferenceDataVersion=1",
+        assertEquals("/calendar/v3/calendars/primary/events/{id}?sendUpdates=none&conferenceDataVersion=1",
                 HttpGoogleApiClient.UPDATE_EVENT_URI);
     }
 

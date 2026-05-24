@@ -31,11 +31,13 @@ import org.springframework.web.client.RestClientResponseException;
 public class HttpGoogleApiClient implements GoogleApiClient {
     private static final Logger log = LoggerFactory.getLogger(HttpGoogleApiClient.class);
     private static final String CALENDAR_ID = "primary";
-    static final String CREATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events?sendUpdates=all&conferenceDataVersion=1";
-    static final String UPDATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events/{id}?sendUpdates=all&conferenceDataVersion=1";
+    // sendUpdates=none: app is the canonical organizer and emits its own ICS invites/updates/cancels.
+    // Google Calendar remains a silent time-block mirror — it must not dispatch parallel invitation emails.
+    static final String CREATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events?sendUpdates=none&conferenceDataVersion=1";
+    static final String UPDATE_EVENT_URI_TEMPLATE = "/calendar/v3/calendars/{calendarId}/events/{id}?sendUpdates=none&conferenceDataVersion=1";
     // Back-compat constants retained for tests/diagnostics that reference the primary-calendar URI directly.
-    static final String CREATE_EVENT_URI = "/calendar/v3/calendars/primary/events?sendUpdates=all&conferenceDataVersion=1";
-    static final String UPDATE_EVENT_URI = "/calendar/v3/calendars/primary/events/{id}?sendUpdates=all&conferenceDataVersion=1";
+    static final String CREATE_EVENT_URI = "/calendar/v3/calendars/primary/events?sendUpdates=none&conferenceDataVersion=1";
+    static final String UPDATE_EVENT_URI = "/calendar/v3/calendars/primary/events/{id}?sendUpdates=none&conferenceDataVersion=1";
 
     private final RestClient restClient;
     private final GoogleOAuthProperties googleOAuthProperties;
@@ -75,7 +77,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .retrieve()
                     .toEntity(Map.class);
             if (diagnosticsEnabled) {
-                emitDiagnostics("create", accessToken, request.idempotencyKey(), CALENDAR_ID, "all", 1,
+                emitDiagnostics("create", accessToken, request.idempotencyKey(), CALENDAR_ID, "none", 1,
                         request.organizerEmail(), request.attendeeEmail(), body, response.getBody());
             }
             log.info("google_calendar_event_create_response requestId={} externalEventId={} conferenceLinkPresent={}",
@@ -107,7 +109,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .retrieve()
                     .toEntity(Map.class);
             if (diagnosticsEnabled) {
-                emitDiagnostics("update", accessToken, request.externalEventId(), CALENDAR_ID, "all", 1,
+                emitDiagnostics("update", accessToken, request.externalEventId(), CALENDAR_ID, "none", 1,
                         request.organizerEmail(), request.attendeeEmail(), body, response.getBody());
             }
             log.info("google_calendar_event_update_response externalEventId={} conferenceLinkPresent={}",
