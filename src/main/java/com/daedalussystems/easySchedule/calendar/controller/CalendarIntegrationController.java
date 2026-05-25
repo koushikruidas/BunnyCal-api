@@ -8,6 +8,7 @@ import com.daedalussystems.easySchedule.calendar.replay.WebhookDeliveryMetadata;
 import com.daedalussystems.easySchedule.calendar.config.GoogleOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.config.MicrosoftOAuthProperties;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
+import com.daedalussystems.easySchedule.calendar.dto.CalendarRuntimeStatusResponse;
 import com.daedalussystems.easySchedule.calendar.dto.MicrosoftWebhookNotificationRequest;
 import com.daedalussystems.easySchedule.calendar.auth.OAuthStateException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
@@ -38,6 +39,8 @@ import org.slf4j.MDC;
 import com.daedalussystems.easySchedule.sync.state.SyncSourceAttribution;
 import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
 import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarRuntimeStatusService;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @RestController
 @RequestMapping("/integrations/calendar")
@@ -56,6 +59,8 @@ public class CalendarIntegrationController {
     private final String webhookSharedSecret;
     private final ProviderCapabilityRegistry capabilityRegistry;
     private final ProviderCatalogService providerCatalogService;
+    private final CalendarRuntimeStatusService calendarRuntimeStatusService;
+    private final MeterRegistry meterRegistry;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
                                          MicrosoftCalendarOAuthService microsoftOAuthService,
@@ -65,6 +70,8 @@ public class CalendarIntegrationController {
                                          MicrosoftOAuthProperties microsoftOAuthProperties,
                                          ProviderCapabilityRegistry capabilityRegistry,
                                          ProviderCatalogService providerCatalogService,
+                                         CalendarRuntimeStatusService calendarRuntimeStatusService,
+                                         MeterRegistry meterRegistry,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
         this.microsoftOAuthService = microsoftOAuthService;
@@ -74,6 +81,8 @@ public class CalendarIntegrationController {
         this.microsoftOAuthProperties = microsoftOAuthProperties;
         this.capabilityRegistry = capabilityRegistry;
         this.providerCatalogService = providerCatalogService;
+        this.calendarRuntimeStatusService = calendarRuntimeStatusService;
+        this.meterRegistry = meterRegistry;
         this.webhookSharedSecret = webhookSharedSecret;
     }
 
@@ -134,11 +143,9 @@ public class CalendarIntegrationController {
     }
 
     @GetMapping("/status")
-    public ResponseEntity<ApiResponse<Map<String, String>>> status(Authentication authentication) {
+    public ResponseEntity<ApiResponse<CalendarRuntimeStatusResponse>> status(Authentication authentication) {
         UUID userId = extractUserId(authentication);
-        return ResponseEntity.ok(ApiResponse.success(Map.of(
-                "google", oauthService.googleConnectionStatus(userId),
-                "microsoft", microsoftOAuthService.microsoftConnectionStatus(userId))));
+        return ResponseEntity.ok(ApiResponse.success(calendarRuntimeStatusService.runtimeStatus(userId)));
     }
 
     @DeleteMapping("/{provider}")
@@ -447,6 +454,8 @@ public class CalendarIntegrationController {
     @GetMapping("/status/providers")
     public ResponseEntity<ApiResponse<Map<String, Object>>> providerAwareStatus(Authentication authentication) {
         UUID userId = extractUserId(authentication);
+        meterRegistry.counter("calendar.integration.status.providers.deprecated.calls").increment();
+        log.warn("calendar_status_providers_deprecated_called userId={} endpoint=/integrations/calendar/status/providers", userId);
         Map<String, Object> payload = new java.util.LinkedHashMap<>();
         payload.put("calendar", Map.of(
                 "google", oauthService.googleConnectionStatus(userId),
@@ -459,6 +468,10 @@ public class CalendarIntegrationController {
                 "lifecycleAuthority", catalog.authority().lifecycleAuthority(),
                 "identityProvider", catalog.authority().identityProvider()
         ));
-        return ResponseEntity.ok(ApiResponse.success(payload));
+        return ResponseEntity.ok()
+                .header("Deprecation", "true")
+                .header("Sunset", "Wed, 30 Sep 2026 00:00:00 GMT")
+                .header("Warning", "299 - \"Deprecated API: use GET /integrations/calendar/status\"")
+                .body(ApiResponse.success(payload));
     }
 }

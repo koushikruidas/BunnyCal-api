@@ -17,6 +17,7 @@ import com.daedalussystems.easySchedule.calendar.service.CalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.MicrosoftCalendarOAuthService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarWebhookIngestionService;
 import com.daedalussystems.easySchedule.calendar.dto.GoogleWebhookRequest;
+import com.daedalussystems.easySchedule.calendar.dto.CalendarRuntimeStatusResponse;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
 import com.daedalussystems.easySchedule.common.api.ApiResponse;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -24,6 +25,8 @@ import com.daedalussystems.easySchedule.integration.ProviderCapabilityRegistry;
 import com.daedalussystems.easySchedule.integration.ProviderAuthoritySummary;
 import com.daedalussystems.easySchedule.integration.ProviderCatalogResponse;
 import com.daedalussystems.easySchedule.integration.ProviderCatalogService;
+import com.daedalussystems.easySchedule.calendar.service.CalendarRuntimeStatusService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Map;
 import java.util.List;
 import java.util.Optional;
@@ -46,11 +49,14 @@ class CalendarIntegrationControllerTest {
     private CalendarWebhookAuthService webhookAuthService;
     @Mock
     private ProviderCatalogService providerCatalogService;
+    @Mock
+    private CalendarRuntimeStatusService calendarRuntimeStatusService;
 
     private CalendarIntegrationController controller;
     private GoogleOAuthProperties properties;
     private MicrosoftOAuthProperties microsoftProperties;
     private ProviderCapabilityRegistry capabilityRegistry;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
@@ -62,7 +68,19 @@ class CalendarIntegrationControllerTest {
         properties.setFrontendErrorRedirect("http://localhost:3000/error");
         microsoftProperties.setFrontendSuccessRedirect("http://localhost:3000/success");
         microsoftProperties.setFrontendErrorRedirect("http://localhost:3000/error");
-        controller = new CalendarIntegrationController(oauthService, microsoftOAuthService, webhookAuthService, webhookIngestionService, properties, microsoftProperties, capabilityRegistry, providerCatalogService, "secret");
+        meterRegistry = new SimpleMeterRegistry();
+        controller = new CalendarIntegrationController(
+                oauthService,
+                microsoftOAuthService,
+                webhookAuthService,
+                webhookIngestionService,
+                properties,
+                microsoftProperties,
+                capabilityRegistry,
+                providerCatalogService,
+                calendarRuntimeStatusService,
+                meterRegistry,
+                "secret");
     }
 
     @Test
@@ -113,17 +131,24 @@ class CalendarIntegrationControllerTest {
     }
 
     @Test
-    void statusReturnsMappedValue() {
+    void statusReturnsCanonicalRuntimeShape() {
         UUID userId = UUID.randomUUID();
         Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
-        when(oauthService.googleConnectionStatus(userId)).thenReturn("CONNECTED");
-        when(microsoftOAuthService.microsoftConnectionStatus(userId)).thenReturn("NOT_CONNECTED");
+        when(calendarRuntimeStatusService.runtimeStatus(userId)).thenReturn(
+                new CalendarRuntimeStatusResponse(
+                        "application",
+                        new CalendarRuntimeStatusResponse.Identity("google", "host@example.com"),
+                        List.of(),
+                        new CalendarRuntimeStatusResponse.Conferencing(true, true, false)
+                ));
 
-        ApiResponse<Map<String, String>> body = controller.status(auth).getBody();
+        ApiResponse<CalendarRuntimeStatusResponse> body = controller.status(auth).getBody();
 
         assertEquals(true, body.isSuccess());
-        assertEquals("CONNECTED", body.getData().get("google"));
-        assertEquals("NOT_CONNECTED", body.getData().get("microsoft"));
+        assertEquals("application", body.getData().lifecycleAuthority());
+        assertEquals("google", body.getData().identity().provider());
+        assertEquals("host@example.com", body.getData().identity().email());
+        assertEquals(true, body.getData().conferencing().zoomConnected());
     }
 
     @Test
@@ -210,5 +235,25 @@ class CalendarIntegrationControllerTest {
         assertEquals(true, body.isSuccess());
         assertNotNull(body.getData().get("providerCatalog"));
         assertNotNull(body.getData().get("authority"));
+    }
+
+    @Test
+    void providerAwareStatus_setsDeprecationHeaders() {
+        UUID userId = UUID.randomUUID();
+        Authentication auth = new UsernamePasswordAuthenticationToken(userId, null);
+        ProviderCatalogResponse catalogResponse = new ProviderCatalogResponse(
+                "v1alpha-provider-catalog",
+                List.of(),
+                new ProviderAuthoritySummary("google", List.of("google"), "application", List.of("zoom")));
+        when(oauthService.googleConnectionStatus(userId)).thenReturn("CONNECTED");
+        when(microsoftOAuthService.microsoftConnectionStatus(userId)).thenReturn("NOT_CONNECTED");
+        when(providerCatalogService.catalogForUser(userId)).thenReturn(catalogResponse);
+        when(providerCatalogService.calendarProviderSubset(userId)).thenReturn(Map.of());
+
+        var response = controller.providerAwareStatus(auth);
+
+        assertEquals("true", response.getHeaders().getFirst("Deprecation"));
+        assertNotNull(response.getHeaders().getFirst("Sunset"));
+        assertNotNull(response.getHeaders().getFirst("Warning"));
     }
 }
