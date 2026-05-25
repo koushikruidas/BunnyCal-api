@@ -11,6 +11,7 @@ import com.daedalussystems.easySchedule.booking.notification.BookingNotification
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
@@ -47,9 +48,7 @@ class LoggingOutboxEventDispatcherTest {
                 eventTypeRepository,
                 calendarConnectionRepository,
                 bookingNotificationService,
-                invariantMonitor,
-                "google",
-                false);
+                invariantMonitor);
     }
 
     @Test
@@ -71,25 +70,16 @@ class LoggingOutboxEventDispatcherTest {
                 org.mockito.ArgumentMatchers.any(UUID.class),
                 eq("BOOKING"),
                 eq(bookingId),
-                eq("google"),
+                eq(null),
                 eq("CREATE"),
                 eq(null),
                 eq(null), eq(null));
     }
 
     @Test
-    void dispatch_bookingConfirmed_optionalModeWithoutActiveConnection_skipsSyncJob() {
+    void dispatch_bookingConfirmed_noActiveConnection_skipsSyncJob() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        LoggingOutboxEventDispatcher optionalDispatcher = new LoggingOutboxEventDispatcher(
-                calendarSyncJobRepository,
-                bookingRepository,
-                eventTypeRepository,
-                calendarConnectionRepository,
-                bookingNotificationService,
-                invariantMonitor,
-                "google",
-                true);
         OutboxEvent event = OutboxEvent.builder()
                 .id(UUID.randomUUID())
                 .aggregateType("Booking")
@@ -104,13 +94,12 @@ class LoggingOutboxEventDispatcherTest {
                         .id(bookingId)
                         .hostId(hostId)
                         .build()));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
                 eq(hostId),
-                eq(com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.GOOGLE),
                 eq(com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus.ACTIVE)))
-                .thenReturn(java.util.Optional.empty());
+                .thenReturn(java.util.List.of());
 
-        optionalDispatcher.dispatch(event);
+        dispatcher.dispatch(event);
 
         verify(calendarSyncJobRepository, never()).upsertPendingJob(
                 org.mockito.ArgumentMatchers.any(UUID.class),
@@ -123,18 +112,11 @@ class LoggingOutboxEventDispatcherTest {
     }
 
     @Test
-    void dispatch_bookingConfirmed_optionalModeWithActiveConnection_enqueuesSyncJob() {
+    void dispatch_bookingConfirmed_activeConnectionFallback_enqueuesSyncJob() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        LoggingOutboxEventDispatcher optionalDispatcher = new LoggingOutboxEventDispatcher(
-                calendarSyncJobRepository,
-                bookingRepository,
-                eventTypeRepository,
-                calendarConnectionRepository,
-                bookingNotificationService,
-                invariantMonitor,
-                "google",
-                true);
+        UUID connId = UUID.randomUUID();
+        CalendarConnection conn = connection(connId, CalendarProviderType.GOOGLE);
         OutboxEvent event = OutboxEvent.builder()
                 .id(UUID.randomUUID())
                 .aggregateType("Booking")
@@ -149,13 +131,12 @@ class LoggingOutboxEventDispatcherTest {
                         .id(bookingId)
                         .hostId(hostId)
                         .build()));
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
                 eq(hostId),
-                eq(com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType.GOOGLE),
                 eq(com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus.ACTIVE)))
-                .thenReturn(java.util.Optional.of(new CalendarConnection()));
+                .thenReturn(java.util.List.of(conn));
 
-        optionalDispatcher.dispatch(event);
+        dispatcher.dispatch(event);
 
         verify(calendarSyncJobRepository).upsertPendingJob(
                 org.mockito.ArgumentMatchers.any(UUID.class),
@@ -164,7 +145,7 @@ class LoggingOutboxEventDispatcherTest {
                 eq("google"),
                 eq("CREATE"),
                 eq(null),
-                eq(hostId), org.mockito.ArgumentMatchers.any());
+                eq(hostId), eq(connId));
     }
 
     @Test
@@ -228,6 +209,8 @@ class LoggingOutboxEventDispatcherTest {
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
                 .thenReturn(java.util.Optional.of(configured));
+        when(calendarConnectionRepository.findById(authoritativeConnectionId))
+                .thenReturn(java.util.Optional.of(connection(authoritativeConnectionId, CalendarProviderType.GOOGLE)));
 
         dispatcher.dispatch(event);
 
@@ -240,5 +223,16 @@ class LoggingOutboxEventDispatcherTest {
                 eq(null),
                 eq(hostId),
                 eq(authoritativeConnectionId));
+    }
+
+    private static CalendarConnection connection(UUID id, CalendarProviderType provider) {
+        CalendarConnection connection = new CalendarConnection();
+        connection.setProvider(provider);
+        try {
+            java.lang.reflect.Field f = CalendarConnection.class.getDeclaredField("id");
+            f.setAccessible(true);
+            f.set(connection, id);
+        } catch (Exception ignored) {}
+        return connection;
     }
 }

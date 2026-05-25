@@ -21,6 +21,8 @@ import org.springframework.web.client.RestClient;
         "com.daedalussystems.easySchedule.calendar.config",
         "com.daedalussystems.easySchedule.calendar.repository",
         "com.daedalussystems.easySchedule.availability",
+        "com.daedalussystems.easySchedule.conferencing",
+        "com.daedalussystems.easySchedule.integration",
         "com.daedalussystems.easySchedule.common"
 })
 public class TestApplication {

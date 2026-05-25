@@ -7,8 +7,7 @@ public record ConferencingExecutionResult(
 
     public enum Outcome {
         APPLIED,
-        DEGRADED,
-        LEGACY_PASSTHROUGH
+        DEGRADED
     }
 
     public static ConferencingExecutionResult applied(ConferencingInstruction instruction) {
@@ -22,13 +21,6 @@ public record ConferencingExecutionResult(
         return new ConferencingExecutionResult(
                 instruction == null ? ConferencingInstruction.none() : instruction,
                 Outcome.DEGRADED,
-                reasonCode);
-    }
-
-    public static ConferencingExecutionResult legacyPassthrough(ConferencingInstruction instruction, String reasonCode) {
-        return new ConferencingExecutionResult(
-                instruction == null ? ConferencingInstruction.none() : instruction,
-                Outcome.LEGACY_PASSTHROUGH,
                 reasonCode);
     }
 }

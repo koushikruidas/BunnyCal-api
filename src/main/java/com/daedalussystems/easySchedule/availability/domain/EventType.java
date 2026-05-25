@@ -55,6 +55,11 @@ public class EventType {
 
     @Builder.Default
     @Enumerated(EnumType.STRING)
+    @Column(name = "availability_mode", nullable = false, length = 32)
+    private AvailabilityMode availabilityMode = AvailabilityMode.ALL_CONNECTED;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
     @Column(name = "conferencing_provider", nullable = false, length = 32)
     private ConferencingProviderType conferencingProvider = ConferencingProviderType.GOOGLE_MEET;
 

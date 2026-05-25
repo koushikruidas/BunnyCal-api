@@ -22,6 +22,7 @@ import com.daedalussystems.easySchedule.availability.repository.AvailabilityOver
 import com.daedalussystems.easySchedule.availability.repository.AvailabilityRuleRepository;
 import com.daedalussystems.easySchedule.availability.repository.DbClockRepository;
 import com.daedalussystems.easySchedule.availability.repository.EventTypeRepository;
+import com.daedalussystems.easySchedule.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.booking.domain.Booking;
 import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
@@ -48,6 +49,7 @@ public class SlotService {
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarBusyTimeService calendarBusyTimeService;
+    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final TimeConversionService timeConversionService;
 
     public SlotService(
@@ -60,6 +62,7 @@ public class SlotService {
             SlotCacheService slotCacheService,
             SlotCacheVersionService slotCacheVersionService,
             CalendarBusyTimeService calendarBusyTimeService,
+            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
             TimeConversionService timeConversionService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
@@ -70,6 +73,7 @@ public class SlotService {
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.calendarBusyTimeService = calendarBusyTimeService;
+        this.orchestrationJsonCodec = orchestrationJsonCodec;
         this.timeConversionService = timeConversionService;
     }
 
@@ -147,8 +151,15 @@ public class SlotService {
             bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));
         }
 
-        // 6.6 Calendar busy from normalized calendar_events aggregated across all active connections.
-        List<TimeInterval> calendarBusy = calendarBusyTimeService.busyIntervalsForDate(host.getId(), date, zoneId);
+        // 6.6 Calendar busy — resolve bindings according to availabilityMode.
+        // SELECTED: use only the explicitly listed connections (empty list = no blocking).
+        // ALL_CONNECTED / null: fall back to all active connections (legacy behavior).
+        com.daedalussystems.easySchedule.availability.domain.AvailabilityMode availabilityMode = eventType.getAvailabilityMode();
+        List<AvailabilityBinding> availabilityBindings = (availabilityMode == com.daedalussystems.easySchedule.availability.domain.AvailabilityMode.SELECTED)
+                ? orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson())
+                : List.of();
+        List<TimeInterval> calendarBusy =
+                calendarBusyTimeService.busyIntervalsForDate(host.getId(), date, zoneId, availabilityBindings);
 
         // 6.7 Build engine input. Service performs ZERO filtering — engine is the
         //     single source of truth for slot semantics.

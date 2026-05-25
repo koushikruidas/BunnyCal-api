@@ -13,6 +13,11 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             Instant windowEnd,
             Instant windowStart);
 
+    List<CalendarEvent> findByConnectionIdInAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+            java.util.Collection<UUID> connectionIds,
+            Instant windowEnd,
+            Instant windowStart);
+
     Optional<CalendarEvent> findByConnectionIdAndProviderAndExternalEventId(UUID connectionId,
                                                                              String provider,
                                                                              String externalEventId);

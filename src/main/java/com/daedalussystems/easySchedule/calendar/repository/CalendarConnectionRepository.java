@@ -30,4 +30,6 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
             WHERE :scope = ANY(scopes)
             """, nativeQuery = true)
     java.util.List<CalendarConnection> findAllByScope(@Param("scope") String scope);
+
+    java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
 }

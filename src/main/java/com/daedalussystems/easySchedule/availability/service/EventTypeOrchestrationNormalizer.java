@@ -4,7 +4,6 @@ import com.daedalussystems.easySchedule.availability.domain.EventType;
 import com.daedalussystems.easySchedule.availability.dto.CreateEventTypeRequest;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
-import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.common.enums.ConferencingProviderType;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
@@ -16,70 +15,35 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
 public class EventTypeOrchestrationNormalizer {
 
     private final CalendarConnectionRepository calendarConnectionRepository;
-    // TEMP MIGRATION ROLLBACK FLAG.
-    // Sunset plan: remove after Phase-1 decoupling stabilization once all clients
-    // stop depending on provider-authoritative conference/provider matching.
-    // Target removal: next architecture-convergence release train.
-    private final boolean enforceNativeConferenceProviderMatch;
 
-    public EventTypeOrchestrationNormalizer(
-            CalendarConnectionRepository calendarConnectionRepository,
-            @Value("${orchestration.validation.enforce-native-conference-provider-match:false}")
-            boolean enforceNativeConferenceProviderMatch) {
+    public EventTypeOrchestrationNormalizer(CalendarConnectionRepository calendarConnectionRepository) {
         this.calendarConnectionRepository = calendarConnectionRepository;
-        this.enforceNativeConferenceProviderMatch = enforceNativeConferenceProviderMatch;
     }
 
     public NormalizedOrchestration normalize(UUID userId, CreateEventTypeRequest request) {
-        UUID authoritativeConnectionId = resolveAuthoritativeConnectionId(
-                userId,
-                request.organizerCalendarConnectionId(),
-                request.orchestrationProvider(),
-                request.calendarProvider(),
-                null);
-        if (authoritativeConnectionId == null) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "organizerCalendarConnectionId is required.");
-        }
-        return normalizeResolved(userId, authoritativeConnectionId, request.availabilityCalendars(),
-                request.conference(), request.conferencingProvider(), request.customConferenceUrl());
+        List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, request.availabilityCalendars());
+        ConferencingConfig conferencing = normalizeConference(request.conference());
+        UUID syncConnectionId = resolveSyncConnectionId(userId);
+        return new NormalizedOrchestration(syncConnectionId, availabilityBindings, conferencing);
     }
 
     public NormalizedOrchestration normalizeForDraftMutation(UUID userId,
                                                              EventType existingEventType,
-                                                             UUID organizerCalendarConnectionId,
-                                                             String orchestrationProvider,
-                                                             String calendarProvider,
                                                              List<CreateEventTypeRequest.AvailabilityCalendarRequest> availabilityCalendars,
                                                              CreateEventTypeRequest.ConferenceRequest conference,
-                                                             String conferencingProvider,
-                                                             String customConferenceUrl,
-                                                             List<AvailabilityBinding> existingAvailabilityBindings,
-                                                             boolean allowMissingAuthoritativeConnection) {
-        UUID authoritativeConnectionId = resolveAuthoritativeConnectionId(
-                userId,
-                organizerCalendarConnectionId,
-                orchestrationProvider,
-                calendarProvider,
-                existingEventType == null ? null : existingEventType.getOrganizerCalendarConnectionId());
-        if (authoritativeConnectionId == null && !allowMissingAuthoritativeConnection) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "organizerCalendarConnectionId is required.");
-        }
-
+                                                             List<AvailabilityBinding> existingAvailabilityBindings) {
         List<AvailabilityBinding> availabilityBindings = availabilityCalendars != null
                 ? normalizeAvailabilityBindings(userId, availabilityCalendars)
                 : (existingAvailabilityBindings == null ? List.of() : List.copyOf(existingAvailabilityBindings));
 
         CreateEventTypeRequest.ConferenceRequest effectiveConference = conference;
-        String effectiveConferencingProvider = conferencingProvider;
-        String effectiveCustomConferenceUrl = customConferenceUrl;
-        if (effectiveConference == null && effectiveConferencingProvider == null && effectiveCustomConferenceUrl == null && existingEventType != null) {
+        if (effectiveConference == null && existingEventType != null) {
             boolean enabled = existingEventType.getConferencingProvider() != ConferencingProviderType.NONE;
             effectiveConference = new CreateEventTypeRequest.ConferenceRequest(
                     enabled,
@@ -87,49 +51,22 @@ public class EventTypeOrchestrationNormalizer {
                     existingEventType.getCustomConferenceUrl()
             );
         }
-        ConferencingConfig conferencing = normalizeConference(effectiveConference, effectiveConferencingProvider, effectiveCustomConferenceUrl);
-        if (authoritativeConnectionId == null) {
-            return new NormalizedOrchestration(null, null, availabilityBindings, conferencing);
-        }
-        CalendarConnection authoritative = requireActiveOwnedConnection(userId, authoritativeConnectionId, "authoritative scheduling connection is invalid.");
-        validateNativeConferenceCompatibilityIfEnabled(authoritative.getProvider(), conferencing.provider());
-        return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
+        ConferencingConfig conferencing = normalizeConference(effectiveConference);
+        UUID syncConnectionId = resolveSyncConnectionId(userId);
+        return new NormalizedOrchestration(syncConnectionId, availabilityBindings, conferencing);
     }
 
-    private NormalizedOrchestration normalizeResolved(UUID userId,
-                                                      UUID authoritativeConnectionId,
-                                                      List<CreateEventTypeRequest.AvailabilityCalendarRequest> availabilityCalendars,
-                                                      CreateEventTypeRequest.ConferenceRequest conference,
-                                                      String conferencingProvider,
-                                                      String customConferenceUrl) {
-        CalendarConnection authoritative = requireActiveOwnedConnection(
-                userId, authoritativeConnectionId, "authoritative scheduling connection is invalid.");
-
-        List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, availabilityCalendars);
-        ConferencingConfig conferencing = normalizeConference(conference, conferencingProvider, customConferenceUrl);
-        validateNativeConferenceCompatibilityIfEnabled(authoritative.getProvider(), conferencing.provider());
-        return new NormalizedOrchestration(authoritativeConnectionId, authoritative.getProvider(), availabilityBindings, conferencing);
-    }
-
-    private UUID resolveAuthoritativeConnectionId(UUID userId,
-                                                  UUID organizerCalendarConnectionId,
-                                                  String orchestrationProvider,
-                                                  String calendarProvider,
-                                                  UUID fallbackConnectionId) {
-        if (organizerCalendarConnectionId != null) {
-            return organizerCalendarConnectionId;
-        }
-        String provider = trimToNull(orchestrationProvider);
-        if (provider == null) {
-            provider = trimToNull(calendarProvider);
-        }
-        if (provider == null) {
-            return fallbackConnectionId;
-        }
-        CalendarProviderType providerType = parseCalendarProvider(provider, "invalid calendarProvider");
-        return calendarConnectionRepository.findByUserIdAndProviderAndStatus(userId, providerType, CalendarConnectionStatus.ACTIVE)
+    /**
+     * Sync/mirror connection = oldest active connection by creation time.
+     * Derived independently of availabilityCalendars ordering — availability is free/busy semantics only.
+     */
+    private UUID resolveSyncConnectionId(UUID userId) {
+        return calendarConnectionRepository
+                .findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE)
+                .stream()
+                .findFirst()
                 .map(CalendarConnection::getId)
-                .orElse(fallbackConnectionId);
+                .orElse(null);
     }
 
     private List<AvailabilityBinding> normalizeAvailabilityBindings(UUID userId,
@@ -140,10 +77,11 @@ public class EventTypeOrchestrationNormalizer {
         LinkedHashSet<UUID> dedup = new LinkedHashSet<>();
         List<AvailabilityBinding> bindings = new ArrayList<>();
         for (CreateEventTypeRequest.AvailabilityCalendarRequest entry : raw) {
-            if (entry == null || entry.connectionId() == null || !dedup.add(entry.connectionId())) {
+            UUID connectionId = parseConnectionId(entry);
+            if (connectionId == null || !dedup.add(connectionId)) {
                 continue;
             }
-            CalendarConnection connection = calendarConnectionRepository.findById(entry.connectionId())
+            CalendarConnection connection = calendarConnectionRepository.findById(connectionId)
                     .filter(c -> userId.equals(c.getUserId()))
                     .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
                     .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "availability calendar connection is invalid."));
@@ -152,12 +90,21 @@ public class EventTypeOrchestrationNormalizer {
         return List.copyOf(bindings);
     }
 
-    private ConferencingConfig normalizeConference(CreateEventTypeRequest.ConferenceRequest conference,
-                                                   String legacyConferencingProvider,
-                                                   String legacyCustomConferenceUrl) {
+    private static UUID parseConnectionId(CreateEventTypeRequest.AvailabilityCalendarRequest entry) {
+        if (entry == null || entry.connectionId() == null || entry.connectionId().isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(entry.connectionId().trim());
+        } catch (IllegalArgumentException ex) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "availabilityCalendars[].connectionId must be a valid UUID.");
+        }
+    }
+
+    private ConferencingConfig normalizeConference(CreateEventTypeRequest.ConferenceRequest conference) {
         boolean enabled = conference != null && Boolean.TRUE.equals(conference.enabled());
-        String providerRaw = conference != null ? conference.provider() : legacyConferencingProvider;
-        String customUrl = trimToNull(conference != null ? conference.customUrl() : legacyCustomConferenceUrl);
+        String providerRaw = conference != null ? conference.provider() : null;
+        String customUrl = trimToNull(conference != null ? conference.customUrl() : null);
 
         ConferencingProviderType providerType;
         if (!enabled) {
@@ -177,21 +124,6 @@ public class EventTypeOrchestrationNormalizer {
             customUrl = null;
         }
         return new ConferencingConfig(enabled, providerType, customUrl);
-    }
-
-    private CalendarConnection requireActiveOwnedConnection(UUID userId, UUID connectionId, String message) {
-        return calendarConnectionRepository.findById(connectionId)
-                .filter(connection -> userId.equals(connection.getUserId()))
-                .filter(connection -> connection.getStatus() == CalendarConnectionStatus.ACTIVE)
-                .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, message));
-    }
-
-    private static CalendarProviderType parseCalendarProvider(String raw, String message) {
-        try {
-            return CalendarProviderType.valueOf(raw.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, message);
-        }
     }
 
     private static ConferencingProviderType parseConferencingProvider(String raw) {
@@ -221,27 +153,10 @@ public class EventTypeOrchestrationNormalizer {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private void validateNativeConferenceCompatibilityIfEnabled(CalendarProviderType authoritativeProvider,
-                                                                ConferencingProviderType conferenceProvider) {
-        if (!enforceNativeConferenceProviderMatch) {
-            return;
-        }
-        if (conferenceProvider == ConferencingProviderType.GOOGLE_MEET
-                && authoritativeProvider != CalendarProviderType.GOOGLE) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "conference.provider GOOGLE_MEET requires a Google authoritative scheduling connection.");
-        }
-        if (conferenceProvider == ConferencingProviderType.MICROSOFT_TEAMS
-                && authoritativeProvider != CalendarProviderType.MICROSOFT) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "conference.provider MICROSOFT_TEAMS requires a Microsoft authoritative scheduling connection.");
-        }
-    }
-
     public record AvailabilityBinding(UUID connectionId, String provider, String externalCalendarId) {}
     public record ConferencingConfig(boolean enabled, ConferencingProviderType provider, String customUrl) {}
-    public record NormalizedOrchestration(UUID authoritativeConnectionId,
-                                          CalendarProviderType authoritativeProvider,
+    /** syncConnectionId = oldest active connection — used internally for mirror/calendar writes. Independent of availabilityCalendars ordering. */
+    public record NormalizedOrchestration(UUID syncConnectionId,
                                           List<AvailabilityBinding> availabilityBindings,
                                           ConferencingConfig conferencing) {}
 }

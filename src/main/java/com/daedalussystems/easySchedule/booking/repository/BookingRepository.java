@@ -370,6 +370,18 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                     @Param("startTime") Instant startTime,
                                     @Param("endTime") Instant endTime);
 
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET scheduling_provider = :provider
+             WHERE id      = :id
+               AND host_id = :hostId
+               AND scheduling_provider IS DISTINCT FROM :provider
+            """, nativeQuery = true)
+    int stampSchedulingProvider(@Param("id") UUID id,
+                                @Param("hostId") UUID hostId,
+                                @Param("provider") String provider);
+
     @Query(value = """
             SELECT id, host_id, status, version, expires_at
                    , terminal_intent_epoch
@@ -418,7 +430,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
-               AND cem.provider = :provider
+               AND cem.provider = b.scheduling_provider
             LEFT JOIN LATERAL (
                 SELECT m.provider, m.join_url
                 FROM conferencing_event_mappings m
@@ -437,7 +449,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
-                  AND j.provider = :provider
+                  AND j.provider = b.scheduling_provider
                 ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
@@ -446,7 +458,6 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LIMIT :limit
             """, nativeQuery = true)
     List<MeetingRow> findMeetingsForHost(@Param("hostId") UUID hostId,
-                                         @Param("provider") String provider,
                                          @Param("limit") int limit);
 
     @Query(value = """
@@ -484,7 +495,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
-               AND cem.provider = :provider
+               AND cem.provider = b.scheduling_provider
             LEFT JOIN LATERAL (
                 SELECT m.provider, m.join_url
                 FROM conferencing_event_mappings m
@@ -503,7 +514,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
-                  AND j.provider = :provider
+                  AND j.provider = b.scheduling_provider
                 ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
@@ -515,7 +526,6 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LIMIT :limit
             """, nativeQuery = true)
     List<MeetingRow> findUpcomingMeetingsForHost(@Param("hostId") UUID hostId,
-                                                 @Param("provider") String provider,
                                                  @Param("now") Instant now,
                                                  @Param("limit") int limit);
 
@@ -554,7 +564,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             LEFT JOIN event_types et ON et.id = b.event_type_id
             LEFT JOIN calendar_event_mappings cem
                 ON cem.booking_id = b.id
-               AND cem.provider = :provider
+               AND cem.provider = b.scheduling_provider
             LEFT JOIN LATERAL (
                 SELECT m.provider, m.join_url
                 FROM conferencing_event_mappings m
@@ -573,7 +583,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
                   AND j.internal_ref_id = b.id
-                  AND j.provider = :provider
+                  AND j.provider = b.scheduling_provider
                 ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
                 LIMIT 1
             ) csj ON TRUE
@@ -584,6 +594,5 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             """, nativeQuery = true)
     Optional<MeetingRow> findManageRow(@Param("bookingId") UUID bookingId,
                                        @Param("hostId") UUID hostId,
-                                       @Param("eventTypeId") UUID eventTypeId,
-                                       @Param("provider") String provider);
+                                       @Param("eventTypeId") UUID eventTypeId);
 }

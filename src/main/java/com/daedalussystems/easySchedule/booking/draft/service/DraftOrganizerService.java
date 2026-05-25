@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.auth.domain.user.User;
 import com.daedalussystems.easySchedule.auth.repository.UserRepository;
 import com.daedalussystems.easySchedule.availability.domain.AvailabilityOverride;
 import com.daedalussystems.easySchedule.availability.domain.AvailabilityRule;
+import com.daedalussystems.easySchedule.availability.domain.AvailabilityMode;
 import com.daedalussystems.easySchedule.availability.domain.EventType;
 import com.daedalussystems.easySchedule.availability.service.EventTypeOrchestrationJsonCodec;
 import com.daedalussystems.easySchedule.availability.service.EventTypeOrchestrationNormalizer;
@@ -86,23 +87,22 @@ public class DraftOrganizerService {
                 orchestrationNormalizer.normalizeForDraftMutation(
                         shadowUser.getId(),
                         null,
-                        request.organizerCalendarConnectionId(),
-                        request.orchestrationProvider(),
-                        request.calendarProvider(),
                         request.availabilityCalendars(),
                         request.conference(),
-                        request.conferencingProvider(),
-                        request.customConferenceUrl(),
-                        List.of(),
-                        true);
+                        List.of());
+
+        AvailabilityMode availabilityMode = (request.availabilityCalendars() != null && !request.availabilityCalendars().isEmpty())
+                ? AvailabilityMode.SELECTED
+                : AvailabilityMode.ALL_CONNECTED;
 
         EventType eventType = eventTypeRepository.save(EventType.builder()
                 .userId(shadowUser.getId())
                 .name(request.eventName().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .organizerCalendarConnectionId(orchestration.authoritativeConnectionId())
+                .organizerCalendarConnectionId(orchestration.syncConnectionId())
                 .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
+                .availabilityMode(availabilityMode)
                 .conferencingProvider(orchestration.conferencing().provider())
                 .customConferenceUrl(orchestration.conferencing().customUrl())
                 .slug(slug)
@@ -175,15 +175,9 @@ public class DraftOrganizerService {
                 orchestrationNormalizer.normalizeForDraftMutation(
                         draft.getShadowUserId(),
                         eventType,
-                        request.organizerCalendarConnectionId(),
-                        request.orchestrationProvider(),
-                        request.calendarProvider(),
                         request.availabilityCalendars(),
                         request.conference(),
-                        request.conferencingProvider(),
-                        request.customConferenceUrl(),
-                        orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()),
-                        true);
+                        orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()));
         eventType.setName(draft.getEventName());
         if (request.description() != null) {
             eventType.setDescription(trimToNull(request.description()));
@@ -198,8 +192,9 @@ public class DraftOrganizerService {
         if (request.holdDurationMinutes() != null && request.holdDurationMinutes() > 0) {
             eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
         }
-        eventType.setOrganizerCalendarConnectionId(orchestration.authoritativeConnectionId());
+        eventType.setOrganizerCalendarConnectionId(orchestration.syncConnectionId());
         eventType.setAvailabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()));
+        eventType.setAvailabilityMode(orchestration.availabilityBindings().isEmpty() ? AvailabilityMode.ALL_CONNECTED : AvailabilityMode.SELECTED);
         eventType.setConferencingProvider(orchestration.conferencing().provider());
         eventType.setCustomConferenceUrl(orchestration.conferencing().customUrl());
         eventTypeRepository.save(eventType);

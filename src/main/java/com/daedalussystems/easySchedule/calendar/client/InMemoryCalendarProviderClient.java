@@ -5,6 +5,7 @@ import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruc
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.lang.Nullable;
 
 public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     private final CalendarProviderType providerType;
@@ -24,7 +25,8 @@ public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     public CreateEventDetails createEvent(UUID internalId,
                                           String provider,
                                           String idempotencyKey,
-                                          ConferencingInstruction conferencingInstruction) {
+                                          ConferencingInstruction conferencingInstruction,
+                                          @Nullable UUID schedulingConnectionId) {
         String externalId = eventsByIdempotency.computeIfAbsent(
                 provider + ":" + idempotencyKey,
                 ignored -> provider + "-" + internalId);
@@ -40,7 +42,8 @@ public class InMemoryCalendarProviderClient implements CalendarProviderClient {
                               String provider,
                               String externalEventId,
                               String idempotencyKey,
-                              ConferencingInstruction conferencingInstruction) {
+                              ConferencingInstruction conferencingInstruction,
+                              @Nullable UUID schedulingConnectionId) {
         if (externalEventId == null || !eventsByExternalId.containsKey(externalEventId)) {
             throw new CalendarClientException(404, "event not found");
         }
@@ -48,7 +51,8 @@ public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public void deleteEvent(UUID internalId, String provider, String externalEventId) {
+    public void deleteEvent(UUID internalId, String provider, String externalEventId,
+                            @Nullable UUID schedulingConnectionId) {
         if (externalEventId != null) {
             eventsByExternalId.remove(externalEventId);
         }

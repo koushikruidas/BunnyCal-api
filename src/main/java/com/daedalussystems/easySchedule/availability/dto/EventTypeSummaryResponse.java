@@ -9,31 +9,22 @@ public record EventTypeSummaryResponse(
         String name,
         String slug,
         String link,
-        @JsonInclude(JsonInclude.Include.NON_NULL) OrchestrationResponse orchestration,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String orchestrationProvider,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String calendarProvider,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String conferencingProvider,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String customConferenceUrl
+        List<AvailabilityCalendarResponse> availabilityCalendars,
+        ConferenceResponse conference
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, null, null, null, null, null);
+        this(id, name, slug, link, List.of(), null);
     }
-
-    public record OrchestrationResponse(
-            UUID organizerCalendarConnectionId,
-            List<AvailabilityCalendarResponse> availabilityCalendars,
-            ConferenceResponse conference
-    ) {}
 
     public record AvailabilityCalendarResponse(
             UUID connectionId,
             String provider,
-            String externalCalendarId
+            @JsonInclude(JsonInclude.Include.NON_NULL) String externalCalendarId
     ) {}
 
     public record ConferenceResponse(
             boolean enabled,
             String provider,
-            String customUrl
+            @JsonInclude(JsonInclude.Include.NON_NULL) String customUrl
     ) {}
 }

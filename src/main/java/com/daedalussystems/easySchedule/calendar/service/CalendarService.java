@@ -2,6 +2,7 @@ package com.daedalussystems.easySchedule.calendar.service;
 
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.UUID;
+import org.springframework.lang.Nullable;
 
 public interface CalendarService {
     CreateEventResult createEvent(CreateCalendarEventCommand command);
@@ -15,15 +16,21 @@ public interface CalendarService {
     record CreateCalendarEventCommand(UUID internalId,
                                       String provider,
                                       String idempotencyKey,
-                                      ConferencingInstruction conferencingInstruction) {
+                                      ConferencingInstruction conferencingInstruction,
+                                      @Nullable UUID schedulingConnectionId) {
         public CreateCalendarEventCommand {
             if (conferencingInstruction == null) {
                 conferencingInstruction = ConferencingInstruction.none();
             }
         }
 
+        public CreateCalendarEventCommand(UUID internalId, String provider, String idempotencyKey,
+                                          ConferencingInstruction conferencingInstruction) {
+            this(internalId, provider, idempotencyKey, conferencingInstruction, null);
+        }
+
         public CreateCalendarEventCommand(UUID internalId, String provider, String idempotencyKey) {
-            this(internalId, provider, idempotencyKey, ConferencingInstruction.none());
+            this(internalId, provider, idempotencyKey, ConferencingInstruction.none(), null);
         }
     }
 
@@ -31,21 +38,31 @@ public interface CalendarService {
                                       String provider,
                                       String externalEventId,
                                       String idempotencyKey,
-                                      ConferencingInstruction conferencingInstruction) {
+                                      ConferencingInstruction conferencingInstruction,
+                                      @Nullable UUID schedulingConnectionId) {
         public UpdateCalendarEventCommand {
             if (conferencingInstruction == null) {
                 conferencingInstruction = ConferencingInstruction.none();
             }
         }
 
+        public UpdateCalendarEventCommand(UUID internalId, String provider, String externalEventId,
+                                          String idempotencyKey, ConferencingInstruction conferencingInstruction) {
+            this(internalId, provider, externalEventId, idempotencyKey, conferencingInstruction, null);
+        }
+
         public UpdateCalendarEventCommand(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
-            this(internalId, provider, externalEventId, idempotencyKey, ConferencingInstruction.none());
+            this(internalId, provider, externalEventId, idempotencyKey, ConferencingInstruction.none(), null);
         }
     }
 
     record DeleteCalendarEventCommand(UUID internalId,
                                       String provider,
-                                      String externalEventId) {
+                                      String externalEventId,
+                                      @Nullable UUID schedulingConnectionId) {
+        public DeleteCalendarEventCommand(UUID internalId, String provider, String externalEventId) {
+            this(internalId, provider, externalEventId, null);
+        }
     }
 
     record ObserveEventCommand(UUID internalId,

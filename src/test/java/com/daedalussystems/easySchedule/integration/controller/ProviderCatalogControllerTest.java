@@ -37,7 +37,7 @@ class ProviderCatalogControllerTest {
         ProviderCatalogResponse response = new ProviderCatalogResponse(
                 "v1alpha-provider-catalog",
                 List.of(),
-                new ProviderAuthoritySummary("google", List.of("google"), "application", "google", List.of("zoom")));
+                new ProviderAuthoritySummary("google", List.of("google"), "application", List.of("zoom")));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(response);
 
         ApiResponse<ProviderCatalogResponse> body = controller.catalog(authentication).getBody();

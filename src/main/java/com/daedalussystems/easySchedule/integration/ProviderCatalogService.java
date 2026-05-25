@@ -13,11 +13,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -34,16 +32,13 @@ public class ProviderCatalogService {
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final ZoomConferencingOAuthService zoomConferencingOAuthService;
     private final AuthIdentityRepository authIdentityRepository;
-    private final String schedulingProvider;
 
     public ProviderCatalogService(CalendarConnectionRepository calendarConnectionRepository,
                                   ZoomConferencingOAuthService zoomConferencingOAuthService,
-                                  AuthIdentityRepository authIdentityRepository,
-                                  @Value("${sync.provider.default:google}") String schedulingProvider) {
+                                  AuthIdentityRepository authIdentityRepository) {
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.zoomConferencingOAuthService = zoomConferencingOAuthService;
         this.authIdentityRepository = authIdentityRepository;
-        this.schedulingProvider = schedulingProvider == null ? GOOGLE : schedulingProvider.trim().toLowerCase(Locale.ROOT);
     }
 
     public ProviderCatalogResponse catalogForUser(UUID userId) {
@@ -55,7 +50,6 @@ public class ProviderCatalogService {
                 .distinct()
                 .toList();
 
-        String authoritativeSchedulingProvider = availabilityProviders.contains(schedulingProvider) ? schedulingProvider : null;
         String identityProvider = resolveIdentityProvider(userId);
         String zoomStatus = zoomConferencingOAuthService.status(userId);
         boolean zoomConnected = "CONNECTED".equals(zoomStatus);
@@ -65,7 +59,6 @@ public class ProviderCatalogService {
                 identityProvider,
                 availabilityProviders,
                 LIFECYCLE_AUTHORITY_APPLICATION,
-                authoritativeSchedulingProvider,
                 conferencingProviders
         );
 
@@ -120,7 +113,6 @@ public class ProviderCatalogService {
         ProviderRoleAssignments roles = new ProviderRoleAssignments(
                 providerId.equals(authoritySummary.identityProvider()),
                 authoritySummary.availabilityProviders().contains(providerId),
-                providerId.equals(authoritySummary.authoritativeSchedulingProvider()),
                 false
         );
         return new ProviderDescriptor(
@@ -148,7 +140,6 @@ public class ProviderCatalogService {
                 new ProviderRoleAssignments(
                         false,
                         false,
-                        false,
                         authoritySummary.conferencingProviders().contains(ZOOM)
                 ),
                 Map.of("conferencingProviderType", ConferencingProviderType.ZOOM.name())
@@ -165,7 +156,7 @@ public class ProviderCatalogService {
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
                 new ProviderStatusView(null, false, false),
-                new ProviderRoleAssignments(false, false, false, authoritySummary.conferencingProviders().contains(GOOGLE_MEET)),
+                new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(GOOGLE_MEET)),
                 Map.of("conferencingProviderType", ConferencingProviderType.GOOGLE_MEET.name())
         );
     }
@@ -180,7 +171,7 @@ public class ProviderCatalogService {
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
                 new ProviderStatusView(null, false, false),
-                new ProviderRoleAssignments(false, false, false, authoritySummary.conferencingProviders().contains(CUSTOM_URL)),
+                new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(CUSTOM_URL)),
                 Map.of("conferencingProviderType", ConferencingProviderType.CUSTOM_URL.name())
         );
     }
@@ -195,7 +186,7 @@ public class ProviderCatalogService {
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
                 new ProviderStatusView(null, false, false),
-                new ProviderRoleAssignments(false, false, false, authoritySummary.conferencingProviders().contains(MICROSOFT_TEAMS)),
+                new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(MICROSOFT_TEAMS)),
                 Map.of("conferencingProviderType", ConferencingProviderType.MICROSOFT_TEAMS.name())
         );
     }

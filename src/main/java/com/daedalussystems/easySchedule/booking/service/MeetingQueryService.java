@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,22 +18,19 @@ public class MeetingQueryService {
 
     private final BookingRepository bookingRepository;
     private final TimeSource timeSource;
-    private final String schedulingProvider;
 
     public MeetingQueryService(BookingRepository bookingRepository,
-                               TimeSource timeSource,
-                               @Value("${sync.provider.default:google}") String schedulingProvider) {
+                               TimeSource timeSource) {
         this.bookingRepository = bookingRepository;
         this.timeSource = timeSource;
-        this.schedulingProvider = schedulingProvider;
     }
 
     @Transactional(readOnly = true)
     public List<MeetingSummaryResponse> listHostMeetings(UUID hostId, Boolean upcomingOnly, Integer limit) {
         int safeLimit = sanitizeLimit(limit);
         List<BookingRepository.MeetingRow> rows = Boolean.TRUE.equals(upcomingOnly)
-                ? bookingRepository.findUpcomingMeetingsForHost(hostId, schedulingProvider, timeSource.now(), safeLimit)
-                : bookingRepository.findMeetingsForHost(hostId, schedulingProvider, safeLimit);
+                ? bookingRepository.findUpcomingMeetingsForHost(hostId, timeSource.now(), safeLimit)
+                : bookingRepository.findMeetingsForHost(hostId, safeLimit);
         return rows.stream()
                 .map(this::toDto)
                 .toList();

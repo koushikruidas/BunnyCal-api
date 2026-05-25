@@ -4,6 +4,7 @@ import com.daedalussystems.easySchedule.calendar.config.MicrosoftOAuthProperties
 import com.daedalussystems.easySchedule.calendar.provider.CreateEventRequest;
 import com.daedalussystems.easySchedule.calendar.provider.UpdateEventRequest;
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -285,7 +286,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
 
     private SyncWindow listEvents(String accessToken, String pathOrDeltaLink) {
         try {
-            String uri = pathOrDeltaLink.startsWith("http") ? pathOrDeltaLink : pathOrDeltaLink;
+            URI uri = URI.create(pathOrDeltaLink);
             ResponseEntity<Map> response = graphClient.get()
                     .uri(uri)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)

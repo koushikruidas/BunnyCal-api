@@ -78,7 +78,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
         when(googleCalendarProvider.createEvent(any())).thenReturn(new CreateEventResponse("ext-1", "https://calendar.google.com/event?eid=1", "https://meet.google.com/a"));
 
-        var created = client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none());
+        var created = client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none(), null);
         assertEquals("ext-1", created.externalEventId());
         assertEquals("https://calendar.google.com/event?eid=1", created.providerEventUrl());
         assertEquals("https://meet.google.com/a", created.conferenceUrl());
@@ -116,7 +116,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
 
         CalendarClientException ex = assertThrows(CalendarClientException.class,
-                () -> client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none()));
+                () -> client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none(), null));
         assertEquals(400, ex.getStatusCode());
     }
 
@@ -147,7 +147,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
         when(googleCalendarProvider.updateEvent(any())).thenReturn(new UpdateEventResponse("ext-2", "https://calendar.google.com/event?eid=2", "https://meet.google.com/b"));
 
-        String externalId = client.updateEvent(bookingId, "google", "ext-1", "idem-1", ConferencingInstruction.none());
+        String externalId = client.updateEvent(bookingId, "google", "ext-1", "idem-1", ConferencingInstruction.none(), null);
         assertEquals("ext-2", externalId);
 
         ArgumentCaptor<UpdateEventRequest> requestCaptor = ArgumentCaptor.forClass(UpdateEventRequest.class);

@@ -1,7 +1,10 @@
 package com.daedalussystems.easySchedule.availability.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import com.daedalussystems.easySchedule.availability.dto.CreateEventTypeRequest;
@@ -31,52 +34,106 @@ class EventTypeOrchestrationNormalizerTest {
 
     @BeforeEach
     void setUp() {
-        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository, false);
+        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository);
     }
 
     @Test
-    void canonicalOrganizerConnectionTakesPrecedenceOverLegacyProvider() {
+    void syncConnection_derivedFromOldestActiveConnection_independentOfAvailabilityOrder() {
         UUID userId = UUID.randomUUID();
-        UUID canonicalConnectionId = UUID.randomUUID();
-        CalendarConnection canonicalConnection = activeConnection(userId, canonicalConnectionId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(canonicalConnectionId)).thenReturn(Optional.of(canonicalConnection));
+        UUID oldConnId = UUID.randomUUID();   // the "oldest" — should become syncConnectionId
+        UUID newConnId = UUID.randomUUID();   // a newer connection
+
+        CalendarConnection oldConn = activeConnection(userId, oldConnId, CalendarProviderType.GOOGLE);
+        CalendarConnection newConn = activeConnection(userId, newConnId, CalendarProviderType.MICROSOFT);
+
+        // Availability list intentionally puts the newer connection first — sync must still use oldest
+        when(calendarConnectionRepository.findById(newConnId)).thenReturn(Optional.of(newConn));
+        when(calendarConnectionRepository.findById(oldConnId)).thenReturn(Optional.of(oldConn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(oldConn, newConn));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                canonicalConnectionId,
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "zoom", null),
-                null,
-                "microsoft",
-                "google_meet",
-                null
+                "Ordering Test", null, null, 30, 0, 0, 30, 0, 30, 10, "ordering-test",
+                List.of(
+                        new CreateEventTypeRequest.AvailabilityCalendarRequest(newConnId.toString(), "microsoft", "cal_m"),
+                        new CreateEventTypeRequest.AvailabilityCalendarRequest(oldConnId.toString(), "google", "cal_g")
+                ),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
         );
 
         EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-        assertEquals(canonicalConnectionId, normalized.authoritativeConnectionId());
-        assertEquals(ConferencingProviderType.ZOOM, normalized.conferencing().provider());
+
+        // Sync must be oldest connection regardless of availability array order
+        assertEquals(oldConnId, normalized.syncConnectionId());
+        // Both availability bindings preserved, original order intact
+        assertEquals(2, normalized.availabilityBindings().size());
+        assertEquals(newConnId, normalized.availabilityBindings().get(0).connectionId());
+        assertEquals(oldConnId, normalized.availabilityBindings().get(1).connectionId());
+    }
+
+    @Test
+    void availabilityBindings_allPreserved_withoutAffectingSyncRouting() {
+        UUID userId = UUID.randomUUID();
+        UUID googleConnId = UUID.randomUUID();
+        UUID msConnId = UUID.randomUUID();
+        CalendarConnection googleConn = activeConnection(userId, googleConnId, CalendarProviderType.GOOGLE);
+        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
+
+        when(calendarConnectionRepository.findById(googleConnId)).thenReturn(Optional.of(googleConn));
+        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(googleConn, msConn));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Multi", null, null, 30, 0, 0, 30, 0, 30, 10, "multi",
+                List.of(
+                        new CreateEventTypeRequest.AvailabilityCalendarRequest(googleConnId.toString(), "google", "cal_g"),
+                        new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", "cal_m")
+                ),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertEquals(googleConnId, normalized.syncConnectionId());
+        assertEquals(2, normalized.availabilityBindings().size());
+        assertEquals(googleConnId, normalized.availabilityBindings().get(0).connectionId());
+        assertEquals(msConnId, normalized.availabilityBindings().get(1).connectionId());
+    }
+
+    @Test
+    void noActiveConnections_syncConnectionIsNull_providerOptionalMode() {
+        UUID userId = UUID.randomUUID();
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertNull(normalized.syncConnectionId());
+        assertEquals(0, normalized.availabilityBindings().size());
     }
 
     @Test
     void availabilityConnectionsAreValidatedAsReadOnlyBindings() {
         UUID userId = UUID.randomUUID();
-        UUID schedulerConnectionId = UUID.randomUUID();
         UUID availabilityConnectionId = UUID.randomUUID();
-        when(calendarConnectionRepository.findById(schedulerConnectionId))
-                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.GOOGLE)));
-        when(calendarConnectionRepository.findById(availabilityConnectionId))
-                .thenReturn(Optional.of(activeConnection(userId, availabilityConnectionId, CalendarProviderType.GOOGLE)));
+        CalendarConnection conn = activeConnection(userId, availabilityConnectionId, CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findById(availabilityConnectionId)).thenReturn(Optional.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                schedulerConnectionId,
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(availabilityConnectionId, "google", "cal_1")),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                null,
-                null,
-                null,
-                null
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(availabilityConnectionId.toString(), "google", "cal_1")),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
         );
+
         EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
 
         assertEquals(1, normalized.availabilityBindings().size());
@@ -87,68 +144,86 @@ class EventTypeOrchestrationNormalizerTest {
     @Test
     void customConferenceUrlRequiresHttps() {
         UUID userId = UUID.randomUUID();
-        UUID schedulerConnectionId = UUID.randomUUID();
-        when(calendarConnectionRepository.findById(schedulerConnectionId))
-                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.GOOGLE)));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                schedulerConnectionId,
                 List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "custom_url", "http://insecure.test"),
-                null,
-                null,
-                null,
-                null
+                new CreateEventTypeRequest.ConferenceRequest(true, "custom_url", "http://insecure.test")
         );
 
         assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
     }
 
     @Test
-    void decoupledMode_allowsGoogleMeetWithMicrosoftAuthoritativeConnection() {
+    void decoupledMode_allowsGoogleMeetWithMicrosoftSyncConnection() {
         UUID userId = UUID.randomUUID();
-        UUID schedulerConnectionId = UUID.randomUUID();
-        when(calendarConnectionRepository.findById(schedulerConnectionId))
-                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.MICROSOFT)));
+        UUID msConnId = UUID.randomUUID();
+        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
+        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(msConn));
+        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
-                schedulerConnectionId,
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
-                null,
-                null,
-                null,
-                null
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", null)),
+                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null)
         );
 
         EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
         assertEquals(ConferencingProviderType.GOOGLE_MEET, normalized.conferencing().provider());
-        assertEquals(CalendarProviderType.MICROSOFT, normalized.authoritativeProvider());
+        assertEquals(msConnId, normalized.syncConnectionId());
     }
 
     @Test
-    void strictCompatibilityMode_rejectsGoogleMeetWithMicrosoftAuthoritativeConnection() {
-        EventTypeOrchestrationNormalizer strictNormalizer =
-                new EventTypeOrchestrationNormalizer(calendarConnectionRepository, true);
+    void conferencingExecutionPolicy_rejectsGoogleMeetWithMicrosoftMirrorProvider() {
+        com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy policy =
+                new com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy();
+        com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction instruction =
+                com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction.requestNativeMeet(
+                        com.daedalussystems.easySchedule.common.enums.ConferencingProviderType.GOOGLE_MEET);
+
+        assertThrows(CustomException.class,
+                () -> policy.adaptForMirrorProvider(instruction, "microsoft", UUID.randomUUID(), "CREATE"));
+    }
+
+    @Test
+    void conferencingExecutionPolicy_rejectsMicrosoftTeamsWithGoogleMirrorProvider() {
+        com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy policy =
+                new com.daedalussystems.easySchedule.conferencing.service.ConferencingExecutionPolicy();
+        com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction instruction =
+                com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction.requestNativeMeet(
+                        com.daedalussystems.easySchedule.common.enums.ConferencingProviderType.MICROSOFT_TEAMS);
+
+        assertThrows(CustomException.class,
+                () -> policy.adaptForMirrorProvider(instruction, "google", UUID.randomUUID(), "CREATE"));
+    }
+
+    @Test
+    void invalidAvailabilityConnection_throwsValidationError() {
         UUID userId = UUID.randomUUID();
-        UUID schedulerConnectionId = UUID.randomUUID();
-        when(calendarConnectionRepository.findById(schedulerConnectionId))
-                .thenReturn(Optional.of(activeConnection(userId, schedulerConnectionId, CalendarProviderType.MICROSOFT)));
+        UUID unknownId = UUID.randomUUID();
+        when(calendarConnectionRepository.findById(unknownId)).thenReturn(Optional.empty());
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
-                schedulerConnectionId,
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
-                null,
-                null,
-                null,
-                null
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(unknownId.toString(), "google", null)),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
         );
 
-        assertThrows(CustomException.class, () -> strictNormalizer.normalize(userId, request));
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+    }
+
+    @Test
+    void nonUuidAvailabilityConnectionId_throwsValidationError() {
+        UUID userId = UUID.randomUUID();
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest("google", "google", null)),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null)
+        );
+
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
     }
 
     private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {

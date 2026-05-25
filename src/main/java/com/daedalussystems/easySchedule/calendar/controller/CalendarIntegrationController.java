@@ -457,7 +457,6 @@ public class CalendarIntegrationController {
         payload.put("authority", Map.of(
                 "availabilityProviders", catalog.authority().availabilityProviders(),
                 "lifecycleAuthority", catalog.authority().lifecycleAuthority(),
-                "authoritativeSchedulingProvider", catalog.authority().authoritativeSchedulingProvider(),
                 "identityProvider", catalog.authority().identityProvider()
         ));
         return ResponseEntity.ok(ApiResponse.success(payload));

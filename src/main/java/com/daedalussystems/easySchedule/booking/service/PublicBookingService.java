@@ -18,7 +18,6 @@ import com.daedalussystems.easySchedule.calendar.service.CalendarService;
 import com.daedalussystems.easySchedule.calendar.service.CalendarBusyTimeService;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
-import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.common.enums.ErrorCode;
 import com.daedalussystems.easySchedule.common.exception.CustomException;
@@ -51,13 +50,11 @@ public class PublicBookingService {
     private final CalendarEventMappingRepository calendarEventMappingRepository;
     private final FencingTokenGenerator fencingTokenGenerator;
     private final TimeConversionService timeConversionService;
-    private final boolean providerOptionalPublicBookingEnabled;
     private final BookingLifecycleService bookingLifecycleService;
     private final GuestCapabilityTokenService guestCapabilityTokenService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
-    private final String schedulingProvider;
 
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
@@ -73,15 +70,12 @@ public class PublicBookingService {
                                 GuestCapabilityTokenService guestCapabilityTokenService,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
-                                @Value("${booking.public.provider-optional.enabled:false}")
-                                boolean providerOptionalPublicBookingEnabled,
-                                // P3: projection-first availability. If the connection's last
+                                // projection-first availability. If the connection's last
                                 // successful sync is older than this, surface STALE_CALENDAR_DATA
                                 // so the host UI can flag webhook lag instead of silently serving
                                 // an out-of-date answer. 120s is one polling-fallback cycle + buffer.
                                 @Value("${booking.public.projection-freshness-sla-seconds:120}")
-                                long projectionFreshnessSlaSeconds,
-                                @Value("${sync.provider.default:google}") String schedulingProvider) {
+                                long projectionFreshnessSlaSeconds) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.slotService = slotService;
         this.bookingService = bookingService;
@@ -96,9 +90,7 @@ public class PublicBookingService {
         this.guestCapabilityTokenService = guestCapabilityTokenService;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
-        this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
-        this.schedulingProvider = schedulingProvider;
     }
 
     @Transactional(readOnly = true)
@@ -119,23 +111,16 @@ public class PublicBookingService {
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        // Use the oldest active connection as the staleness indicator (same as sync routing).
         java.util.Optional<CalendarConnection> connection =
-                calendarConnectionRepository.findByUserIdAndProvider(target.userId(), CalendarProviderType.GOOGLE);
-        boolean missingOrDisconnected = connection.isEmpty()
-                || connection.get().getStatus() == CalendarConnectionStatus.REVOKED
-                || connection.get().getStatus() == CalendarConnectionStatus.DISCONNECTED;
-        if (!providerOptionalPublicBookingEnabled && missingOrDisconnected) {
-            return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
-        }
-        if (providerOptionalPublicBookingEnabled && missingOrDisconnected) {
+                calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(target.userId(), CalendarConnectionStatus.ACTIVE)
+                        .stream().findFirst();
+        if (connection.isEmpty()) {
             SlotResponse base = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
             return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
                     base.version(), base.generatedAt(), true, base.slots(), AvailabilityStatus.CALENDAR_NOT_CONNECTED);
         }
-        CalendarConnectionStatus status = connection.map(CalendarConnection::getStatus).orElse(null);
-        if (!providerOptionalPublicBookingEnabled && (status == CalendarConnectionStatus.SYNCING || status == CalendarConnectionStatus.PENDING)) {
-            return notReadyAvailability(target.userId(), target.eventTypeId(), date, target.timezone(), AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS);
-        }
+        CalendarConnectionStatus status = connection.get().getStatus();
 
         SlotResponse base = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
 
@@ -254,7 +239,7 @@ public class PublicBookingService {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         bookingLifecycleService.authorizeGuestManageView(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
 
-        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId(), schedulingProvider)
+        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
@@ -332,7 +317,7 @@ public class PublicBookingService {
     private boolean hasProjectionBusyConflict(UUID userId, String timezone, Instant start, Instant end) {
         ZoneId zoneId = timeConversionService.resolveZone(timezone);
         LocalDate date = start.atZone(zoneId).toLocalDate();
-        return calendarBusyTimeService.busyIntervalsForDate(userId, date, zoneId).stream()
+        return calendarBusyTimeService.busyIntervalsForDate(userId, date, zoneId, List.of()).stream()
                 .anyMatch(interval -> overlaps(
                         start,
                         end,
@@ -371,13 +356,5 @@ public class PublicBookingService {
         return new SlotResponse(userId, eventTypeId, date, timezone, 0L, Instant.now(), true, List.of(), status);
     }
 
-    private java.util.Optional<CalendarConnection> resolveActiveCalendarConnection(UUID userId) {
-        return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE);
-    }
-
-    private java.util.Optional<CalendarProviderType> resolveActiveCalendarProvider(UUID userId) {
-        return resolveActiveCalendarConnection(userId).map(CalendarConnection::getProvider);
-    }
-
 }
+

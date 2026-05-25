@@ -60,7 +60,8 @@ public class DefaultCalendarService implements CalendarService {
                     command.internalId(),
                     command.provider(),
                     command.idempotencyKey(),
-                    command.conferencingInstruction());
+                    command.conferencingInstruction(),
+                    command.schedulingConnectionId());
         } catch (CalendarClientException ex) {
             log.warn("calendar_create_provider_failure internalId={} provider={} idempotencyKey={} statusCode={}",
                     command.internalId(), command.provider(), command.idempotencyKey(), ex.getStatusCode(), ex);
@@ -100,13 +101,15 @@ public class DefaultCalendarService implements CalendarService {
                 command.provider(),
                 command.externalEventId(),
                 command.idempotencyKey(),
-                command.conferencingInstruction());
+                command.conferencingInstruction(),
+                command.schedulingConnectionId());
     }
 
     @Override
     public void deleteEvent(DeleteCalendarEventCommand command) {
         CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
-        providerClient.deleteEvent(command.internalId(), command.provider(), command.externalEventId());
+        providerClient.deleteEvent(command.internalId(), command.provider(), command.externalEventId(),
+                command.schedulingConnectionId());
     }
 
     @Override

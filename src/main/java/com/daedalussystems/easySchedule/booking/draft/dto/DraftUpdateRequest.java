@@ -6,8 +6,9 @@ import com.daedalussystems.easySchedule.availability.dto.AvailabilityOverrideCre
 import com.daedalussystems.easySchedule.availability.dto.CreateEventTypeRequest;
 import com.daedalussystems.easySchedule.availability.dto.AvailabilityRuleRequest;
 import java.util.List;
-import java.util.UUID;
 
+// Legacy fields (organizerCalendarConnectionId, orchestrationProvider, calendarProvider,
+// conferencingProvider, customConferenceUrl) are silently ignored via @JsonIgnoreProperties.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record DraftUpdateRequest(
         String displayName,
@@ -18,13 +19,8 @@ public record DraftUpdateRequest(
         Integer durationMinutes,
         Integer slotIntervalMinutes,
         Integer holdDurationMinutes,
-        UUID organizerCalendarConnectionId,
         List<CreateEventTypeRequest.AvailabilityCalendarRequest> availabilityCalendars,
         CreateEventTypeRequest.ConferenceRequest conference,
-        String orchestrationProvider,
-        String calendarProvider,
-        String conferencingProvider,
-        String customConferenceUrl,
         List<AvailabilityRuleRequest> rules,
         List<AvailabilityOverrideCreateRequest> overrides
  ) implements ForwardCompatibleRequest {
@@ -41,6 +37,6 @@ public record DraftUpdateRequest(
             List<AvailabilityOverrideCreateRequest> overrides
     ) {
         this(displayName, timezone, eventName, description, location, durationMinutes, slotIntervalMinutes, holdDurationMinutes,
-                null, null, null, null, null, null, null, rules, overrides);
+                null, null, rules, overrides);
     }
 }

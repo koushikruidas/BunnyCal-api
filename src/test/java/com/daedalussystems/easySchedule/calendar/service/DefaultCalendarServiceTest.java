@@ -53,7 +53,7 @@ class DefaultCalendarServiceTest {
                 .thenReturn(Optional.empty(), Optional.of(inserted));
         when(operationRepository.save(org.mockito.ArgumentMatchers.any(CalendarProviderOperation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
-        when(providerClient.createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none()))
+        when(providerClient.createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none(), null))
                 .thenReturn(new CalendarProviderClient.CreateEventDetails("ext-1", "https://calendar.google.com/event?eid=1", "https://meet.google.com/1"));
 
         CalendarService.CreateEventResult result = service.createEvent(
@@ -63,7 +63,7 @@ class DefaultCalendarServiceTest {
         assertEquals("ext-1", result.externalEventId());
         assertEquals("https://calendar.google.com/event?eid=1", result.providerEventUrl());
         assertEquals("https://meet.google.com/1", result.conferenceUrl());
-        verify(providerClient).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none());
+        verify(providerClient).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none(), null);
     }
 
     @Test
@@ -85,7 +85,7 @@ class DefaultCalendarServiceTest {
 
         assertEquals(CalendarService.CreateEventStatus.RETRYABLE_FAILURE, result.status());
         assertEquals("IN_PROGRESS", result.errorCode());
-        verify(providerClient, never()).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none());
+        verify(providerClient, never()).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none(), null);
     }
 
     @Test
@@ -103,7 +103,7 @@ class DefaultCalendarServiceTest {
                 .thenReturn(Optional.of(existing));
         when(operationRepository.save(org.mockito.ArgumentMatchers.any(CalendarProviderOperation.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
-        when(providerClient.createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none()))
+        when(providerClient.createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none(), null))
                 .thenReturn(new CalendarProviderClient.CreateEventDetails("ext-2", null, null));
 
         CalendarService.CreateEventResult result = service.createEvent(
@@ -111,6 +111,6 @@ class DefaultCalendarServiceTest {
 
         assertEquals(CalendarService.CreateEventStatus.SUCCESS, result.status());
         assertEquals("ext-2", result.externalEventId());
-        verify(providerClient).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none());
+        verify(providerClient).createEvent(bookingId, "google", idempotencyKey, ConferencingInstruction.none(), null);
     }
 }

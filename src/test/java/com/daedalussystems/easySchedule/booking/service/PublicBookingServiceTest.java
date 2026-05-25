@@ -84,11 +84,10 @@ class PublicBookingServiceTest {
                 guestCapabilityTokenService,
                 new SimpleMeterRegistry(),
                 14L,
-                false,
-                120L,
-                "google"
+                120L
         );
         Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
+                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
@@ -111,8 +110,8 @@ class PublicBookingServiceTest {
         conn.setStatus(CalendarConnectionStatus.ACTIVE);
         conn.setProvider(CalendarProviderType.GOOGLE);
         conn.setLastSyncedAt(Instant.now()); // fresh within SLA
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1), new SlotDto("b", s2, e2))
@@ -136,8 +135,8 @@ class PublicBookingServiceTest {
         conn.setProvider(CalendarProviderType.GOOGLE);
         // Last sync way older than 120s default SLA → stale.
         conn.setLastSyncedAt(Instant.now().minusSeconds(3600));
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
@@ -159,8 +158,8 @@ class PublicBookingServiceTest {
         conn.setStatus(CalendarConnectionStatus.ACTIVE);
         conn.setProvider(CalendarProviderType.GOOGLE);
         // lastSyncedAt deliberately null — never-synced connection.
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
@@ -173,18 +172,14 @@ class PublicBookingServiceTest {
     }
 
     @Test
-    void availability_failedConnectionComputesDegradedSlots() {
+    void availability_failedConnection_isExcludedFromActive_returnsCalendarNotConnected() {
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        CalendarConnection conn = new CalendarConnection();
-        conn.setStatus(CalendarConnectionStatus.FAILED);
-        conn.setProvider(CalendarProviderType.GOOGLE);
-        // Even with a recent lastSyncedAt, FAILED status forces STALE_CALENDAR_DATA.
-        conn.setLastSyncedAt(Instant.now());
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(conn));
+        // FAILED connections are excluded by the ACTIVE status query
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 3L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
@@ -192,24 +187,26 @@ class PublicBookingServiceTest {
 
         SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(1, response.slots().size());
-        assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
-        assertEquals(true, response.degraded());
-        assertEquals(3L, response.version());    }
+        assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
+        assertEquals(true, response.degraded());    }
 
     @Test
-    void availability_syncingConnectionStillReturnsSyncInProgress() {
+    void availability_syncingConnection_isExcludedFromActive_returnsCalendarNotConnected() {
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        CalendarConnection conn = new CalendarConnection();
-        conn.setStatus(CalendarConnectionStatus.SYNCING);
-        conn.setProvider(CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+        // SYNCING connections are excluded by the ACTIVE status query
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 0L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
 
         SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
-        assertEquals(AvailabilityStatus.CALENDAR_SYNC_IN_PROGRESS, response.status());
+        assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
         assertEquals(true, response.degraded());
-        assertEquals(0L, response.version());
-        verify(slotService, never()).getSlots(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
@@ -262,7 +259,7 @@ class PublicBookingServiceTest {
         Instant end = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId))
                 .thenReturn(Optional.of(new BookingRepository.MeetingRow() {
                     public UUID getBookingId() { return bookingId; }
                     public UUID getEventTypeId() { return eventTypeId; }
@@ -314,7 +311,6 @@ class PublicBookingServiceTest {
         verify(bookingRepository, never()).findManageRow(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any());
     }
 
@@ -322,7 +318,7 @@ class PublicBookingServiceTest {
     void manageView_returnsNotFound_whenBookingMissing() {
         UUID bookingId = UUID.randomUUID();
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId, "google"))
+        when(bookingRepository.findManageRow(bookingId, userId, eventTypeId))
                 .thenReturn(Optional.empty());
 
         CustomException ex = assertThrows(CustomException.class,
@@ -349,6 +345,7 @@ class PublicBookingServiceTest {
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
         when(calendarBusyTimeService.busyIntervalsForDate(
                 org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any()))
                 .thenReturn(List.of(new TimeInterval(
@@ -479,147 +476,67 @@ class PublicBookingServiceTest {
     }
 
     @Test
-    void availability_syncingConnectionComputesWhenProviderOptionalEnabled() {
-        PublicBookingService providerOptionalService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                true,
-                120L,
-                "google"
-        );
+    void availability_activeConnectionWithRecentSync_returnsAvailable() {
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
         CalendarConnection conn = new CalendarConnection();
-        conn.setStatus(CalendarConnectionStatus.SYNCING);
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
         conn.setProvider(CalendarProviderType.GOOGLE);
-        // SYNCING but already synced once recently → projection is fresh enough
-        // to serve. Without lastSyncedAt set, P3 would correctly classify as
-        // STALE_CALENDAR_DATA (never synced).
         conn.setLastSyncedAt(Instant.now());
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
         ));
 
-        SlotResponse response = providerOptionalService.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(AvailabilityStatus.AVAILABLE, response.status());
         assertEquals(1, response.slots().size());    }
 
     @Test
-    void availability_missingConnectionComputesDegradedCalendarNotConnectedWhenProviderOptionalEnabled() {
-        PublicBookingService providerOptionalService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                true,
-                120L,
-                "google"
-        );
+    void availability_noActiveConnection_returnsCalendarNotConnectedDegraded() {
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.empty());
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 7L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
         ));
 
-        SlotResponse response = providerOptionalService.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
         assertEquals(true, response.degraded());
         assertEquals(1, response.slots().size());
         assertEquals("a", response.slots().get(0).slotId());    }
 
     @Test
-    void availability_disconnectedConnectionComputesDegradedCalendarNotConnectedWhenProviderOptionalEnabled() {
-        PublicBookingService providerOptionalService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                true,
-                120L,
-                "google"
-        );
+    void availability_disconnectedConnection_isExcludedFromActive_returnsCalendarNotConnected() {
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
         Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
-        CalendarConnection conn = new CalendarConnection();
-        conn.setStatus(CalendarConnectionStatus.DISCONNECTED);
-        conn.setProvider(CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(conn));
+        // DISCONNECTED connections are excluded by findByUserIdAndStatusOrderByCreatedAtAsc(..., ACTIVE)
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
         when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
                 userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 8L, Instant.now(), false,
                 List.of(new SlotDto("a", s1, e1))
         ));
 
-        SlotResponse response = providerOptionalService.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
         assertEquals(AvailabilityStatus.CALENDAR_NOT_CONNECTED, response.status());
         assertEquals(true, response.degraded());
         assertEquals(1, response.slots().size());
         assertEquals("a", response.slots().get(0).slotId());    }
 
     @Test
-    void confirm_succeedsWithoutCalendarWhenProviderOptionalEnabled() {
-        PublicBookingService providerOptionalService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                true,
-                120L,
-                "google"
-        );
+    void confirm_succeedsWithoutCalendarConnection() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
@@ -639,41 +556,19 @@ class PublicBookingServiceTest {
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
-        var response = providerOptionalService.confirm("koushik", "30min", bookingId);
+        var response = service.confirm("koushik", "30min", bookingId);
         assertEquals("SYNCING", response.status());
         verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
         verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
-    void confirm_optionalModeWithActiveConnection_doesNotCallCalendarSynchronously() {
-        PublicBookingService providerOptionalService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                true,
-                120L,
-                "google"
-        );
+    void confirm_withActiveConnection_doesNotCallCalendarSynchronously() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
                 .guestEmail("guest@example.com")
                 .build();
-        CalendarConnection conn = new CalendarConnection();
-        conn.setStatus(CalendarConnectionStatus.ACTIVE);
-        conn.setProvider(CalendarProviderType.GOOGLE);
 
         when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
         when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, userId, eventTypeId))
@@ -689,33 +584,14 @@ class PublicBookingServiceTest {
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
 
-        var response = providerOptionalService.confirm("koushik", "30min", bookingId);
+        var response = service.confirm("koushik", "30min", bookingId);
         assertEquals("SYNCING", response.status());
         verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
         verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     @Test
-    void confirm_asyncMode_skipsSynchronousCalendarCallsAndReturnsSyncing() {
-        PublicBookingService asyncService = new PublicBookingService(
-                publicBookingTargetResolver,
-                slotService,
-                bookingService,
-                bookingRepository,
-                calendarBusyTimeService,
-                calendarConnectionRepository,
-                calendarService,
-                calendarEventMappingRepository,
-                fencingTokenGenerator,
-                timeConversionService,
-                bookingLifecycleService,
-                guestCapabilityTokenService,
-                new SimpleMeterRegistry(),
-                14L,
-                false,
-                120L,
-                "google"
-        );
+    void confirm_alwaysUsesAsyncSyncJobPath_doesNotCallCalendarSynchronously() {
         UUID bookingId = UUID.randomUUID();
         Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
                 .startTime(Instant.parse("2026-05-10T10:00:00Z")).endTime(Instant.parse("2026-05-10T10:30:00Z"))
@@ -732,10 +608,13 @@ class PublicBookingServiceTest {
                     public Long getTerminalIntentEpoch() { return 0L; }
                 }));
         when(bookingRepository.findById(new BookingId(bookingId, userId))).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, booking.getStartTime(), booking.getEndTime()))
+                .thenReturn(0L);
 
-        var response = asyncService.confirm("koushik", "30min", bookingId);
+        var response = service.confirm("koushik", "30min", bookingId);
         assertEquals("SYNCING", response.status());
-        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());        verify(bookingService).confirmHeldBooking(bookingId);
+        verify(calendarService, never()).createEvent(org.mockito.ArgumentMatchers.any());
+        verify(bookingService).confirmHeldBooking(bookingId);
     }
 
     private PublicBookingTargetResolver.ResolvedTarget target() {

@@ -187,7 +187,8 @@ public class BookingSyncWorker {
                         job.getInternalRefId(),
                         job.getProvider(),
                         idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId()),
-                        instruction
+                        instruction,
+                        job.getSchedulingConnectionId()
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
@@ -218,7 +219,8 @@ public class BookingSyncWorker {
                         job.getProvider(),
                         job.getExternalEventId(),
                         idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId()),
-                        instruction
+                        instruction,
+                        job.getSchedulingConnectionId()
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         syncJobRepository.markSyncedWithMetadata(
@@ -247,7 +249,8 @@ public class BookingSyncWorker {
                 calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
                         job.getInternalRefId(),
                         job.getProvider(),
-                        job.getExternalEventId()
+                        job.getExternalEventId(),
+                        job.getSchedulingConnectionId()
                 ));
             } catch (CalendarClientException ex) {
                 if (isDeleteAlreadyConverged(ex)) {

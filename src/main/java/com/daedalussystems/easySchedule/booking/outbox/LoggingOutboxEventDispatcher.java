@@ -5,8 +5,8 @@ import com.daedalussystems.easySchedule.booking.repository.BookingRepository;
 import com.daedalussystems.easySchedule.sync.repository.CalendarSyncJobRepository;
 import com.daedalussystems.easySchedule.booking.notification.BookingNotificationService;
 import com.daedalussystems.easySchedule.booking.contract.BookingState;
+import com.daedalussystems.easySchedule.calendar.domain.CalendarConnection;
 import com.daedalussystems.easySchedule.calendar.domain.CalendarConnectionStatus;
-import com.daedalussystems.easySchedule.calendar.domain.CalendarProviderType;
 import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRepository;
 import com.daedalussystems.easySchedule.sync.invariants.CompositeSyncStateClassifier;
 import com.daedalussystems.easySchedule.sync.invariants.LineageContext;
@@ -14,18 +14,11 @@ import com.daedalussystems.easySchedule.sync.invariants.SyncInvariantMonitor;
 import com.daedalussystems.easySchedule.sync.state.SyncJobStatus;
 import java.util.Locale;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.lang.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-/**
- * Default dispatcher that logs the event and does nothing else.
- *
- * <p>Replace or extend with a real implementation once a downstream consumer
- * (notification service, calendar sync, etc.) is available.
- */
 @Component
 public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
@@ -39,26 +32,19 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     @Nullable
     private final BookingNotificationService bookingNotificationService;
     private final SyncInvariantMonitor invariantMonitor;
-    private final String provider;
-    private final boolean providerOptionalPublicBookingEnabled;
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
                                         BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
                                         CalendarConnectionRepository calendarConnectionRepository,
                                         @Nullable BookingNotificationService bookingNotificationService,
-                                        SyncInvariantMonitor invariantMonitor,
-                                        @Value("${sync.provider.default:google}") String provider,
-                                        @Value("${booking.public.provider-optional.enabled:false}")
-                                        boolean providerOptionalPublicBookingEnabled) {
+                                        SyncInvariantMonitor invariantMonitor) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingNotificationService = bookingNotificationService;
         this.invariantMonitor = invariantMonitor;
-        this.provider = provider;
-        this.providerOptionalPublicBookingEnabled = providerOptionalPublicBookingEnabled;
     }
 
     @Override
@@ -70,30 +56,35 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (isBookingSyncCandidate(event)) {
             String desiredAction = mapDesiredAction(event.getEventType());
             if (desiredAction != null) {
-                if (shouldSkipProviderSync(event)) {
-                    log.info("outbox.sync_job_skipped_no_active_provider bookingId={} provider={} action={}",
-                            event.getAggregateId(), provider, desiredAction);
-                    return;
-                }
                 UUID partitionKey = event.getPartitionKey();
                 if (partitionKey == null) {
                     partitionKey = bookingRepository.findAnyById(event.getAggregateId())
                             .map(booking -> booking.getHostId())
                             .orElse(null);
                 }
-                UUID schedulingConnectionId = resolveSchedulingConnectionId(event.getAggregateId(), partitionKey);
+                SchedulingResolution resolution = resolveSchedulingConnection(event.getAggregateId(), partitionKey);
+                if (resolution == null && partitionKey != null) {
+                    log.info("outbox.sync_job_skipped_no_active_connection bookingId={} hostId={} action={}",
+                            event.getAggregateId(), partitionKey, desiredAction);
+                    return;
+                }
+                String resolvedProvider = resolution != null ? resolution.provider() : null;
+                UUID schedulingConnectionId = resolution != null ? resolution.connectionId() : null;
+                if (partitionKey != null && resolvedProvider != null) {
+                    bookingRepository.stampSchedulingProvider(event.getAggregateId(), partitionKey, resolvedProvider);
+                }
                 calendarSyncJobRepository.upsertPendingJob(
                         UUID.randomUUID(),
                         "BOOKING",
                         event.getAggregateId(),
-                        provider,
+                        resolvedProvider,
                         desiredAction,
                         null,
                         partitionKey,
                         schedulingConnectionId
                 );
                 log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
-                        event.getId(), event.getAggregateId(), provider, desiredAction);
+                        event.getId(), event.getAggregateId(), resolvedProvider, desiredAction);
                 emitSyncEnqueueInvariant(event, desiredAction);
                 return;
             }
@@ -110,57 +101,34 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 && event.getAggregateId() != null;
     }
 
-    private boolean shouldSkipProviderSync(OutboxEvent event) {
-        if (!providerOptionalPublicBookingEnabled) {
-            return false;
-        }
-        CalendarProviderType providerType = parseProviderType(provider);
-        if (providerType == null) {
-            return false;
-        }
-        if (event.getPartitionKey() != null) {
-            return calendarConnectionRepository
-                    .findByUserIdAndProviderAndStatus(event.getPartitionKey(), providerType, CalendarConnectionStatus.ACTIVE)
-                    .isEmpty();
-        }
-        return bookingRepository.findAnyById(event.getAggregateId())
-                .map(booking -> calendarConnectionRepository
-                        .findByUserIdAndProviderAndStatus(booking.getHostId(), providerType, CalendarConnectionStatus.ACTIVE)
-                        .isEmpty())
-                .orElse(false);
-    }
-
-    private static CalendarProviderType parseProviderType(String provider) {
-        if (provider == null || provider.isBlank()) {
-            return null;
-        }
-        try {
-            return CalendarProviderType.valueOf(provider.toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            return null;
-        }
-    }
+    private record SchedulingResolution(UUID connectionId, String provider) {}
 
     @Nullable
-    private UUID resolveSchedulingConnectionId(UUID bookingId, @Nullable UUID hostId) {
+    private SchedulingResolution resolveSchedulingConnection(UUID bookingId, @Nullable UUID hostId) {
+        // Priority 1: connection stamped on the event type at creation time.
         UUID eventTypeConnectionId = bookingRepository.findAnyById(bookingId)
                 .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
                 .map(eventType -> eventType.getOrganizerCalendarConnectionId())
                 .orElse(null);
         if (eventTypeConnectionId != null) {
-            return eventTypeConnectionId;
+            return calendarConnectionRepository.findById(eventTypeConnectionId)
+                    .map(c -> new SchedulingResolution(c.getId(), providerString(c)))
+                    .orElse(null);
         }
+        // Priority 2: oldest active connection for the host (deterministic fallback).
         if (hostId == null) {
             return null;
         }
-        CalendarProviderType providerType = parseProviderType(provider);
-        if (providerType == null) {
-            return null;
-        }
         return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(hostId, providerType, CalendarConnectionStatus.ACTIVE)
-                .map(connection -> connection.getId())
+                .findByUserIdAndStatusOrderByCreatedAtAsc(hostId, CalendarConnectionStatus.ACTIVE)
+                .stream()
+                .findFirst()
+                .map(c -> new SchedulingResolution(c.getId(), providerString(c)))
                 .orElse(null);
+    }
+
+    private static String providerString(CalendarConnection connection) {
+        return connection.getProvider().name().toLowerCase(Locale.ROOT);
     }
 
     private static String mapDesiredAction(String eventType) {

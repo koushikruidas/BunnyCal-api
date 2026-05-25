@@ -18,6 +18,7 @@ import com.daedalussystems.easySchedule.calendar.repository.CalendarConnectionRe
 import com.daedalussystems.easySchedule.conferencing.service.ConferencingInstruction;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -50,13 +51,15 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey, ConferencingInstruction conferencingInstruction) {
+    public CreateEventDetails createEvent(UUID internalId, String provider, String idempotencyKey,
+                                          ConferencingInstruction conferencingInstruction,
+                                          @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
-        CalendarConnection connection = resolveActiveConnection(booking.getHostId(), provider);
+        CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
 
         String title = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
@@ -83,13 +86,15 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public String updateEvent(UUID internalId, String provider, String externalEventId, String idempotencyKey, ConferencingInstruction conferencingInstruction) {
+    public String updateEvent(UUID internalId, String provider, String externalEventId, String idempotencyKey,
+                              ConferencingInstruction conferencingInstruction,
+                              @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
         EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
-        CalendarConnection connection = resolveActiveConnection(booking.getHostId(), provider);
+        CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
 
         String title = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
@@ -116,10 +121,14 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public void deleteEvent(UUID internalId, String provider, String externalEventId) {
+    public void deleteEvent(UUID internalId, String provider, String externalEventId,
+                            @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        CalendarConnection connection = resolveAnyConnection(booking.getHostId(), provider);
+        CalendarConnection connection = schedulingConnectionId != null
+                ? connectionRepository.findById(schedulingConnectionId)
+                        .orElseGet(() -> resolveAnyConnection(booking.getHostId(), provider))
+                : resolveAnyConnection(booking.getHostId(), provider);
         microsoftCalendarProvider.deleteEvent(new DeleteEventRequest(connection.getId(), externalEventId));
     }
 
@@ -139,7 +148,12 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         return eventExists(internalId, provider, externalEventId);
     }
 
-    private CalendarConnection resolveActiveConnection(UUID userId, String provider) {
+    private CalendarConnection resolveConnection(UUID userId, String provider,
+                                                    @Nullable UUID schedulingConnectionId) {
+        if (schedulingConnectionId != null) {
+            return connectionRepository.findById(schedulingConnectionId)
+                    .orElseThrow(() -> new CalendarClientException(404, "scheduling connection not found"));
+        }
         CalendarProviderType providerType = providerType(provider);
         return connectionRepository.findByUserIdAndProviderAndStatus(userId, providerType, CalendarConnectionStatus.ACTIVE)
                 .orElseThrow(() -> new CalendarClientException(404, "active calendar connection not found"));
