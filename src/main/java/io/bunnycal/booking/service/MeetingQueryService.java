@@ -47,6 +47,13 @@ public class MeetingQueryService {
     }
 
     private MeetingSummaryResponse toDto(BookingRepository.MeetingRow row) {
+        String conferenceUrl = row.getConferenceUrl();
+        String provider = row.getProvider();
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails = conferenceUrl == null || conferenceUrl.isBlank()
+                ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
+                : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
+                        provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
+                        conferenceUrl, null, null, null, "projection");
         MeetingSummaryResponse response = new MeetingSummaryResponse(
                 row.getBookingId(),
                 row.getEventTypeId(),
@@ -56,11 +63,11 @@ public class MeetingQueryService {
                 row.getBookingStatus(),
                 row.getGuestEmail(),
                 row.getGuestName(),
-                row.getProvider(),
+                provider,
                 row.getCalendarSyncStatus(),
                 row.getExternalEventId(),
                 row.getProviderEventUrl(),
-                row.getConferenceUrl(),
+                conferenceDetails,
                 row.getExternalLifecycleState(),
                 row.getExternalLifecycleReason(),
                 Boolean.TRUE.equals(row.getReconcileSuppressed()),

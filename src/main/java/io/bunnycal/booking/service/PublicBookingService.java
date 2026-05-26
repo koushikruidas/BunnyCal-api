@@ -243,6 +243,13 @@ public class PublicBookingService {
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
+        String conferenceUrl = row.getConferenceUrl();
+        String provider = row.getProvider();
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails = conferenceUrl == null || conferenceUrl.isBlank()
+                ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
+                : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
+                        provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
+                        conferenceUrl, null, null, null, "projection");
         return new PublicManageBookingResponse(
                 row.getBookingId(),
                 eventTitle,
@@ -254,7 +261,7 @@ public class PublicBookingService {
                 target.hostAvatarUrl(),
                 row.getGuestName(),
                 row.getGuestEmail(),
-                row.getConferenceUrl(),
+                conferenceDetails,
                 row.getBookingStatus(),
                 row.getExternalLifecycleState(),
                 row.getExternalLifecycleReason(),

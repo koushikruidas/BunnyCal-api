@@ -78,6 +78,6 @@ class MeetingQueryServiceTest {
         assertEquals("google", result.get(0).provider());
         assertEquals("CREATED", result.get(0).calendarSyncStatus());
         assertEquals("https://calendar.google.com/event?eid=1", result.get(0).providerEventUrl());
-        assertEquals("https://meet.google.com/abc-defg-hij", result.get(0).conferenceUrl());
+        assertEquals("https://meet.google.com/abc-defg-hij", result.get(0).conferenceDetails().joinUrl());
     }
 }

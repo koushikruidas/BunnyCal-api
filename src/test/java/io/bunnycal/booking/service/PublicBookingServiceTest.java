@@ -290,7 +290,7 @@ class PublicBookingServiceTest {
         assertEquals("koushik", response.hostUsername());
         assertEquals("guest@example.com", response.attendeeEmail());
         assertEquals("Guest", response.attendeeName());
-        assertEquals("https://meet.example.com/abc", response.conferenceUrl());
+        assertEquals("https://meet.example.com/abc", response.conferenceDetails().joinUrl());
         assertEquals("CONFIRMED", response.status());
         assertEquals("STABLE", response.externalLifecycleState());
         assertEquals("UTC", response.timezone());
