@@ -128,10 +128,10 @@ public class ProviderEventProjectionService {
                 meterRegistry.counter("provider_projection_echo_detected",
                         "provider", provider,
                         "connectionId", connectionId.toString()).increment();
-                log.info("convergence_loop_prevented provider={} connectionId={} externalEventId={} reason=projection_echo",
-                        provider, connectionId, incoming.externalEventId());
-                log.info("replay_window_duplicate_suppressed provider={} connectionId={} externalEventId={} reason=projection_echo payloadHash={}",
-                        provider, connectionId, incoming.externalEventId(), incoming.payloadHash());
+                log.info("convergence_loop_prevented provider={} connectionId={} externalEventId={} bookingId={} reason=projection_echo",
+                        provider, connectionId, incoming.externalEventId(), existing.get().getBookingId());
+                log.info("replay_window_duplicate_suppressed provider={} connectionId={} externalEventId={} bookingId={} reason=projection_echo payloadHash={}",
+                        provider, connectionId, incoming.externalEventId(), existing.get().getBookingId(), incoming.payloadHash());
                 return false;
             }
 
@@ -146,6 +146,16 @@ public class ProviderEventProjectionService {
                     incoming.providerUpdatedAt(),
                     existing.map(ProviderEventProjection::getProviderUpdatedAt).orElse(null));
             if (compare == ProviderEventVersionComparator.ComparisonResult.OLDER_OR_EQUAL) {
+                // For externally-created (unlinked) events, allow the calendar_events write through
+                // even when the projection version hasn't advanced. The projection row is not updated,
+                // but the calendar_events upsert is idempotent and self-heals any gap caused by a
+                // prior transaction split between the projection commit and the calendar_events write.
+                if (linkedBookingId == null && existing.isPresent()) {
+                    counter("sync.projection.external_stable_passthrough.total", provider, "reason", "unlinked_idempotent").increment();
+                    log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=true reason=external_stable_passthrough",
+                            provider, connectionId, incoming.externalEventId());
+                    return true;
+                }
                 counter("sync.projection.rejected.total", provider, "reason", "older_or_equal").increment();
                 log.info("projection_observation_rejected provider={} reason=older_or_equal {}",
                         provider, lineage.asLogLine());
@@ -328,6 +338,13 @@ public class ProviderEventProjectionService {
 
     private static boolean isProjectionEcho(ProviderEventProjection existing,
                                             CalendarEventIngestionService.IncomingCalendarEvent incoming) {
+        // Only suppress as a projection echo when the existing row is linked to a BunnyCal booking.
+        // An unlinked row means the event was created externally (e.g. a manual Outlook busy block).
+        // Suppressing unlinked events would permanently hide externally-created provider events after
+        // their first ingest, because the payload hash never changes for stable unchanged events.
+        if (existing.getBookingId() == null) {
+            return false;
+        }
         String existingHash = existing.getPayloadHash();
         String incomingHash = incoming.payloadHash();
         if (existingHash != null && !existingHash.isBlank() && incomingHash != null && !incomingHash.isBlank()) {
