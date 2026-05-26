@@ -1,5 +1,5 @@
  ---
-BunnyCal / easySchedule — Calendar Multi-Provider Architecture Audit
+BunnyCal / BunnyCal — Calendar Multi-Provider Architecture Audit
 
 Date: 2026-05-18
 Scope: entire calendar/ module, sync/, booking/ cross-references, controllers, repositories, Flyway migrations, application config

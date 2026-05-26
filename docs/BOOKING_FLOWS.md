@@ -4,15 +4,15 @@ Implementation-accurate backend flow documentation for the current booking syste
 
 ## Source Basis
 - Directly implemented sources include:
-  - `src/main/java/com/daedalussystems/easySchedule/booking/controller/BookingController.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/controller/PublicBookingController.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/service/BookingService.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/service/PublicBookingService.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/service/DefaultPublicBookingTargetResolver.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/notification/BookingNotificationService.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/notification/IcsInviteGenerator.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/outbox/*`
-  - `src/main/java/com/daedalussystems/easySchedule/calendar/service/*`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/controller/BookingController.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/controller/PublicBookingController.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/service/BookingService.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/service/PublicBookingService.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/service/DefaultPublicBookingTargetResolver.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/notification/BookingNotificationService.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/notification/IcsInviteGenerator.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/outbox/*`
+  - `src/main/java/com/daedalussystems/BunnyCal/calendar/service/*`
   - `src/main/resources/db/migration/*` (bookings/outbox/sync/idempotency)
 - Where behavior is not explicitly wired in one place, this doc marks it as **Inferred**.
 

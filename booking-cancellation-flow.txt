@@ -2,7 +2,7 @@ Booking Cancellation & External Synchronization Architecture
 Production-Grade Lifecycle Management Design
 
 1. Overview
-EasySchedule supports multiple booking lifecycle mutation paths:
+BunnyCal supports multiple booking lifecycle mutation paths:
 * authenticated host cancellation
 * anonymous guest cancellation
 * external provider synchronization

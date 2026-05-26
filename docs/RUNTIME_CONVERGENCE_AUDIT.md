@@ -273,7 +273,7 @@ There is **no provider-native invite dispatch** from the application. The applic
 | Aspect | Status | Notes |
 |---|---|---|
 | Invite delivery | FULLY APP-AUTHORITATIVE | ICS sent via SMTP to both |
-| Organizer rendering | KNOWN DIVERGENCE | ORGANIZER = app address, not host Gmail. Gmail may show "via easySchedule" |
+| Organizer rendering | KNOWN DIVERGENCE | ORGANIZER = app address, not host Gmail. Gmail may show "via BunnyCal" |
 | Conference rendering | FULLY SUPPORTED (Zoom/Custom URL) | Join URL in ICS and email body |
 | Conference rendering | PROVIDER-LIMITED (Google Meet) | Meet link only present if sync connection = Google AND calendar event created successfully |
 | RSVP handling | NOT APP-AUTHORITATIVE | ICS `METHOD:REQUEST` triggers Gmail's calendar accept/decline UI. RSVP status is not read back by the application |

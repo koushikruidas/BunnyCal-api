@@ -92,7 +92,7 @@ Infrastructure (from JVM/Actuator/Micrometer):
    - `docker compose up -d`
 3. Verify Prometheus target:
    - Open `http://localhost:9090/targets`
-   - `easyschedule-app` should be `UP`
+   - `BunnyCal-app` should be `UP`
 4. Open Grafana:
    - URL: `http://localhost:3000`
    - Username: `admin`

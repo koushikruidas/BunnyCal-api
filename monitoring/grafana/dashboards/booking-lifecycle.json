@@ -2,7 +2,7 @@
   "id": null,
   "uid": "booking-lifecycle",
   "title": "Booking Lifecycle",
-  "tags": ["easyschedule", "booking"],
+  "tags": ["BunnyCal", "booking"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

@@ -1,6 +1,6 @@
 ## 1. High-Level Overview (User Perspective)
 
-easySchedule is a scheduling platform with two main personas:
+BunnyCal is a scheduling platform with two main personas:
 
 - Host: sets availability, connects Google Calendar, receives bookings.
 - Client: views open time slots and requests a booking.

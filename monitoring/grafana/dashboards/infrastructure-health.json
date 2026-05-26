@@ -2,7 +2,7 @@
   "id": null,
   "uid": "infra-health",
   "title": "Infrastructure Health",
-  "tags": ["easyschedule", "infra"],
+  "tags": ["BunnyCal", "infra"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

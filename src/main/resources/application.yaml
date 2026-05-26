@@ -1,6 +1,6 @@
 spring:
   application:
-    name: easySchedule
+    name: BunnyCal
 
   datasource:
     url: jdbc:postgresql://localhost:5432/mydatabase
@@ -223,7 +223,7 @@ booking:
     enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
     from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@logpulse.dev}
     calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL:calendar@logpulse.dev}
-    calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:easySchedule Calendar}
+    calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:BunnyCal Calendar}
 
 draft:
   ttl:
@@ -239,3 +239,5 @@ zoom:
     redirect-uri: ${ZOOM_REDIRECT_URI:http://localhost:8080/integrations/conferencing/zoom/callback}
     frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:http://localhost:5173/dashboard/integrations}
     frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:http://localhost:5173/calendar-error}
+
+kind: Application

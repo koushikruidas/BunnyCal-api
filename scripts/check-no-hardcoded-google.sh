@@ -4,8 +4,8 @@ set -euo pipefail
 # Guard shared-path regressions: provider literals must not creep back into
 # repository/service paths that should be provider-parameterized.
 TARGETS=(
-  "src/main/java/com/daedalussystems/easySchedule/booking/repository/BookingRepository.java"
-  "src/main/java/com/daedalussystems/easySchedule/booking/service/PublicBookingService.java"
+  "src/main/java/com/daedalussystems/BunnyCal/booking/repository/BookingRepository.java"
+  "src/main/java/com/daedalussystems/BunnyCal/booking/service/PublicBookingService.java"
 )
 
 violations=0

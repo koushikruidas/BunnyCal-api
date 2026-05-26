@@ -6,7 +6,7 @@ Scope constraint: validation-only; no architecture expansion, no provider-scope 
 ## 1) Operational Proving Report
 
 Evidence executed in this pass:
-- `./gradlew test --tests "com.daedalussystems.easySchedule.calendar.replay.*" --tests "com.daedalussystems.easySchedule.sync.reconcile.WebhookReplayConvergenceHarnessTest"`
+- `./gradlew test --tests "io.bunnycal.calendar.replay.*" --tests "reconcile.sync.io.bunnycal.WebhookReplayConvergenceHarnessTest"`
 - Result: 16 passed, 0 failed.
 
 Validated by deterministic harness + runtime logic:

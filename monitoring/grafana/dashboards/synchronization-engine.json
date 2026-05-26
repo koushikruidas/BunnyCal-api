@@ -2,7 +2,7 @@
   "id": null,
   "uid": "sync-engine",
   "title": "Synchronization Engine",
-  "tags": ["easyschedule", "sync"],
+  "tags": ["BunnyCal", "sync"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

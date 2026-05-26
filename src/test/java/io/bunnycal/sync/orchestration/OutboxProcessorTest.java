@@ -1,0 +1,76 @@
+package io.bunnycal.sync.orchestration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.booking.outbox.OutboxEventRepository;
+import io.bunnycal.booking.outbox.OutboxEventStatus;
+import io.bunnycal.sync.invariants.SyncInvariantMonitor;
+import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import io.bunnycal.sync.state.InternalRefType;
+import io.bunnycal.sync.state.SyncDesiredAction;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
+class OutboxProcessorTest {
+
+    @Mock
+    private OutboxEventRepository outboxRepository;
+    @Mock
+    private CalendarSyncJobRepository syncJobRepository;
+    @Mock
+    private BookingOutboxEventRouter eventRouter;
+    @Mock
+    private SyncInvariantMonitor invariantMonitor;
+
+    private OutboxProcessor processor;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        processor = new OutboxProcessor(outboxRepository, syncJobRepository, eventRouter, invariantMonitor, new SimpleMeterRegistry());
+    }
+
+    @Test
+    void bookingConfirmedEvent_createsSyncJobAndMarksOutboxProcessed() {
+        UUID outboxId = UUID.randomUUID();
+        UUID bookingId = UUID.randomUUID();
+        OutboxEvent event = new OutboxEvent();
+        event.setId(outboxId);
+        event.setAggregateType("Booking");
+        event.setAggregateId(bookingId);
+        event.setEventType("BOOKING_CONFIRMED");
+        event.setPayload("{\"type\":\"BOOKING_CONFIRMED\",\"version\":1,\"payload\":{\"bookingId\":\"" + bookingId + "\"}}");
+        event.setStatus(OutboxEventStatus.PROCESSING);
+        event.setAttemptCount(0);
+        event.setNextAttemptAt(Instant.now());
+
+        when(outboxRepository.claimBookingSyncEvents(any(), eq(10))).thenReturn(List.of(outboxId));
+        when(outboxRepository.findById(outboxId)).thenReturn(Optional.of(event));
+        when(eventRouter.toPlan(event, "google"))
+                .thenReturn(new SyncJobPlan(
+                        InternalRefType.BOOKING,
+                        bookingId,
+                        SyncDesiredAction.CREATE,
+                        "google"));
+
+        int claimed = processor.processBatch(10, "google");
+
+        assertEquals(1, claimed);
+        verify(syncJobRepository).upsertPendingJob(any(), eq("BOOKING"), eq(bookingId), eq("google"), eq("CREATE"), any());
+        verify(outboxRepository).save(event);
+        assertEquals(OutboxEventStatus.PROCESSED, event.getStatus());
+    }
+}

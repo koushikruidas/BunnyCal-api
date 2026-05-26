@@ -1,5 +1,5 @@
 groups:
-  - name: easyschedule.booking
+  - name: BunnyCal.booking
     rules:
 
       # ── 1. High booking conflict rate ────────────────────────────────────────
@@ -36,7 +36,7 @@ groups:
             Booking backlog growing. System may be under load or slow.
             Check: confirmation worker health, DB connection pool, expiry reaper.
 
-  - name: easyschedule.outbox
+  - name: BunnyCal.outbox
     rules:
 
       # ── 3. Outbox processing lag high ────────────────────────────────────────
@@ -102,7 +102,7 @@ groups:
             Outbox processing latency is high. System performance degraded.
             Check: DB slow-query log, connection pool saturation, dispatcher I/O.
 
-  - name: easyschedule.slo
+  - name: BunnyCal.slo
     rules:
 
       # ── 6. Booking completion SLO violation (histogram) ──────────────────────
@@ -154,7 +154,7 @@ groups:
             Check: same as BookingSLOViolation — both alerts fire together under
             sustained degradation; SLI alert may lag due to counter accumulation.
 
-  - name: easyschedule.calendar.webhooks
+  - name: BunnyCal.calendar.webhooks
     rules:
 
       - alert: WebhookRenewalFailureRateHigh

@@ -2,7 +2,7 @@
   "id": null,
   "uid": "provider-health",
   "title": "Provider Health",
-  "tags": ["easyschedule", "provider"],
+  "tags": ["BunnyCal", "provider"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

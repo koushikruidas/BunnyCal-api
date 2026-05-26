@@ -1,4 +1,4 @@
-# easySchedule — Production Architecture (Current)
+# BunnyCal — Production Architecture (Current)
 
 > **Source of truth.** This document is reverse-engineered from the current codebase in this workspace, not historical HLD/LLD intent. If this document conflicts with code, code wins.
 >
@@ -28,7 +28,7 @@
 
 ## 1. Executive Summary
 
-easySchedule is a modular monolith implementing:
+BunnyCal is a modular monolith implementing:
 - OAuth login + JWT auth (`auth/*`).
 - Availability/slot computation with Redis versioned cache (`availability/*`).
 - Booking write path with idempotency and DB-backed overlap enforcement (`booking/*`, `db/migration/V3_0__bookings.sql`).
@@ -73,7 +73,7 @@ Status of major legacy sections from prior architecture doc:
 ### 3.2 Implemented modules (current)
 
 ```
-com.daedalussystems.easySchedule
+io.bunnycal
 ├── auth/            # JWT, refresh tokens, OAuth2 login normalization/success handler
 ├── availability/    # rules/overrides, slot engine, cache+versioning
 ├── booking/         # booking writes, idempotency, outbox

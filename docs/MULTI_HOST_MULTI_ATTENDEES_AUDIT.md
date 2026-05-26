@@ -1,4 +1,4 @@
-# BunnyCal / easySchedule — Brutal Backend Audit
+# BunnyCal / BunnyCal — Brutal Backend Audit
 
 ---
 

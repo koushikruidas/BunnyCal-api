@@ -23,8 +23,8 @@ BUILD SUCCESSFUL in 33s
 ```
 
 Root fix applied this session: `TestApplication.java` was missing
-`com.daedalussystems.easySchedule.conferencing` and
-`com.daedalussystems.easySchedule.integration` from `@ComponentScan`. All 68
+`io.bunnycal.conferencing` and
+`io.bunnycal.integration` from `@ComponentScan`. All 68
 integration test failures traced to a single Spring context wiring error
 (`ConferencingCoordinator` unreachable) introduced when that bean was added to
 `BookingNotificationService` without updating the test application config.

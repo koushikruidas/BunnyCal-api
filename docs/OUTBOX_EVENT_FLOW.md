@@ -4,11 +4,11 @@ Implementation-accurate deep dive of async outbox/event processing in current ba
 
 ## Source Basis
 - Primary sources:
-  - `src/main/java/com/daedalussystems/easySchedule/booking/outbox/*`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/service/BookingService.java`
-  - `src/main/java/com/daedalussystems/easySchedule/booking/notification/BookingNotificationService.java`
-  - `src/main/java/com/daedalussystems/easySchedule/sync/worker/*`
-  - `src/main/java/com/daedalussystems/easySchedule/sync/orchestration/*`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/outbox/*`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/service/BookingService.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/booking/notification/BookingNotificationService.java`
+  - `src/main/java/com/daedalussystems/BunnyCal/sync/worker/*`
+  - `src/main/java/com/daedalussystems/BunnyCal/sync/orchestration/*`
   - migrations: `V4_0__outbox.sql`, `V16_0__outbox_retrying_and_nullable_next_attempt.sql`, `V22_0__calendar_sync_jobs.sql`
 
 Where runtime activation is not explicit from one file, this doc marks **Inferred**.
