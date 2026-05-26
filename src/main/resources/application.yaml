@@ -95,6 +95,14 @@ spring:
             jwk-set-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/discovery/v2.0/keys
             user-name-attribute: sub
 
+jdbc:
+  opentelemetry:
+    # Prometheus requires stable tag keys per metric name. Query analysis can
+    # conditionally emit db.collection.name, which breaks jdbc_query_* schema.
+    # Keep JDBC metrics enabled but disable conditional query analysis tags.
+    analysis:
+      enabled: ${JDBC_OPENTELEMETRY_ANALYSIS_ENABLED:false}
+
 management:
   otlp:
     metrics:

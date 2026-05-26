@@ -3,8 +3,11 @@ package io.bunnycal.common.config;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import java.util.ArrayList;
 import java.util.List;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -16,35 +19,43 @@ public class MetricsSchemaConfig {
         return new MeterFilter() {
             @Override
             public Meter.Id map(Meter.Id id) {
-                if ("jdbc_query_active_seconds".equals(id.getName())) {
-                    return ensureTag(id, "db_collection_name", "unknown");
+                if (id.getName().startsWith("jdbc_query_") || id.getName().startsWith("jdbc.query.")) {
+                    // Normalize JDBC instrumentation series to a stable schema across
+                    // drivers/conventions: some paths emit db_collection_name, others don't.
+                    // Drop it uniformly to prevent Prometheus tag-key collisions.
+                    Meter.Id normalized = removeTag(id, "db_collection_name");
+                    normalized = removeTag(normalized, "db.collection.name");
+                    return normalized;
                 }
                 return id;
             }
         };
     }
 
-    private static Meter.Id ensureTag(Meter.Id id, String key, String defaultValue) {
-        List<Tag> existing = id.getTags();
-        for (Tag tag : existing) {
-            if (key.equals(tag.getKey())) {
-                if (tag.getValue() != null && !tag.getValue().isBlank()) {
-                    return id;
+    @Bean
+    static BeanPostProcessor prometheusRegistryMeterFilterPostProcessor(MeterFilter prometheusTagSchemaNormalizer) {
+        return new BeanPostProcessor() {
+            @Override
+            public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+                if (bean instanceof PrometheusMeterRegistry registry) {
+                    registry.config().meterFilter(prometheusTagSchemaNormalizer);
                 }
-                List<Tag> replaced = new ArrayList<>(existing.size());
-                for (Tag t : existing) {
-                    if (key.equals(t.getKey())) {
-                        replaced.add(Tag.of(key, defaultValue));
-                    } else {
-                        replaced.add(t);
-                    }
-                }
-                return id.withTags(replaced);
+                return bean;
             }
+        };
+    }
+
+    private static Meter.Id removeTag(Meter.Id id, String key) {
+        List<Tag> existing = id.getTags();
+        List<Tag> filtered = new ArrayList<>(existing.size());
+        boolean removed = false;
+        for (Tag t : existing) {
+            if (key.equals(t.getKey())) {
+                removed = true;
+                continue;
+            }
+            filtered.add(t);
         }
-        List<Tag> expanded = new ArrayList<>(existing.size() + 1);
-        expanded.addAll(existing);
-        expanded.add(Tag.of(key, defaultValue));
-        return id.withTags(expanded);
+        return removed ? id.withTags(filtered) : id;
     }
 }

@@ -30,7 +30,7 @@ public class ConnectionRateLimitBreaker {
 
     public void recordRateLimit(String provider, String key) {
         String effectiveKey = (key == null || key.isBlank()) ? "unknown" : key;
-        meterRegistry.counter("provider_rate_limit_hit_total", "provider", provider, "connection_id", effectiveKey)
+        meterRegistry.counter("provider_rate_limit_hit_total", "provider", provider)
                 .increment();
         states.compute(effectiveKey, (k, existing) -> {
             Instant now = Instant.now();
@@ -55,4 +55,3 @@ public class ConnectionRateLimitBreaker {
         private Instant openUntil;
     }
 }
-
