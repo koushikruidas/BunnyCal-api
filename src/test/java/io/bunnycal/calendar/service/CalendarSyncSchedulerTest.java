@@ -1,5 +1,6 @@
 package io.bunnycal.calendar.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Pageable;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
@@ -45,6 +47,8 @@ class CalendarSyncSchedulerTest {
     private CalendarConnectionWriteService connectionWriteService;
 
     private CalendarSyncScheduler scheduler;
+    private SimpleMeterRegistry meterRegistry;
+    private ProviderConcurrencyGate concurrencyGate;
 
     @BeforeEach
     void setUp() {
@@ -52,14 +56,19 @@ class CalendarSyncSchedulerTest {
         lenient().when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         lenient().when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
         CalendarSyncClientRegistry registry = new CalendarSyncClientRegistry(List.of(syncClient));
+        meterRegistry = new SimpleMeterRegistry();
+        concurrencyGate = new ProviderConcurrencyGate(meterRegistry, 32, 32);
         scheduler = new CalendarSyncScheduler(
                 connectionRepository,
                 ingestionService,
                 registry,
                 slotCacheVersionService,
                 connectionWriteService,
+                concurrencyGate,
                 txManager,
-                new SimpleMeterRegistry());
+                meterRegistry,
+                100,   // batchSize
+                2000); // maxConnectionsPerTick
     }
 
     @Test
@@ -67,7 +76,10 @@ class CalendarSyncSchedulerTest {
         CalendarConnection failedReady = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.FAILED);
         CalendarConnection erroredReady = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ERROR);
 
-        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(failedReady, erroredReady));
+        // Batch returns the two due rows on page 0, then empty so the sweep exits.
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(failedReady, erroredReady))
+                .thenReturn(List.of());
         when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
                 .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor-1", false, false, "incremental"));
 
@@ -79,12 +91,13 @@ class CalendarSyncSchedulerTest {
 
     @Test
     void sync_preservesRevokedStatusWhenTokenRefresherAlreadyClassified() {
-        // F1 + F3: TokenRefresher marks REVOKED in its own REQUIRES_NEW transaction and re-throws.
-        // The scheduler must NOT clobber that classification with FAILED.
+        // F1 + F3 preserved: TokenRefresher marks REVOKED, scheduler must not clobber.
         UUID connectionId = UUID.randomUUID();
         CalendarConnection swept = connection(connectionId, UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
 
-        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(swept));
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(swept))
+                .thenReturn(List.of());
 
         OAuthError terminal = new OAuthError("invalid_grant", "Token has been expired or revoked.",
                 400, CalendarProviderType.GOOGLE, OAuthErrorCategory.TERMINAL);
@@ -93,7 +106,6 @@ class CalendarSyncSchedulerTest {
                         "Calendar API request failed: status=400 body={\"error\":\"invalid_grant\"}",
                         terminal));
 
-        // After the throw, the REVOKED row is what handleSyncFailure reloads from the repo.
         CalendarConnection reloaded = connection(connectionId, swept.getUserId(), CalendarConnectionStatus.REVOKED);
         reloaded.setLastErrorCode("invalid_grant");
         reloaded.setLastErrorAt(Instant.now());
@@ -101,7 +113,6 @@ class CalendarSyncSchedulerTest {
 
         scheduler.sync();
 
-        // No FAILED write — REVOKED is preserved. (Neither legacy nor category-based.)
         verify(connectionWriteService, never()).markFailure(eq(connectionId), any(), any(), any(), any());
         verify(connectionWriteService, never()).markFailureWithCategory(eq(connectionId), any(), any(), any(), any());
         verify(connectionWriteService, never()).markActive(eq(connectionId), any(), any(), any());
@@ -109,12 +120,12 @@ class CalendarSyncSchedulerTest {
 
     @Test
     void sync_writesCategorisedFailureWhenStatusNotAlreadyClassified() {
-        // F1 + F6: when the latest persisted status is still ACTIVE, stamp a category-aware
-        // failure so backoff state is updated correctly.
         UUID connectionId = UUID.randomUUID();
         CalendarConnection swept = connection(connectionId, UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
 
-        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(swept));
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(swept))
+                .thenReturn(List.of());
 
         OAuthError transientErr = new OAuthError(null, "upstream down", 503,
                 CalendarProviderType.GOOGLE, OAuthErrorCategory.TRANSIENT);
@@ -134,11 +145,8 @@ class CalendarSyncSchedulerTest {
     }
 
     @Test
-    void sync_skipsRowsNotReturnedByDueQuery() {
-        // F7 contract: REVOKED and not-yet-due FAILED/ERROR rows are simply not returned
-        // by findDueForSync, so the scheduler never sees them. We verify by asserting that
-        // an empty due-query yields zero provider calls.
-        when(connectionRepository.findDueForSync(any())).thenReturn(List.of());
+    void sync_emptyDueQueue_doesNothing() {
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class))).thenReturn(List.of());
 
         scheduler.sync();
 
@@ -146,6 +154,102 @@ class CalendarSyncSchedulerTest {
         verify(connectionWriteService, never()).markActive(any(), any(), any(), any());
         verify(connectionWriteService, never()).markFailure(any(), any(), any(), any(), any());
         verify(connectionWriteService, never()).markFailureWithCategory(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void sync_paginatesThroughMultipleBatches() {
+        // Phase 3 batching: with batchSize=2 and three due rows, the sweep should make two
+        // findDueForSyncBatch calls (page 0 returns 2 rows; page 1 returns 1 row and ends).
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection b = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection c = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+
+        scheduler = new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                concurrencyGate, mockTxManager(), meterRegistry,
+                2,    // batchSize
+                100); // maxConnectionsPerTick
+
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(a, b))
+                .thenReturn(List.of(c))
+                .thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        scheduler.sync();
+
+        verify(syncClient, times(3)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
+        verify(connectionRepository, times(2)).findDueForSyncBatch(any(), any(Pageable.class));
+    }
+
+    @Test
+    void sync_stopsAtMaxConnectionsPerTickEvenWhenMoreAreDue() {
+        // Hard cap: if maxConnectionsPerTick=1, only one row is processed even if the page
+        // returned more.
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection b = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+
+        scheduler = new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                concurrencyGate, mockTxManager(), meterRegistry,
+                5,  // batchSize
+                1); // maxConnectionsPerTick — but batchSize floor wins, so 5 are loaded but only 1 processed
+        // Note: maxConnectionsPerTick is clamped up to batchSize, so this is actually
+        // maxConnectionsPerTick=5. Use batchSize=1 instead to exercise the cap.
+        scheduler = new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                concurrencyGate, mockTxManager(), meterRegistry,
+                1, 1);
+
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(a))
+                .thenReturn(List.of(b));
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        scheduler.sync();
+
+        verify(syncClient, times(1)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
+    }
+
+    @Test
+    void sync_deferredWhenProviderConcurrencyExhausted() {
+        // Part 2.B: when a provider's gate has no permits, the row is skipped and not
+        // processed this tick. The counter must increment and the syncClient must NOT be called.
+        ProviderConcurrencyGate exhaustedGate = new ProviderConcurrencyGate(meterRegistry, 1, 1);
+        exhaustedGate.tryAcquire(CalendarProviderType.GOOGLE); // consume the only permit
+        scheduler = new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                exhaustedGate, mockTxManager(), meterRegistry,
+                10, 10);
+
+        CalendarConnection googleConn = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(googleConn))
+                .thenReturn(List.of());
+
+        scheduler.sync();
+
+        verify(syncClient, never()).fetchIncremental(any(), any());
+        verify(connectionWriteService, never()).markActive(any(), any(), any(), any());
+        assertThat(meterRegistry.counter("calendar.sync.concurrency.deferred.total",
+                        "provider", "google").count())
+                .isGreaterThanOrEqualTo(1d);
+    }
+
+    private PlatformTransactionManager mockTxManager() {
+        PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
+        lenient().when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        return txManager;
     }
 
     private static CalendarConnection connection(UUID id, UUID userId, CalendarConnectionStatus status) {

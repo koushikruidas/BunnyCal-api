@@ -80,6 +80,14 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "webhook_channel_expires_at")
     private Instant webhookChannelExpiresAt;
 
+    /** Phase 4 R8: consecutive failed watch-renewal attempts. Reset on success. */
+    @Column(name = "watch_renewal_failure_count", nullable = false)
+    private int watchRenewalFailureCount = 0;
+
+    /** Phase 4 R8: timestamp of the most recent renewal attempt (success or failure). */
+    @Column(name = "last_watch_renewal_attempt_at")
+    private Instant lastWatchRenewalAttemptAt;
+
     /** F7: count of consecutive non-success transitions. Reset to 0 on markActive. */
     @Column(name = "failure_count", nullable = false)
     private int failureCount = 0;
@@ -129,6 +137,10 @@ public class CalendarConnection extends BaseEntity {
     public void setWebhookResourceId(String webhookResourceId) { this.webhookResourceId = webhookResourceId; }
     public Instant getWebhookChannelExpiresAt() { return webhookChannelExpiresAt; }
     public void setWebhookChannelExpiresAt(Instant webhookChannelExpiresAt) { this.webhookChannelExpiresAt = webhookChannelExpiresAt; }
+    public int getWatchRenewalFailureCount() { return watchRenewalFailureCount; }
+    public void setWatchRenewalFailureCount(int watchRenewalFailureCount) { this.watchRenewalFailureCount = watchRenewalFailureCount; }
+    public Instant getLastWatchRenewalAttemptAt() { return lastWatchRenewalAttemptAt; }
+    public void setLastWatchRenewalAttemptAt(Instant lastWatchRenewalAttemptAt) { this.lastWatchRenewalAttemptAt = lastWatchRenewalAttemptAt; }
     public int getFailureCount() { return failureCount; }
     public void setFailureCount(int failureCount) { this.failureCount = failureCount; }
     public Instant getNextRetryAt() { return nextRetryAt; }

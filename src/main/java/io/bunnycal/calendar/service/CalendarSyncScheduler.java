@@ -6,9 +6,11 @@ import io.bunnycal.calendar.client.OAuthError;
 import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -16,6 +18,8 @@ import java.util.concurrent.TimeUnit;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -31,28 +35,47 @@ public class CalendarSyncScheduler {
     private final CalendarSyncClientRegistry syncClientRegistry;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
+    private final ProviderConcurrencyGate concurrencyGate;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate txTemplate;
+    private final Timer sweepTimer;
+    private final Timer perConnectionTimer;
+    private final int batchSize;
+    private final int maxConnectionsPerTick;
 
     public CalendarSyncScheduler(CalendarConnectionRepository connectionRepository,
                                  CalendarEventIngestionService ingestionService,
                                  CalendarSyncClientRegistry syncClientRegistry,
                                  SlotCacheVersionService slotCacheVersionService,
                                  CalendarConnectionWriteService connectionWriteService,
+                                 ProviderConcurrencyGate concurrencyGate,
                                  PlatformTransactionManager transactionManager,
-                                 MeterRegistry meterRegistry) {
+                                 MeterRegistry meterRegistry,
+                                 @Value("${calendar.sync.batch-size:100}") int batchSize,
+                                 @Value("${calendar.sync.max-connections-per-tick:2000}") int maxConnectionsPerTick) {
         this.connectionRepository = connectionRepository;
         this.ingestionService = ingestionService;
         this.syncClientRegistry = syncClientRegistry;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
+        this.concurrencyGate = concurrencyGate;
         this.meterRegistry = meterRegistry;
+        this.batchSize = Math.max(1, batchSize);
+        this.maxConnectionsPerTick = Math.max(this.batchSize, maxConnectionsPerTick);
         // Per-connection tx boundary. Outer sync() loop is non-transactional so a slow
         // provider call on connection N never holds a DB connection across the entire
         // candidate list. REQUIRES_NEW because the scheduler runs outside any tx and we
         // want each connection's progress committed independently.
         this.txTemplate = new TransactionTemplate(transactionManager);
         this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.sweepTimer = Timer.builder("calendar.sync.sweep.duration")
+                .description("Wall-clock duration of one CalendarSyncScheduler.sync() tick.")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+        this.perConnectionTimer = Timer.builder("calendar.sync.per_connection.duration")
+                .description("Wall-clock duration of one connection's sync within a sweep.")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
     }
 
     @Scheduled(fixedDelayString = "${calendar.sync.fixed-delay-ms:30000}")
@@ -62,24 +85,62 @@ public class CalendarSyncScheduler {
             lockAtLeastFor = "PT5S"
     )
     public void sync() {
-        long started = System.nanoTime();
+        long sweepStart = System.nanoTime();
         Instant now = Instant.now();
-        // F7: due-query replaces the four findByStatus calls + Phase-1 lastErrorAt gate.
-        // ACTIVE/SYNCING always; FAILED/ERROR only when next_retry_at <= now (or null,
-        // which covers legacy rows that pre-date the migration).
-        List<CalendarConnection> candidates = connectionRepository.findDueForSync(now);
-        log.info("calendar_sync_scheduler_start candidateCount={} elapsedMs={}",
-                candidates.size(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
-        for (CalendarConnection connection : candidates) {
-            try {
-                txTemplate.executeWithoutResult(status -> syncOne(connection));
-            } catch (RuntimeException ex) {
-                // Per-connection tx already rolled back; markFailure was attempted inside.
-                // Don't let one bad connection abort the whole sweep.
-                log.warn("calendar_sync_scheduler_connection_uncaught connectionId={} userId={}",
-                        connection.getId(), connection.getUserId(), ex);
+
+        // Phase 3 batching: paginate the due-query so we never load the entire candidate
+        // set into memory. Ordered deterministically (NULLS FIRST nextRetryAt, then id) so
+        // pagination is stable across calls and across ticks.
+        int processed = 0;
+        int deferred = 0;
+        int pageIndex = 0;
+        while (processed < maxConnectionsPerTick) {
+            int remaining = maxConnectionsPerTick - processed;
+            int pageLimit = Math.min(batchSize, remaining);
+            List<CalendarConnection> page = connectionRepository.findDueForSyncBatch(
+                    now, PageRequest.of(pageIndex, pageLimit));
+            if (page.isEmpty()) {
+                break;
+            }
+            for (CalendarConnection connection : page) {
+                CalendarProviderType provider = connection.getProvider();
+                if (!concurrencyGate.tryAcquire(provider)) {
+                    // Provider saturated this tick — leave the row's next_retry_at unchanged
+                    // so the next sweep picks it back up. We do NOT consume the page slot;
+                    // the connection is simply skipped this tick.
+                    deferred++;
+                    continue;
+                }
+                long perConnectionStart = System.nanoTime();
+                try {
+                    txTemplate.executeWithoutResult(status -> syncOne(connection));
+                } catch (RuntimeException ex) {
+                    // Per-connection tx already rolled back; markFailure was attempted inside.
+                    // Don't let one bad connection abort the whole sweep.
+                    log.warn("calendar_sync_scheduler_connection_uncaught connectionId={} userId={}",
+                            connection.getId(), connection.getUserId(), ex);
+                } finally {
+                    concurrencyGate.release(provider);
+                    perConnectionTimer.record(System.nanoTime() - perConnectionStart, TimeUnit.NANOSECONDS);
+                }
+                processed++;
+            }
+            // Page was smaller than requested → no further rows exist for this snapshot of `now`.
+            if (page.size() < pageLimit) {
+                break;
+            }
+            pageIndex++;
+            // Safety: if every row in the page got deferred (provider saturated), break so we
+            // don't spin re-reading the same page when nothing has been advanced.
+            if (processed == 0 && deferred > 0 && pageIndex > 1) {
+                break;
             }
         }
+
+        long elapsedNanos = System.nanoTime() - sweepStart;
+        sweepTimer.record(elapsedNanos, TimeUnit.NANOSECONDS);
+        log.info("calendar_sync_scheduler_start processed={} deferred={} pages={} batchSize={} elapsedMs={}",
+                processed, deferred, pageIndex + 1, batchSize, TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
     }
 
     private void syncOne(CalendarConnection connection) {

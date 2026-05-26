@@ -185,8 +185,21 @@ public class CalendarIntegrationController {
         String resolvedRawPayload = request == null ? null : request.rawPayload();
         if (isGooglePushNotification) {
             webhookAuthService.verifyGoogleWatchNotification(webhookSharedSecret, googleChannelToken);
-            resolvedConnectionId = oauthService.findGoogleConnectionIdByWebhookChannel(googleChannelId)
-                    .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection for Google channel not found."));
+            java.util.Optional<UUID> resolved = oauthService.findGoogleConnectionIdByWebhookChannel(googleChannelId);
+            if (resolved.isEmpty()) {
+                // Phase 4 R4 fix: return 200 to Google for orphan channels (disconnect
+                // happened, channel was rotated, or the row is otherwise gone) so Google
+                // stops retrying for the channel's remaining 7-day TTL. Channel-token was
+                // already verified above, so this is not a security drop.
+                meterRegistry.counter("calendar.webhook.orphan_channel.total",
+                                "provider", "google",
+                                "resource_state", googleResourceState == null ? "unknown" : googleResourceState)
+                        .increment();
+                log.warn("calendar_webhook_orphan_channel provider=google channelId={} resourceState={} messageNumber={}",
+                        googleChannelId, googleResourceState, googleMessageNumber);
+                return ResponseEntity.ok(ApiResponse.success(null));
+            }
+            resolvedConnectionId = resolved.get();
             if (resolvedProviderEventId == null || resolvedProviderEventId.isBlank()) {
                 resolvedProviderEventId = "google_channel_signal";
             }
@@ -263,8 +276,21 @@ public class CalendarIntegrationController {
         }
         for (MicrosoftWebhookNotificationRequest.Notification notification : request.value()) {
             webhookAuthService.verifyMicrosoftNotification(webhookSharedSecret, notification.clientState());
-            UUID connectionId = microsoftOAuthService.findMicrosoftConnectionIdByWebhookChannel(notification.subscriptionId())
-                    .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar connection for Microsoft subscription not found."));
+            java.util.Optional<UUID> resolved =
+                    microsoftOAuthService.findMicrosoftConnectionIdByWebhookChannel(notification.subscriptionId());
+            if (resolved.isEmpty()) {
+                // Phase 4 R4 fix (MS parity): unknown subscription → log + skip this
+                // notification. We still return 200 for the request as a whole so MS does not
+                // retry-amplify on orphans.
+                meterRegistry.counter("calendar.webhook.orphan_channel.total",
+                                "provider", "microsoft",
+                                "change_type", notification.changeType() == null ? "unknown" : notification.changeType())
+                        .increment();
+                log.warn("calendar_webhook_orphan_channel provider=microsoft subscriptionId={} changeType={}",
+                        notification.subscriptionId(), notification.changeType());
+                continue;
+            }
+            UUID connectionId = resolved.get();
             String providerEventId = notification.resourceDataId();
             if ((providerEventId == null || providerEventId.isBlank()) && notification.resourceData() != null) {
                 Object fromData = notification.resourceData().get("id");

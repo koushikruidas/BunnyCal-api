@@ -237,6 +237,52 @@ public class CalendarConnectionWriteService {
     }
 
     /**
+     * Phase 4 R10 fix: status-guarded variant of {@link #updateWebhookChannel}. Returns
+     * {@code null} (no write) when the latest persisted status is not ACTIVE — protects
+     * against the disconnect-races-renewal scenario where a freshly-created Google watch
+     * could otherwise be written onto a REVOKED row.
+     *
+     * <p>Also resets {@code watch_renewal_failure_count} and stamps
+     * {@code last_watch_renewal_attempt_at} as part of the same write, so renewal success is
+     * recorded atomically with the channel metadata.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CalendarConnection updateWebhookChannelIfActive(UUID connectionId,
+                                                            String channelId,
+                                                            String resourceId,
+                                                            Instant channelExpiresAt,
+                                                            Instant renewalAttemptAt,
+                                                            String context) {
+        return withRetry(connectionId, context, latest -> {
+            if (latest.getStatus() != CalendarConnectionStatus.ACTIVE) {
+                return null;
+            }
+            latest.setWebhookChannelId(channelId);
+            latest.setWebhookResourceId(resourceId);
+            latest.setWebhookChannelExpiresAt(channelExpiresAt);
+            latest.setWatchRenewalFailureCount(0);
+            latest.setLastWatchRenewalAttemptAt(renewalAttemptAt == null ? Instant.now() : renewalAttemptAt);
+            return latest;
+        });
+    }
+
+    /**
+     * Phase 4 R8: record a failed watch-renewal attempt. Increments the failure counter and
+     * stamps the attempt timestamp; never changes the connection's main status — that stays
+     * the renewal scheduler's call.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public CalendarConnection recordWatchRenewalFailure(UUID connectionId,
+                                                        Instant attemptAt,
+                                                        String context) {
+        return withRetry(connectionId, context, latest -> {
+            latest.setWatchRenewalFailureCount(latest.getWatchRenewalFailureCount() + 1);
+            latest.setLastWatchRenewalAttemptAt(attemptAt == null ? Instant.now() : attemptAt);
+            return latest;
+        });
+    }
+
+    /**
      * F9: clear the encrypted refresh token after a successful disconnect/revoke. Leaves
      * the row in place for audit but ensures no revoked secret remains on disk.
      */
@@ -331,6 +377,8 @@ public class CalendarConnectionWriteService {
         target.setWebhookChannelId(source.getWebhookChannelId());
         target.setWebhookResourceId(source.getWebhookResourceId());
         target.setWebhookChannelExpiresAt(source.getWebhookChannelExpiresAt());
+        target.setWatchRenewalFailureCount(source.getWatchRenewalFailureCount());
+        target.setLastWatchRenewalAttemptAt(source.getLastWatchRenewalAttemptAt());
         target.setFailureCount(source.getFailureCount());
         target.setNextRetryAt(source.getNextRetryAt());
         target.setQuarantinedUntil(source.getQuarantinedUntil());

@@ -1,6 +1,9 @@
 package io.bunnycal.calendar.service;
 
 import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.calendar.client.CalendarClientException;
+import io.bunnycal.calendar.client.OAuthError;
+import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.replay.WebhookDeliveryMetadata;
@@ -11,6 +14,7 @@ import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -197,15 +201,7 @@ public class CalendarWebhookIngestionService {
                 log.info("calendar_webhook_ingested provider={} providerEventId={} connectionId={} mode=full_resync",
                         provider, normalizedProviderEventId, connectionId);
             } catch (RuntimeException ex) {
-                connectionWriteService.markFailure(
-                        connection.getId(),
-                        CalendarConnectionStatus.FAILED,
-                        "WEBHOOK_SYNC_FAILED",
-                        Instant.now(),
-                        "webhook_sync_failure");
-                log.warn("calendar_webhook_ingest_failed provider={} providerEventId={} connectionId={}",
-                        provider, normalizedProviderEventId, connectionId, ex);
-                throw ex;
+                handleWebhookSyncFailure(provider, connection, normalizedProviderEventId, ex);
             }
         } finally {
             MDC.remove("externalEventId");
@@ -214,6 +210,108 @@ public class CalendarWebhookIngestionService {
             MDC.remove("correlationId");
             MDC.remove("syncSource");
         }
+    }
+
+    /**
+     * Phase 4 R3 fix: status-aware webhook failure handling.
+     *
+     * Mirrors the F1/F3 pattern from CalendarSyncScheduler:
+     * <ul>
+     *   <li>Reload the connection to see the status TokenRefresher may have already written
+     *       in its own REQUIRES_NEW transaction. REVOKED/ERROR is preserved verbatim — we
+     *       must not overwrite a terminal classification with the legacy
+     *       "WEBHOOK_SYNC_FAILED" stamp.</li>
+     *   <li>Otherwise classify via the typed OAuth category (Phase 2 F6) and call
+     *       {@code markFailureWithCategory}, which drives backoff + quarantine.</li>
+     *   <li>Swallow the exception for TERMINAL and TRANSIENT categories so the controller
+     *       returns 200. The pull-sweep is the deterministic retry mechanism; letting Google
+     *       retry independently was the source of the original retry-storm amplification.
+     *       Genuinely UNKNOWN errors still propagate so observability surfaces them.</li>
+     * </ul>
+     */
+    private void handleWebhookSyncFailure(String provider,
+                                           CalendarConnection connection,
+                                           String providerEventId,
+                                           RuntimeException ex) {
+        CalendarConnection latest = connectionRepository.findById(connection.getId()).orElse(connection);
+        CalendarConnectionStatus latestStatus = latest.getStatus();
+        String latestErrorCode = latest.getLastErrorCode();
+
+        if (isAlreadyClassified(latestStatus)) {
+            meterRegistry.counter("calendar.webhook.terminal_preserved.total",
+                            "provider", provider,
+                            "status", latestStatus.name(),
+                            "errorCode", safeTag(latestErrorCode))
+                    .increment();
+            log.warn("calendar_webhook_terminal_preserved provider={} providerEventId={} connectionId={} preservedStatus={} preservedErrorCode={} ingestErrorClass={}",
+                    provider, providerEventId, connection.getId(), latestStatus, latestErrorCode,
+                    ex.getClass().getSimpleName());
+            // Swallow — terminal/already-classified. Google should not retry; the pull sweep
+            // (or reconnect) is the only way forward.
+            return;
+        }
+
+        OAuthErrorCategory category = categoryOf(ex);
+        String errorCode = errorCodeOf(ex);
+        connectionWriteService.markFailureWithCategory(
+                connection.getId(),
+                category,
+                errorCode,
+                Instant.now(),
+                "webhook_sync_failure");
+        meterRegistry.counter("calendar.webhook.failure.total",
+                        "provider", provider,
+                        "category", category.name(),
+                        "errorCode", safeTag(errorCode))
+                .increment();
+        log.warn("calendar_webhook_ingest_failed provider={} providerEventId={} connectionId={} category={} errorCode={}",
+                provider, providerEventId, connection.getId(), category, errorCode, ex);
+
+        // Only propagate UNKNOWN failures. TERMINAL is dead and Google retries are wasted;
+        // TRANSIENT has next_retry_at scheduled and the pull sweep will pick it up — Google
+        // re-delivering the same notification adds no value and risks retry amplification.
+        if (category == OAuthErrorCategory.UNKNOWN) {
+            throw ex;
+        }
+    }
+
+    private static boolean isAlreadyClassified(CalendarConnectionStatus status) {
+        return status == CalendarConnectionStatus.REVOKED || status == CalendarConnectionStatus.ERROR;
+    }
+
+    private static OAuthErrorCategory categoryOf(RuntimeException ex) {
+        if (ex instanceof CalendarClientException cce) {
+            OAuthError err = cce.getOAuthError();
+            if (err != null) {
+                return err.category();
+            }
+            int status = cce.getStatusCode();
+            if (status == 401 || status == 403) return OAuthErrorCategory.TERMINAL;
+            if (status == 429 || status >= 500) return OAuthErrorCategory.TRANSIENT;
+            return OAuthErrorCategory.UNKNOWN;
+        }
+        return OAuthErrorCategory.UNKNOWN;
+    }
+
+    private static String errorCodeOf(RuntimeException ex) {
+        if (ex instanceof CalendarClientException cce && cce.getOAuthError() != null) {
+            return cce.getOAuthError().stableCode();
+        }
+        String message = ex.getMessage();
+        if (message != null) {
+            String normalized = message.toLowerCase(Locale.ROOT);
+            if (normalized.contains("invalid_grant")) return "invalid_grant";
+            if (normalized.contains("invalid_token")) return "invalid_token";
+            if (normalized.contains("unauthorized")) return "unauthorized";
+        }
+        return "WEBHOOK_SYNC_FAILED";
+    }
+
+    private static String safeTag(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        return value.length() > 64 ? value.substring(0, 64) : value;
     }
 
     private static void putIfAbsent(String key, String value) {
