@@ -80,6 +80,18 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "webhook_channel_expires_at")
     private Instant webhookChannelExpiresAt;
 
+    /** F7: count of consecutive non-success transitions. Reset to 0 on markActive. */
+    @Column(name = "failure_count", nullable = false)
+    private int failureCount = 0;
+
+    /** F7: earliest time the sweep is allowed to attempt this connection again. */
+    @Column(name = "next_retry_at")
+    private Instant nextRetryAt;
+
+    /** F8: set when transient failures exceed the threshold and the row is parked in REVOKED. */
+    @Column(name = "quarantined_until")
+    private Instant quarantinedUntil;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -117,6 +129,12 @@ public class CalendarConnection extends BaseEntity {
     public void setWebhookResourceId(String webhookResourceId) { this.webhookResourceId = webhookResourceId; }
     public Instant getWebhookChannelExpiresAt() { return webhookChannelExpiresAt; }
     public void setWebhookChannelExpiresAt(Instant webhookChannelExpiresAt) { this.webhookChannelExpiresAt = webhookChannelExpiresAt; }
+    public int getFailureCount() { return failureCount; }
+    public void setFailureCount(int failureCount) { this.failureCount = failureCount; }
+    public Instant getNextRetryAt() { return nextRetryAt; }
+    public void setNextRetryAt(Instant nextRetryAt) { this.nextRetryAt = nextRetryAt; }
+    public Instant getQuarantinedUntil() { return quarantinedUntil; }
+    public void setQuarantinedUntil(Instant quarantinedUntil) { this.quarantinedUntil = quarantinedUntil; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }

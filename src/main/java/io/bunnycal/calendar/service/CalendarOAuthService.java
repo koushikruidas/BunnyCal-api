@@ -197,8 +197,31 @@ public class CalendarOAuthService {
     @Transactional
     public void disconnectGoogle(UUID userId) {
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
-        if (existing.isPresent()) {
-            CalendarConnection connection = existing.get();
+        if (existing.isEmpty()) {
+            return;
+        }
+        CalendarConnection connection = existing.get();
+        boolean hasCiphertext = connection.getRefreshTokenCiphertext() != null
+                && !connection.getRefreshTokenCiphertext().isBlank();
+
+        // F9 ordering: stop the watch channel BEFORE revoking the refresh token. Once
+        // revoked, we can no longer obtain an access token to call /channels/stop.
+        if (hasCiphertext
+                && connection.getWebhookChannelId() != null && !connection.getWebhookChannelId().isBlank()
+                && connection.getWebhookResourceId() != null && !connection.getWebhookResourceId().isBlank()) {
+            try {
+                String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
+                TokenRefreshResult refreshed = googleApiClient.refreshAccessToken(refreshToken);
+                googleApiClient.stopWatchChannel(
+                        refreshed.accessToken(),
+                        connection.getWebhookChannelId(),
+                        connection.getWebhookResourceId());
+            } catch (RuntimeException ex) {
+                log.warn("google_watch_stop_on_disconnect_failed connectionId={} userId={}", connection.getId(), userId, ex);
+            }
+        }
+
+        if (hasCiphertext) {
             try {
                 String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
                 googleApiClient.revokeToken(refreshToken);
@@ -207,26 +230,18 @@ public class CalendarOAuthService {
                         .increment();
                 log.warn("google_oauth_revoke_failed connectionId={} userId={}", connection.getId(), userId, ex);
             }
-            if (connection.getWebhookChannelId() != null && !connection.getWebhookChannelId().isBlank()
-                    && connection.getWebhookResourceId() != null && !connection.getWebhookResourceId().isBlank()) {
-                try {
-                    String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
-                    TokenRefreshResult refreshed = googleApiClient.refreshAccessToken(refreshToken);
-                    googleApiClient.stopWatchChannel(
-                            refreshed.accessToken(),
-                            connection.getWebhookChannelId(),
-                            connection.getWebhookResourceId());
-                } catch (RuntimeException ex) {
-                    log.warn("google_watch_stop_on_disconnect_failed connectionId={} userId={}", connection.getId(), userId, ex);
-                }
-            }
-            connectionWriteService.markFailure(connection.getId(),
-                    CalendarConnectionStatus.REVOKED,
-                    connection.getLastErrorCode(),
-                    connection.getLastErrorAt(),
-                    "oauth_disconnect");
-            log.info("{{\"event\":\"calendar_disconnected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
         }
+
+        connectionWriteService.markFailure(connection.getId(),
+                CalendarConnectionStatus.REVOKED,
+                connection.getLastErrorCode(),
+                connection.getLastErrorAt(),
+                "oauth_disconnect");
+        // F9: clear the encrypted refresh token (and webhook handles) from disk so no
+        // revoked secret remains. Order matters — do this AFTER markFailure transitions
+        // the row to REVOKED so any racing scheduler tick is already filtered out.
+        connectionWriteService.clearRefreshTokenCiphertext(connection.getId(), "oauth_disconnect_clear_token");
+        log.info("{{\"event\":\"calendar_disconnected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
     }
 
     private static String enc(String value) {

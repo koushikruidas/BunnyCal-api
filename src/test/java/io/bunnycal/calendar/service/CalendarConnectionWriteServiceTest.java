@@ -7,13 +7,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.never;
 
+import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -31,7 +37,7 @@ class CalendarConnectionWriteServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CalendarConnectionWriteService(repository);
+        service = new CalendarConnectionWriteService(repository, new SimpleMeterRegistry());
     }
 
     @Test
@@ -84,6 +90,135 @@ class CalendarConnectionWriteServiceTest {
         CalendarConnection saved = service.markActive(id, null, staleCandidate, "test");
 
         assertEquals(current, saved.getLastSyncedAt());
+    }
+
+    @Test
+    void markFailure_failedStatus_incrementsCountAndSchedulesNextRetry() {
+        // F7: a transient/unknown failure schedules next_retry_at and increments failure_count.
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setStatus(CalendarConnectionStatus.ACTIVE);
+        latest.setFailureCount(0);
+        Instant errorAt = Instant.parse("2026-05-26T10:00:00Z");
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markFailure(id, CalendarConnectionStatus.FAILED, "SYNC_FAILED", errorAt, "test");
+
+        assertEquals(CalendarConnectionStatus.FAILED, saved.getStatus());
+        assertEquals(1, saved.getFailureCount());
+        assertNotNull(saved.getNextRetryAt());
+        // 1st failure → 1 min cooldown.
+        assertEquals(errorAt.plusSeconds(60), saved.getNextRetryAt());
+    }
+
+    @Test
+    void markFailure_revokedStatus_clearsNextRetry() {
+        // Terminal: no retry scheduled. failure_count preserved for observability.
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setFailureCount(3);
+        latest.setNextRetryAt(Instant.now().plusSeconds(60));
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markFailure(id, CalendarConnectionStatus.REVOKED, "invalid_grant", Instant.now(), "test");
+
+        assertEquals(CalendarConnectionStatus.REVOKED, saved.getStatus());
+        assertNull(saved.getNextRetryAt());
+        assertNull(saved.getQuarantinedUntil());
+    }
+
+    @Test
+    void markFailureWithCategory_transientOverflow_quarantines() {
+        // F8: TRANSIENT category at/past threshold escalates to REVOKED + quarantined_until.
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setFailureCount(CalendarConnectionWriteService.TRANSIENT_QUARANTINE_THRESHOLD - 1);
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markFailureWithCategory(
+                id, OAuthErrorCategory.TRANSIENT, "http_503", Instant.now(), "test");
+
+        assertEquals(CalendarConnectionStatus.REVOKED, saved.getStatus());
+        assertNotNull(saved.getQuarantinedUntil());
+        assertNull(saved.getNextRetryAt());
+    }
+
+    @Test
+    void markFailureWithCategory_terminalCategory_marksRevokedWithoutQuarantine() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markFailureWithCategory(
+                id, OAuthErrorCategory.TERMINAL, "invalid_grant", Instant.now(), "test");
+
+        assertEquals(CalendarConnectionStatus.REVOKED, saved.getStatus());
+        assertEquals("invalid_grant", saved.getLastErrorCode());
+        assertNull(saved.getNextRetryAt());
+        assertNull(saved.getQuarantinedUntil()); // explicit invalid_grant is terminal, not quarantine.
+    }
+
+    @Test
+    void markActive_clearsAllRetryState() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setStatus(CalendarConnectionStatus.FAILED);
+        latest.setFailureCount(5);
+        latest.setNextRetryAt(Instant.now().plusSeconds(900));
+        latest.setQuarantinedUntil(Instant.now().plusSeconds(3600));
+        latest.setLastErrorCode("invalid_grant");
+        latest.setLastErrorAt(Instant.now());
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markActive(id, Instant.now().plusSeconds(3600), Instant.now(), "test");
+
+        assertEquals(CalendarConnectionStatus.ACTIVE, saved.getStatus());
+        assertEquals(0, saved.getFailureCount());
+        assertNull(saved.getNextRetryAt());
+        assertNull(saved.getQuarantinedUntil());
+        assertNull(saved.getLastErrorCode());
+        assertNull(saved.getLastErrorAt());
+    }
+
+    @Test
+    void markActiveWithRotatedToken_updatesCiphertext() {
+        // F4: rotated refresh-token ciphertext is persisted atomically with the active state.
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setRefreshTokenCiphertext("old-cipher");
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.markActiveWithRotatedToken(
+                id, Instant.now().plusSeconds(3600), Instant.now(), "new-cipher", "test");
+
+        assertEquals("new-cipher", saved.getRefreshTokenCiphertext());
+        assertEquals(CalendarConnectionStatus.ACTIVE, saved.getStatus());
+    }
+
+    @Test
+    void clearRefreshTokenCiphertext_emptiesCiphertextAndWebhook() {
+        // F9: clear refresh token + webhook handles after disconnect.
+        UUID id = UUID.randomUUID();
+        CalendarConnection latest = connection(id);
+        latest.setRefreshTokenCiphertext("secret");
+        latest.setWebhookChannelId("ch-123");
+        latest.setWebhookResourceId("res-456");
+        latest.setWebhookChannelExpiresAt(Instant.now().plusSeconds(3600));
+        when(repository.findById(id)).thenReturn(Optional.of(latest));
+        when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CalendarConnection saved = service.clearRefreshTokenCiphertext(id, "test");
+
+        assertTrue(saved.getRefreshTokenCiphertext().isEmpty());
+        assertNull(saved.getWebhookChannelId());
+        assertNull(saved.getWebhookResourceId());
+        assertNull(saved.getWebhookChannelExpiresAt());
     }
 
     @Test

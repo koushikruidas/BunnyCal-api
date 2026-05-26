@@ -185,7 +185,12 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .toEntity(Map.class);
             String accessToken = (String) response.getBody().get("access_token");
             Number expiresIn = (Number) response.getBody().getOrDefault("expires_in", 3600);
-            return new TokenRefreshResult(accessToken, Instant.now().plusSeconds(expiresIn.longValue()));
+            // F4: Google occasionally rotates the refresh token (re-consent, security events).
+            // When present, propagate it so the caller can persist atomically.
+            String rotatedRefreshToken = (String) response.getBody().get("refresh_token");
+            return new TokenRefreshResult(accessToken,
+                    Instant.now().plusSeconds(expiresIn.longValue()),
+                    rotatedRefreshToken);
         } catch (RestClientException ex) {
             throw classify(ex);
         }
@@ -402,14 +407,17 @@ public class HttpGoogleApiClient implements GoogleApiClient {
 
     private static CalendarClientException classify(RestClientException ex) {
         if (ex instanceof RestClientResponseException responseEx) {
+            int status = responseEx.getStatusCode().value();
             String body = responseEx.getResponseBodyAsString();
             String message = "Calendar API request failed: status=%d body=%s"
-                    .formatted(responseEx.getStatusCode().value(), body == null ? "" : body);
-            return new CalendarClientException(responseEx.getStatusCode().value(), message);
+                    .formatted(status, body == null ? "" : body);
+            OAuthError error = OAuthError.fromHttp(status, body, io.bunnycal.calendar.domain.CalendarProviderType.GOOGLE);
+            return new CalendarClientException(status, message, error);
         }
         String message = ex.getMessage() == null ? "calendar api error" : ex.getMessage();
         int status = extractStatus(message);
-        return new CalendarClientException(status, "Calendar API request failed: " + message);
+        OAuthError error = OAuthError.network(io.bunnycal.calendar.domain.CalendarProviderType.GOOGLE, message);
+        return new CalendarClientException(status, "Calendar API request failed: " + message, error);
     }
 
     private static List<CalendarEventObservation> toObservations(Map body) {

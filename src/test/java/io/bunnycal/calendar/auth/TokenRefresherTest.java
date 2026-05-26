@@ -11,6 +11,8 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.eq;
 
 import io.bunnycal.calendar.client.CalendarClientException;
+import io.bunnycal.calendar.client.OAuthError;
+import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.client.TokenRefreshResult;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -50,7 +52,9 @@ class TokenRefresherTest {
         CalendarTokenClientRegistry registry = new CalendarTokenClientRegistry(List.of(googleTokenClient));
         tokenRefresher = new TokenRefresher(repository, tokenCipher, registry, connectionWriteService, accessTokenCache, new SimpleMeterRegistry());
         lenient().when(connectionWriteService.markActive(any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
+        lenient().when(connectionWriteService.markActiveWithRotatedToken(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         lenient().when(connectionWriteService.markFailure(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
+        lenient().when(connectionWriteService.markFailureWithCategory(any(), any(), any(), any(), any())).thenAnswer(inv -> new CalendarConnection());
         lenient().when(accessTokenCache.get(any())).thenReturn(Optional.empty());
     }
 
@@ -116,7 +120,9 @@ class TokenRefresherTest {
     }
 
     @Test
-    void refreshFailure_marksRevoked() {
+    void refreshFailure_genericRuntimeException_marksTransient() {
+        // A bare RuntimeException with no typed OAuth payload is treated as transient (ERROR),
+        // not terminal — the network/upstream might recover.
         UUID id = UUID.randomUUID();
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
 
@@ -128,7 +134,83 @@ class TokenRefresherTest {
         assertThrows(RuntimeException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> "never"));
 
-        verify(connectionWriteService).markFailure(eq(id), eq(CalendarConnectionStatus.ERROR), any(), any(), any());
+        verify(connectionWriteService).markFailureWithCategory(
+                eq(id), eq(OAuthErrorCategory.TRANSIENT), any(), any(), any());
+    }
+
+    @Test
+    void refreshFailure_invalidGrant_marksTerminal() {
+        // F6: a typed OAuthError with TERMINAL category triggers REVOKED.
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        OAuthError terminal = new OAuthError("invalid_grant", "expired", 400,
+                CalendarProviderType.GOOGLE, OAuthErrorCategory.TERMINAL);
+
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenThrow(new CalendarClientException(400, "body", terminal));
+
+        assertThrows(CalendarClientException.class,
+                () -> tokenRefresher.executeWithValidToken(id, token -> "never"));
+
+        verify(connectionWriteService).markFailureWithCategory(
+                eq(id), eq(OAuthErrorCategory.TERMINAL), eq("invalid_grant"), any(), any());
+    }
+
+    @Test
+    void refreshSuccess_withRotatedToken_persistsViaMarkActiveWithRotatedToken() {
+        // F4: provider returned a new refresh_token different from the stored one;
+        // TokenRefresher must encrypt and persist atomically with the active-token update.
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("old-refresh");
+        when(tokenCipher.encrypt("new-refresh")).thenReturn("new-cipher");
+        when(googleTokenClient.refreshAccessToken("old-refresh"))
+                .thenReturn(new TokenRefreshResult("access-1", Instant.now().plusSeconds(3600), "new-refresh"));
+
+        tokenRefresher.executeWithValidToken(id, token -> token);
+
+        verify(connectionWriteService).markActiveWithRotatedToken(
+                eq(id), any(), any(), eq("new-cipher"), any());
+        verify(connectionWriteService, never()).markActive(eq(id), any(), any(), any());
+    }
+
+    @Test
+    void refreshSuccess_withoutRotation_persistsViaPlainMarkActive() {
+        // F4: provider did NOT rotate (Google's common case); use the original markActive
+        // signature so the ciphertext column is untouched.
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("access-1", Instant.now().plusSeconds(3600), null));
+
+        tokenRefresher.executeWithValidToken(id, token -> token);
+
+        verify(connectionWriteService).markActive(eq(id), any(), any(), any());
+        verify(connectionWriteService, never())
+                .markActiveWithRotatedToken(eq(id), any(), any(), any(), any());
+    }
+
+    @Test
+    void refreshSuccess_withSameRefreshTokenEcho_doesNotRotate() {
+        // Defensive: some providers echo the same refresh_token. Don't treat that as a
+        // rotation event.
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("same-refresh");
+        when(googleTokenClient.refreshAccessToken("same-refresh"))
+                .thenReturn(new TokenRefreshResult("access-1", Instant.now().plusSeconds(3600), "same-refresh"));
+
+        tokenRefresher.executeWithValidToken(id, token -> token);
+
+        verify(connectionWriteService).markActive(eq(id), any(), any(), any());
+        verify(connectionWriteService, never())
+                .markActiveWithRotatedToken(eq(id), any(), any(), any(), any());
     }
 
     @Test

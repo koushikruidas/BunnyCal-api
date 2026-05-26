@@ -161,14 +161,38 @@ public class MicrosoftCalendarOAuthService {
     @Transactional
     public void disconnectMicrosoft(UUID userId) {
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, MICROSOFT_PROVIDER);
-        if (existing.isPresent()) {
-            CalendarConnection connection = existing.get();
-            connectionWriteService.markFailure(connection.getId(),
-                    CalendarConnectionStatus.REVOKED,
-                    connection.getLastErrorCode(),
-                    connection.getLastErrorAt(),
-                    "oauth_disconnect");
+        if (existing.isEmpty()) {
+            return;
         }
+        CalendarConnection connection = existing.get();
+        boolean hasCiphertext = connection.getRefreshTokenCiphertext() != null
+                && !connection.getRefreshTokenCiphertext().isBlank();
+
+        // F9: delete the Graph subscription before tearing down the local row. Done with
+        // a freshly refreshed access token; failures are logged but never block disconnect.
+        if (hasCiphertext
+                && connection.getWebhookChannelId() != null
+                && !connection.getWebhookChannelId().isBlank()) {
+            try {
+                String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
+                String accessToken = microsoftApiClient.refreshAccessToken(refreshToken).accessToken();
+                microsoftApiClient.deleteEventSubscription(accessToken, connection.getWebhookChannelId());
+            } catch (RuntimeException ex) {
+                log.warn("microsoft_subscription_delete_on_disconnect_failed connectionId={} userId={}",
+                        connection.getId(), userId, ex);
+            }
+        }
+
+        connectionWriteService.markFailure(connection.getId(),
+                CalendarConnectionStatus.REVOKED,
+                connection.getLastErrorCode(),
+                connection.getLastErrorAt(),
+                "oauth_disconnect");
+        // F9: clear the encrypted refresh token. Microsoft does not have a standalone
+        // revoke endpoint analogous to Google's; the subscription delete above is the only
+        // upstream cleanup. Local cleanup is non-negotiable.
+        connectionWriteService.clearRefreshTokenCiphertext(connection.getId(), "oauth_disconnect_clear_token");
+        log.info("microsoft_calendar_disconnected userId={} connectionId={}", userId, connection.getId());
     }
 
     @Transactional(readOnly = true)

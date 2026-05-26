@@ -1,6 +1,5 @@
 package io.bunnycal.calendar.service;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -11,13 +10,14 @@ import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.client.CalendarClientException;
+import io.bunnycal.calendar.client.OAuthError;
+import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -49,7 +49,6 @@ class CalendarSyncSchedulerTest {
     @BeforeEach
     void setUp() {
         PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
-        // lenient: some tests exercise the retry-suppression path that returns before any tx.
         lenient().when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         lenient().when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
         CalendarSyncClientRegistry registry = new CalendarSyncClientRegistry(List.of(syncClient));
@@ -64,20 +63,17 @@ class CalendarSyncSchedulerTest {
     }
 
     @Test
-    void sync_includesFailedAndErrorConnectionsAndMarksActiveOnSuccess() {
-        CalendarConnection failed = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.FAILED);
-        CalendarConnection errored = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ERROR);
+    void sync_marksDueConnectionsActiveOnSuccess() {
+        CalendarConnection failedReady = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.FAILED);
+        CalendarConnection erroredReady = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ERROR);
 
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of(failed));
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of(errored));
-        when(syncClient.fetchIncremental(any(), org.mockito.ArgumentMatchers.eq(SyncSourceAttribution.PULL_SYNC)))
+        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(failedReady, erroredReady));
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
                 .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor-1", false, false, "incremental"));
 
         scheduler.sync();
 
-        verify(syncClient, times(2)).fetchIncremental(any(), org.mockito.ArgumentMatchers.eq(SyncSourceAttribution.PULL_SYNC));
+        verify(syncClient, times(2)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
         verify(connectionWriteService, times(2)).markActive(any(), any(), any(), any());
     }
 
@@ -87,16 +83,15 @@ class CalendarSyncSchedulerTest {
         // The scheduler must NOT clobber that classification with FAILED.
         UUID connectionId = UUID.randomUUID();
         CalendarConnection swept = connection(connectionId, UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
-        // Simulate the row as the scheduler-loop sees it before invoking syncOne.
 
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE)).thenReturn(List.of(swept));
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of());
+        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(swept));
 
-        // Sync client throws as if TokenRefresher.refreshConnectionToken hit invalid_grant.
+        OAuthError terminal = new OAuthError("invalid_grant", "Token has been expired or revoked.",
+                400, CalendarProviderType.GOOGLE, OAuthErrorCategory.TERMINAL);
         when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
-                .thenThrow(new CalendarClientException(400, "Calendar API request failed: status=400 body={\"error\":\"invalid_grant\"}"));
+                .thenThrow(new CalendarClientException(400,
+                        "Calendar API request failed: status=400 body={\"error\":\"invalid_grant\"}",
+                        terminal));
 
         // After the throw, the REVOKED row is what handleSyncFailure reloads from the repo.
         CalendarConnection reloaded = connection(connectionId, swept.getUserId(), CalendarConnectionStatus.REVOKED);
@@ -106,96 +101,51 @@ class CalendarSyncSchedulerTest {
 
         scheduler.sync();
 
-        // No FAILED write — REVOKED is preserved.
-        verify(connectionWriteService, never()).markFailure(eq(connectionId),
-                eq(CalendarConnectionStatus.FAILED), any(), any(), any());
-        // No success path either.
+        // No FAILED write — REVOKED is preserved. (Neither legacy nor category-based.)
+        verify(connectionWriteService, never()).markFailure(eq(connectionId), any(), any(), any(), any());
+        verify(connectionWriteService, never()).markFailureWithCategory(eq(connectionId), any(), any(), any(), any());
         verify(connectionWriteService, never()).markActive(eq(connectionId), any(), any(), any());
     }
 
     @Test
-    void sync_writesFailedOnlyWhenStatusNotAlreadyClassified() {
-        // F1: when the latest persisted status is still ACTIVE (or PENDING/SYNCING — anything
-        // other than REVOKED/ERROR), the scheduler should record the failure and preserve the
-        // root cause via classifySyncError rather than the legacy "SYNC_FAILED" string.
+    void sync_writesCategorisedFailureWhenStatusNotAlreadyClassified() {
+        // F1 + F6: when the latest persisted status is still ACTIVE, stamp a category-aware
+        // failure so backoff state is updated correctly.
         UUID connectionId = UUID.randomUUID();
         CalendarConnection swept = connection(connectionId, UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
 
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE)).thenReturn(List.of(swept));
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of());
+        when(connectionRepository.findDueForSync(any())).thenReturn(List.of(swept));
 
+        OAuthError transientErr = new OAuthError(null, "upstream down", 503,
+                CalendarProviderType.GOOGLE, OAuthErrorCategory.TRANSIENT);
         when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
-                .thenThrow(new CalendarClientException(500, "upstream calendar boom"));
+                .thenThrow(new CalendarClientException(503, "upstream calendar boom", transientErr));
 
-        // Latest state still ACTIVE — nothing classified by an inner layer.
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(swept));
 
         scheduler.sync();
 
-        verify(connectionWriteService).markFailure(eq(connectionId),
-                eq(CalendarConnectionStatus.FAILED),
-                eq("SYNC_FAILED"),
+        verify(connectionWriteService).markFailureWithCategory(
+                eq(connectionId),
+                eq(OAuthErrorCategory.TRANSIENT),
+                eq("http_503"),
                 any(),
                 eq("scheduler_sync_failure"));
     }
 
     @Test
-    void sync_suppressesFailedConnectionWithinCooldownWindow() {
-        // F2: a FAILED row whose lastErrorAt is one minute ago must be skipped.
-        CalendarConnection recent = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.FAILED);
-        recent.setLastErrorAt(Instant.now().minus(Duration.ofMinutes(1)));
-        recent.setLastErrorCode("invalid_grant");
-
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of(recent));
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of());
+    void sync_skipsRowsNotReturnedByDueQuery() {
+        // F7 contract: REVOKED and not-yet-due FAILED/ERROR rows are simply not returned
+        // by findDueForSync, so the scheduler never sees them. We verify by asserting that
+        // an empty due-query yields zero provider calls.
+        when(connectionRepository.findDueForSync(any())).thenReturn(List.of());
 
         scheduler.sync();
 
         verify(syncClient, never()).fetchIncremental(any(), any());
         verify(connectionWriteService, never()).markActive(any(), any(), any(), any());
         verify(connectionWriteService, never()).markFailure(any(), any(), any(), any(), any());
-    }
-
-    @Test
-    void sync_retriesFailedConnectionOnceCooldownHasElapsed() {
-        // F2: a FAILED row whose lastErrorAt is 10 minutes ago is past the tier-1 5-minute
-        // cooldown, so the sweep should attempt it again.
-        CalendarConnection ready = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.FAILED);
-        ready.setLastErrorAt(Instant.now().minus(Duration.ofMinutes(10)));
-        ready.setLastErrorCode("SYNC_FAILED");
-
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING)).thenReturn(List.of());
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED)).thenReturn(List.of(ready));
-        when(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR)).thenReturn(List.of());
-        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
-                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor-1", false, false, "incremental"));
-
-        scheduler.sync();
-
-        verify(syncClient).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
-        verify(connectionWriteService).markActive(eq(ready.getId()), any(), any(), eq("scheduler_incremental_success"));
-    }
-
-    @Test
-    void isRetrySuppressed_revokedIsAlwaysSuppressed() {
-        // F2 defense-in-depth: REVOKED is filtered by findByStatus, but the gate also blocks it.
-        CalendarConnection revoked = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.REVOKED);
-        revoked.setLastErrorAt(Instant.now().minus(Duration.ofDays(30)));
-
-        assertThat(scheduler.isRetrySuppressed(revoked, Instant.now())).isTrue();
-    }
-
-    @Test
-    void isRetrySuppressed_activeIsNeverSuppressed() {
-        CalendarConnection active = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
-        active.setLastErrorAt(Instant.now());
-
-        assertThat(scheduler.isRetrySuppressed(active, Instant.now())).isFalse();
+        verify(connectionWriteService, never()).markFailureWithCategory(any(), any(), any(), any(), any());
     }
 
     private static CalendarConnection connection(UUID id, UUID userId, CalendarConnectionStatus status) {

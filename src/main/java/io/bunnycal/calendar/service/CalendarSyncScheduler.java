@@ -1,13 +1,16 @@
 package io.bunnycal.calendar.service;
 
 import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.calendar.client.CalendarClientException;
+import io.bunnycal.calendar.client.OAuthError;
+import io.bunnycal.calendar.client.OAuthErrorCategory;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
-import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -22,14 +25,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Component
 public class CalendarSyncScheduler {
     private static final Logger log = LoggerFactory.getLogger(CalendarSyncScheduler.class);
-
-    // Phase 1 retry suppression (F2). Schema-free: derived from lastErrorAt + age-of-error.
-    // The longer a connection has been broken, the longer we wait before the next attempt.
-    private static final Duration COOLDOWN_TIER_1 = Duration.ofMinutes(5);
-    private static final Duration COOLDOWN_TIER_2 = Duration.ofMinutes(30);
-    private static final Duration COOLDOWN_TIER_3 = Duration.ofHours(6);
-    private static final Duration TIER_2_AFTER = Duration.ofMinutes(30);
-    private static final Duration TIER_3_AFTER = Duration.ofHours(6);
 
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventIngestionService ingestionService;
@@ -68,25 +63,14 @@ public class CalendarSyncScheduler {
     )
     public void sync() {
         long started = System.nanoTime();
-        java.util.List<CalendarConnection> candidates = new java.util.ArrayList<>();
-        candidates.addAll(connectionRepository.findByStatus(CalendarConnectionStatus.ACTIVE));
-        candidates.addAll(connectionRepository.findByStatus(CalendarConnectionStatus.SYNCING));
-        candidates.addAll(connectionRepository.findByStatus(CalendarConnectionStatus.FAILED));
-        candidates.addAll(connectionRepository.findByStatus(CalendarConnectionStatus.ERROR));
+        Instant now = Instant.now();
+        // F7: due-query replaces the four findByStatus calls + Phase-1 lastErrorAt gate.
+        // ACTIVE/SYNCING always; FAILED/ERROR only when next_retry_at <= now (or null,
+        // which covers legacy rows that pre-date the migration).
+        List<CalendarConnection> candidates = connectionRepository.findDueForSync(now);
         log.info("calendar_sync_scheduler_start candidateCount={} elapsedMs={}",
                 candidates.size(), TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
-        Instant now = Instant.now();
         for (CalendarConnection connection : candidates) {
-            if (isRetrySuppressed(connection, now)) {
-                meterRegistry.counter("calendar.sync.retry_suppressed.total",
-                                "provider", providerTag(connection),
-                                "status", connection.getStatus().name())
-                        .increment();
-                log.info("calendar_sync_scheduler_retry_suppressed connectionId={} userId={} status={} lastErrorCode={} lastErrorAt={}",
-                        connection.getId(), connection.getUserId(), connection.getStatus(),
-                        connection.getLastErrorCode(), connection.getLastErrorAt());
-                continue;
-            }
             try {
                 txTemplate.executeWithoutResult(status -> syncOne(connection));
             } catch (RuntimeException ex) {
@@ -157,11 +141,10 @@ public class CalendarSyncScheduler {
     /**
      * F1 + F3: status-aware failure handling.
      *
-     * TokenRefresher writes REVOKED (invalid_grant) or ERROR (other unauthorized) in its own
-     * REQUIRES_NEW transaction before re-throwing. Previously this catch unconditionally wrote
-     * FAILED, clobbering REVOKED and creating a 30 s retry storm. Now: reload the row, and
-     * only downgrade to FAILED when the latest persisted status is NOT a terminal/classified
-     * one. This preserves the upstream OAuth classification end-to-end.
+     * TokenRefresher writes REVOKED/ERROR in its own REQUIRES_NEW transaction before
+     * re-throwing. The scheduler must not clobber that classification. When the latest
+     * persisted status is already terminal/classified, skip the write. Otherwise stamp a
+     * FAILED with the typed OAuth category (F6) so backoff state is updated correctly.
      */
     private void handleSyncFailure(CalendarConnection connection,
                                    CalendarConnectionStatus previousStatus,
@@ -185,68 +168,47 @@ public class CalendarSyncScheduler {
             return;
         }
 
-        String errorCode = classifySyncError(ex);
-        connectionWriteService.markFailure(
+        OAuthErrorCategory category = categoryOf(ex);
+        String errorCode = errorCodeOf(ex);
+        connectionWriteService.markFailureWithCategory(
                 connection.getId(),
-                CalendarConnectionStatus.FAILED,
+                category,
                 errorCode,
                 Instant.now(),
                 "scheduler_sync_failure");
-        log.warn("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=FAILED errorCode={} elapsedMs={}",
-                connection.getId(), connection.getUserId(), previousStatus, errorCode,
+        log.warn("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} category={} errorCode={} elapsedMs={}",
+                connection.getId(), connection.getUserId(), previousStatus, category, errorCode,
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart), ex);
-    }
-
-    /**
-     * F2: skip FAILED/ERROR connections that are still inside their cooldown window.
-     * REVOKED is already excluded by the findByStatus query set above; this guards against
-     * mistaken inclusion and is also explicit defense-in-depth.
-     */
-    boolean isRetrySuppressed(CalendarConnection connection, Instant now) {
-        CalendarConnectionStatus status = connection.getStatus();
-        if (status == CalendarConnectionStatus.REVOKED) {
-            return true;
-        }
-        if (status != CalendarConnectionStatus.FAILED && status != CalendarConnectionStatus.ERROR) {
-            return false;
-        }
-        Instant lastErrorAt = connection.getLastErrorAt();
-        if (lastErrorAt == null) {
-            // No timestamp recorded — let it through so we can classify and stamp lastErrorAt.
-            return false;
-        }
-        Duration cooldown = cooldownFor(lastErrorAt, now);
-        return lastErrorAt.plus(cooldown).isAfter(now);
-    }
-
-    private static Duration cooldownFor(Instant lastErrorAt, Instant now) {
-        Duration age = Duration.between(lastErrorAt, now);
-        if (age.compareTo(TIER_3_AFTER) >= 0) {
-            return COOLDOWN_TIER_3;
-        }
-        if (age.compareTo(TIER_2_AFTER) >= 0) {
-            return COOLDOWN_TIER_2;
-        }
-        return COOLDOWN_TIER_1;
     }
 
     private static boolean isTerminalOrAlreadyClassified(CalendarConnectionStatus status) {
         return status == CalendarConnectionStatus.REVOKED || status == CalendarConnectionStatus.ERROR;
     }
 
-    private static String classifySyncError(RuntimeException ex) {
+    private static OAuthErrorCategory categoryOf(RuntimeException ex) {
+        if (ex instanceof CalendarClientException cce) {
+            OAuthError err = cce.getOAuthError();
+            if (err != null) {
+                return err.category();
+            }
+            int status = cce.getStatusCode();
+            if (status == 401 || status == 403) return OAuthErrorCategory.TERMINAL;
+            if (status == 429 || status >= 500) return OAuthErrorCategory.TRANSIENT;
+            return OAuthErrorCategory.UNKNOWN;
+        }
+        return OAuthErrorCategory.UNKNOWN;
+    }
+
+    private static String errorCodeOf(RuntimeException ex) {
+        if (ex instanceof CalendarClientException cce && cce.getOAuthError() != null) {
+            return cce.getOAuthError().stableCode();
+        }
         String message = ex.getMessage();
         if (message != null) {
             String normalized = message.toLowerCase(Locale.ROOT);
-            if (normalized.contains("invalid_grant")) {
-                return "invalid_grant";
-            }
-            if (normalized.contains("invalid_token")) {
-                return "invalid_token";
-            }
-            if (normalized.contains("unauthorized")) {
-                return "unauthorized";
-            }
+            if (normalized.contains("invalid_grant")) return "invalid_grant";
+            if (normalized.contains("invalid_token")) return "invalid_token";
+            if (normalized.contains("unauthorized")) return "unauthorized";
         }
         return "SYNC_FAILED";
     }

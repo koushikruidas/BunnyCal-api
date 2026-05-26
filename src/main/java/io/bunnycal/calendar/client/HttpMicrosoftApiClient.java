@@ -124,7 +124,13 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     .toEntity(Map.class);
             String accessToken = asString(response.getBody(), "access_token");
             Number expiresIn = asNumber(response.getBody(), "expires_in", 3600);
-            return new TokenRefreshResult(accessToken, Instant.now().plusSeconds(expiresIn.longValue()));
+            // F4: Microsoft Graph rotates the refresh token on EVERY refresh; missing this
+            // value used to cause the stored ciphertext to drift stale and eventually fail
+            // with invalid_grant. Pass it through so TokenRefresher can persist it.
+            String rotatedRefreshToken = asString(response.getBody(), "refresh_token");
+            return new TokenRefreshResult(accessToken,
+                    Instant.now().plusSeconds(expiresIn.longValue()),
+                    rotatedRefreshToken);
         } catch (RestClientException ex) {
             throw classify(ex);
         }
@@ -371,10 +377,16 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
 
     private static CalendarClientException classify(RestClientException ex) {
         if (ex instanceof RestClientResponseException responseException) {
-            return new CalendarClientException(responseException.getStatusCode().value(),
-                    responseException.getResponseBodyAsString());
+            int status = responseException.getStatusCode().value();
+            String body = responseException.getResponseBodyAsString();
+            OAuthError error = OAuthError.fromHttp(status, body,
+                    io.bunnycal.calendar.domain.CalendarProviderType.MICROSOFT);
+            return new CalendarClientException(status, body, error);
         }
-        return new CalendarClientException(503, ex.getMessage());
+        OAuthError error = OAuthError.network(
+                io.bunnycal.calendar.domain.CalendarProviderType.MICROSOFT,
+                ex.getMessage());
+        return new CalendarClientException(503, ex.getMessage(), error);
     }
 
     private String effectiveTenant() {
