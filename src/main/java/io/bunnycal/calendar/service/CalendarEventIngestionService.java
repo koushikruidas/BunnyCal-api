@@ -73,6 +73,8 @@ public class CalendarEventIngestionService {
                         connectionId,
                         connection.getProvider().name(),
                         incoming);
+                log.info("microsoft_event_filter_decision connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} apply={}",
+                        connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(), apply);
                 if (!apply) {
                     continue;
                 }
@@ -90,6 +92,9 @@ public class CalendarEventIngestionService {
                 event.setEndsAt(incoming.endsAt());
                 event.setCancelled(incoming.cancelled());
                 eventRepository.save(event);
+                log.info("calendar_event_ingestion_upsert connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} source={}",
+                        connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(),
+                        sourceAttribution == null ? "unknown" : sourceAttribution.name());
                 invariantMonitor.assertState(
                         sourceAttribution == null ? "provider_ingestion_acceptance" : sourceAttribution.name().toLowerCase() + "_ingestion_acceptance",
                         incoming.cancelled() ? BookingState.CANCELLED : BookingState.CONFIRMED,

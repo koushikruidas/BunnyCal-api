@@ -149,9 +149,13 @@ public class CalendarSyncScheduler {
         String expectedCursor = connection.getProviderSyncCursor();
         ExternalCalendarSyncClient syncClient = syncClientRegistry.clientFor(connection);
         String providerTag = providerTag(connection);
+        log.info("microsoft_incremental_sync_start connectionId={} userId={} provider={} hasCursor={}",
+                connection.getId(), connection.getUserId(), providerTag, expectedCursor != null);
         try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
+                log.info("microsoft_incremental_sync_batch_received connectionId={} provider={} eventCount={} isFullResync={} nextCursorPresent={}",
+                        connection.getId(), providerTag, batch.events().size(), batch.fullResyncWindow(), batch.nextCursor() != null);
                 ingestionService.upsertEvents(connection.getId(), batch.events(), SyncSourceAttribution.PULL_SYNC);
                 if (batch.events().isEmpty()) {
                     meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", providerTag, "source", "PULL_SYNC")

@@ -4,9 +4,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
-import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
@@ -28,14 +26,11 @@ public class EventTypeOrchestrationNormalizer {
     private static final Logger log = LoggerFactory.getLogger(EventTypeOrchestrationNormalizer.class);
 
     private final CalendarConnectionRepository calendarConnectionRepository;
-    private final CalendarConnectionCalendarRepository calendarRepository;
     private final MeterRegistry meterRegistry;
 
     public EventTypeOrchestrationNormalizer(CalendarConnectionRepository calendarConnectionRepository,
-                                            CalendarConnectionCalendarRepository calendarRepository,
                                             MeterRegistry meterRegistry) {
         this.calendarConnectionRepository = calendarConnectionRepository;
-        this.calendarRepository = calendarRepository;
         this.meterRegistry = meterRegistry;
     }
 
@@ -211,36 +206,15 @@ public class EventTypeOrchestrationNormalizer {
                     userId, providerType, connectionId, calendarId);
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination provider does not match connection provider.");
         }
-        validateProjectionDestinationWritable(userId, connection, calendarId);
-        log.info("projection_destination_resolved userId={} provider={} connectionId={} calendarId={} source=explicit_request",
-                userId, providerType, connectionId, calendarId);
-        return new ProjectionDestination(providerType.name().toLowerCase(Locale.ROOT), connectionId, calendarId);
-    }
-
-    private void validateProjectionDestinationWritable(UUID userId, CalendarConnection connection, String calendarId) {
-        CalendarConnectionCalendar calendar = calendarRepository
-                .findByConnectionIdAndExternalCalendarId(connection.getId(), calendarId)
-                .orElse(null);
-        if (calendar == null) {
-            meterRegistry.counter("ownership_resolution_failures_total", "reason", "missing_calendar").increment();
-            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=missing_calendar",
-                    userId, connection.getProvider(), connection.getId(), calendarId);
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination calendar does not exist.");
-        }
-        if (!calendar.isSyncEnabled()) {
-            meterRegistry.counter("ownership_resolution_failures_total", "reason", "calendar_not_writable").increment();
-            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=calendar_not_writable",
-                    userId, connection.getProvider(), connection.getId(), calendarId);
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination calendar is not writable.");
-        }
         if (!hasWriteScope(connection)) {
             meterRegistry.counter("ownership_resolution_failures_total", "reason", "missing_write_scope").increment();
             log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=missing_write_scope",
-                    userId, connection.getProvider(), connection.getId(), calendarId);
+                    userId, providerType, connectionId, calendarId);
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination connection lacks writable calendar scope.");
         }
-        log.info("projection_destination_writability_verified userId={} provider={} connectionId={} calendarId={}",
-                userId, connection.getProvider(), connection.getId(), calendarId);
+        log.info("projection_destination_resolved userId={} provider={} connectionId={} calendarId={} source=explicit_request",
+                userId, providerType, connectionId, calendarId);
+        return new ProjectionDestination(providerType.name().toLowerCase(Locale.ROOT), connectionId, calendarId);
     }
 
     private static boolean hasWriteScope(CalendarConnection connection) {

@@ -42,7 +42,10 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
     public SyncBatch fetchIncremental(CalendarConnection connection, SyncSourceAttribution sourceAttribution) throws SyncTokenInvalidException {
         Instant startedAt = Instant.now();
         String cursor = normalize(connection.getProviderSyncCursor());
+        log.info("microsoft_delta_state connectionId={} source={} hasCursor={} cursorLength={}",
+                connection.getId(), source(sourceAttribution), cursor != null, cursor != null ? cursor.length() : 0);
         if (cursor == null) {
+            log.info("microsoft_delta_state connectionId={} action=full_recovery reason=missing_cursor", connection.getId());
             SyncBatch full = fetchFull(connection, sourceAttribution);
             return new SyncBatch(full.events(), full.nextCursor(), true, true, "missing_cursor_full_recovery");
         }
@@ -53,6 +56,8 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     .increment();
             throw new SyncTokenInvalidException("Microsoft incremental cursor is invalid; full resync required");
         }
+        log.info("microsoft_graph_fetch connectionId={} mode=incremental deltaUrl=\"{}\"",
+                connection.getId(), cursor.length() > 200 ? cursor.substring(0, 200) + "..." : cursor);
         MicrosoftApiClient.SyncWindow window;
         try {
             window = tokenRefresher.executeWithValidToken(
@@ -92,13 +97,20 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     .increment();
             throw new SyncTokenInvalidException("Microsoft next incremental cursor is invalid; full resync required");
         }
+        int rawCount = window.events() == null ? 0 : window.events().size();
+        log.info("microsoft_graph_response connectionId={} mode=incremental rawEventCount={} hasNextCursor={}",
+                connection.getId(), rawCount, nextCursor != null);
         meterRegistry.counter("calendar.sync.incremental.total", "provider", "microsoft").increment();
-        return new SyncBatch(toIncoming(window.events(), connection, sourceAttribution), nextCursor, false, false, "incremental");
+        List<CalendarEventIngestionService.IncomingCalendarEvent> incoming = toIncoming(window.events(), connection, sourceAttribution);
+        log.info("microsoft_incremental_sync_summary connectionId={} source={} rawEventCount={} incomingCount={} nextCursorPresent={}",
+                connection.getId(), source(sourceAttribution), rawCount, incoming.size(), nextCursor != null);
+        return new SyncBatch(incoming, nextCursor, false, false, "incremental");
     }
 
     @Override
     public SyncBatch fetchFull(CalendarConnection connection, SyncSourceAttribution sourceAttribution) {
         Instant startedAt = Instant.now();
+        log.info("microsoft_graph_fetch connectionId={} mode=full url=/v1.0/me/calendar/events", connection.getId());
         MicrosoftApiClient.SyncWindow window = tokenRefresher.executeWithValidToken(
                 connection.getId(),
                 microsoftApiClient::listEventsFull);
@@ -111,10 +123,16 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                         "ingestionMode", "full",
                         "syncType", source(sourceAttribution))
                 .record(latencyMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        int rawCount = window.events() == null ? 0 : window.events().size();
+        log.info("microsoft_graph_response connectionId={} mode=full rawEventCount={} hasNextCursor={}",
+                connection.getId(), rawCount, window.nextDeltaCursor() != null);
         meterRegistry.counter("calendar.sync.incremental_recovery.total",
                 "provider", "microsoft",
                 "source", source(sourceAttribution)).increment();
-        return new SyncBatch(toIncoming(window.events(), connection, sourceAttribution), normalize(window.nextDeltaCursor()), true, false, "full_recovery");
+        List<CalendarEventIngestionService.IncomingCalendarEvent> incoming = toIncoming(window.events(), connection, sourceAttribution);
+        log.info("microsoft_incremental_sync_summary connectionId={} source={} mode=full rawEventCount={} incomingCount={} nextCursorPresent={}",
+                connection.getId(), source(sourceAttribution), rawCount, incoming.size(), window.nextDeltaCursor() != null);
+        return new SyncBatch(incoming, normalize(window.nextDeltaCursor()), true, false, "full_recovery");
     }
 
     private List<CalendarEventIngestionService.IncomingCalendarEvent> toIncoming(List<MicrosoftApiClient.CalendarEventObservation> observations,
@@ -138,15 +156,20 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     connection.getId(), normalizationFailures, source(sourceAttribution));
         }
         return observations.stream()
-                .map(obs -> new CalendarEventIngestionService.IncomingCalendarEvent(
-                        obs.externalEventId(),
-                        obs.startsAt() == null ? Instant.EPOCH : obs.startsAt(),
-                        obs.endsAt() == null ? Instant.EPOCH.plusSeconds(60) : obs.endsAt(),
-                        obs.cancelled(),
-                        obs.providerSequence(),
-                        obs.providerUpdatedAt(),
-                        obs.providerEtag(),
-                        obs.payloadHash()))
+                .map(obs -> {
+                    boolean nullTime = obs.startsAt() == null || obs.endsAt() == null;
+                    log.info("microsoft_raw_event connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} normalizationFallback={}",
+                            connection.getId(), obs.externalEventId(), obs.startsAt(), obs.endsAt(), obs.cancelled(), nullTime);
+                    return new CalendarEventIngestionService.IncomingCalendarEvent(
+                            obs.externalEventId(),
+                            obs.startsAt() == null ? Instant.EPOCH : obs.startsAt(),
+                            obs.endsAt() == null ? Instant.EPOCH.plusSeconds(60) : obs.endsAt(),
+                            obs.cancelled(),
+                            obs.providerSequence(),
+                            obs.providerUpdatedAt(),
+                            obs.providerEtag(),
+                            obs.payloadHash());
+                })
                 .toList();
     }
 

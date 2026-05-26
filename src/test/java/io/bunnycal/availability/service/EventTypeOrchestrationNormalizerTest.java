@@ -2,16 +2,12 @@ package io.bunnycal.availability.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
@@ -34,14 +30,12 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Mock
     private CalendarConnectionRepository calendarConnectionRepository;
-    @Mock
-    private CalendarConnectionCalendarRepository calendarRepository;
 
     private EventTypeOrchestrationNormalizer normalizer;
 
     @BeforeEach
     void setUp() {
-        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository, calendarRepository, new SimpleMeterRegistry());
+        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository, new SimpleMeterRegistry());
     }
 
     @Test
@@ -55,8 +49,6 @@ class EventTypeOrchestrationNormalizerTest {
 
         when(calendarConnectionRepository.findById(newConnId)).thenReturn(Optional.of(newConn));
         when(calendarConnectionRepository.findById(oldConnId)).thenReturn(Optional.of(oldConn));
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(oldConnId, "proj-g"))
-                .thenReturn(Optional.of(writableCalendar(oldConnId, "proj-g")));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Ordering Test", null, null, 30, 0, 0, 30, 0, 30, 10, "ordering-test",
@@ -72,7 +64,6 @@ class EventTypeOrchestrationNormalizerTest {
 
         assertEquals(oldConnId, normalized.projectionDestination().connectionId());
         assertEquals("google", normalized.projectionDestination().provider());
-        // Both availability bindings preserved, original order intact
         assertEquals(2, normalized.availabilityBindings().size());
         assertEquals(newConnId, normalized.availabilityBindings().get(0).connectionId());
         assertEquals(oldConnId, normalized.availabilityBindings().get(1).connectionId());
@@ -88,8 +79,7 @@ class EventTypeOrchestrationNormalizerTest {
 
         when(calendarConnectionRepository.findById(googleConnId)).thenReturn(Optional.of(googleConn));
         when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(googleConnId, "proj-g"))
-                .thenReturn(Optional.of(writableCalendar(googleConnId, "proj-g")));
+
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Multi", null, null, 30, 0, 0, 30, 0, 30, 10, "multi",
                 List.of(
@@ -128,8 +118,7 @@ class EventTypeOrchestrationNormalizerTest {
         UUID availabilityConnectionId = UUID.randomUUID();
         CalendarConnection conn = activeConnection(userId, availabilityConnectionId, CalendarProviderType.GOOGLE);
         when(calendarConnectionRepository.findById(availabilityConnectionId)).thenReturn(Optional.of(conn));
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(availabilityConnectionId, "proj-g"))
-                .thenReturn(Optional.of(writableCalendar(availabilityConnectionId, "proj-g")));
+
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(availabilityConnectionId.toString(), "google", "cal_1")),
@@ -165,9 +154,6 @@ class EventTypeOrchestrationNormalizerTest {
         UUID msConnId = UUID.randomUUID();
         CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
         when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
-        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(msConnId, "proj-m"))
-                .thenReturn(Optional.of(writableCalendar(msConnId, "proj-m")));
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
@@ -183,11 +169,8 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsGoogleMeetWithMicrosoftMirrorProvider() {
-        ConferencingExecutionPolicy policy =
-                new ConferencingExecutionPolicy();
-        ConferencingInstruction instruction =
-                ConferencingInstruction.requestNativeMeet(
-                        ConferencingProviderType.GOOGLE_MEET);
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy();
+        ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.GOOGLE_MEET);
 
         assertThrows(CustomException.class,
                 () -> policy.adaptForMirrorProvider(instruction, "microsoft", UUID.randomUUID(), "CREATE"));
@@ -195,11 +178,8 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsMicrosoftTeamsWithGoogleMirrorProvider() {
-        ConferencingExecutionPolicy policy =
-                new ConferencingExecutionPolicy();
-        ConferencingInstruction instruction =
-                ConferencingInstruction.requestNativeMeet(
-                        ConferencingProviderType.MICROSOFT_TEAMS);
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy();
+        ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.MICROSOFT_TEAMS);
 
         assertThrows(CustomException.class,
                 () -> policy.adaptForMirrorProvider(instruction, "google", UUID.randomUUID(), "CREATE"));
@@ -235,37 +215,18 @@ class EventTypeOrchestrationNormalizerTest {
     }
 
     @Test
-    void projectionDestination_missingCalendar_rejected() {
+    void projectionDestination_providerMismatch_rejected() {
         UUID userId = UUID.randomUUID();
         UUID connId = UUID.randomUUID();
+        // Connection is GOOGLE but request says MICROSOFT
         CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
         when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(connId, "missing")).thenReturn(Optional.empty());
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", connId, "missing")
-        );
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-    }
-
-    @Test
-    void projectionDestination_readOnlyCalendar_rejected() {
-        UUID userId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
-        CalendarConnectionCalendar readOnly = writableCalendar(connId, "cal");
-        readOnly.setSyncEnabled(false);
-        when(calendarRepository.findByConnectionIdAndExternalCalendarId(connId, "cal")).thenReturn(Optional.of(readOnly));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", connId, "cal")
+                projection("microsoft", connId, "cal-id")
         );
         assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
     }
@@ -286,14 +247,6 @@ class EventTypeOrchestrationNormalizerTest {
         } catch (Exception ignored) {
         }
         return c;
-    }
-
-    private static CalendarConnectionCalendar writableCalendar(UUID connectionId, String externalCalendarId) {
-        CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
-        calendar.setConnectionId(connectionId);
-        calendar.setExternalCalendarId(externalCalendarId);
-        calendar.setSyncEnabled(true);
-        return calendar;
     }
 
     private static CreateEventTypeRequest.ProjectionDestinationRequest projection(String provider, UUID connectionId, String calendarId) {

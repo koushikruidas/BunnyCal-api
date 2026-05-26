@@ -293,9 +293,12 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         }
     }
 
+    private static final org.slf4j.Logger graphLog = org.slf4j.LoggerFactory.getLogger(HttpMicrosoftApiClient.class);
+
     private SyncWindow listEvents(String accessToken, String pathOrDeltaLink) {
         try {
             URI uri = URI.create(pathOrDeltaLink);
+            graphLog.info("microsoft_graph_request url=\"{}\"", pathOrDeltaLink.length() > 300 ? pathOrDeltaLink.substring(0, 300) + "..." : pathOrDeltaLink);
             ResponseEntity<Map> response = graphClient.get()
                     .uri(uri)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
@@ -321,6 +324,9 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
             if (delta == null) {
                 delta = asStringLoose(response.getBody() == null ? null : response.getBody().get("@odata.nextLink"));
             }
+            graphLog.info("microsoft_graph_response_parsed url_prefix=\"{}\" rawValueCount={} hasDeltaLink={}",
+                    pathOrDeltaLink.length() > 80 ? pathOrDeltaLink.substring(0, 80) : pathOrDeltaLink,
+                    events.size(), delta != null);
             return new SyncWindow(List.copyOf(events), delta);
         } catch (RestClientException ex) {
             throw classify(ex);
