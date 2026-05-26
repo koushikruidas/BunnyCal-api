@@ -53,7 +53,11 @@ public class EventTypeService {
                 .name(request.name().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .organizerCalendarConnectionId(orchestration.syncConnectionId())
+                .organizerCalendarConnectionId(orchestration.projectionDestination().connectionId())
+                .projectionConnectionId(orchestration.projectionDestination().connectionId())
+                .projectionCalendarId(orchestration.projectionDestination().calendarId())
+                .projectionProvider(io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
+                        orchestration.projectionDestination().provider().toUpperCase(Locale.ROOT)))
                 .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
                 .availabilityMode(availabilityMode)
                 .conferencingProvider(orchestration.conferencing().provider())
@@ -147,13 +151,19 @@ public class EventTypeService {
                 eventType.getConferencingProvider().name(),
                 eventType.getCustomConferenceUrl()
         );
+        EventTypeSummaryResponse.ProjectionDestinationResponse projectionDestination =
+                new EventTypeSummaryResponse.ProjectionDestinationResponse(
+                        eventType.getProjectionProvider() == null ? null : eventType.getProjectionProvider().name(),
+                        eventType.getProjectionConnectionId(),
+                        eventType.getProjectionCalendarId());
         return new EventTypeSummaryResponse(
                 eventType.getId(),
                 eventType.getName(),
                 eventType.getSlug(),
                 "/public/" + username + "/" + eventType.getSlug(),
                 availability,
-                conference
+                conference,
+                projectionDestination
         );
     }
 

@@ -7,8 +7,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipService;
+import io.bunnycal.booking.ownership.BookingOwnership;
+import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.calendar.client.CalendarClientException;
@@ -59,6 +63,8 @@ class BookingSyncWorkerTest {
     private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
     @Mock
     private ConferencingExecutionPolicy conferencingExecutionPolicy;
+    @Mock
+    private BookingOwnershipService bookingOwnershipService;
 
     private BookingSyncWorker worker;
 
@@ -69,8 +75,16 @@ class BookingSyncWorkerTest {
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
                 repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
-                rateLimitBreaker, idempotencyKeyFactory, conferencingExecutionPolicy, txManager, new SimpleMeterRegistry(), new ObjectMapper());
+                rateLimitBreaker, idempotencyKeyFactory, conferencingExecutionPolicy, bookingOwnershipService,
+                txManager, new SimpleMeterRegistry(), new ObjectMapper());
         when(rateLimitBreaker.isOpen(any())).thenReturn(false);
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(UUID.randomUUID());
+        ownership.setOwnershipVersion(1L);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(UUID.randomUUID());
+        ownership.setProjectionCalendarId("primary");
+        when(bookingOwnershipService.requireOwnership(any())).thenReturn(ownership);
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
         when(conferencingExecutionPolicy.adaptForMirrorProvider(any(), any(), any(), any()))
                 .thenAnswer(invocation -> ConferencingExecutionResult.applied(
@@ -220,6 +234,45 @@ class BookingSyncWorkerTest {
         verify(repository).markFailure(id, 19L, next, "INVALID_REQUEST", true);
     }
 
+    @Test
+    void ownershipVersionMismatch_skipsStaleJob() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 5L, null);
+        job.setOwnershipVersion(1L);
+        when(repository.claimPendingBatch(any(), eq(1))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        BookingOwnership latest = new BookingOwnership();
+        latest.setOwnershipVersion(2L);
+        latest.setProjectionProvider(CalendarProviderType.GOOGLE);
+        latest.setProjectionConnectionId(UUID.randomUUID());
+        latest.setProviderExternalEventId("ext-x");
+        when(bookingOwnershipService.requireOwnership(job.getInternalRefId())).thenReturn(latest);
+
+        worker.processPending(1);
+
+        verify(repository).markSyncedFromProcessingWithLifecycle(id, 5L, null, "STALE_OWNERSHIP_VERSION");
+        verify(calendarService, never()).createEvent(any());
+    }
+
+    @Test
+    void duplicateCreatePrevented_whenOwnershipAlreadyLinked() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 5L, null);
+        when(repository.claimPendingBatch(any(), eq(1))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setOwnershipVersion(1L);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(UUID.randomUUID());
+        ownership.setProviderExternalEventId("ext-existing");
+        when(bookingOwnershipService.requireOwnership(job.getInternalRefId())).thenReturn(ownership);
+
+        worker.processPending(1);
+
+        verify(repository, times(1)).markSyncedWithMetadata(eq(id), eq(5L), eq("ext-existing"), any(), any(), any(), any());
+        verify(calendarService, never()).createEvent(any());
+    }
+
     private static CalendarSyncJob pendingCreateJob(UUID id, long version, String externalEventId) {
         CalendarSyncJob job = new CalendarSyncJob();
         job.setId(id);
@@ -232,6 +285,7 @@ class BookingSyncWorkerTest {
         job.setAttemptCount(0);
         job.setNextRetryAt(Instant.now());
         job.setExternalEventId(externalEventId);
+        job.setOwnershipVersion(1L);
         return job;
     }
 

@@ -21,7 +21,8 @@ public record CreateEventTypeRequest(
         Integer holdDurationMinutes,
         String slug,
         List<AvailabilityCalendarRequest> availabilityCalendars,
-        ConferenceRequest conference
+        ConferenceRequest conference,
+        ProjectionDestinationRequest projectionDestination
 ) implements ForwardCompatibleRequest {
     public CreateEventTypeRequest(
             String name,
@@ -38,7 +39,7 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, null, null);
+                slug, null, null, null);
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -46,4 +47,7 @@ public record CreateEventTypeRequest(
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ConferenceRequest(Boolean enabled, String provider, String customUrl) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ProjectionDestinationRequest(String provider, String connectionId, String calendarId) {}
 }

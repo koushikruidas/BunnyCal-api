@@ -76,7 +76,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
         String maskedGuest = maskEmail(attendeeEmail);
-        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        String targetCalendarId = resolveTargetCalendarId(eventType);
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
@@ -102,6 +102,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 instruction
         ));
         String externalEventId = response.externalEventId();
+        log.info("provider_authority_isolation provider=google action=create sendUpdates=none organizerAuthority=application");
         log.info("google_calendar_event_create_success bookingId={} provider={} externalEventId={}",
                 booking.getId(), provider, externalEventId);
         return new CreateEventDetails(externalEventId, response.providerEventUrl(), response.conferenceUrl());
@@ -131,7 +132,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
             throw new CalendarClientException(400, "guest attendee email is required");
         }
         String maskedGuest = maskEmail(attendeeEmail);
-        String targetCalendarId = resolveTargetCalendarId(connection.getId());
+        String targetCalendarId = resolveTargetCalendarId(eventType);
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
@@ -154,6 +155,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 targetCalendarId,
                 instruction
         )).externalEventId();
+        log.info("provider_authority_isolation provider=google action=update sendUpdates=none organizerAuthority=application");
         log.info("google_calendar_event_update_success bookingId={} provider={} externalEventId={}",
                 booking.getId(), provider, updatedExternalId);
         return updatedExternalId;
@@ -217,11 +219,11 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         }
     }
 
-    private String resolveTargetCalendarId(UUID connectionId) {
-        return calendarRepository.findByConnectionIdAndSelectedTrue(connectionId)
-                .map(c -> c.getExternalCalendarId())
-                .filter(v -> v != null && !v.isBlank())
-                .orElse("primary");
+    private static String resolveTargetCalendarId(EventType eventType) {
+        if (eventType == null || eventType.getProjectionCalendarId() == null || eventType.getProjectionCalendarId().isBlank()) {
+            throw new CalendarClientException(400, "projection calendar ownership is missing");
+        }
+        return eventType.getProjectionCalendarId().trim();
     }
 
     private static String maskEmail(String email) {

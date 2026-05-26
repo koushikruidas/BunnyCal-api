@@ -67,7 +67,7 @@ class GoogleCalendarProviderClientTest {
                 .guestEmail("guest@example.com")
                 .guestName("Guest User")
                 .build();
-        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").build();
+        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").projectionCalendarId("primary").build();
         User host = User.builder().id(hostId).email("host@example.com").name("Host").timezone("UTC").build();
         CalendarConnection connection = new CalendarConnection();
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
@@ -105,7 +105,7 @@ class GoogleCalendarProviderClientTest {
                 .endTime(Instant.parse("2026-05-10T10:30:00Z"))
                 .guestEmail("  ")
                 .build();
-        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").build();
+        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").projectionCalendarId("primary").build();
         User host = User.builder().id(hostId).email("host@example.com").name("Host").timezone("UTC").build();
         CalendarConnection connection = new CalendarConnection();
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
@@ -136,7 +136,7 @@ class GoogleCalendarProviderClientTest {
                 .guestEmail("guest@example.com")
                 .guestName("Guest User")
                 .build();
-        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").build();
+        EventType eventType = EventType.builder().id(eventTypeId).userId(hostId).name("30 min Intro").projectionCalendarId("primary").build();
         User host = User.builder().id(hostId).email("host@example.com").name("Host").timezone("UTC").build();
         CalendarConnection connection = new CalendarConnection();
         connection.setStatus(CalendarConnectionStatus.ACTIVE);

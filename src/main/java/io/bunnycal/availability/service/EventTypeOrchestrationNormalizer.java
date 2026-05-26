@@ -4,10 +4,14 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
+import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -15,28 +19,38 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class EventTypeOrchestrationNormalizer {
+    private static final Logger log = LoggerFactory.getLogger(EventTypeOrchestrationNormalizer.class);
 
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final CalendarConnectionCalendarRepository calendarRepository;
+    private final MeterRegistry meterRegistry;
 
-    public EventTypeOrchestrationNormalizer(CalendarConnectionRepository calendarConnectionRepository) {
+    public EventTypeOrchestrationNormalizer(CalendarConnectionRepository calendarConnectionRepository,
+                                            CalendarConnectionCalendarRepository calendarRepository,
+                                            MeterRegistry meterRegistry) {
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.calendarRepository = calendarRepository;
+        this.meterRegistry = meterRegistry;
     }
 
     public NormalizedOrchestration normalize(UUID userId, CreateEventTypeRequest request) {
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, request.availabilityCalendars());
         ConferencingConfig conferencing = normalizeConference(request.conference());
-        UUID syncConnectionId = resolveSyncConnectionId(userId);
-        return new NormalizedOrchestration(syncConnectionId, availabilityBindings, conferencing);
+        ProjectionDestination projectionDestination = normalizeProjectionDestination(userId, request.projectionDestination());
+        return new NormalizedOrchestration(projectionDestination, availabilityBindings, conferencing);
     }
 
     public NormalizedOrchestration normalizeForDraftMutation(UUID userId,
                                                              EventType existingEventType,
                                                              List<CreateEventTypeRequest.AvailabilityCalendarRequest> availabilityCalendars,
                                                              CreateEventTypeRequest.ConferenceRequest conference,
+                                                             CreateEventTypeRequest.ProjectionDestinationRequest projectionDestination,
                                                              List<AvailabilityBinding> existingAvailabilityBindings) {
         List<AvailabilityBinding> availabilityBindings = availabilityCalendars != null
                 ? normalizeAvailabilityBindings(userId, availabilityCalendars)
@@ -52,21 +66,31 @@ public class EventTypeOrchestrationNormalizer {
             );
         }
         ConferencingConfig conferencing = normalizeConference(effectiveConference);
-        UUID syncConnectionId = resolveSyncConnectionId(userId);
-        return new NormalizedOrchestration(syncConnectionId, availabilityBindings, conferencing);
+        ProjectionDestination effectiveProjection = projectionDestination != null
+                ? normalizeProjectionDestination(userId, projectionDestination)
+                : projectionDestinationFromExisting(existingEventType, true);
+        return new NormalizedOrchestration(effectiveProjection, availabilityBindings, conferencing);
     }
 
     /**
      * Sync/mirror connection = oldest active connection by creation time.
      * Derived independently of availabilityCalendars ordering — availability is free/busy semantics only.
      */
-    private UUID resolveSyncConnectionId(UUID userId) {
-        return calendarConnectionRepository
-                .findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE)
-                .stream()
-                .findFirst()
-                .map(CalendarConnection::getId)
-                .orElse(null);
+    private ProjectionDestination projectionDestinationFromExisting(EventType existingEventType, boolean allowMissing) {
+        if (existingEventType == null
+                || existingEventType.getProjectionProvider() == null
+                || existingEventType.getProjectionConnectionId() == null
+                || trimToNull(existingEventType.getProjectionCalendarId()) == null) {
+            if (allowMissing) {
+                return null;
+            }
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "projection destination is required and must not use fallback resolution.");
+        }
+        return new ProjectionDestination(
+                existingEventType.getProjectionProvider().name().toLowerCase(Locale.ROOT),
+                existingEventType.getProjectionConnectionId(),
+                existingEventType.getProjectionCalendarId().trim());
     }
 
     private List<AvailabilityBinding> normalizeAvailabilityBindings(UUID userId,
@@ -153,10 +177,91 @@ public class EventTypeOrchestrationNormalizer {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private ProjectionDestination normalizeProjectionDestination(UUID userId,
+                                                                 CreateEventTypeRequest.ProjectionDestinationRequest projectionDestination) {
+        if (projectionDestination == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projectionDestination is required.");
+        }
+        String providerRaw = trimToNull(projectionDestination.provider());
+        String connectionIdRaw = trimToNull(projectionDestination.connectionId());
+        String calendarId = trimToNull(projectionDestination.calendarId());
+        if (providerRaw == null || connectionIdRaw == null || calendarId == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "projectionDestination.provider, projectionDestination.connectionId and projectionDestination.calendarId are required.");
+        }
+        UUID connectionId;
+        try {
+            connectionId = UUID.fromString(connectionIdRaw);
+        } catch (IllegalArgumentException ex) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projectionDestination.connectionId must be a valid UUID.");
+        }
+        CalendarProviderType providerType;
+        try {
+            providerType = CalendarProviderType.valueOf(providerRaw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projectionDestination.provider is invalid.");
+        }
+        CalendarConnection connection = calendarConnectionRepository.findById(connectionId)
+                .filter(c -> userId.equals(c.getUserId()))
+                .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
+                .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination connection is invalid."));
+        if (connection.getProvider() != providerType) {
+            meterRegistry.counter("ownership_resolution_failures_total", "reason", "provider_mismatch").increment();
+            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=provider_mismatch",
+                    userId, providerType, connectionId, calendarId);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination provider does not match connection provider.");
+        }
+        validateProjectionDestinationWritable(userId, connection, calendarId);
+        log.info("projection_destination_resolved userId={} provider={} connectionId={} calendarId={} source=explicit_request",
+                userId, providerType, connectionId, calendarId);
+        return new ProjectionDestination(providerType.name().toLowerCase(Locale.ROOT), connectionId, calendarId);
+    }
+
+    private void validateProjectionDestinationWritable(UUID userId, CalendarConnection connection, String calendarId) {
+        CalendarConnectionCalendar calendar = calendarRepository
+                .findByConnectionIdAndExternalCalendarId(connection.getId(), calendarId)
+                .orElse(null);
+        if (calendar == null) {
+            meterRegistry.counter("ownership_resolution_failures_total", "reason", "missing_calendar").increment();
+            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=missing_calendar",
+                    userId, connection.getProvider(), connection.getId(), calendarId);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination calendar does not exist.");
+        }
+        if (!calendar.isSyncEnabled()) {
+            meterRegistry.counter("ownership_resolution_failures_total", "reason", "calendar_not_writable").increment();
+            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=calendar_not_writable",
+                    userId, connection.getProvider(), connection.getId(), calendarId);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination calendar is not writable.");
+        }
+        if (!hasWriteScope(connection)) {
+            meterRegistry.counter("ownership_resolution_failures_total", "reason", "missing_write_scope").increment();
+            log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=missing_write_scope",
+                    userId, connection.getProvider(), connection.getId(), calendarId);
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination connection lacks writable calendar scope.");
+        }
+        log.info("projection_destination_writability_verified userId={} provider={} connectionId={} calendarId={}",
+                userId, connection.getProvider(), connection.getId(), calendarId);
+    }
+
+    private static boolean hasWriteScope(CalendarConnection connection) {
+        if (connection.getScopes() == null || connection.getScopes().isEmpty()) {
+            return false;
+        }
+        return connection.getScopes().stream()
+                .filter(s -> s != null && !s.isBlank())
+                .map(s -> s.toLowerCase(Locale.ROOT))
+                .filter(scope -> !scope.contains("readonly"))
+                .anyMatch(scope -> scope.contains("readwrite")
+                        || scope.contains("calendar.events")
+                        || scope.contains("calendars")
+                        || scope.contains("calendar"));
+    }
+
     public record AvailabilityBinding(UUID connectionId, String provider, String externalCalendarId) {}
     public record ConferencingConfig(boolean enabled, ConferencingProviderType provider, String customUrl) {}
-    /** syncConnectionId = oldest active connection — used internally for mirror/calendar writes. Independent of availabilityCalendars ordering. */
-    public record NormalizedOrchestration(UUID syncConnectionId,
+    public record ProjectionDestination(String provider, UUID connectionId, String calendarId) {}
+
+    public record NormalizedOrchestration(ProjectionDestination projectionDestination,
                                           List<AvailabilityBinding> availabilityBindings,
                                           ConferencingConfig conferencing) {}
 }

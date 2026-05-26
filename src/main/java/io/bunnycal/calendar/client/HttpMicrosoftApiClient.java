@@ -45,6 +45,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     .body(body)
                     .retrieve()
                     .toEntity(Map.class);
+            logContractVerified("create", body);
             return toDetails(response.getBody());
         } catch (RestClientException ex) {
             throw classify(ex);
@@ -66,6 +67,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     .body(body)
                     .retrieve()
                     .toEntity(Map.class);
+            logContractVerified("update", body);
             return toDetails(response.getBody());
         } catch (RestClientException ex) {
             throw classify(ex);
@@ -387,6 +389,14 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 io.bunnycal.calendar.domain.CalendarProviderType.MICROSOFT,
                 ex.getMessage());
         return new CalendarClientException(503, ex.getMessage(), error);
+    }
+
+    private static void logContractVerified(String action, Map<String, Object> body) {
+        Object responseRequested = body.get("responseRequested");
+        org.slf4j.LoggerFactory.getLogger(HttpMicrosoftApiClient.class)
+                .info("provider_authority_contract_verified provider=microsoft action={} responseRequested={}", action, responseRequested);
+        org.slf4j.LoggerFactory.getLogger(HttpMicrosoftApiClient.class)
+                .info("provider_notification_suppression_verified provider=microsoft action={} responseRequested={}", action, responseRequested);
     }
 
     private String effectiveTenant() {

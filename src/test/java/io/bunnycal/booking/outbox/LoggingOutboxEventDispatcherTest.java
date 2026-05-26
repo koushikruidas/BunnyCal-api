@@ -8,14 +8,15 @@ import static org.mockito.Mockito.when;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.notification.BookingNotificationService;
+import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,8 @@ class LoggingOutboxEventDispatcherTest {
     @Mock
     private BookingNotificationService bookingNotificationService;
     @Mock
+    private BookingOwnershipService bookingOwnershipService;
+    @Mock
     private SyncInvariantMonitor invariantMonitor;
 
     private LoggingOutboxEventDispatcher dispatcher;
@@ -48,8 +51,10 @@ class LoggingOutboxEventDispatcherTest {
                 bookingRepository,
                 eventTypeRepository,
                 calendarConnectionRepository,
+                bookingOwnershipService,
                 bookingNotificationService,
-                invariantMonitor);
+                invariantMonitor,
+                new SimpleMeterRegistry());
     }
 
     @Test
@@ -74,7 +79,7 @@ class LoggingOutboxEventDispatcherTest {
                 eq(null),
                 eq("CREATE"),
                 eq(null),
-                eq(null), eq(null));
+                eq(null), eq(null), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -95,11 +100,6 @@ class LoggingOutboxEventDispatcherTest {
                         .id(bookingId)
                         .hostId(hostId)
                         .build()));
-        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
-                eq(hostId),
-                eq(CalendarConnectionStatus.ACTIVE)))
-                .thenReturn(java.util.List.of());
-
         dispatcher.dispatch(event);
 
         verify(calendarSyncJobRepository, never()).upsertPendingJob(
@@ -109,15 +109,13 @@ class LoggingOutboxEventDispatcherTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
-    void dispatch_bookingConfirmed_activeConnectionFallback_enqueuesSyncJob() {
+    void dispatch_bookingConfirmed_missingProjection_skipsSyncJob() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        CalendarConnection conn = connection(connId, CalendarProviderType.GOOGLE);
         OutboxEvent event = OutboxEvent.builder()
                 .id(UUID.randomUUID())
                 .aggregateType("Booking")
@@ -132,21 +130,16 @@ class LoggingOutboxEventDispatcherTest {
                         .id(bookingId)
                         .hostId(hostId)
                         .build()));
-        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
-                eq(hostId),
-                eq(CalendarConnectionStatus.ACTIVE)))
-                .thenReturn(java.util.List.of(conn));
-
         dispatcher.dispatch(event);
 
-        verify(calendarSyncJobRepository).upsertPendingJob(
+        verify(calendarSyncJobRepository, never()).upsertPendingJob(
                 org.mockito.ArgumentMatchers.any(UUID.class),
-                eq("BOOKING"),
-                eq(bookingId),
-                eq("google"),
-                eq("CREATE"),
-                eq(null),
-                eq(hostId), eq(connId));
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -170,7 +163,7 @@ class LoggingOutboxEventDispatcherTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -206,7 +199,9 @@ class LoggingOutboxEventDispatcherTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(5))
-                .organizerCalendarConnectionId(authoritativeConnectionId)
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionConnectionId(authoritativeConnectionId)
+                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
                 .thenReturn(java.util.Optional.of(configured));
@@ -223,7 +218,8 @@ class LoggingOutboxEventDispatcherTest {
                 eq("CREATE"),
                 eq(null),
                 eq(hostId),
-                eq(authoritativeConnectionId));
+                eq(authoritativeConnectionId),
+                org.mockito.ArgumentMatchers.anyLong());
     }
 
     private static CalendarConnection connection(UUID id, CalendarProviderType provider) {

@@ -18,11 +18,14 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import java.util.Locale;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 @Component
 public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
+    private static final Logger log = LoggerFactory.getLogger(MicrosoftCalendarProviderClient.class);
 
     @Override
     public CalendarProviderType providerType() {
@@ -79,9 +82,10 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 attendeeEmail,
                 booking.getGuestName(),
                 idempotencyKey,
-                resolveTargetCalendarId(connection.getId()),
+                resolveTargetCalendarId(eventType),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
         ));
+        log.info("provider_authority_isolation provider=microsoft action=create responseRequested=false organizerAuthority=application");
         return new CreateEventDetails(response.externalEventId(), response.providerEventUrl(), response.conferenceUrl());
     }
 
@@ -114,9 +118,10 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 host.getEmail(),
                 attendeeEmail,
                 booking.getGuestName(),
-                resolveTargetCalendarId(connection.getId()),
+                resolveTargetCalendarId(eventType),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
         )).externalEventId();
+        log.info("provider_authority_isolation provider=microsoft action=update responseRequested=false organizerAuthority=application");
         return updated;
     }
 
@@ -176,11 +181,11 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         }
     }
 
-    private String resolveTargetCalendarId(UUID connectionId) {
-        return calendarRepository.findByConnectionIdAndSelectedTrue(connectionId)
-                .map(c -> c.getExternalCalendarId())
-                .filter(v -> v != null && !v.isBlank())
-                .orElse("primary");
+    private static String resolveTargetCalendarId(EventType eventType) {
+        if (eventType == null || eventType.getProjectionCalendarId() == null || eventType.getProjectionCalendarId().isBlank()) {
+            throw new CalendarClientException(400, "projection calendar ownership is missing");
+        }
+        return eventType.getProjectionCalendarId().trim();
     }
 
     private static String normalizeAttendeeEmail(String email) {

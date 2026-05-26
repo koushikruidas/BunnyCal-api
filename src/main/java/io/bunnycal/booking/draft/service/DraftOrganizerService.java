@@ -19,6 +19,7 @@ import io.bunnycal.booking.draft.dto.DraftCreateRequest;
 import io.bunnycal.booking.draft.dto.DraftResponse;
 import io.bunnycal.booking.draft.dto.DraftUpdateRequest;
 import io.bunnycal.booking.draft.repository.HostDraftRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.UserStatus;
@@ -32,18 +33,24 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class DraftOrganizerService {
+    private static final Logger log = LoggerFactory.getLogger(DraftOrganizerService.class);
     private final HostDraftRepository hostDraftRepository;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
     private final BookingRepository bookingRepository;
+    private final BookingOwnershipRepository bookingOwnershipRepository;
+    private final MeterRegistry meterRegistry;
     private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
     private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final Duration ttl;
@@ -54,8 +61,10 @@ public class DraftOrganizerService {
                                  AvailabilityRuleRepository availabilityRuleRepository,
                                  AvailabilityOverrideRepository availabilityOverrideRepository,
                                  BookingRepository bookingRepository,
+                                 BookingOwnershipRepository bookingOwnershipRepository,
                                  EventTypeOrchestrationNormalizer orchestrationNormalizer,
                                  EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
+                                 MeterRegistry meterRegistry,
                                  @Value("${draft.ttl.days:21}") long ttlDays) {
         this.hostDraftRepository = hostDraftRepository;
         this.userRepository = userRepository;
@@ -63,8 +72,10 @@ public class DraftOrganizerService {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.bookingRepository = bookingRepository;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
         this.orchestrationNormalizer = orchestrationNormalizer;
         this.orchestrationJsonCodec = orchestrationJsonCodec;
+        this.meterRegistry = meterRegistry;
         this.ttl = Duration.ofDays(Math.max(1, ttlDays));
     }
 
@@ -89,6 +100,7 @@ public class DraftOrganizerService {
                         null,
                         request.availabilityCalendars(),
                         request.conference(),
+                        request.projectionDestination(),
                         List.of());
 
         AvailabilityMode availabilityMode = (request.availabilityCalendars() != null && !request.availabilityCalendars().isEmpty())
@@ -100,7 +112,6 @@ public class DraftOrganizerService {
                 .name(request.eventName().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .organizerCalendarConnectionId(orchestration.syncConnectionId())
                 .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
                 .availabilityMode(availabilityMode)
                 .conferencingProvider(orchestration.conferencing().provider())
@@ -114,6 +125,15 @@ public class DraftOrganizerService {
                 .maxAdvance(Duration.ofDays(90))
                 .holdDuration(Duration.ofMinutes(request.holdDurationMinutes() == null ? 10 : request.holdDurationMinutes()))
                 .build());
+        if (orchestration.projectionDestination() != null) {
+            enforceProjectionOwnershipImmutability(eventType, orchestration);
+            eventType.setOrganizerCalendarConnectionId(orchestration.projectionDestination().connectionId());
+            eventType.setProjectionConnectionId(orchestration.projectionDestination().connectionId());
+            eventType.setProjectionCalendarId(orchestration.projectionDestination().calendarId());
+            eventType.setProjectionProvider(io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
+                    orchestration.projectionDestination().provider().toUpperCase(Locale.ROOT)));
+            eventType = eventTypeRepository.save(eventType);
+        }
 
         replaceRulesAndOverrides(shadowUser.getId(), request.rules(), request.overrides());
 
@@ -177,6 +197,7 @@ public class DraftOrganizerService {
                         eventType,
                         request.availabilityCalendars(),
                         request.conference(),
+                        request.projectionDestination(),
                         orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()));
         eventType.setName(draft.getEventName());
         if (request.description() != null) {
@@ -192,7 +213,13 @@ public class DraftOrganizerService {
         if (request.holdDurationMinutes() != null && request.holdDurationMinutes() > 0) {
             eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
         }
-        eventType.setOrganizerCalendarConnectionId(orchestration.syncConnectionId());
+        if (orchestration.projectionDestination() != null) {
+            eventType.setOrganizerCalendarConnectionId(orchestration.projectionDestination().connectionId());
+            eventType.setProjectionConnectionId(orchestration.projectionDestination().connectionId());
+            eventType.setProjectionCalendarId(orchestration.projectionDestination().calendarId());
+            eventType.setProjectionProvider(io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
+                    orchestration.projectionDestination().provider().toUpperCase(Locale.ROOT)));
+        }
         eventType.setAvailabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()));
         eventType.setAvailabilityMode(orchestration.availabilityBindings().isEmpty() ? AvailabilityMode.ALL_CONNECTED : AvailabilityMode.SELECTED);
         eventType.setConferencingProvider(orchestration.conferencing().provider());
@@ -202,6 +229,41 @@ public class DraftOrganizerService {
 
         hostDraftRepository.save(draft);
         return toResponse(draft);
+    }
+
+    private void enforceProjectionOwnershipImmutability(EventType existingEventType,
+                                                        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration) {
+        if (existingEventType == null || existingEventType.getId() == null || orchestration.projectionDestination() == null) {
+            return;
+        }
+        boolean changed = existingEventType.getProjectionProvider() == null
+                || !existingEventType.getProjectionProvider().name().equalsIgnoreCase(orchestration.projectionDestination().provider())
+                || existingEventType.getProjectionConnectionId() == null
+                || !existingEventType.getProjectionConnectionId().equals(orchestration.projectionDestination().connectionId())
+                || existingEventType.getProjectionCalendarId() == null
+                || !existingEventType.getProjectionCalendarId().equals(orchestration.projectionDestination().calendarId());
+        if (!changed) {
+            return;
+        }
+        long activeBookings = bookingRepository.countActiveByEventTypeId(existingEventType.getId());
+        long resolvedOwnership = bookingOwnershipRepository.countResolvedByEventTypeId(existingEventType.getId());
+        boolean hasSyncHistory = bookingRepository.existsSyncHistoryByEventTypeId(existingEventType.getId());
+        if (activeBookings > 0 || resolvedOwnership > 0 || hasSyncHistory) {
+            meterRegistry.counter("projection_ownership_mutation_blocked_total").increment();
+            log.warn("projection_ownership_mutation_blocked eventTypeId={} activeBookings={} resolvedOwnership={} syncHistory={} fromProvider={} fromConnectionId={} fromCalendarId={} toProvider={} toConnectionId={} toCalendarId={}",
+                    existingEventType.getId(),
+                    activeBookings,
+                    resolvedOwnership,
+                    hasSyncHistory,
+                    existingEventType.getProjectionProvider(),
+                    existingEventType.getProjectionConnectionId(),
+                    existingEventType.getProjectionCalendarId(),
+                    orchestration.projectionDestination().provider(),
+                    orchestration.projectionDestination().connectionId(),
+                    orchestration.projectionDestination().calendarId());
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Projection ownership is immutable after booking ownership materialization.");
+        }
     }
 
     @Transactional

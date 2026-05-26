@@ -25,11 +25,11 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             INSERT INTO calendar_sync_jobs (
                 id, internal_ref_type, internal_ref_id, provider, desired_action,
                 status, external_event_id, attempt_count, next_retry_at, version, last_error, partition_key,
-                scheduling_connection_id
+                scheduling_connection_id, ownership_version
             )
             VALUES (
                 :id, :internalRefType, :internalRefId, :provider, :desiredAction,
-                'PENDING', :externalEventId, 0, NOW(), 0, NULL, :partitionKey, :schedulingConnectionId
+                'PENDING', :externalEventId, 0, NOW(), 0, NULL, :partitionKey, :schedulingConnectionId, :ownershipVersion
             )
             ON CONFLICT (internal_ref_type, internal_ref_id, provider)
             DO UPDATE
@@ -38,6 +38,7 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                 external_event_id = COALESCE(EXCLUDED.external_event_id, calendar_sync_jobs.external_event_id),
                 partition_key    = COALESCE(EXCLUDED.partition_key, calendar_sync_jobs.partition_key),
                 scheduling_connection_id = COALESCE(EXCLUDED.scheduling_connection_id, calendar_sync_jobs.scheduling_connection_id),
+                ownership_version = EXCLUDED.ownership_version,
                 next_retry_at    = NOW(),
                 last_error       = NULL
             """, nativeQuery = true)
@@ -49,7 +50,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             @Param("desiredAction") String desiredAction,
             @Param("externalEventId") String externalEventId,
             @Param("partitionKey") UUID partitionKey,
-            @Param("schedulingConnectionId") UUID schedulingConnectionId);
+            @Param("schedulingConnectionId") UUID schedulingConnectionId,
+            @Param("ownershipVersion") long ownershipVersion);
 
     default int upsertPendingJob(UUID id,
                                  String internalRefType,
@@ -58,7 +60,7 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                                  String desiredAction,
                                  String externalEventId) {
         return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
-                null, null);
+                null, null, 1L);
     }
 
     default int upsertPendingJob(UUID id,
@@ -69,7 +71,7 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                                  String externalEventId,
                                  UUID partitionKey) {
         return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
-                partitionKey, null);
+                partitionKey, null, 1L);
     }
 
     default int upsertPendingJob(UUID id,
@@ -81,7 +83,20 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                                  UUID partitionKey,
                                  UUID schedulingConnectionId) {
         return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
-                partitionKey, schedulingConnectionId);
+                partitionKey, schedulingConnectionId, 1L);
+    }
+
+    default int upsertPendingJob(UUID id,
+                                 String internalRefType,
+                                 UUID internalRefId,
+                                 String provider,
+                                 String desiredAction,
+                                 String externalEventId,
+                                 UUID partitionKey,
+                                 UUID schedulingConnectionId,
+                                 long ownershipVersion) {
+        return upsertPendingJobInternal(id, internalRefType, internalRefId, provider, desiredAction, externalEventId,
+                partitionKey, schedulingConnectionId, ownershipVersion);
     }
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)

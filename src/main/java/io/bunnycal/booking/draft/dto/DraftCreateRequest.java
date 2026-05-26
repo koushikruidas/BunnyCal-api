@@ -22,6 +22,7 @@ public record DraftCreateRequest(
         Integer holdDurationMinutes,
         List<CreateEventTypeRequest.AvailabilityCalendarRequest> availabilityCalendars,
         CreateEventTypeRequest.ConferenceRequest conference,
+        CreateEventTypeRequest.ProjectionDestinationRequest projectionDestination,
         List<AvailabilityRuleRequest> rules,
         List<AvailabilityOverrideCreateRequest> overrides
  ) implements ForwardCompatibleRequest {
@@ -39,6 +40,6 @@ public record DraftCreateRequest(
             List<AvailabilityOverrideCreateRequest> overrides
     ) {
         this(email, displayName, timezone, eventName, description, location, durationMinutes, slotIntervalMinutes,
-                holdDurationMinutes, null, null, rules, overrides);
+                holdDurationMinutes, null, null, null, rules, overrides);
     }
 }

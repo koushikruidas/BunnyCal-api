@@ -45,6 +45,9 @@ public class CalendarSyncJob extends BaseEntity {
     @Column(name = "scheduling_connection_id")
     private UUID schedulingConnectionId;
 
+    @Column(name = "ownership_version", nullable = false)
+    private long ownershipVersion;
+
     @Column(nullable = false, length = 32)
     private String provider;
 

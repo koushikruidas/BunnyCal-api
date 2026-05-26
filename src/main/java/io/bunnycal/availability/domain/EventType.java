@@ -1,6 +1,7 @@
 package io.bunnycal.availability.domain;
 
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.calendar.domain.CalendarProviderType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -49,6 +50,16 @@ public class EventType {
 
     @Column(name = "organizer_calendar_connection_id")
     private UUID organizerCalendarConnectionId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "projection_provider", length = 32)
+    private CalendarProviderType projectionProvider;
+
+    @Column(name = "projection_connection_id")
+    private UUID projectionConnectionId;
+
+    @Column(name = "projection_calendar_id", length = 255)
+    private String projectionCalendarId;
 
     @Column(name = "availability_calendars_json", columnDefinition = "TEXT")
     private String availabilityCalendarsJson;

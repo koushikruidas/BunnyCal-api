@@ -10,4 +10,6 @@ public interface CalendarConnectionCalendarRepository extends JpaRepository<Cale
     List<CalendarConnectionCalendar> findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(UUID connectionId);
 
     Optional<CalendarConnectionCalendar> findByConnectionIdAndSelectedTrue(UUID connectionId);
+
+    Optional<CalendarConnectionCalendar> findByConnectionIdAndExternalCalendarId(UUID connectionId, String externalCalendarId);
 }

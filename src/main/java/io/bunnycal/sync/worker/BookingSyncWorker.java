@@ -1,6 +1,8 @@
 package io.bunnycal.sync.worker;
 
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipService;
+import io.bunnycal.booking.ownership.BookingOwnership;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.service.CalendarService;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
@@ -48,6 +50,7 @@ public class BookingSyncWorker {
     private final IdempotencyKeyFactory idempotencyKeyFactory;
     private final ConferencingCoordinator conferencingCoordinator;
     private final ConferencingExecutionPolicy conferencingExecutionPolicy;
+    private final BookingOwnershipService bookingOwnershipService;
     private final MeterRegistry meterRegistry;
     private final Counter syncSuccessCount;
     private final Counter syncFailureCount;
@@ -67,6 +70,7 @@ public class BookingSyncWorker {
                              IdempotencyKeyFactory idempotencyKeyFactory,
                              ObjectProvider<ConferencingCoordinator> conferencingCoordinatorProvider,
                              ConferencingExecutionPolicy conferencingExecutionPolicy,
+                             BookingOwnershipService bookingOwnershipService,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry,
                              ObjectMapper objectMapper) {
@@ -79,6 +83,7 @@ public class BookingSyncWorker {
         this.idempotencyKeyFactory = idempotencyKeyFactory;
         this.conferencingCoordinator = conferencingCoordinatorProvider.getIfAvailable();
         this.conferencingExecutionPolicy = conferencingExecutionPolicy;
+        this.bookingOwnershipService = bookingOwnershipService;
         log.info("conferencing_coordinator_injection coordinatorAvailable={}",
                 this.conferencingCoordinator != null);
         this.meterRegistry = meterRegistry;
@@ -101,12 +106,13 @@ public class BookingSyncWorker {
                       ConnectionRateLimitBreaker rateLimitBreaker,
                       IdempotencyKeyFactory idempotencyKeyFactory,
                       ConferencingExecutionPolicy conferencingExecutionPolicy,
+                      BookingOwnershipService bookingOwnershipService,
                       PlatformTransactionManager transactionManager,
                       MeterRegistry meterRegistry,
                       ObjectMapper objectMapper) {
         this(syncJobRepository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
                 rateLimitBreaker, idempotencyKeyFactory, new DefaultListableBeanFactory().getBeanProvider(ConferencingCoordinator.class),
-                conferencingExecutionPolicy,
+                conferencingExecutionPolicy, bookingOwnershipService,
                 transactionManager, meterRegistry, objectMapper);
     }
 
@@ -141,6 +147,9 @@ public class BookingSyncWorker {
             }
             log.info("{{\"event\":\"sync_job_processing\",\"internalRefId\":\"{}\",\"provider\":\"{}\",\"correlationId\":\"{}\",\"action\":\"{}\"}}",
                     job.getInternalRefId(), job.getProvider(), correlationId, job.getDesiredAction());
+            if (ownershipVersionMismatch(job)) {
+                return;
+            }
             switch (job.getDesiredAction()) {
                 case CREATE -> processCreate(job);
                 case UPDATE -> processUpdate(job);
@@ -161,6 +170,26 @@ public class BookingSyncWorker {
     }
 
     private void processCreate(CalendarSyncJob job) {
+        BookingOwnership ownership = bookingOwnershipService.requireOwnership(job.getInternalRefId());
+        if (ownership.getProviderExternalEventId() != null && !ownership.getProviderExternalEventId().isBlank()) {
+            meterRegistry.counter("duplicate_projection_write_prevented_total").increment();
+            log.warn("duplicate_projection_write_prevented bookingId={} ownershipVersion={} provider={} projectionConnectionId={} externalEventId={} syncJobId={} lifecycleOperation=create",
+                    job.getInternalRefId(),
+                    ownership.getOwnershipVersion(),
+                    ownership.getProjectionProvider(),
+                    ownership.getProjectionConnectionId(),
+                    ownership.getProviderExternalEventId(),
+                    job.getId());
+            syncJobRepository.markSyncedWithMetadata(
+                    job.getId(),
+                    job.getVersion(),
+                    ownership.getProviderExternalEventId(),
+                    job.getProviderEventUrl(),
+                    job.getConferenceUrl(),
+                    job.getConferenceProvider(),
+                    job.getConferenceMetadataJson());
+            return;
+        }
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
@@ -199,6 +228,11 @@ public class BookingSyncWorker {
                     resolveConferenceUrl(result, instruction),
                     resolveConferenceProvider(instruction),
                     toConferenceMetadataJson(instruction, conferencingResult));
+            BookingOwnershipService.LinkageAttachResult attachResult =
+                    bookingOwnershipService.attachExternalEventIdResult(job.getInternalRefId(), result.externalEventId());
+            if (attachResult == BookingOwnershipService.LinkageAttachResult.CONFLICT) {
+                meterRegistry.counter("external_event_linkage_conflict_total").increment();
+            }
             return;
         }
         handleFailure(job, result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode());
@@ -230,6 +264,38 @@ public class BookingSyncWorker {
                 resolveConferenceUrl(null, instruction),
                 resolveConferenceProvider(instruction),
                 toConferenceMetadataJson(instruction, conferencingResult));
+        bookingOwnershipService.attachExternalEventIdResult(job.getInternalRefId(), externalId);
+    }
+
+    private boolean ownershipVersionMismatch(CalendarSyncJob job) {
+        BookingOwnership ownership = bookingOwnershipService.requireOwnership(job.getInternalRefId());
+        if (ownership.getOwnershipVersion() == job.getOwnershipVersion()) {
+            return false;
+        }
+        meterRegistry.counter("ownership_version_mismatch_total").increment();
+        log.warn("ownership_version_mismatch_detected bookingId={} ownershipVersion={} jobOwnershipVersion={} provider={} projectionConnectionId={} externalEventId={} syncJobId={} lifecycleOperation={}",
+                job.getInternalRefId(),
+                ownership.getOwnershipVersion(),
+                job.getOwnershipVersion(),
+                ownership.getProjectionProvider(),
+                ownership.getProjectionConnectionId(),
+                ownership.getProviderExternalEventId(),
+                job.getId(),
+                job.getDesiredAction());
+        syncJobRepository.markSyncedFromProcessingWithLifecycle(
+                job.getId(),
+                job.getVersion(),
+                job.getExternalEventId(),
+                "STALE_OWNERSHIP_VERSION");
+        log.warn("stale_sync_job_skipped bookingId={} ownershipVersion={} provider={} projectionConnectionId={} externalEventId={} syncJobId={} lifecycleOperation={}",
+                job.getInternalRefId(),
+                ownership.getOwnershipVersion(),
+                ownership.getProjectionProvider(),
+                ownership.getProjectionConnectionId(),
+                ownership.getProviderExternalEventId(),
+                job.getId(),
+                job.getDesiredAction());
+        return true;
     }
 
     private BookingRepository.BookingStateRow resolveState(CalendarSyncJob job) {

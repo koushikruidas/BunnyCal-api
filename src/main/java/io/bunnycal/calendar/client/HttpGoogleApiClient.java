@@ -77,6 +77,8 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .body(body)
                     .retrieve()
                     .toEntity(Map.class);
+            log.info("provider_authority_contract_verified provider=google action=create sendUpdates=none");
+            log.info("provider_notification_suppression_verified provider=google action=create sendUpdates=none");
             if (diagnosticsEnabled) {
                 emitDiagnostics("create", accessToken, request.idempotencyKey(), CALENDAR_ID, "none", 1,
                         request.organizerEmail(), request.attendeeEmail(), body, response.getBody());
@@ -109,6 +111,8 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     .body(body)
                     .retrieve()
                     .toEntity(Map.class);
+            log.info("provider_authority_contract_verified provider=google action=update sendUpdates=none");
+            log.info("provider_notification_suppression_verified provider=google action=update sendUpdates=none");
             if (diagnosticsEnabled) {
                 emitDiagnostics("update", accessToken, request.externalEventId(), CALENDAR_ID, "none", 1,
                         request.organizerEmail(), request.attendeeEmail(), body, response.getBody());

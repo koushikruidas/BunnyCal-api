@@ -10,10 +10,11 @@ public record EventTypeSummaryResponse(
         String slug,
         String link,
         List<AvailabilityCalendarResponse> availabilityCalendars,
-        ConferenceResponse conference
+        ConferenceResponse conference,
+        ProjectionDestinationResponse projectionDestination
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, List.of(), null);
+        this(id, name, slug, link, List.of(), null, null);
     }
 
     public record AvailabilityCalendarResponse(
@@ -26,5 +27,11 @@ public record EventTypeSummaryResponse(
             boolean enabled,
             String provider,
             @JsonInclude(JsonInclude.Include.NON_NULL) String customUrl
+    ) {}
+
+    public record ProjectionDestinationResponse(
+            String provider,
+            UUID connectionId,
+            String calendarId
     ) {}
 }

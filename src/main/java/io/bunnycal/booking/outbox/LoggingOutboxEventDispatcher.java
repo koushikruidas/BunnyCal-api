@@ -1,18 +1,17 @@
 package io.bunnycal.booking.outbox;
 
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.booking.notification.BookingNotificationService;
 import io.bunnycal.booking.contract.BookingState;
-import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.invariants.CompositeSyncStateClassifier;
 import io.bunnycal.sync.invariants.LineageContext;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.state.SyncJobStatus;
-import java.util.Locale;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.UUID;
 import org.springframework.lang.Nullable;
 import org.slf4j.Logger;
@@ -29,22 +28,28 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final BookingRepository bookingRepository;
     private final EventTypeRepository eventTypeRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final BookingOwnershipService bookingOwnershipService;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
     private final SyncInvariantMonitor invariantMonitor;
+    private final MeterRegistry meterRegistry;
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
                                         BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
                                         CalendarConnectionRepository calendarConnectionRepository,
+                                        BookingOwnershipService bookingOwnershipService,
                                         @Nullable BookingNotificationService bookingNotificationService,
-                                        SyncInvariantMonitor invariantMonitor) {
+                                        SyncInvariantMonitor invariantMonitor,
+                                        MeterRegistry meterRegistry) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.bookingOwnershipService = bookingOwnershipService;
         this.bookingNotificationService = bookingNotificationService;
         this.invariantMonitor = invariantMonitor;
+        this.meterRegistry = meterRegistry;
     }
 
     @Override
@@ -64,10 +69,15 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 }
                 SchedulingResolution resolution = resolveSchedulingConnection(event.getAggregateId(), partitionKey);
                 if (resolution == null && partitionKey != null) {
-                    log.info("outbox.sync_job_skipped_no_active_connection bookingId={} hostId={} action={}",
+                    log.warn("outbox.sync_job_skipped_missing_projection_ownership bookingId={} hostId={} action={}",
                             event.getAggregateId(), partitionKey, desiredAction);
+                    meterRegistry.counter("sync_jobs_skipped_missing_ownership_total").increment();
                     return;
                 }
+                io.bunnycal.booking.ownership.BookingOwnership ownership = bookingRepository.findAnyById(event.getAggregateId())
+                        .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
+                        .map(eventType -> bookingOwnershipService.ensureOwnership(event.getAggregateId(), eventType))
+                        .orElse(null);
                 String resolvedProvider = resolution != null ? resolution.provider() : null;
                 UUID schedulingConnectionId = resolution != null ? resolution.connectionId() : null;
                 if (partitionKey != null && resolvedProvider != null) {
@@ -81,7 +91,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                         desiredAction,
                         null,
                         partitionKey,
-                        schedulingConnectionId
+                        schedulingConnectionId,
+                        ownership == null ? 1L : ownership.getOwnershipVersion()
                 );
                 log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
                         event.getId(), event.getAggregateId(), resolvedProvider, desiredAction);
@@ -105,30 +116,16 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     @Nullable
     private SchedulingResolution resolveSchedulingConnection(UUID bookingId, @Nullable UUID hostId) {
-        // Priority 1: connection stamped on the event type at creation time.
-        UUID eventTypeConnectionId = bookingRepository.findAnyById(bookingId)
+        return bookingRepository.findAnyById(bookingId)
                 .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
-                .map(eventType -> eventType.getOrganizerCalendarConnectionId())
+                .flatMap(eventType -> {
+                    if (eventType.getProjectionConnectionId() == null || eventType.getProjectionProvider() == null) {
+                        return java.util.Optional.empty();
+                    }
+                    return calendarConnectionRepository.findById(eventType.getProjectionConnectionId())
+                            .map(c -> new SchedulingResolution(c.getId(), eventType.getProjectionProvider().name().toLowerCase(java.util.Locale.ROOT)));
+                })
                 .orElse(null);
-        if (eventTypeConnectionId != null) {
-            return calendarConnectionRepository.findById(eventTypeConnectionId)
-                    .map(c -> new SchedulingResolution(c.getId(), providerString(c)))
-                    .orElse(null);
-        }
-        // Priority 2: oldest active connection for the host (deterministic fallback).
-        if (hostId == null) {
-            return null;
-        }
-        return calendarConnectionRepository
-                .findByUserIdAndStatusOrderByCreatedAtAsc(hostId, CalendarConnectionStatus.ACTIVE)
-                .stream()
-                .findFirst()
-                .map(c -> new SchedulingResolution(c.getId(), providerString(c)))
-                .orElse(null);
-    }
-
-    private static String providerString(CalendarConnection connection) {
-        return connection.getProvider().name().toLowerCase(Locale.ROOT);
     }
 
     private static String mapDesiredAction(String eventType) {
