@@ -101,7 +101,8 @@ public class ProviderEventProjectionService {
         try {
             Optional<ProviderEventProjection> existing = repository.findWithLockByConnectionIdAndProviderAndExternalEventId(
                     connectionId, provider, incoming.externalEventId());
-            UUID linkedBookingId = resolveBookingId(connectionId, provider, incoming.externalEventId(), existing);
+            BookingLinkResolution linkResolution = resolveBookingId(connectionId, provider, incoming.externalEventId(), existing);
+            UUID linkedBookingId = linkResolution.bookingId();
             LineageContext lineage = new LineageContext(
                     safeMdc("correlationId"),
                     safeMdc("causationId"),
@@ -188,9 +189,19 @@ public class ProviderEventProjectionService {
                     provider, connectionId, incoming.externalEventId(), projection.getProjectionVersion(), projection.getProjectionStatus());
             if (incoming.cancelled()) {
                 if (linkedBookingId == null) {
-                    counter("sync.projection.booking_linkage.total", provider, "result", "missing").increment();
-                    log.warn("provider_tombstone_booking_linkage_failed provider={} connectionId={} externalEventId={} reason=no_deterministic_booking",
-                            provider, connectionId, incoming.externalEventId());
+                    if (linkResolution.classification() == LinkageClassification.BENIGN_UNMANAGED) {
+                        meterRegistry.counter("sync.projection.unmanaged_external.total",
+                                "provider", provider,
+                                "reason", linkResolution.reason()).increment();
+                        log.info("provider_event_unmanaged_external provider={} connectionId={} externalEventId={} reason={} matches={}",
+                                provider, connectionId, incoming.externalEventId(), linkResolution.reason(), linkResolution.matches());
+                    } else {
+                        meterRegistry.counter("sync.projection.linkage_risk.total",
+                                "provider", provider,
+                                "reason", linkResolution.reason()).increment();
+                        log.warn("provider_tombstone_booking_linkage_failed provider={} connectionId={} externalEventId={} reason=no_deterministic_booking linkageReason={} matches={}",
+                                provider, connectionId, incoming.externalEventId(), linkResolution.reason(), linkResolution.matches());
+                    }
                 } else {
                     var result = terminalDeleteConvergenceService.convergeProviderTombstone(
                             linkedBookingId,
@@ -246,13 +257,13 @@ public class ProviderEventProjectionService {
         }
     }
 
-    private UUID resolveBookingId(UUID connectionId,
-                                  String provider,
-                                  String externalEventId,
-                                  Optional<ProviderEventProjection> existing) {
+    private BookingLinkResolution resolveBookingId(UUID connectionId,
+                                                   String provider,
+                                                   String externalEventId,
+                                                   Optional<ProviderEventProjection> existing) {
         if (existing.isPresent() && existing.get().getBookingId() != null) {
             counter("sync.projection.booking_linkage.total", provider, "result", "existing").increment();
-            return existing.get().getBookingId();
+            return BookingLinkResolution.linked(existing.get().getBookingId(), "existing", 1);
         }
         var syncCandidates = syncJobRepository.findBookingCandidatesForExternalEvent(connectionId, provider, externalEventId);
         if (syncCandidates.size() == 1) {
@@ -260,13 +271,13 @@ public class ProviderEventProjectionService {
             counter("sync.projection.booking_linkage.total", provider, "result", "linked_sync_job").increment();
             log.info("provider_event_booking_linked provider={} connectionId={} externalEventId={} bookingId={} reason=sync_job",
                     provider, connectionId, externalEventId, bookingId);
-            return bookingId;
+            return BookingLinkResolution.linked(bookingId, "linked_sync_job", 1);
         }
         if (syncCandidates.size() > 1) {
             counter("sync.projection.booking_linkage.total", provider, "result", "ambiguous_sync_job").increment();
             log.warn("provider_event_booking_ambiguous provider={} connectionId={} externalEventId={} reason=sync_job matches={}",
                     provider, connectionId, externalEventId, syncCandidates.size());
-            return null;
+            return BookingLinkResolution.unlinked("ambiguous_sync_job", syncCandidates.size(), LinkageClassification.RISKY_AMBIGUOUS);
         }
         CalendarEventMappingRepository.BookingLinkageResult linkage =
                 mappingRepository.findUniqueBookingForProviderEvent(connectionId, provider, externalEventId);
@@ -274,12 +285,15 @@ public class ProviderEventProjectionService {
             counter("sync.projection.booking_linkage.total", provider, "result", "linked").increment();
             log.info("provider_event_booking_linked provider={} connectionId={} externalEventId={} bookingId={} reason={} matches={}",
                     provider, connectionId, externalEventId, linkage.bookingId().get(), linkage.reason(), linkage.matches());
-            return linkage.bookingId().get();
+            return BookingLinkResolution.linked(linkage.bookingId().get(), linkage.reason(), linkage.matches());
         }
         counter("sync.projection.booking_linkage.total", provider, "result", linkage.reason()).increment();
         log.info("provider_event_booking_linkage_absent provider={} connectionId={} externalEventId={} reason={} matches={}",
                 provider, connectionId, externalEventId, linkage.reason(), linkage.matches());
-        return null;
+        LinkageClassification classification = "ambiguous".equals(linkage.reason())
+                ? LinkageClassification.RISKY_AMBIGUOUS
+                : LinkageClassification.BENIGN_UNMANAGED;
+        return BookingLinkResolution.unlinked(linkage.reason(), linkage.matches(), classification);
     }
 
     private Counter counter(String name, String provider, String tagName, String tagValue) {
@@ -296,5 +310,23 @@ public class ProviderEventProjectionService {
     private static String safeMdc(String key) {
         String v = MDC.get(key);
         return v == null ? "" : v;
+    }
+
+    private enum LinkageClassification {
+        BENIGN_UNMANAGED,
+        RISKY_AMBIGUOUS
+    }
+
+    private record BookingLinkResolution(UUID bookingId,
+                                         String reason,
+                                         int matches,
+                                         LinkageClassification classification) {
+        private static BookingLinkResolution linked(UUID bookingId, String reason, int matches) {
+            return new BookingLinkResolution(bookingId, reason, matches, LinkageClassification.BENIGN_UNMANAGED);
+        }
+
+        private static BookingLinkResolution unlinked(String reason, int matches, LinkageClassification classification) {
+            return new BookingLinkResolution(null, reason, matches, classification);
+        }
     }
 }

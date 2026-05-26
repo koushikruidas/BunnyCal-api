@@ -84,7 +84,9 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
         MicrosoftApiClient.SyncWindow window = tokenRefresher.executeWithValidToken(
                 connection.getId(),
                 microsoftApiClient::listEventsFull);
-        meterRegistry.counter("calendar.sync.incremental_recovery.total", "provider", "microsoft").increment();
+        meterRegistry.counter("calendar.sync.incremental_recovery.total",
+                "provider", "microsoft",
+                "source", source(sourceAttribution)).increment();
         return new SyncBatch(toIncoming(window.events()), normalize(window.nextDeltaCursor()), true, false, "full_recovery");
     }
 

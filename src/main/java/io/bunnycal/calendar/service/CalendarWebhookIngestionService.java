@@ -62,7 +62,9 @@ public class CalendarWebhookIngestionService {
         this.webhookProperties = webhookProperties;
         this.webhookIngestTotal = Counter.builder("webhook_ingest_total").register(meterRegistry);
         this.webhookDuplicateTotal = Counter.builder("webhook_duplicate_total").register(meterRegistry);
-        this.reconciliationConflictTotal = Counter.builder("reconciliation_conflict_total").register(meterRegistry);
+        this.reconciliationConflictTotal = Counter.builder("reconciliation_conflict_total")
+                .tag("reason", "webhook_duplicate")
+                .register(meterRegistry);
     }
 
     @Transactional
@@ -141,7 +143,10 @@ public class CalendarWebhookIngestionService {
                         provider,
                         batch.recoveryAction(), batch.gapSuspected(), batch.events().size(), batch.nextCursor() != null);
                 if (batch.gapSuspected()) {
-                    meterRegistry.counter("calendar.sync.webhook_gap_suspected.total", "provider", provider, "action", batch.recoveryAction())
+                    meterRegistry.counter("calendar.sync.webhook_gap_suspected.total",
+                                    "provider", provider,
+                                    "source", "WEBHOOK",
+                                    "action", batch.recoveryAction())
                             .increment();
                 }
                 ingestionService.upsertEvents(connectionId, batch.events(), SyncSourceAttribution.WEBHOOK);

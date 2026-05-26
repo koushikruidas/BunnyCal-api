@@ -51,7 +51,10 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
             return SyncBatch.empty(cursor, false, "incremental_disabled");
         }
         if (cursor == null) {
-            meterRegistry.counter("calendar.sync.webhook_gap_suspected.total", "provider", "google", "source", source(sourceAttribution))
+            meterRegistry.counter("calendar.sync.webhook_gap_suspected.total",
+                            "provider", "google",
+                            "source", source(sourceAttribution),
+                            "action", "missing_cursor_full_recovery")
                     .increment();
             SyncBatch full = fetchFull(connection, sourceAttribution);
             return new SyncBatch(full.events(), full.nextCursor(), true, true, "missing_cursor_full_recovery");
