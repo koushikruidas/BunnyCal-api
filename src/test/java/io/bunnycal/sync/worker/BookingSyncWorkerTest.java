@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.times;
+import static org.mockito.ArgumentMatchers.argThat;
 
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
@@ -271,6 +272,63 @@ class BookingSyncWorkerTest {
 
         verify(repository, times(1)).markSyncedWithMetadata(eq(id), eq(5L), eq("ext-existing"), any(), any(), any(), any());
         verify(calendarService, never()).createEvent(any());
+    }
+
+    @Test
+    void updateUsesAuthoritativeOwnershipExternalEventId() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 8L, "ext-job");
+        job.setDesiredAction(SyncDesiredAction.UPDATE);
+        when(repository.claimPendingBatch(any(), eq(1))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setOwnershipVersion(1L);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(UUID.randomUUID());
+        ownership.setProviderExternalEventId("ext-own");
+        when(bookingOwnershipService.requireOwnership(job.getInternalRefId())).thenReturn(ownership);
+        when(calendarService.updateEvent(any())).thenReturn("ext-own");
+
+        worker.processPending(1);
+
+        verify(calendarService).updateEvent(argThat(cmd -> "ext-own".equals(cmd.externalEventId())));
+    }
+
+    @Test
+    void deleteUsesAuthoritativeOwnershipExternalEventId() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 10L, "ext-job");
+        job.setDesiredAction(SyncDesiredAction.DELETE);
+        when(repository.claimPendingBatch(any(), eq(1))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setOwnershipVersion(1L);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(UUID.randomUUID());
+        ownership.setProviderExternalEventId("ext-own");
+        when(bookingOwnershipService.requireOwnership(job.getInternalRefId())).thenReturn(ownership);
+        when(repository.markSyncedFromProcessingWithLifecycle(id, 10L, "ext-own", "TERMINAL_EXTERNAL_DELETE"))
+                .thenReturn(1);
+        when(terminalDeleteConvergenceService.convergeProcessingJob(job, "worker_delete"))
+                .thenReturn(new ExternalTerminalDeleteConvergenceService.ConvergenceResult(1, 1, "applied"));
+        UUID hostId = UUID.randomUUID();
+        when(bookingRepository.findProjectionStateById(job.getInternalRefId()))
+                .thenReturn(Optional.of(new BookingRepository.BookingProjectionRow() {
+                    public UUID getId() { return job.getInternalRefId(); }
+                    public UUID getHostId() { return hostId; }
+                    public String getStatus() { return "CONFIRMED"; }
+                    public Instant getAvailabilityReleasedAt() { return null; }
+                }))
+                .thenReturn(Optional.of(new BookingRepository.BookingProjectionRow() {
+                    public UUID getId() { return job.getInternalRefId(); }
+                    public UUID getHostId() { return hostId; }
+                    public String getStatus() { return "CANCELLED"; }
+                    public Instant getAvailabilityReleasedAt() { return Instant.now(); }
+                }));
+
+        worker.processPending(1);
+
+        verify(calendarService).deleteEvent(argThat(cmd -> "ext-own".equals(cmd.externalEventId())));
     }
 
     private static CalendarSyncJob pendingCreateJob(UUID id, long version, String externalEventId) {

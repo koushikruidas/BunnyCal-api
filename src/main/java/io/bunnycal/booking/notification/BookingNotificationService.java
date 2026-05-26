@@ -247,9 +247,32 @@ public class BookingNotificationService {
                 );
             }
             try {
+                String clientType = inferClientType(recipient);
+                if (calendarOrganizerEmail == null || calendarOrganizerEmail.isBlank()) {
+                    log.warn("organizer_authority_mismatch_detected bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={}",
+                            booking.getId(),
+                            eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                            "",
+                            "",
+                            clientType);
+                } else {
+                    log.info("organizer_authority_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={}",
+                            booking.getId(),
+                            eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                            "",
+                            calendarOrganizerEmail,
+                            clientType);
+                }
                 sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceJoinUrl);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true);
+                log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
+                        booking.getId(),
+                        eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                        "",
+                        calendarOrganizerEmail,
+                        clientType,
+                        event.getEventType());
             } catch (Exception ex) {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={} message={}",
@@ -343,21 +366,22 @@ public class BookingNotificationService {
         // recognise the cancelled session.
         boolean isTerminal = "BOOKING_CANCELLED".equals(outboxEventType)
                 || "BOOKING_EXTERNAL_TERMINATED".equals(outboxEventType);
+        if (isTerminal) {
+            return null;
+        }
 
-        if (!isTerminal) {
-            try {
-                ConferencingInstruction instruction = "BOOKING_UPDATED".equals(outboxEventType)
-                        ? conferencingCoordinator.prepareForUpdate(booking.getId(), booking.getHostId())
-                        : conferencingCoordinator.prepareForCreate(booking.getId(), booking.getHostId());
-                if (instruction != null && instruction.joinUrl() != null && !instruction.joinUrl().isBlank()) {
-                    return instruction.joinUrl();
-                }
-            } catch (RuntimeException ex) {
-                // Synchronous conferencing prep is best-effort here — the sync worker
-                // remains the durable retry path. Fall through to read-only lookup.
-                log.warn("booking_notification_conferencing_prepare_failed bookingId={} provider={} eventType={} message={}",
-                        booking.getId(), providerType, outboxEventType, ex.getMessage());
+        try {
+            ConferencingInstruction instruction = "BOOKING_UPDATED".equals(outboxEventType)
+                    ? conferencingCoordinator.prepareForUpdate(booking.getId(), booking.getHostId())
+                    : conferencingCoordinator.prepareForCreate(booking.getId(), booking.getHostId());
+            if (instruction != null && instruction.joinUrl() != null && !instruction.joinUrl().isBlank()) {
+                return instruction.joinUrl();
             }
+        } catch (RuntimeException ex) {
+            // Synchronous conferencing prep is best-effort here — the sync worker
+            // remains the durable retry path. Fall through to read-only lookup.
+            log.warn("booking_notification_conferencing_prepare_failed bookingId={} provider={} eventType={} message={}",
+                    booking.getId(), providerType, outboxEventType, ex.getMessage());
         }
 
         return conferencingEventMappingRepository
@@ -396,6 +420,15 @@ public class BookingNotificationService {
             idx += 9;
         }
         return count;
+    }
+
+    private static String inferClientType(String recipient) {
+        if (recipient == null) return "unknown";
+        String lower = recipient.toLowerCase(Locale.ROOT);
+        if (lower.endsWith("@outlook.com") || lower.endsWith("@hotmail.com") || lower.endsWith("@live.com")) return "outlook";
+        if (lower.endsWith("@gmail.com")) return "gmail";
+        if (lower.endsWith("@microsoft.com") || lower.endsWith("@office365.com")) return "microsoft_calendar";
+        return "generic";
     }
 
     private static String subject(String summary, String eventType) {

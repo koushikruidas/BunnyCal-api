@@ -2,8 +2,11 @@ package io.bunnycal.booking.notification;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -157,6 +160,98 @@ class IcsInviteGeneratorTest {
         assertFalse(unfolded.contains("URL:"));
         assertFalse(unfolded.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
         assertFalse(unfolded.contains("X-GOOGLE-CONFERENCE"));
+    }
+
+    @Test
+    void lifecycleUidAndOrganizerRemainStableAcrossRequestUpdateCancel() {
+        UUID bookingId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-06-10T10:00:00Z");
+        Instant end = Instant.parse("2026-06-10T10:30:00Z");
+        String request = unfold(generator.buildStandaloneRequest(
+                bookingId, "Summary", "Desc", start, end,
+                "App Calendar", "calendar@example.com",
+                "Host", "host@example.com", "Guest", "guest@example.com", 0,
+                "https://zoom.us/j/111"));
+        String update = unfold(generator.buildStandaloneRequest(
+                bookingId, "Summary", "Desc2", start.plusSeconds(1800), end.plusSeconds(1800),
+                "App Calendar", "calendar@example.com",
+                "Host", "host@example.com", "Guest", "guest@example.com", 1,
+                "https://zoom.us/j/111"));
+        String cancel = unfold(generator.buildStandaloneCancel(
+                bookingId, "Summary", "Desc2", start.plusSeconds(1800), end.plusSeconds(1800),
+                "App Calendar", "calendar@example.com",
+                "Host", "host@example.com", "Guest", "guest@example.com", 2,
+                "https://zoom.us/j/111"));
+
+        String uid = "UID:booking-" + bookingId + "@example.com";
+        String organizer = "ORGANIZER;CN=App Calendar:mailto:calendar@example.com";
+        assertTrue(request.contains(uid));
+        assertTrue(update.contains(uid));
+        assertTrue(cancel.contains(uid));
+        assertTrue(request.contains(organizer));
+        assertTrue(update.contains(organizer));
+        assertTrue(cancel.contains(organizer));
+        assertTrue(request.contains("METHOD:REQUEST"));
+        assertTrue(update.contains("METHOD:REQUEST"));
+        assertTrue(cancel.contains("METHOD:CANCEL"));
+        assertTrue(cancel.contains("STATUS:CANCELLED"));
+        assertTrue(request.contains("SEQUENCE:0"));
+        assertTrue(update.contains("SEQUENCE:1"));
+        assertTrue(cancel.contains("SEQUENCE:2"));
+    }
+
+    @Test
+    void fixtureConferenceProvidersRenderConsistentCalendarFields() {
+        UUID bookingId = UUID.randomUUID();
+        String[] urls = {
+                "https://meet.google.com/abc-defg-hij",
+                "https://teams.microsoft.com/l/meetup-join/xyz",
+                "https://zoom.us/j/123456",
+                "https://example.com/custom-room"
+        };
+        for (String url : urls) {
+            String request = unfold(generator.buildStandaloneRequest(
+                    bookingId, "Summary", "Desc",
+                    Instant.parse("2026-06-10T10:00:00Z"),
+                    Instant.parse("2026-06-10T10:30:00Z"),
+                    "App Calendar", "calendar@example.com",
+                    "Host", "host@example.com", "Guest", "guest@example.com", 5, url));
+            String cancel = unfold(generator.buildStandaloneCancel(
+                    bookingId, "Summary", "Desc",
+                    Instant.parse("2026-06-10T10:00:00Z"),
+                    Instant.parse("2026-06-10T10:30:00Z"),
+                    "App Calendar", "calendar@example.com",
+                    "Host", "host@example.com", "Guest", "guest@example.com", 6, url));
+            assertTrue(request.contains("URL:" + url));
+            assertTrue(cancel.contains("URL:" + url));
+            assertTrue(request.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + url));
+            assertTrue(cancel.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + url));
+        }
+        assertEquals(4, urls.length);
+    }
+
+    @Test
+    void dstBoundary_utcInstantsRemainStableInIcs() {
+        ZonedDateTime nyBefore = ZonedDateTime.of(2026, 3, 8, 1, 30, 0, 0, ZoneId.of("America/New_York"));
+        Instant start = nyBefore.toInstant();
+        Instant end = nyBefore.plusHours(1).toInstant();
+        String unfolded = unfold(generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "DST",
+                "Boundary",
+                start,
+                end,
+                "App Calendar",
+                "calendar@example.com",
+                "Host",
+                "host@example.com",
+                "Guest",
+                "guest@example.com",
+                1,
+                null
+        ));
+        assertTrue(unfolded.contains("DTSTART:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(start)));
+        assertTrue(unfolded.contains("DTEND:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(end)));
     }
 
     private static String unfold(String ics) {

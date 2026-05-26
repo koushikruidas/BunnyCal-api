@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.clearInvocations;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.bunnycal.auth.domain.user.User;
@@ -23,7 +24,6 @@ import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.common.enums.ConferencingProviderType;
-import io.bunnycal.conferencing.domain.ConferencingEventMapping;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
@@ -32,10 +32,12 @@ import jakarta.mail.Session;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeMultipart;
 import java.io.InputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Optional;
+import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -318,7 +320,6 @@ class BookingNotificationServiceTest {
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 9L);
         User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CANCELLED");
-        String joinUrl = "https://zoom.us/j/7766554433";
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
@@ -331,13 +332,6 @@ class BookingNotificationServiceTest {
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
-        ConferencingEventMapping mapping = new ConferencingEventMapping();
-        mapping.setBookingId(bookingId);
-        mapping.setProvider(ConferencingProviderType.ZOOM);
-        mapping.setJoinUrl(joinUrl);
-        when(conferencingEventMappingRepository.findByBookingIdAndProvider(bookingId, ConferencingProviderType.ZOOM))
-                .thenReturn(Optional.of(mapping));
-
         service.handleOutboxEvent(event);
 
         verify(mailSender, times(2)).send(messageCaptor.capture());
@@ -345,9 +339,9 @@ class BookingNotificationServiceTest {
 
         String attendeeIcs = unfold(icsBody(attendeeMsg));
         assertTrue(attendeeIcs.contains("METHOD:CANCEL"));
-        // Cancellation surface still reveals the join URL so recipients can
-        // recognise which meeting was cancelled.
-        assertTrue(attendeeIcs.contains("LOCATION:" + joinUrl));
+        assertFalse(attendeeIcs.contains("LOCATION:"));
+        assertFalse(attendeeIcs.contains("URL:"));
+        assertFalse(textBody(attendeeMsg).contains("Join the meeting:"));
     }
 
     @Test
@@ -400,6 +394,70 @@ class BookingNotificationServiceTest {
         assertThrows(IllegalStateException.class, () -> service.handleOutboxEvent(event));
 
         verify(notificationSendDedupService).release(event.getId(), "guest@example.com", "BOOKING_CONFIRMED");
+    }
+
+    @Test
+    void rawMimeLifecycleArtifacts_areCapturableAcrossProjectionAndConferenceVariants() throws Exception {
+        List<ConferencingProviderType> conferenceProviders = List.of(
+                ConferencingProviderType.GOOGLE_MEET,
+                ConferencingProviderType.MICROSOFT_TEAMS,
+                ConferencingProviderType.ZOOM,
+                ConferencingProviderType.CUSTOM_URL
+        );
+        List<io.bunnycal.calendar.domain.CalendarProviderType> projections = List.of(
+                io.bunnycal.calendar.domain.CalendarProviderType.GOOGLE,
+                io.bunnycal.calendar.domain.CalendarProviderType.MICROSOFT
+        );
+        for (io.bunnycal.calendar.domain.CalendarProviderType projection : projections) {
+            for (ConferencingProviderType conferenceProvider : conferenceProviders) {
+                UUID bookingId = UUID.randomUUID();
+                UUID hostId = UUID.randomUUID();
+                Booking booking = booking(bookingId, hostId, "guest@gmail.com", "Guest Name", 10L);
+                User host = User.builder().id(hostId).name("Host Name").email("host@outlook.com").username("host-user").timezone("UTC").build();
+                when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+                when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+                EventType eventType = EventType.builder()
+                        .name("Lifecycle")
+                        .slug("lifecycle")
+                        .projectionProvider(projection)
+                        .conferencingProvider(conferenceProvider)
+                        .customConferenceUrl(conferenceProvider == ConferencingProviderType.CUSTOM_URL ? "https://example.com/room" : null)
+                        .build();
+                when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId))).thenReturn(Optional.of(eventType));
+                when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@gmail.com"));
+                when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@outlook.com"));
+                when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@outlook.com", "guest@gmail.com"));
+                when(notificationSendDedupService.claim(any(), any(), any())).thenReturn(true);
+                when(conferencingCoordinator.prepareForCreate(bookingId, hostId))
+                        .thenReturn(ConferencingInstruction.urlEmbedded(conferenceProvider, "https://meet.example.com/" + conferenceProvider.name().toLowerCase(), null, "m1"));
+                when(conferencingCoordinator.prepareForUpdate(bookingId, hostId))
+                        .thenReturn(ConferencingInstruction.urlEmbedded(conferenceProvider, "https://meet.example.com/" + conferenceProvider.name().toLowerCase(), null, "m1"));
+
+                service.handleOutboxEvent(outboxEvent(bookingId, "BOOKING_CONFIRMED"));
+                ArgumentCaptor<MimeMessage> requestCaptor = ArgumentCaptor.forClass(MimeMessage.class);
+                verify(mailSender, times(2)).send(requestCaptor.capture());
+                String requestMime = rawMime(requestCaptor.getAllValues().get(0));
+                assertTrue(requestMime.contains("method=REQUEST"));
+                assertTrue(requestMime.toLowerCase(java.util.Locale.ROOT).contains("text/calendar"));
+                clearInvocations(mailSender);
+
+                service.handleOutboxEvent(outboxEvent(bookingId, "BOOKING_UPDATED"));
+                ArgumentCaptor<MimeMessage> updateCaptor = ArgumentCaptor.forClass(MimeMessage.class);
+                verify(mailSender, times(2)).send(updateCaptor.capture());
+                String updateMime = rawMime(updateCaptor.getAllValues().get(0));
+                assertTrue(updateMime.contains("method=REQUEST"));
+                clearInvocations(mailSender);
+
+                service.handleOutboxEvent(outboxEvent(bookingId, "BOOKING_CANCELLED"));
+                ArgumentCaptor<MimeMessage> cancelCaptor = ArgumentCaptor.forClass(MimeMessage.class);
+                verify(mailSender, times(2)).send(cancelCaptor.capture());
+                String cancelMime = rawMime(cancelCaptor.getAllValues().get(0));
+                assertTrue(cancelMime.contains("method=CANCEL"));
+                assertFalse(cancelMime.contains("Join the meeting:"));
+                assertFalse(cancelMime.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
+                clearInvocations(mailSender);
+            }
+        }
     }
 
     private static Booking booking(UUID bookingId, UUID hostId, String guestEmail, String guestName, long sequence) {
@@ -513,6 +571,12 @@ class BookingNotificationServiceTest {
 
     private static String unfold(String ics) {
         return ics.replace("\r\n ", "");
+    }
+
+    private static String rawMime(MimeMessage message) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        message.writeTo(out);
+        return out.toString(StandardCharsets.UTF_8);
     }
 
     private static String textBody(MimeMessage message) throws Exception {

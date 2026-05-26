@@ -239,7 +239,9 @@ public class BookingSyncWorker {
     }
 
     private void processUpdate(CalendarSyncJob job) {
-        if (job.getExternalEventId() == null || job.getExternalEventId().isBlank()) {
+        BookingOwnership ownership = bookingOwnershipService.requireOwnership(job.getInternalRefId());
+        String authoritativeExternalEventId = resolveAuthoritativeExternalEventId(job, ownership, "update");
+        if (authoritativeExternalEventId == null || authoritativeExternalEventId.isBlank()) {
             processCreate(job);
             return;
         }
@@ -250,7 +252,7 @@ public class BookingSyncWorker {
                 new CalendarService.UpdateCalendarEventCommand(
                         job.getInternalRefId(),
                         job.getProvider(),
-                        job.getExternalEventId(),
+                        authoritativeExternalEventId,
                         idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId()),
                         instruction,
                         job.getSchedulingConnectionId()
@@ -307,20 +309,22 @@ public class BookingSyncWorker {
 
     private void processDelete(CalendarSyncJob job) {
         cancelConferencing(job);
+        BookingOwnership ownership = bookingOwnershipService.requireOwnership(job.getInternalRefId());
+        String authoritativeExternalEventId = resolveAuthoritativeExternalEventId(job, ownership, "delete");
         boolean idempotentProviderMissing = false;
-        if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
+        if (authoritativeExternalEventId != null && !authoritativeExternalEventId.isBlank()) {
             Instant startedAt = Instant.now();
             try {
                 calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
                         job.getInternalRefId(),
                         job.getProvider(),
-                        job.getExternalEventId(),
+                        authoritativeExternalEventId,
                         job.getSchedulingConnectionId()
                 ));
             } catch (CalendarClientException ex) {
                 if (isDeleteAlreadyConverged(ex)) {
                     log.info("sync_delete_idempotent_success syncJobId={} bookingId={} provider={} externalEventId={} status={}",
-                            job.getId(), job.getInternalRefId(), job.getProvider(), job.getExternalEventId(), ex.getStatusCode());
+                            job.getId(), job.getInternalRefId(), job.getProvider(), authoritativeExternalEventId, ex.getStatusCode());
                     idempotentProviderMissing = true;
                 } else {
                     throw ex;
@@ -337,6 +341,31 @@ public class BookingSyncWorker {
             return;
         }
         syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
+    }
+
+    private String resolveAuthoritativeExternalEventId(CalendarSyncJob job,
+                                                       BookingOwnership ownership,
+                                                       String lifecycleOperation) {
+        String ownershipExternalEventId = ownership.getProviderExternalEventId();
+        String jobExternalEventId = job.getExternalEventId();
+        if (ownershipExternalEventId != null && !ownershipExternalEventId.isBlank()) {
+            if (jobExternalEventId != null
+                    && !jobExternalEventId.isBlank()
+                    && !ownershipExternalEventId.equals(jobExternalEventId)) {
+                meterRegistry.counter("lifecycle_authority_external_event_mismatch_total").increment();
+                log.warn("lifecycle_authority_external_event_mismatch bookingId={} ownershipVersion={} projectionProvider={} projectionConnectionId={} jobExternalEventId={} authoritativeExternalEventId={} syncJobId={} lifecycleOperation={}",
+                        job.getInternalRefId(),
+                        ownership.getOwnershipVersion(),
+                        ownership.getProjectionProvider(),
+                        ownership.getProjectionConnectionId(),
+                        jobExternalEventId,
+                        ownershipExternalEventId,
+                        job.getId(),
+                        lifecycleOperation);
+            }
+            return ownershipExternalEventId;
+        }
+        return jobExternalEventId;
     }
 
     private void cancelConferencing(CalendarSyncJob job) {
