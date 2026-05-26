@@ -2,6 +2,7 @@ package io.bunnycal.calendar.service;
 
 import io.bunnycal.calendar.auth.TokenRefresher;
 import io.bunnycal.calendar.client.MicrosoftApiClient;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
@@ -26,18 +27,16 @@ public class MicrosoftWatchChannelRenewalScheduler {
     private final MicrosoftApiClient microsoftApiClient;
     private final TokenRefresher tokenRefresher;
     private final MeterRegistry meterRegistry;
-    private final String webhookClientState;
-    private final String webhookAddress;
+    private final CalendarWebhookProperties webhookProperties;
     private final Duration renewalLeadTime;
-    private final long ttlSeconds;
+    private final long minTtlSeconds;
 
     public MicrosoftWatchChannelRenewalScheduler(CalendarConnectionRepository connectionRepository,
                                                  CalendarConnectionWriteService connectionWriteService,
                                                  MicrosoftApiClient microsoftApiClient,
                                                  TokenRefresher tokenRefresher,
                                                  MeterRegistry meterRegistry,
-                                                 @Value("${calendar.webhook.shared-secret:}") String webhookClientState,
-                                                 @Value("${calendar.webhook.provider.microsoft.address:http://localhost:8080/integrations/calendar/webhooks/microsoft}") String webhookAddress,
+                                                 CalendarWebhookProperties webhookProperties,
                                                  @Value("${calendar.webhook.renewal.lead-time:PT24H}") Duration renewalLeadTime,
                                                  @Value("${calendar.webhook.provider.microsoft.ttl-seconds:7200}") long ttlSeconds) {
         this.connectionRepository = connectionRepository;
@@ -45,10 +44,9 @@ public class MicrosoftWatchChannelRenewalScheduler {
         this.microsoftApiClient = microsoftApiClient;
         this.tokenRefresher = tokenRefresher;
         this.meterRegistry = meterRegistry;
-        this.webhookClientState = webhookClientState;
-        this.webhookAddress = webhookAddress;
+        this.webhookProperties = webhookProperties;
         this.renewalLeadTime = renewalLeadTime;
-        this.ttlSeconds = Math.max(900L, ttlSeconds);
+        this.minTtlSeconds = Math.max(900L, ttlSeconds);
     }
 
     /**
@@ -58,6 +56,7 @@ public class MicrosoftWatchChannelRenewalScheduler {
      * TTL window regardless of misconfiguration.
      */
     Duration effectiveRenewalLeadTime() {
+        long ttlSeconds = effectiveTtlSeconds();
         Duration halfTtl = Duration.ofSeconds(ttlSeconds / 2);
         return renewalLeadTime.compareTo(halfTtl) > 0 ? halfTtl : renewalLeadTime;
     }
@@ -65,6 +64,11 @@ public class MicrosoftWatchChannelRenewalScheduler {
     @Scheduled(fixedDelayString = "${calendar.webhook.renewal.fixed-delay-ms:900000}")
     @SchedulerLock(name = "microsoft-watch-renewal", lockAtMostFor = "PT10M", lockAtLeastFor = "PT30S")
     public void renewExpiringChannels() {
+        String webhookAddress = webhookProperties.getProvider().getMicrosoft().getAddress();
+        String webhookClientState = webhookProperties.getSharedSecret();
+        if (!webhookProperties.isProviderWebhookEnabled(MICROSOFT_PROVIDER)) {
+            return;
+        }
         if (webhookAddress == null || webhookAddress.isBlank() || webhookClientState == null || webhookClientState.isBlank()) {
             return;
         }
@@ -134,12 +138,19 @@ public class MicrosoftWatchChannelRenewalScheduler {
     }
 
     private MicrosoftApiClient.WebhookSubscription renewOrCreate(String accessToken, CalendarConnection connection) {
+        String webhookAddress = webhookProperties.getProvider().getMicrosoft().getAddress();
+        String webhookClientState = webhookProperties.getSharedSecret();
+        long ttlSeconds = effectiveTtlSeconds();
         Instant expiresAt = Instant.now().plusSeconds(ttlSeconds);
         String subscriptionId = connection.getWebhookChannelId();
         if (subscriptionId != null && !subscriptionId.isBlank()) {
             return microsoftApiClient.renewEventSubscription(accessToken, subscriptionId, expiresAt);
         }
         return microsoftApiClient.createEventSubscription(accessToken, webhookAddress, webhookClientState, expiresAt);
+    }
+
+    private long effectiveTtlSeconds() {
+        return Math.max(minTtlSeconds, webhookProperties.getProvider().getMicrosoft().getTtlSeconds());
     }
 
     private void deleteSubscriptionBestEffort(java.util.UUID connectionId, String subscriptionId) {

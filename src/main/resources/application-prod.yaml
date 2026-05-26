@@ -1,0 +1,8 @@
+calendar:
+  webhook:
+    enabled: true
+    provider:
+      google:
+        enabled: true
+      microsoft:
+        enabled: true

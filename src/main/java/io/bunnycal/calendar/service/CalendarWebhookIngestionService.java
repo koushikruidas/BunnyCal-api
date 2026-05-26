@@ -4,8 +4,10 @@ import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.OAuthError;
 import io.bunnycal.calendar.client.OAuthErrorCategory;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.replay.WebhookDeliveryMetadata;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ErrorCode;
@@ -19,7 +21,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,9 +36,7 @@ public class CalendarWebhookIngestionService {
     private final CalendarConnectionWriteService connectionWriteService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final MeterRegistry meterRegistry;
-    private final boolean webhookEnabled;
-    private final boolean googleWebhookEnabled;
-    private final boolean microsoftWebhookEnabled;
+    private final CalendarWebhookProperties webhookProperties;
     private final Counter webhookIngestTotal;
     private final Counter webhookDuplicateTotal;
     private final Counter reconciliationConflictTotal;
@@ -51,9 +50,7 @@ public class CalendarWebhookIngestionService {
             CalendarConnectionWriteService connectionWriteService,
             SlotCacheVersionService slotCacheVersionService,
             MeterRegistry meterRegistry,
-            @Value("${calendar.webhook.enabled:false}") boolean webhookEnabled,
-            @Value("${calendar.webhook.provider.google.enabled:false}") boolean googleWebhookEnabled,
-            @Value("${calendar.webhook.provider.microsoft.enabled:false}") boolean microsoftWebhookEnabled) {
+            CalendarWebhookProperties webhookProperties) {
         this.dedupService = dedupService;
         this.connectionRepository = connectionRepository;
         this.syncClientRegistry = syncClientRegistry;
@@ -62,9 +59,7 @@ public class CalendarWebhookIngestionService {
         this.connectionWriteService = connectionWriteService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.meterRegistry = meterRegistry;
-        this.webhookEnabled = webhookEnabled;
-        this.googleWebhookEnabled = googleWebhookEnabled;
-        this.microsoftWebhookEnabled = microsoftWebhookEnabled;
+        this.webhookProperties = webhookProperties;
         this.webhookIngestTotal = Counter.builder("webhook_ingest_total").register(meterRegistry);
         this.webhookDuplicateTotal = Counter.builder("webhook_duplicate_total").register(meterRegistry);
         this.reconciliationConflictTotal = Counter.builder("reconciliation_conflict_total").register(meterRegistry);
@@ -82,21 +77,21 @@ public class CalendarWebhookIngestionService {
 
     @Transactional
     public void ingestMicrosoft(UUID connectionId, String providerEventId, String rawPayload, WebhookDeliveryMetadata deliveryMetadata) {
-        ingest("microsoft", microsoftWebhookEnabled, connectionId, providerEventId, rawPayload, deliveryMetadata);
+        ingest("microsoft", CalendarProviderType.MICROSOFT, connectionId, providerEventId, rawPayload, deliveryMetadata);
     }
 
     @Transactional
     public void ingestGoogle(UUID connectionId, String providerEventId, String rawPayload, WebhookDeliveryMetadata deliveryMetadata) {
-        ingest("google", googleWebhookEnabled, connectionId, providerEventId, rawPayload, deliveryMetadata);
+        ingest("google", CalendarProviderType.GOOGLE, connectionId, providerEventId, rawPayload, deliveryMetadata);
     }
 
     private void ingest(String provider,
-                        boolean providerEnabled,
+                        CalendarProviderType providerType,
                         UUID connectionId,
                         String providerEventId,
                         String rawPayload,
                         WebhookDeliveryMetadata deliveryMetadata) {
-        if (!webhookEnabled || !providerEnabled) {
+        if (!webhookProperties.isProviderWebhookEnabled(providerType)) {
             throw new CustomException(ErrorCode.FORBIDDEN, "Calendar webhook ingestion is disabled.");
         }
         if (connectionId == null) {

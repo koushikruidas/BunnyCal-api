@@ -4,6 +4,7 @@ import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.auth.TokenRefresher;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.GoogleApiClient;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -33,8 +34,7 @@ public class GoogleWatchChannelRenewalScheduler {
     private final CalendarConnectionWriteService connectionWriteService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final MeterRegistry meterRegistry;
-    private final String googleWebhookAddress;
-    private final String googleWebhookToken;
+    private final CalendarWebhookProperties webhookProperties;
     private final Duration renewalLeadTime;
 
     public GoogleWatchChannelRenewalScheduler(
@@ -44,8 +44,7 @@ public class GoogleWatchChannelRenewalScheduler {
             CalendarConnectionWriteService connectionWriteService,
             SlotCacheVersionService slotCacheVersionService,
             MeterRegistry meterRegistry,
-            @Value("${calendar.webhook.provider.google.address:http://localhost:8080/integrations/calendar/webhooks/google}") String googleWebhookAddress,
-            @Value("${calendar.webhook.shared-secret:}") String googleWebhookToken,
+            CalendarWebhookProperties webhookProperties,
             @Value("${calendar.webhook.renewal.lead-time:PT24H}") Duration renewalLeadTime) {
         this.connectionRepository = connectionRepository;
         this.tokenRefresher = tokenRefresher;
@@ -53,8 +52,7 @@ public class GoogleWatchChannelRenewalScheduler {
         this.connectionWriteService = connectionWriteService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.meterRegistry = meterRegistry;
-        this.googleWebhookAddress = googleWebhookAddress;
-        this.googleWebhookToken = googleWebhookToken;
+        this.webhookProperties = webhookProperties;
         this.renewalLeadTime = renewalLeadTime;
 
         Gauge.builder("webhook_channel_age_seconds", this, GoogleWatchChannelRenewalScheduler::maxChannelAgeSeconds)
@@ -70,6 +68,11 @@ public class GoogleWatchChannelRenewalScheduler {
             lockAtLeastFor = "PT30S"
     )
     public void renewExpiringChannels() {
+        String googleWebhookAddress = webhookProperties.getProvider().getGoogle().getAddress();
+        String googleWebhookToken = webhookProperties.getSharedSecret();
+        if (!webhookProperties.isProviderWebhookEnabled(GOOGLE_PROVIDER)) {
+            return;
+        }
         if (googleWebhookAddress == null || googleWebhookAddress.isBlank()
                 || googleWebhookToken == null || googleWebhookToken.isBlank()) {
             return;
@@ -142,6 +145,8 @@ public class GoogleWatchChannelRenewalScheduler {
      * after its 7-day TTL.
      */
     private void renewConnection(CalendarConnection connection) {
+        String googleWebhookAddress = webhookProperties.getProvider().getGoogle().getAddress();
+        String googleWebhookToken = webhookProperties.getSharedSecret();
         // 1. Create the new channel FIRST.
         GoogleApiClient.WatchChannel renewed = tokenRefresher.executeWithValidToken(connection.getId(), accessToken ->
                 googleApiClient.watchEvents(accessToken, googleWebhookAddress, googleWebhookToken));

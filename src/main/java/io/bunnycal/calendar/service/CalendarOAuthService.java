@@ -8,6 +8,7 @@ import io.bunnycal.calendar.auth.TokenCipher;
 import io.bunnycal.calendar.client.GoogleApiClient;
 import io.bunnycal.calendar.client.OAuthTokenExchangeResult;
 import io.bunnycal.calendar.client.TokenRefreshResult;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.config.GoogleOAuthProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -22,7 +23,6 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,8 +41,7 @@ public class CalendarOAuthService {
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final MeterRegistry meterRegistry;
-    private final String googleWebhookAddress;
-    private final String googleWebhookToken;
+    private final CalendarWebhookProperties webhookProperties;
 
     public CalendarOAuthService(CalendarConnectionRepository repository,
                                 GoogleApiClient googleApiClient,
@@ -54,8 +53,7 @@ public class CalendarOAuthService {
                                 SlotCacheVersionService slotCacheVersionService,
                                 CalendarConnectionWriteService connectionWriteService,
                                 MeterRegistry meterRegistry,
-                                @Value("${calendar.webhook.google.address:http://localhost:8080/integrations/calendar/webhooks/google}") String googleWebhookAddress,
-                                @Value("${calendar.webhook.shared-secret:}") String googleWebhookToken) {
+                                CalendarWebhookProperties webhookProperties) {
         this.repository = repository;
         this.googleApiClient = googleApiClient;
         this.properties = properties;
@@ -66,8 +64,7 @@ public class CalendarOAuthService {
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.meterRegistry = meterRegistry;
-        this.googleWebhookAddress = googleWebhookAddress;
-        this.googleWebhookToken = googleWebhookToken;
+        this.webhookProperties = webhookProperties;
     }
 
     public String buildGoogleConnectUrl(UUID userId) {
@@ -148,7 +145,10 @@ public class CalendarOAuthService {
                 connectionWriteService.advanceProviderCursor(
                         saved.getId(), null, fullBatch.nextCursor(), Instant.now(), "oauth_initial_full_cursor_advance");
             }
-            if (googleWebhookAddress != null && !googleWebhookAddress.isBlank()
+            String googleWebhookAddress = webhookProperties.getProvider().getGoogle().getAddress();
+            String googleWebhookToken = webhookProperties.getSharedSecret();
+            if (webhookProperties.isProviderWebhookEnabled(GOOGLE_PROVIDER)
+                    && googleWebhookAddress != null && !googleWebhookAddress.isBlank()
                     && googleWebhookToken != null && !googleWebhookToken.isBlank()) {
                 try {
                     GoogleApiClient.WatchChannel watch = googleApiClient.watchEvents(

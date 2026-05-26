@@ -15,6 +15,7 @@ import io.bunnycal.calendar.auth.TokenCipher;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.client.GoogleApiClient;
 import io.bunnycal.calendar.client.OAuthTokenExchangeResult;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.config.CalendarSecurityProperties;
 import io.bunnycal.calendar.config.GoogleOAuthProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -74,10 +75,15 @@ class CalendarOAuthServiceTest {
         stateService = new OAuthStateService(securityProperties, new ObjectMapper());
         when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
         CalendarSyncClientRegistry syncClientRegistry = new CalendarSyncClientRegistry(List.of(syncClient));
+        CalendarWebhookProperties webhookProperties = new CalendarWebhookProperties();
+        webhookProperties.setEnabled(true);
+        webhookProperties.setSharedSecret("secret");
+        webhookProperties.getProvider().getGoogle().setEnabled(true);
+        webhookProperties.getProvider().getGoogle().setAddress("http://localhost:8080/integrations/calendar/webhooks/google");
         service = new CalendarOAuthService(
                 repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClientRegistry, slotCacheVersionService, connectionWriteService,
                 new SimpleMeterRegistry(),
-                "http://localhost:8080/integrations/calendar/webhooks/google", "secret");
+                webhookProperties);
         when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any())).thenAnswer(inv -> inv.getArgument(0));

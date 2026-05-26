@@ -135,6 +135,14 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
             """)
     long countActiveHealthyWatches(@Param("provider") CalendarProviderType provider, @Param("now") Instant now);
 
+    @Query("""
+            SELECT COUNT(c)
+            FROM CalendarConnection c
+            WHERE c.provider = :provider
+              AND c.status = io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE
+            """)
+    long countActiveConnections(@Param("provider") CalendarProviderType provider);
+
     /**
      * Phase 4 R1 fix: ACTIVE rows that either have no watch channel (initial creation
      * silently failed) OR have a channel expiring within the renewal threshold.

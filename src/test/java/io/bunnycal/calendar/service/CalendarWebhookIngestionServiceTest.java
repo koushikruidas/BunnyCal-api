@@ -13,6 +13,7 @@ import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.OAuthError;
 import io.bunnycal.calendar.client.OAuthErrorCategory;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -46,6 +47,10 @@ class CalendarWebhookIngestionServiceTest {
     void setUp() {
         lenient().when(syncClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
         CalendarSyncClientRegistry registry = new CalendarSyncClientRegistry(List.of(syncClient));
+        CalendarWebhookProperties webhookProperties = new CalendarWebhookProperties();
+        webhookProperties.setEnabled(true);
+        webhookProperties.getProvider().getGoogle().setEnabled(true);
+        webhookProperties.getProvider().getMicrosoft().setEnabled(true);
         service = new CalendarWebhookIngestionService(
                 dedupService,
                 connectionRepository,
@@ -55,9 +60,7 @@ class CalendarWebhookIngestionServiceTest {
                 connectionWriteService,
                 slotCacheVersionService,
                 new SimpleMeterRegistry(),
-                true,
-                true,
-                true
+                webhookProperties
         );
     }
 

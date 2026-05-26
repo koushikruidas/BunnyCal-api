@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.calendar.auth.TokenRefresher;
 import io.bunnycal.calendar.client.GoogleApiClient;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -45,6 +46,11 @@ class GoogleWatchChannelRenewalSchedulerTest {
 
     @BeforeEach
     void setUp() {
+        CalendarWebhookProperties webhookProperties = new CalendarWebhookProperties();
+        webhookProperties.setEnabled(true);
+        webhookProperties.setSharedSecret("test-secret");
+        webhookProperties.getProvider().getGoogle().setEnabled(true);
+        webhookProperties.getProvider().getGoogle().setAddress("http://localhost:8080/integrations/calendar/webhooks/google");
         scheduler = new GoogleWatchChannelRenewalScheduler(
                 connectionRepository,
                 tokenRefresher,
@@ -52,8 +58,7 @@ class GoogleWatchChannelRenewalSchedulerTest {
                 connectionWriteService,
                 slotCacheVersionService,
                 new SimpleMeterRegistry(),
-                "http://localhost:8080/integrations/calendar/webhooks/google",
-                "test-secret",
+                webhookProperties,
                 Duration.ofHours(24));
 
         lenient().when(tokenRefresher.executeWithValidToken(any(), any())).thenAnswer(invocation -> {

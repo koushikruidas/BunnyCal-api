@@ -7,6 +7,7 @@ import io.bunnycal.calendar.auth.OAuthStateService;
 import io.bunnycal.calendar.auth.TokenCipher;
 import io.bunnycal.calendar.client.MicrosoftApiClient;
 import io.bunnycal.calendar.client.OAuthTokenExchangeResult;
+import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.config.MicrosoftOAuthProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -20,7 +21,6 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,9 +38,7 @@ public class MicrosoftCalendarOAuthService {
     private final CalendarSyncClientRegistry syncClientRegistry;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
-    private final String webhookAddress;
-    private final String webhookClientState;
-    private final long webhookTtlSeconds;
+    private final CalendarWebhookProperties webhookProperties;
 
     public MicrosoftCalendarOAuthService(CalendarConnectionRepository repository,
                                          MicrosoftApiClient microsoftApiClient,
@@ -51,9 +49,7 @@ public class MicrosoftCalendarOAuthService {
                                          CalendarSyncClientRegistry syncClientRegistry,
                                          SlotCacheVersionService slotCacheVersionService,
                                          CalendarConnectionWriteService connectionWriteService,
-                                         @Value("${calendar.webhook.provider.microsoft.address:http://localhost:8080/integrations/calendar/webhooks/microsoft}") String webhookAddress,
-                                         @Value("${calendar.webhook.shared-secret:}") String webhookClientState,
-                                         @Value("${calendar.webhook.provider.microsoft.ttl-seconds:7200}") long webhookTtlSeconds) {
+                                         CalendarWebhookProperties webhookProperties) {
         this.repository = repository;
         this.microsoftApiClient = microsoftApiClient;
         this.properties = properties;
@@ -63,9 +59,7 @@ public class MicrosoftCalendarOAuthService {
         this.syncClientRegistry = syncClientRegistry;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
-        this.webhookAddress = webhookAddress;
-        this.webhookClientState = webhookClientState;
-        this.webhookTtlSeconds = Math.max(900L, webhookTtlSeconds);
+        this.webhookProperties = webhookProperties;
     }
 
     public String buildMicrosoftConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
@@ -206,7 +200,11 @@ public class MicrosoftCalendarOAuthService {
     }
 
     private void createWebhookSubscription(UUID connectionId, String accessToken) {
+        String webhookAddress = webhookProperties.getProvider().getMicrosoft().getAddress();
+        String webhookClientState = webhookProperties.getSharedSecret();
+        long webhookTtlSeconds = Math.max(900L, webhookProperties.getProvider().getMicrosoft().getTtlSeconds());
         if (accessToken == null || accessToken.isBlank()
+                || !webhookProperties.isProviderWebhookEnabled(MICROSOFT_PROVIDER)
                 || webhookAddress == null || webhookAddress.isBlank()
                 || webhookClientState == null || webhookClientState.isBlank()) {
             return;

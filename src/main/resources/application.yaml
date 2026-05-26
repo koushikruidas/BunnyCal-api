@@ -129,7 +129,7 @@ auth:
 
 logging:
   level:
-    org.flywaydb: DEBUG
+    org.flywaydb: INFO
 
 calendar:
   sync:
@@ -138,7 +138,7 @@ calendar:
       shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:false}
       stale-cursor-max-age-hours: ${CALENDAR_SYNC_INCREMENTAL_STALE_CURSOR_MAX_AGE_HOURS:168}
   webhook:
-    enabled: ${CALENDAR_WEBHOOK_ENABLED:true}
+    enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
     auth:
       require-signature: ${CALENDAR_WEBHOOK_REQUIRE_SIGNATURE:true}
       max-skew-seconds: ${CALENDAR_WEBHOOK_MAX_SKEW_SECONDS:300}

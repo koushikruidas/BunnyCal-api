@@ -38,6 +38,9 @@ BunnyCal is a modular monolith implementing:
 
 Key shift vs old doc: calendar/outbox/sync subsystems now exist and are active in code; previous claims that they were missing are no longer correct.
 
+Calendar sync operational semantics (pull-first correctness + webhook acceleration) are documented in:
+- `docs/CALENDAR_SYNC_OPERATIONAL_MODEL.md`
+
 ---
 
 ## 2. Document Drift Audit
