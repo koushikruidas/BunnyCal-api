@@ -120,6 +120,20 @@ public class ProviderEventProjectionService {
                     .map(e -> new ProviderEventVersionComparator.VersionVector(
                             e.getProviderSequence(), e.getProviderUpdatedAt(), e.getProviderEtag(), e.getPayloadHash()))
                     .orElse(null);
+            if (existing.isPresent() && isProjectionEcho(existing.get(), incoming)) {
+                meterRegistry.counter("convergence_dedup_applied",
+                        "provider", provider,
+                        "connectionId", connectionId.toString(),
+                        "reason", "projection_echo").increment();
+                meterRegistry.counter("provider_projection_echo_detected",
+                        "provider", provider,
+                        "connectionId", connectionId.toString()).increment();
+                log.info("convergence_loop_prevented provider={} connectionId={} externalEventId={} reason=projection_echo",
+                        provider, connectionId, incoming.externalEventId());
+                log.info("replay_window_duplicate_suppressed provider={} connectionId={} externalEventId={} reason=projection_echo payloadHash={}",
+                        provider, connectionId, incoming.externalEventId(), incoming.payloadHash());
+                return false;
+            }
 
             ProviderEventVersionComparator.ComparisonResult compare = comparator.compare(incomingVector, persistedVector);
             log.info("projection_apply_attempt provider={} connectionId={} externalEventId={} compareResult={} incomingSequence={} persistedSequence={} incomingUpdatedAt={} persistedUpdatedAt={}",
@@ -310,6 +324,20 @@ public class ProviderEventProjectionService {
     private static String safeMdc(String key) {
         String v = MDC.get(key);
         return v == null ? "" : v;
+    }
+
+    private static boolean isProjectionEcho(ProviderEventProjection existing,
+                                            CalendarEventIngestionService.IncomingCalendarEvent incoming) {
+        String existingHash = existing.getPayloadHash();
+        String incomingHash = incoming.payloadHash();
+        if (existingHash != null && !existingHash.isBlank() && incomingHash != null && !incomingHash.isBlank()) {
+            return existingHash.equals(incomingHash);
+        }
+        boolean sameWindow = existing.getProviderUpdatedAt() != null
+                && incoming.providerUpdatedAt() != null
+                && existing.getProviderUpdatedAt().equals(incoming.providerUpdatedAt());
+        boolean sameStatus = ("TOMBSTONED_SOFT".equals(existing.getProjectionStatus())) == incoming.cancelled();
+        return sameWindow && sameStatus;
     }
 
     private enum LinkageClassification {

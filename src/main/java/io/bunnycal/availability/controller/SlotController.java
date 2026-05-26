@@ -8,6 +8,7 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import java.time.LocalDate;
 import java.util.UUID;
+import org.slf4j.MDC;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,11 +31,13 @@ public class SlotController {
     public ResponseEntity<ApiResponse<SlotResponse>> getSlots(
             @PathVariable("userId") UUID userId,
             @PathVariable("eventTypeId") UUID eventTypeId,
-            @RequestParam("date") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+            @RequestParam("date") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+            @RequestParam(name = "debug", defaultValue = "false") boolean debug) {
         if (date == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "date is required.");
         }
-        SlotResponse response = slotService.getSlots(new SlotRequest(userId, eventTypeId, date));
+        String requestId = MDC.get("correlationId");
+        SlotResponse response = slotService.getSlots(new SlotRequest(userId, eventTypeId, date, debug, requestId));
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 }

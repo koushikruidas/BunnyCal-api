@@ -9,6 +9,7 @@ import io.bunnycal.conferencing.service.ConferencingCoordinator;
 import io.bunnycal.conferencing.service.ConferencingExecutionPolicy;
 import io.bunnycal.conferencing.service.ConferencingExecutionResult;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
+import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.sync.orchestration.ExternalTerminalDeleteConvergenceService;
 import io.bunnycal.sync.orchestration.IdempotencyKeyFactory;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
@@ -210,6 +211,7 @@ public class BookingSyncWorker {
         Instant startedAt = Instant.now();
         ConferencingExecutionResult conferencingResult = resolveConferencingInstructionForCreate(job);
         ConferencingInstruction instruction = conferencingResult.instruction();
+        ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(instruction, "conferencing_instruction", Instant.now());
         CalendarService.CreateEventResult result = calendarService.createEvent(
                 new CalendarService.CreateCalendarEventCommand(
                         job.getInternalRefId(),
@@ -220,14 +222,15 @@ public class BookingSyncWorker {
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
+            conferenceDetails = conferenceDetails.withJoinUrlIfMissing(result.conferenceUrl(), "provider_create_result");
             syncJobRepository.markSyncedWithMetadata(
                     job.getId(),
                     job.getVersion(),
                     result.externalEventId(),
                     result.providerEventUrl(),
-                    resolveConferenceUrl(result, instruction),
-                    resolveConferenceProvider(instruction),
-                    toConferenceMetadataJson(instruction, conferencingResult));
+                    conferenceDetails.joinUrl(),
+                    conferenceDetails.provider(),
+                    toConferenceMetadataJson(conferenceDetails, conferencingResult));
             BookingOwnershipService.LinkageAttachResult attachResult =
                     bookingOwnershipService.attachExternalEventIdResult(job.getInternalRefId(), result.externalEventId());
             if (attachResult == BookingOwnershipService.LinkageAttachResult.CONFLICT) {
@@ -248,6 +251,7 @@ public class BookingSyncWorker {
         Instant startedAt = Instant.now();
         ConferencingExecutionResult conferencingResult = resolveConferencingInstructionForUpdate(job);
         ConferencingInstruction instruction = conferencingResult.instruction();
+        ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(instruction, "conferencing_instruction", Instant.now());
         String externalId = calendarService.updateEvent(
                 new CalendarService.UpdateCalendarEventCommand(
                         job.getInternalRefId(),
@@ -263,9 +267,9 @@ public class BookingSyncWorker {
                 job.getVersion(),
                 externalId,
                 job.getProviderEventUrl(),
-                resolveConferenceUrl(null, instruction),
-                resolveConferenceProvider(instruction),
-                toConferenceMetadataJson(instruction, conferencingResult));
+                conferenceDetails.joinUrl(),
+                conferenceDetails.provider(),
+                toConferenceMetadataJson(conferenceDetails, conferencingResult));
         bookingOwnershipService.attachExternalEventIdResult(job.getInternalRefId(), externalId);
     }
 
@@ -400,33 +404,20 @@ public class BookingSyncWorker {
         return result;
     }
 
-    private static String resolveConferenceProvider(ConferencingInstruction instruction) {
-        if (instruction == null || instruction.providerType() == null) {
-            return null;
-        }
-        return instruction.providerType().name();
-    }
-
-    private static String resolveConferenceUrl(CalendarService.CreateEventResult result,
-                                               ConferencingInstruction instruction) {
-        if (result != null && result.conferenceUrl() != null && !result.conferenceUrl().isBlank()) {
-            return result.conferenceUrl();
-        }
-        if (instruction != null && instruction.joinUrl() != null && !instruction.joinUrl().isBlank()) {
-            return instruction.joinUrl();
-        }
-        return null;
-    }
-
-    private String toConferenceMetadataJson(ConferencingInstruction instruction, ConferencingExecutionResult result) {
-        if (instruction == null) {
+    private String toConferenceMetadataJson(ConferenceDetails details, ConferencingExecutionResult result) {
+        if (details == null) {
             return null;
         }
         try {
             return objectMapper.writeValueAsString(Map.of(
-                    "mode", String.valueOf(instruction.mode()),
-                    "meetingId", instruction.meetingId() == null ? "" : instruction.meetingId(),
-                    "hostUrl", instruction.hostUrl() == null ? "" : instruction.hostUrl(),
+                    "provider", details.provider() == null ? "NONE" : details.provider(),
+                    "joinUrl", details.joinUrl() == null ? "" : details.joinUrl(),
+                    "dialIn", details.dialIn() == null ? "" : details.dialIn(),
+                    "meetingCode", details.meetingCode() == null ? "" : details.meetingCode(),
+                    "password", details.password() == null ? "" : details.password(),
+                    "sourceOfTruth", details.sourceOfTruth() == null ? "unknown" : details.sourceOfTruth(),
+                    "updatedAt", String.valueOf(details.updatedAt()),
+                    "rawPayload", details.rawPayload() == null ? Map.of() : details.rawPayload(),
                     "executionOutcome", result == null ? "APPLIED" : result.outcome().name(),
                     "executionReasonCode", result == null || result.reasonCode() == null ? "" : result.reasonCode()
             ));

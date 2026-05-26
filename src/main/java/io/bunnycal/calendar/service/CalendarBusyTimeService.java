@@ -13,10 +13,13 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -28,11 +31,14 @@ public class CalendarBusyTimeService {
 
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
+    private final MeterRegistry meterRegistry;
 
     public CalendarBusyTimeService(CalendarConnectionRepository connectionRepository,
-                                   CalendarEventRepository eventRepository) {
+                                   CalendarEventRepository eventRepository,
+                                   MeterRegistry meterRegistry) {
         this.connectionRepository = connectionRepository;
         this.eventRepository = eventRepository;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -45,6 +51,27 @@ public class CalendarBusyTimeService {
      * selection was introduced.
      */
     public List<TimeInterval> busyIntervalsForDate(
+            UUID userId,
+            LocalDate date,
+            ZoneId zoneId,
+            List<AvailabilityBinding> availabilityBindings) {
+        List<BusyInterval> canonical = busyIntervalsForDateCanonical(userId, date, zoneId, availabilityBindings);
+        List<TimeInterval> intervals = new ArrayList<>(canonical.size());
+        ZonedDateTime dayStart = date.atStartOfDay(zoneId);
+        ZonedDateTime dayEnd = dayStart.plusDays(1);
+        for (BusyInterval interval : canonical) {
+            ZonedDateTime start = DateTimeUtils.toZone(interval.start(), zoneId);
+            ZonedDateTime end = DateTimeUtils.toZone(interval.end(), zoneId);
+            if (start.isBefore(dayStart)) start = dayStart;
+            if (end.isAfter(dayEnd)) end = dayEnd;
+            if (start.isBefore(end)) {
+                intervals.add(new TimeInterval(start, end));
+            }
+        }
+        return IntervalUtils.normalize(intervals);
+    }
+
+    public List<BusyInterval> busyIntervalsForDateCanonical(
             UUID userId,
             LocalDate date,
             ZoneId zoneId,
@@ -76,22 +103,68 @@ public class CalendarBusyTimeService {
                             userId, dayEndUtc, dayStartUtc);
         }
 
-        List<TimeInterval> intervals = new ArrayList<>(events.size());
-        ZonedDateTime dayStart = date.atStartOfDay(zoneId);
-        ZonedDateTime dayEnd   = dayStart.plusDays(1);
+        List<BusyInterval> intervals = new ArrayList<>(events.size());
         for (CalendarEvent event : events) {
-            ZonedDateTime start = DateTimeUtils.toZone(event.getStartsAt(), zoneId);
-            ZonedDateTime end   = DateTimeUtils.toZone(event.getEndsAt(),   zoneId);
-            if (start.isBefore(dayStart)) start = dayStart;
-            if (end.isAfter(dayEnd))      end   = dayEnd;
-            if (start.isBefore(end)) {
-                intervals.add(new TimeInterval(start, end));
+            if (event.getStartsAt() != null && event.getEndsAt() != null && event.getStartsAt().isBefore(event.getEndsAt())) {
+                intervals.add(new BusyInterval(
+                        event.getStartsAt(),
+                        event.getEndsAt(),
+                        event.getProvider(),
+                        event.getConnectionId() == null ? "unknown" : event.getConnectionId().toString(),
+                        event.getExternalEventId(),
+                        "calendar_event_projection",
+                        event.getUpdatedAt() == null ? Instant.now() : event.getUpdatedAt()));
             }
         }
-
-        List<TimeInterval> merged = IntervalUtils.normalize(intervals);
-        log.debug("availability[userId={} date={}] events={} merged-intervals={}",
-                userId, date, events.size(), merged.size());
-        return merged;
+        intervals.sort(Comparator.comparing(BusyInterval::start));
+        long microsoftCount = intervals.stream()
+                .filter(i -> "MICROSOFT".equalsIgnoreCase(i.sourceProvider()))
+                .count();
+        log.info("availability_busy_intervals_canonicalized userId={} date={} total={} microsoft={} google={}",
+                userId,
+                date,
+                intervals.size(),
+                microsoftCount,
+                intervals.stream().filter(i -> "GOOGLE".equalsIgnoreCase(i.sourceProvider())).count());
+        if (microsoftCount > 0) {
+            Instant latestMicrosoftEnd = intervals.stream()
+                    .filter(i -> "MICROSOFT".equalsIgnoreCase(i.sourceProvider()))
+                    .map(BusyInterval::end)
+                    .max(Instant::compareTo)
+                    .orElse(dayStartUtc);
+            log.info("microsoft_availability_ingestion_freshness userId={} date={} latestBusyEndUtc={} windowEndUtc={}",
+                    userId, date, latestMicrosoftEnd, dayEndUtc);
+            double ageSeconds = Math.max(0d, (double) java.time.Duration.between(latestMicrosoftEnd, Instant.now()).toSeconds());
+            meterRegistry.gauge("microsoft_availability_ingestion_age_seconds",
+                    java.util.List.of(
+                            Tag.of("provider", "microsoft"),
+                            Tag.of("connectionId", "mixed"),
+                            Tag.of("calendarId", "unknown"),
+                            Tag.of("tenantId", "unknown"),
+                            Tag.of("ingestionMode", "canonical_projection"),
+                            Tag.of("syncType", "pull_or_webhook")),
+                    ageSeconds);
+            meterRegistry.gauge("microsoft_busy_interval_count",
+                    java.util.List.of(
+                            Tag.of("provider", "microsoft"),
+                            Tag.of("connectionId", "mixed"),
+                            Tag.of("calendarId", "unknown"),
+                            Tag.of("tenantId", "unknown"),
+                            Tag.of("ingestionMode", "canonical_projection"),
+                            Tag.of("syncType", "pull_or_webhook")),
+                    microsoftCount);
+            if (latestMicrosoftEnd.isBefore(Instant.now().minusSeconds(3600))) {
+                meterRegistry.counter("microsoft_availability_stale_state_total",
+                        "provider", "microsoft",
+                        "connectionId", "mixed",
+                        "calendarId", "unknown",
+                        "tenantId", "unknown",
+                        "ingestionMode", "canonical_projection",
+                        "syncType", "pull_or_webhook").increment();
+                log.warn("microsoft_availability_stale_window_detected userId={} date={} latestBusyEndUtc={} nowUtc={}",
+                        userId, date, latestMicrosoftEnd, Instant.now());
+            }
+        }
+        return List.copyOf(intervals);
     }
 }

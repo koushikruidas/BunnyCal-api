@@ -40,6 +40,7 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
 
     @Override
     public SyncBatch fetchIncremental(CalendarConnection connection, SyncSourceAttribution sourceAttribution) throws SyncTokenInvalidException {
+        Instant startedAt = Instant.now();
         String cursor = normalize(connection.getProviderSyncCursor());
         if (cursor == null) {
             SyncBatch full = fetchFull(connection, sourceAttribution);
@@ -58,6 +59,13 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     connection.getId(),
                     token -> microsoftApiClient.listEventsIncremental(token, cursor));
         } catch (CalendarClientException ex) {
+            meterRegistry.counter("microsoft_availability_fetch_failures_total",
+                    "provider", "microsoft",
+                    "connectionId", connection.getId().toString(),
+                    "calendarId", "primary",
+                    "tenantId", "unknown",
+                    "ingestionMode", "incremental",
+                    "syncType", source(sourceAttribution)).increment();
             if (isCursorCorruptionError(ex)) {
                 log.warn("microsoft_incremental_cursor_rejected connectionId={} statusCode={} message={}",
                         connection.getId(), ex.getStatusCode(), ex.getMessage());
@@ -67,6 +75,15 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
             }
             throw ex;
         }
+        long latencyMs = Math.max(0L, java.time.Duration.between(startedAt, Instant.now()).toMillis());
+        meterRegistry.timer("microsoft_getschedule_latency_ms",
+                "provider", "microsoft",
+                "connectionId", connection.getId().toString(),
+                "calendarId", "primary",
+                "tenantId", "unknown",
+                "ingestionMode", "incremental",
+                "syncType", source(sourceAttribution))
+                .record(latencyMs, java.util.concurrent.TimeUnit.MILLISECONDS);
         String nextCursor = normalize(window.nextDeltaCursor());
         if (nextCursor != null && isLikelyCorruptedCursor(nextCursor)) {
             log.warn("microsoft_incremental_next_cursor_invalid connectionId={} cursorLength={} reason=oversized_or_reencoded",
@@ -76,23 +93,49 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
             throw new SyncTokenInvalidException("Microsoft next incremental cursor is invalid; full resync required");
         }
         meterRegistry.counter("calendar.sync.incremental.total", "provider", "microsoft").increment();
-        return new SyncBatch(toIncoming(window.events()), nextCursor, false, false, "incremental");
+        return new SyncBatch(toIncoming(window.events(), connection, sourceAttribution), nextCursor, false, false, "incremental");
     }
 
     @Override
     public SyncBatch fetchFull(CalendarConnection connection, SyncSourceAttribution sourceAttribution) {
+        Instant startedAt = Instant.now();
         MicrosoftApiClient.SyncWindow window = tokenRefresher.executeWithValidToken(
                 connection.getId(),
                 microsoftApiClient::listEventsFull);
+        long latencyMs = Math.max(0L, java.time.Duration.between(startedAt, Instant.now()).toMillis());
+        meterRegistry.timer("microsoft_getschedule_latency_ms",
+                        "provider", "microsoft",
+                        "connectionId", connection.getId().toString(),
+                        "calendarId", "primary",
+                        "tenantId", "unknown",
+                        "ingestionMode", "full",
+                        "syncType", source(sourceAttribution))
+                .record(latencyMs, java.util.concurrent.TimeUnit.MILLISECONDS);
         meterRegistry.counter("calendar.sync.incremental_recovery.total",
                 "provider", "microsoft",
                 "source", source(sourceAttribution)).increment();
-        return new SyncBatch(toIncoming(window.events()), normalize(window.nextDeltaCursor()), true, false, "full_recovery");
+        return new SyncBatch(toIncoming(window.events(), connection, sourceAttribution), normalize(window.nextDeltaCursor()), true, false, "full_recovery");
     }
 
-    private static List<CalendarEventIngestionService.IncomingCalendarEvent> toIncoming(List<MicrosoftApiClient.CalendarEventObservation> observations) {
+    private List<CalendarEventIngestionService.IncomingCalendarEvent> toIncoming(List<MicrosoftApiClient.CalendarEventObservation> observations,
+                                                                                  CalendarConnection connection,
+                                                                                  SyncSourceAttribution sourceAttribution) {
         if (observations == null || observations.isEmpty()) {
             return List.of();
+        }
+        long normalizationFailures = observations.stream()
+                .filter(obs -> obs.startsAt() == null || obs.endsAt() == null)
+                .count();
+        if (normalizationFailures > 0) {
+            meterRegistry.counter("microsoft_timezone_normalization_failures_total",
+                    "provider", "microsoft",
+                    "connectionId", connection.getId().toString(),
+                    "calendarId", "primary",
+                    "tenantId", "unknown",
+                    "ingestionMode", "incremental",
+                    "syncType", source(sourceAttribution)).increment(normalizationFailures);
+            log.warn("microsoft_timezone_normalization_corrected connectionId={} failures={} source={}",
+                    connection.getId(), normalizationFailures, source(sourceAttribution));
         }
         return observations.stream()
                 .map(obs -> new CalendarEventIngestionService.IncomingCalendarEvent(

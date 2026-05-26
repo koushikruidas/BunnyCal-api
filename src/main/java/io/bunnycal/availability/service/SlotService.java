@@ -25,21 +25,28 @@ import io.bunnycal.availability.repository.DbClockRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
+import io.bunnycal.calendar.service.BusyInterval;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.time.DateTimeUtils;
 import io.bunnycal.common.time.TimeConversionService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SlotService {
+    private static final Logger log = LoggerFactory.getLogger(SlotService.class);
 
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
@@ -109,7 +116,7 @@ public class SlotService {
                 eventTypeId,
                 date,
                 snapshotVersion,
-                () -> compute(host, eventType, date, snapshotVersion));
+                () -> compute(host, eventType, date, snapshotVersion, request.debug(), request.requestId()));
 
         // 7. Stamp slotIds using snapshotVersion (V1). See plan's "NOTE FOR FUTURE
         //    MAINTAINERS" — do not re-stamp with a re-read version on drift.
@@ -127,7 +134,12 @@ public class SlotService {
                 slotDtos);
     }
 
-    private ComputeOutcome compute(User host, EventType eventType, LocalDate date, long snapshotVersion) {
+    private ComputeOutcome compute(User host,
+                                   EventType eventType,
+                                   LocalDate date,
+                                   long snapshotVersion,
+                                   boolean debug,
+                                   String requestId) {
         // 6.1 DB clock — fetched only on cache miss.
         Instant now = dbClockRepository.now();
 
@@ -159,8 +171,14 @@ public class SlotService {
         List<AvailabilityBinding> availabilityBindings = (availabilityMode == AvailabilityMode.SELECTED)
                 ? orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson())
                 : List.of();
-        List<TimeInterval> calendarBusy =
-                calendarBusyTimeService.busyIntervalsForDate(host.getId(), date, zoneId, availabilityBindings);
+        List<BusyInterval> canonicalBusy =
+                calendarBusyTimeService.busyIntervalsForDateCanonical(host.getId(), date, zoneId, availabilityBindings);
+        List<TimeInterval> calendarBusy = new ArrayList<>(canonicalBusy.size());
+        for (BusyInterval interval : canonicalBusy) {
+            calendarBusy.add(new TimeInterval(
+                    DateTimeUtils.toZone(interval.start(), zoneId),
+                    DateTimeUtils.toZone(interval.end(), zoneId)));
+        }
 
         // 6.7 Build engine input. Service performs ZERO filtering — engine is the
         //     single source of truth for slot semantics.
@@ -176,6 +194,9 @@ public class SlotService {
 
         // 6.8 Run engine.
         List<SlotUtc> slots = SlotGenerationEngine.compute(input);
+        if (debug) {
+            emitSlotDebugTrace(requestId, host.getId(), eventType.getId(), date, zoneId, input, canonicalBusy, slots, now);
+        }
 
         // 6.9 Re-check version after data fetch + compute.
         long postFetchVersion = slotCacheVersionService.getCurrentVersion(host.getId());
@@ -186,6 +207,82 @@ public class SlotService {
         boolean cacheable = postFetchVersion == snapshotVersion;
 
         return new ComputeOutcome(slots, now, cacheable);
+    }
+
+    private void emitSlotDebugTrace(String requestId,
+                                    UUID userId,
+                                    UUID eventTypeId,
+                                    LocalDate date,
+                                    ZoneId zoneId,
+                                    SlotInput input,
+                                    List<BusyInterval> canonicalBusy,
+                                    List<SlotUtc> acceptedSlots,
+                                    Instant generatedAt) {
+        List<SlotUtc> candidateSlots = SlotGenerationEngine.compute(new SlotInput(
+                input.date(),
+                input.zoneId(),
+                input.rules(),
+                input.override(),
+                input.eventType(),
+                List.of(),
+                List.of(),
+                input.now()));
+        Set<String> acceptedKeys = acceptedSlots.stream()
+                .map(s -> s.start() + "|" + s.end())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        for (BusyInterval interval : canonicalBusy) {
+            log.info("availability_interval_contributor userId={} eventTypeId={} provider={} calendarId={} sourceEventId={} normalizationSource={} ingestionTimestamp={} start={} end={}",
+                    userId, eventTypeId, interval.sourceProvider(), interval.sourceCalendarId(),
+                    interval.sourceEventId(), interval.normalizationSource(), interval.ingestionTimestamp(),
+                    interval.start(), interval.end());
+        }
+        for (SlotUtc slot : candidateSlots) {
+            String key = slot.start() + "|" + slot.end();
+            if (acceptedKeys.contains(key)) {
+                continue;
+            }
+            List<String> rejectionReasons = new ArrayList<>();
+            Set<String> providerSources = new LinkedHashSet<>();
+            for (BusyInterval interval : canonicalBusy) {
+                boolean overlaps = interval.start().isBefore(slot.end()) && interval.end().isAfter(slot.start());
+                if (overlaps) {
+                    rejectionReasons.add("provider_busy_overlap");
+                    providerSources.add(interval.sourceProvider());
+                    log.info("slot_rejection_trace eventTypeId={} candidateSlotStart={} candidateSlotEnd={} reason=provider_busy_overlap provider={} calendarId={} sourceEventId={} requestId={}",
+                            eventTypeId, slot.start(), slot.end(), interval.sourceProvider(),
+                            interval.sourceCalendarId(), interval.sourceEventId(), requestId);
+                }
+            }
+            if (rejectionReasons.isEmpty()) {
+                rejectionReasons.add("booking_or_buffer_or_notice_constraints");
+            }
+            List<SlotDebugTrace.BusyIntervalContributor> contributors = canonicalBusy.stream()
+                    .filter(interval -> interval.start().isBefore(slot.end()) && interval.end().isAfter(slot.start()))
+                    .map(interval -> new SlotDebugTrace.BusyIntervalContributor(
+                            interval.start(),
+                            interval.end(),
+                            interval.sourceProvider(),
+                            interval.sourceCalendarId(),
+                            interval.sourceEventId(),
+                            interval.normalizationSource(),
+                            interval.ingestionTimestamp()))
+                    .toList();
+            SlotDebugTrace trace = new SlotDebugTrace(
+                    requestId,
+                    eventTypeId,
+                    new SlotDebugTrace.CandidateSlot(slot.start(), slot.end()),
+                    List.copyOf(rejectionReasons),
+                    contributors,
+                    List.copyOf(providerSources),
+                    List.of("availability_rules_applied"),
+                    zoneId.getId(),
+                    generatedAt);
+            log.info("slot_generation_trace requestId={} eventTypeId={} date={} candidateSlotStart={} candidateSlotEnd={} rejectionReasons={} providerSources={} timezoneContext={} generatedAt={}",
+                    trace.requestId(), eventTypeId, date, trace.candidateSlot().start(), trace.candidateSlot().end(),
+                    trace.rejectionReasons(), trace.providerSources(), trace.timezoneContext(), trace.generatedAt());
+            log.info("slot_timezone_normalization_trace requestId={} eventTypeId={} candidateSlotStartUtc={} candidateSlotEndUtc={} timezone={}",
+                    requestId, eventTypeId, slot.start(), slot.end(), zoneId);
+        }
     }
 
     private List<SlotDto> stampSlotIds(

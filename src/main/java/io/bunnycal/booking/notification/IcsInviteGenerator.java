@@ -1,5 +1,6 @@
 package io.bunnycal.booking.notification;
 
+import io.bunnycal.conferencing.service.ConferenceDetails;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -35,11 +36,12 @@ public class IcsInviteGenerator {
                                          String guestName,
                                          String guestEmail,
                                          int sequence,
-                                         String conferenceJoinUrl) {
+                                         ConferenceDetails conferenceDetails) {
         List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
         return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail,
-                attendees, sequence, true, conferenceJoinUrl);
+                attendees, sequence, true, conferenceDetails);
     }
+
 
     public String buildStandaloneCancel(UUID bookingId,
                                         String summary,
@@ -53,11 +55,12 @@ public class IcsInviteGenerator {
                                         String guestName,
                                         String guestEmail,
                                         int sequence,
-                                        String conferenceJoinUrl) {
+                                        ConferenceDetails conferenceDetails) {
         List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
         return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail,
-                attendees, sequence, true, conferenceJoinUrl);
+                attendees, sequence, true, conferenceDetails);
     }
+
 
     public String buildConnectedSnapshot(UUID bookingId,
                                          String summary,
@@ -82,13 +85,15 @@ public class IcsInviteGenerator {
                          List<Participant> attendees,
                          int sequence,
                          boolean includeRsvpSemantics,
-                         String conferenceJoinUrl) {
+                         ConferenceDetails conferenceDetails) {
         String uid = "booking-" + bookingId + "@" + uidDomain;
         String dtStamp = ICS_TIME.format(Instant.now());
         String dtStart = ICS_TIME.format(start);
         String dtEnd = ICS_TIME.format(end);
         String escapedSummary = escape(summary == null ? "Scheduled Meeting" : summary);
-        String trimmedJoinUrl = conferenceJoinUrl == null ? "" : conferenceJoinUrl.trim();
+        String trimmedJoinUrl = conferenceDetails == null || conferenceDetails.joinUrl() == null
+                ? ""
+                : conferenceDetails.joinUrl().trim();
         String descriptionWithJoin = trimmedJoinUrl.isEmpty()
                 ? (description == null ? "" : description)
                 : ((description == null || description.isBlank()

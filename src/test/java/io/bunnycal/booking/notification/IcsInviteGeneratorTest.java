@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import io.bunnycal.conferencing.service.ConferenceDetails;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -30,7 +31,7 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 0,
-                null
+                conf(null)
         );
         String unfolded = unfold(ics);
 
@@ -75,7 +76,7 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 2,
-                null
+                conf(null)
         );
         String unfolded = unfold(ics);
 
@@ -99,7 +100,7 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 3,
-                null
+                conf(null)
         );
         String unfolded = unfold(ics);
 
@@ -125,7 +126,7 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 4,
-                joinUrl
+                conf(joinUrl)
         );
         String unfolded = unfold(ics);
 
@@ -152,7 +153,7 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 5,
-                ""
+                conf("")
         );
         String unfolded = unfold(ics);
 
@@ -171,17 +172,17 @@ class IcsInviteGeneratorTest {
                 bookingId, "Summary", "Desc", start, end,
                 "App Calendar", "calendar@example.com",
                 "Host", "host@example.com", "Guest", "guest@example.com", 0,
-                "https://zoom.us/j/111"));
+                conf("https://zoom.us/j/111")));
         String update = unfold(generator.buildStandaloneRequest(
                 bookingId, "Summary", "Desc2", start.plusSeconds(1800), end.plusSeconds(1800),
                 "App Calendar", "calendar@example.com",
                 "Host", "host@example.com", "Guest", "guest@example.com", 1,
-                "https://zoom.us/j/111"));
+                conf("https://zoom.us/j/111")));
         String cancel = unfold(generator.buildStandaloneCancel(
                 bookingId, "Summary", "Desc2", start.plusSeconds(1800), end.plusSeconds(1800),
                 "App Calendar", "calendar@example.com",
                 "Host", "host@example.com", "Guest", "guest@example.com", 2,
-                "https://zoom.us/j/111"));
+                conf("https://zoom.us/j/111")));
 
         String uid = "UID:booking-" + bookingId + "@example.com";
         String organizer = "ORGANIZER;CN=App Calendar:mailto:calendar@example.com";
@@ -215,13 +216,13 @@ class IcsInviteGeneratorTest {
                     Instant.parse("2026-06-10T10:00:00Z"),
                     Instant.parse("2026-06-10T10:30:00Z"),
                     "App Calendar", "calendar@example.com",
-                    "Host", "host@example.com", "Guest", "guest@example.com", 5, url));
+                    "Host", "host@example.com", "Guest", "guest@example.com", 5, conf(url)));
             String cancel = unfold(generator.buildStandaloneCancel(
                     bookingId, "Summary", "Desc",
                     Instant.parse("2026-06-10T10:00:00Z"),
                     Instant.parse("2026-06-10T10:30:00Z"),
                     "App Calendar", "calendar@example.com",
-                    "Host", "host@example.com", "Guest", "guest@example.com", 6, url));
+                    "Host", "host@example.com", "Guest", "guest@example.com", 6, conf(url)));
             assertTrue(request.contains("URL:" + url));
             assertTrue(cancel.contains("URL:" + url));
             assertTrue(request.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + url));
@@ -248,7 +249,7 @@ class IcsInviteGeneratorTest {
                 "Guest",
                 "guest@example.com",
                 1,
-                null
+                conf(null)
         ));
         assertTrue(unfolded.contains("DTSTART:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(start)));
         assertTrue(unfolded.contains("DTEND:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(end)));
@@ -256,5 +257,12 @@ class IcsInviteGeneratorTest {
 
     private static String unfold(String ics) {
         return ics.replace("\r\n ", "");
+    }
+
+    private static ConferenceDetails conf(String joinUrl) {
+        if (joinUrl == null || joinUrl.isBlank()) {
+            return ConferenceDetails.none("test", Instant.now());
+        }
+        return new ConferenceDetails("UNKNOWN", joinUrl, null, null, null, java.util.Map.of(), "test", Instant.now());
     }
 }

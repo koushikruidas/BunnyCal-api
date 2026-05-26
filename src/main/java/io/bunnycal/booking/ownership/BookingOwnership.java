@@ -35,6 +35,15 @@ public class BookingOwnership {
     @Column(name = "provider_external_event_id", length = 255)
     private String providerExternalEventId;
 
+    @Column(name = "series_external_id", length = 255)
+    private String seriesExternalId;
+
+    @Column(name = "instance_external_id", length = 255)
+    private String instanceExternalId;
+
+    @Column(name = "recurrence_id", length = 255)
+    private String recurrenceId;
+
     @Column(name = "ownership_version", nullable = false)
     private long ownershipVersion = 1L;
 
@@ -67,6 +76,12 @@ public class BookingOwnership {
     public void setProjectionCalendarId(String projectionCalendarId) { this.projectionCalendarId = projectionCalendarId; }
     public String getProviderExternalEventId() { return providerExternalEventId; }
     public void setProviderExternalEventId(String providerExternalEventId) { this.providerExternalEventId = providerExternalEventId; }
+    public String getSeriesExternalId() { return seriesExternalId; }
+    public void setSeriesExternalId(String seriesExternalId) { this.seriesExternalId = seriesExternalId; }
+    public String getInstanceExternalId() { return instanceExternalId; }
+    public void setInstanceExternalId(String instanceExternalId) { this.instanceExternalId = instanceExternalId; }
+    public String getRecurrenceId() { return recurrenceId; }
+    public void setRecurrenceId(String recurrenceId) { this.recurrenceId = recurrenceId; }
     public long getOwnershipVersion() { return ownershipVersion; }
     public void setOwnershipVersion(long ownershipVersion) { this.ownershipVersion = ownershipVersion; }
     public String getOwnershipState() { return ownershipState; }

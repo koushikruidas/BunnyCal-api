@@ -146,6 +146,15 @@ public class TokenRefresher {
             tokenRefreshFailureCount.increment();
             OAuthErrorCategory category = categoryOf(ex);
             String errorCode = errorCodeOf(ex);
+            if (provider == CalendarProviderType.MICROSOFT) {
+                meterRegistry.counter("microsoft_token_refresh_failures_total",
+                        "provider", "microsoft",
+                        "connectionId", connection.getId().toString(),
+                        "calendarId", "primary",
+                        "tenantId", "unknown",
+                        "ingestionMode", "token_refresh",
+                        "syncType", "auth").increment();
+            }
             log.warn("{{\"event\":\"token_refresh_failure\",\"connectionId\":\"{}\",\"provider\":\"{}\",\"category\":\"{}\",\"errorCode\":\"{}\"}}",
                     connection.getId(), provider, category, errorCode, ex);
             markFailed(connection, errorCode, category);

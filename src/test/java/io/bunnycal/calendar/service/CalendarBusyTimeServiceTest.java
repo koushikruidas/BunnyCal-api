@@ -15,6 +15,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarEvent;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -41,7 +42,7 @@ class CalendarBusyTimeServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        service = new CalendarBusyTimeService(connectionRepository, eventRepository);
+        service = new CalendarBusyTimeService(connectionRepository, eventRepository, new SimpleMeterRegistry());
     }
 
     // ────────────────────────────────────────────────────────────────────

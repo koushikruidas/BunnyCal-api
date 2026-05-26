@@ -39,6 +39,8 @@ public class DefaultCalendarService implements CalendarService {
         CalendarProviderOperation op = existing.orElseGet(() -> insertCreating(provider, command));
 
         if (op.getStatus() == CalendarOperationStatus.COMPLETED && op.getExternalEventId() != null) {
+            log.info("provider_create_retry_detected bookingId={} provider={} externalEventId={} idempotencyKey={} lifecycleOperation=create",
+                    command.internalId(), command.provider(), op.getExternalEventId(), command.idempotencyKey());
             return CreateEventResult.success(op.getExternalEventId());
         }
         if (!newlyCreated && op.getStatus() == CalendarOperationStatus.CREATING) {
@@ -90,19 +92,35 @@ public class DefaultCalendarService implements CalendarService {
         op.setLastError(null);
         op.setLastAttemptAt(Instant.now());
         operationRepository.save(op);
+        log.info("projection_write_trace bookingId={} projectionProvider={} projectionConnectionId={} externalEventId={} organizerAuthority=APPLICATION conferencingSource={} syncJobId={} lifecycleOperation=create",
+                command.internalId(),
+                command.provider(),
+                command.schedulingConnectionId(),
+                externalId,
+                command.conferencingInstruction() == null ? "none" : command.conferencingInstruction().providerType(),
+                "",
+                "CREATE");
         return CreateEventResult.success(externalId, created.providerEventUrl(), created.conferenceUrl());
     }
 
     @Override
     public String updateEvent(UpdateCalendarEventCommand command) {
         CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
-        return providerClient.updateEvent(
+        String externalId = providerClient.updateEvent(
                 command.internalId(),
                 command.provider(),
                 command.externalEventId(),
                 command.idempotencyKey(),
                 command.conferencingInstruction(),
                 command.schedulingConnectionId());
+        log.info("projection_write_trace bookingId={} projectionProvider={} projectionConnectionId={} externalEventId={} organizerAuthority=APPLICATION conferencingSource={} syncJobId={} lifecycleOperation=update",
+                command.internalId(),
+                command.provider(),
+                command.schedulingConnectionId(),
+                externalId,
+                command.conferencingInstruction() == null ? "none" : command.conferencingInstruction().providerType(),
+                "");
+        return externalId;
     }
 
     @Override
@@ -110,6 +128,12 @@ public class DefaultCalendarService implements CalendarService {
         CalendarProviderClient providerClient = providerClientRegistry.clientFor(command.provider());
         providerClient.deleteEvent(command.internalId(), command.provider(), command.externalEventId(),
                 command.schedulingConnectionId());
+        log.info("projection_write_trace bookingId={} projectionProvider={} projectionConnectionId={} externalEventId={} organizerAuthority=APPLICATION conferencingSource=none syncJobId={} lifecycleOperation=delete",
+                command.internalId(),
+                command.provider(),
+                command.schedulingConnectionId(),
+                command.externalEventId(),
+                "");
     }
 
     @Override

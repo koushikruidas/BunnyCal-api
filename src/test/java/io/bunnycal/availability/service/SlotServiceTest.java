@@ -37,6 +37,7 @@ import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
+import io.bunnycal.calendar.service.BusyInterval;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
@@ -491,7 +492,7 @@ class SlotServiceTest {
         when(bookingRepository.findActiveOverlappingBookings(any(), any(), any())).thenReturn(List.of());
         when(orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()))
                 .thenReturn(bindings);
-        when(calendarBusyTimeService.busyIntervalsForDate(
+        when(calendarBusyTimeService.busyIntervalsForDateCanonical(
                 eq(userId), eq(date), any(), eq(bindings)))
                 .thenReturn(List.of());
 
@@ -506,7 +507,7 @@ class SlotServiceTest {
         slotService.getSlots(new SlotRequest(userId, eventTypeId, date));
 
         // Verify the bindings were forwarded exactly as returned by the codec
-        verify(calendarBusyTimeService).busyIntervalsForDate(eq(userId), eq(date), any(), eq(bindings));
+        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(eq(userId), eq(date), any(), eq(bindings));
     }
 
     @Test
@@ -526,10 +527,15 @@ class SlotServiceTest {
         when(orchestrationJsonCodec.deserializeAvailabilityBindings(any())).thenReturn(List.of());
 
         // Calendar reports 09:00–09:30 as busy → first slot removed
-        TimeInterval busy = new TimeInterval(
-                Instant.parse("2026-05-04T09:00:00Z").atZone(java.time.ZoneOffset.UTC),
-                Instant.parse("2026-05-04T09:30:00Z").atZone(java.time.ZoneOffset.UTC));
-        when(calendarBusyTimeService.busyIntervalsForDate(any(), any(), any(), any()))
+        BusyInterval busy = new BusyInterval(
+                Instant.parse("2026-05-04T09:00:00Z"),
+                Instant.parse("2026-05-04T09:30:00Z"),
+                "GOOGLE",
+                "primary",
+                "evt-1",
+                "test",
+                Instant.parse("2026-05-04T09:00:00Z"));
+        when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any(), any()))
                 .thenReturn(List.of(busy));
 
         when(slotCacheService.getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any()))

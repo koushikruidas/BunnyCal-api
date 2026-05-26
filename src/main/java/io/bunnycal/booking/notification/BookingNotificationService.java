@@ -14,6 +14,7 @@ import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
+import io.bunnycal.conferencing.service.ConferenceDetails;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
 import java.time.Duration;
@@ -179,7 +180,7 @@ public class BookingNotificationService {
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
                 && eventTypeSlug != null && !eventTypeSlug.isBlank();
-        String conferenceJoinUrl = resolveConferenceJoinUrl(booking, eventType, event.getEventType());
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String standaloneIcs = "CANCEL".equals(eventMethod)
                 ? icsInviteGenerator.buildStandaloneCancel(
                 booking.getId(),
@@ -194,7 +195,7 @@ public class BookingNotificationService {
                 attendeeName,
                 attendeeEmail,
                 sequence,
-                conferenceJoinUrl)
+                conferenceDetails)
                 : icsInviteGenerator.buildStandaloneRequest(
                 booking.getId(),
                 summary,
@@ -208,7 +209,7 @@ public class BookingNotificationService {
                 attendeeName,
                 attendeeEmail,
                 sequence,
-                conferenceJoinUrl);
+                conferenceDetails);
         log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} hasAttachment={} method={} attendeesInIcs={} hasConferenceUrl={}",
                 booking.getId(),
                 event.getId(),
@@ -216,7 +217,7 @@ public class BookingNotificationService {
                 true,
                 eventMethod,
                 countIcsAttendees(standaloneIcs),
-                conferenceJoinUrl != null && !conferenceJoinUrl.isBlank());
+                conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank());
         for (String recipient : recipients) {
             String role = resolveRecipientRole(recipient, hostRecipient, attendee);
             if (event.getId() == null) {
@@ -263,7 +264,7 @@ public class BookingNotificationService {
                             calendarOrganizerEmail,
                             clientType);
                 }
-                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceJoinUrl);
+                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceDetails);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true);
                 log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
@@ -288,7 +289,7 @@ public class BookingNotificationService {
                           String ics,
                           String method,
                           String manageLink,
-                          String conferenceJoinUrl) throws Exception {
+                          ConferenceDetails conferenceDetails) throws Exception {
         var message = mailSender.createMimeMessage();
         // We must construct the MIME tree manually because the auto-rendering
         // contract that Outlook and Gmail honour requires a specific shape:
@@ -306,7 +307,7 @@ public class BookingNotificationService {
             message.setHeader("X-MS-OLK-FORCEINSPECTOROPEN", "TRUE");
         }
 
-        String textBody = body(summary, eventType, manageLink, conferenceJoinUrl);
+        String textBody = body(summary, eventType, manageLink, conferenceDetails);
 
         if (ics != null && method != null) {
             MimeBodyPart textPart = new MimeBodyPart();
@@ -353,13 +354,13 @@ public class BookingNotificationService {
         mailSender.send(message);
     }
 
-    private String resolveConferenceJoinUrl(Booking booking, EventType eventType, String outboxEventType) {
+    private ConferenceDetails resolveConferenceDetails(Booking booking, EventType eventType, String outboxEventType) {
         if (eventType == null) {
-            return null;
+            return ConferenceDetails.none("event_type_missing", java.time.Instant.now());
         }
         ConferencingProviderType providerType = eventType.getConferencingProvider();
         if (providerType == null || providerType == ConferencingProviderType.NONE) {
-            return null;
+            return ConferenceDetails.none("provider_none", java.time.Instant.now());
         }
         // For CANCEL/EXTERNAL_TERMINATED we never want to mint a new meeting,
         // we only want to surface whatever URL exists so recipients can
@@ -367,7 +368,7 @@ public class BookingNotificationService {
         boolean isTerminal = "BOOKING_CANCELLED".equals(outboxEventType)
                 || "BOOKING_EXTERNAL_TERMINATED".equals(outboxEventType);
         if (isTerminal) {
-            return null;
+            return ConferenceDetails.none("terminal_lifecycle", java.time.Instant.now());
         }
 
         try {
@@ -375,7 +376,12 @@ public class BookingNotificationService {
                     ? conferencingCoordinator.prepareForUpdate(booking.getId(), booking.getHostId())
                     : conferencingCoordinator.prepareForCreate(booking.getId(), booking.getHostId());
             if (instruction != null && instruction.joinUrl() != null && !instruction.joinUrl().isBlank()) {
-                return instruction.joinUrl();
+                ConferenceDetails details = ConferenceDetails.fromInstruction(instruction, "conferencing_coordinator", java.time.Instant.now());
+                log.info("provider_conference_payload_normalized bookingId={} provider={} source={} hasJoinUrl={}",
+                        booking.getId(), providerType, details.sourceOfTruth(), details.joinUrl() != null);
+                log.info("canonical_conference_projection_created bookingId={} provider={} sourceOfTruth={} updatedAt={}",
+                        booking.getId(), details.provider(), details.sourceOfTruth(), details.updatedAt());
+                return details;
             }
         } catch (RuntimeException ex) {
             // Synchronous conferencing prep is best-effort here — the sync worker
@@ -384,11 +390,21 @@ public class BookingNotificationService {
                     booking.getId(), providerType, outboxEventType, ex.getMessage());
         }
 
-        return conferencingEventMappingRepository
+        ConferenceDetails details = conferencingEventMappingRepository
                 .findByBookingIdAndProvider(booking.getId(), providerType)
-                .map(mapping -> mapping.getJoinUrl())
-                .filter(url -> url != null && !url.isBlank())
-                .orElse(null);
+                .map(mapping -> new ConferenceDetails(
+                        providerType.name(),
+                        mapping.getJoinUrl(),
+                        null,
+                        mapping.getMeetingId(),
+                        null,
+                        java.util.Map.of("hostUrl", mapping.getHostUrl() == null ? "" : mapping.getHostUrl()),
+                        "conferencing_event_mapping",
+                        java.time.Instant.now()))
+                .orElse(ConferenceDetails.none("conferencing_mapping_missing", java.time.Instant.now()));
+        log.info("conference_details_projection_verified bookingId={} provider={} source={} hasJoinUrl={}",
+                booking.getId(), details.provider(), details.sourceOfTruth(), details.joinUrl() != null);
+        return details;
     }
 
     private static String resolveRecipientRole(String recipient,
@@ -451,9 +467,10 @@ public class BookingNotificationService {
         return lifecycleText;
     }
 
-    private static String body(String summary, String eventType, String manageLink, String conferenceJoinUrl) {
+    private static String body(String summary, String eventType, String manageLink, ConferenceDetails conferenceDetails) {
         String base = body(summary, eventType);
         StringBuilder builder = new StringBuilder(base);
+        String conferenceJoinUrl = conferenceDetails == null ? null : conferenceDetails.joinUrl();
         if (conferenceJoinUrl != null && !conferenceJoinUrl.isBlank()
                 && !"BOOKING_CANCELLED".equals(eventType)
                 && !"BOOKING_EXTERNAL_TERMINATED".equals(eventType)) {
