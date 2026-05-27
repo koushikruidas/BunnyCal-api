@@ -50,6 +50,15 @@ public class CalendarEvent extends BaseEntity {
     @Column(name = "cancelled", nullable = false)
     private boolean cancelled;
 
+    /**
+     * Provider-native calendar id this event was ingested from (e.g. a Microsoft
+     * Graph calendar id). Null on rows ingested before multi-calendar sync
+     * landed and on providers that have not yet been migrated to per-calendar
+     * attribution.
+     */
+    @Column(name = "external_calendar_id", length = 512)
+    private String externalCalendarId;
+
     public UUID getId() { return id; }
     public UUID getUserId() { return userId; }
     public void setUserId(UUID userId) { this.userId = userId; }
@@ -65,4 +74,6 @@ public class CalendarEvent extends BaseEntity {
     public void setEndsAt(Instant endsAt) { this.endsAt = endsAt; }
     public boolean isCancelled() { return cancelled; }
     public void setCancelled(boolean cancelled) { this.cancelled = cancelled; }
+    public String getExternalCalendarId() { return externalCalendarId; }
+    public void setExternalCalendarId(String externalCalendarId) { this.externalCalendarId = externalCalendarId; }
 }

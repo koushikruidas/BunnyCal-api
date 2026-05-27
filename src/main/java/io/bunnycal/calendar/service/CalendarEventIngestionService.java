@@ -91,6 +91,12 @@ public class CalendarEventIngestionService {
                 event.setStartsAt(incoming.startsAt());
                 event.setEndsAt(incoming.endsAt());
                 event.setCancelled(incoming.cancelled());
+                if (incoming.externalCalendarId() != null && !incoming.externalCalendarId().isBlank()) {
+                    // Only stamp when the sync layer carries a real provider calendar id.
+                    // Webhook ingestion and legacy single-calendar paths leave this null;
+                    // keep the existing value so we never null-out a real attribution.
+                    event.setExternalCalendarId(incoming.externalCalendarId());
+                }
                 eventRepository.save(event);
                 log.info("calendar_event_ingestion_upsert connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} source={}",
                         connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(),
@@ -130,12 +136,29 @@ public class CalendarEventIngestionService {
                                         Long providerSequence,
                                         Instant providerUpdatedAt,
                                         String providerEtag,
-                                        String payloadHash) {
+                                        String payloadHash,
+                                        String externalCalendarId) {
         public IncomingCalendarEvent(String externalEventId,
                                      Instant startsAt,
                                      Instant endsAt,
                                      boolean cancelled) {
-            this(externalEventId, startsAt, endsAt, cancelled, null, null, null, null);
+            this(externalEventId, startsAt, endsAt, cancelled, null, null, null, null, null);
+        }
+
+        public IncomingCalendarEvent(String externalEventId,
+                                     Instant startsAt,
+                                     Instant endsAt,
+                                     boolean cancelled,
+                                     Long providerSequence,
+                                     Instant providerUpdatedAt,
+                                     String providerEtag,
+                                     String payloadHash) {
+            this(externalEventId, startsAt, endsAt, cancelled, providerSequence, providerUpdatedAt, providerEtag, payloadHash, null);
+        }
+
+        public IncomingCalendarEvent withExternalCalendarId(String externalCalendarId) {
+            return new IncomingCalendarEvent(externalEventId, startsAt, endsAt, cancelled,
+                    providerSequence, providerUpdatedAt, providerEtag, payloadHash, externalCalendarId);
         }
 
         public LocalDate startDateUtc() {

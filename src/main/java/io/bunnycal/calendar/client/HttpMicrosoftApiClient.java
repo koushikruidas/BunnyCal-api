@@ -6,6 +6,8 @@ import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -370,6 +372,85 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
             throw classify(ex);
         }
     }
+
+    @Override
+    public SyncWindow listCalendarViewDelta(String accessToken,
+                                            String externalCalendarId,
+                                            Instant windowStart,
+                                            Instant windowEnd,
+                                            String deltaCursor) {
+        try {
+            String firstUrl;
+            if (deltaCursor != null && !deltaCursor.isBlank()) {
+                // Follow the persisted @odata.deltaLink verbatim. Graph encodes the
+                // calendar id, window, and skip state inside the link; we MUST NOT
+                // synthesize a fresh URL when we already hold a delta link.
+                firstUrl = deltaCursor;
+            } else {
+                String encodedCalendarId = URLEncoder.encode(externalCalendarId, StandardCharsets.UTF_8);
+                firstUrl = "/v1.0/me/calendars/" + encodedCalendarId + "/calendarView/delta"
+                        + "?startDateTime=" + windowStart.toString()
+                        + "&endDateTime=" + windowEnd.toString();
+            }
+            List<CalendarEventObservation> events = new ArrayList<>();
+            String nextUrl = firstUrl;
+            String finalDeltaLink = null;
+            int pageCount = 0;
+            // Bound the loop defensively. Microsoft's pagination is normally short
+            // (a few hundred events / a few pages); a runaway loop would only happen
+            // on a Graph bug, but a hard cap stops it from amplifying.
+            while (nextUrl != null && pageCount < 100) {
+                PageReadResult page = readDeltaPage(accessToken, nextUrl);
+                events.addAll(page.events);
+                pageCount++;
+                if (page.deltaLink != null) {
+                    // Terminal page. Only the deltaLink is durable state.
+                    finalDeltaLink = page.deltaLink;
+                    nextUrl = null;
+                } else {
+                    // Continuation page. Follow @odata.nextLink, but DO NOT persist it.
+                    nextUrl = page.nextLink;
+                }
+            }
+            graphLog.info("microsoft_calendar_view_delta_complete calendarId={} pages={} events={} hasDeltaLink={}",
+                    externalCalendarId, pageCount, events.size(), finalDeltaLink != null);
+            return new SyncWindow(List.copyOf(events), finalDeltaLink);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    private PageReadResult readDeltaPage(String accessToken, String pathOrLink) {
+        URI uri = URI.create(pathOrLink);
+        graphLog.info("microsoft_graph_request url=\"{}\"",
+                pathOrLink.length() > 300 ? pathOrLink.substring(0, 300) + "..." : pathOrLink);
+        ResponseEntity<Map> response = graphClient.get()
+                .uri(uri)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                .header("Prefer", "outlook.timezone=\"UTC\"")
+                .retrieve()
+                .toEntity(Map.class);
+        Map<?, ?> body = response.getBody();
+        List<CalendarEventObservation> events = new ArrayList<>();
+        Object values = body == null ? null : body.get("value");
+        if (values instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) continue;
+                String id = asStringLoose(map.get("id"));
+                Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
+                Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
+                boolean cancelled = asBooleanLoose(map.get("isCancelled"));
+                Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
+                String etag = asStringLoose(map.get("changeKey"));
+                events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag, hashPayload(id, start, end, cancelled, etag)));
+            }
+        }
+        String deltaLink = body == null ? null : asStringLoose(body.get("@odata.deltaLink"));
+        String nextLink = body == null ? null : asStringLoose(body.get("@odata.nextLink"));
+        return new PageReadResult(events, nextLink, deltaLink);
+    }
+
+    private record PageReadResult(List<CalendarEventObservation> events, String nextLink, String deltaLink) {}
 
     private static Map<String, Object> buildEventBody(String title,
                                                       String description,

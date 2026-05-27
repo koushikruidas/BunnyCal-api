@@ -28,6 +28,24 @@ public interface MicrosoftApiClient {
 
     SyncWindow listEventsIncremental(String accessToken, String deltaCursor);
 
+    /**
+     * Calendar-scoped delta query.
+     *
+     * <p>If {@code deltaCursor} is non-null and non-blank, it is treated as an
+     * {@code @odata.deltaLink} from a previous run and followed verbatim. Otherwise
+     * a fresh bootstrap window is opened using
+     * {@code /me/calendars/{calendarId}/calendarView/delta?startDateTime=...&endDateTime=...}.
+     *
+     * <p>Implementations MUST follow every {@code @odata.nextLink} until they reach the
+     * terminal {@code @odata.deltaLink}, and persist ONLY the {@code deltaLink} — never
+     * a {@code nextLink} or skip token — into {@link SyncWindow#nextDeltaCursor()}.
+     */
+    SyncWindow listCalendarViewDelta(String accessToken,
+                                     String externalCalendarId,
+                                     Instant windowStart,
+                                     Instant windowEnd,
+                                     String deltaCursor);
+
     void revokeToken(String token);
 
     WebhookSubscription createEventSubscription(
