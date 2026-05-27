@@ -351,7 +351,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
 
     @Override
     public SyncWindow listEventsFull(String accessToken) {
-        return listEvents(accessToken, null);
+        return listEvents(accessToken, "primary", null);
     }
 
     @Override
@@ -359,7 +359,20 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (syncCursor == null || syncCursor.isBlank()) {
             return listEventsFull(accessToken);
         }
-        return listEvents(accessToken, syncCursor);
+        return listEvents(accessToken, "primary", syncCursor);
+    }
+
+    @Override
+    public SyncWindow listEventsFull(String accessToken, String externalCalendarId) {
+        return listEvents(accessToken, externalCalendarId, null);
+    }
+
+    @Override
+    public SyncWindow listEventsIncremental(String accessToken, String externalCalendarId, String syncCursor) {
+        if (syncCursor == null || syncCursor.isBlank()) {
+            return listEventsFull(accessToken, externalCalendarId);
+        }
+        return listEvents(accessToken, externalCalendarId, syncCursor);
     }
 
     @Override
@@ -428,7 +441,15 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         }
     }
 
-    private SyncWindow listEvents(String accessToken, String syncCursor) {
+    private SyncWindow listEvents(String accessToken, String externalCalendarId, String syncCursor) {
+        // Google calendar ids contain '@' / ':' / '.' on secondary calendars
+        // (e.g. "user@group.calendar.google.com"). RestClient's UriBuilder pattern
+        // does not encode path variables uniformly across versions, so we hand
+        // RestClient an already-encoded path segment to avoid surprises.
+        String effectiveCalendarId = (externalCalendarId == null || externalCalendarId.isBlank())
+                ? "primary"
+                : externalCalendarId;
+        String encodedCalendarId = java.net.URLEncoder.encode(effectiveCalendarId, java.nio.charset.StandardCharsets.UTF_8);
         try {
             List<CalendarEventObservation> observations = new ArrayList<>();
             String pageToken = null;
@@ -437,7 +458,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                 String currentPageToken = pageToken;
                 ResponseEntity<Map> response = restClient.get()
                         .uri(uriBuilder -> {
-                            uriBuilder.path("/calendar/v3/calendars/primary/events")
+                            uriBuilder.path("/calendar/v3/calendars/" + encodedCalendarId + "/events")
                                     .queryParam("showDeleted", "true")
                                     .queryParam("singleEvents", "true")
                                     .queryParam("maxResults", "2500");

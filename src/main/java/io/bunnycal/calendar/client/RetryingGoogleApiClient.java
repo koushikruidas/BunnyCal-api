@@ -83,6 +83,16 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
+    public SyncWindow listEventsFull(String accessToken, String externalCalendarId) {
+        return withRetry(() -> delegate.listEventsFull(accessToken, externalCalendarId));
+    }
+
+    @Override
+    public SyncWindow listEventsIncremental(String accessToken, String externalCalendarId, String syncCursor) {
+        return withRetry(() -> delegate.listEventsIncremental(accessToken, externalCalendarId, syncCursor));
+    }
+
+    @Override
     public WatchChannel watchEvents(String accessToken, String webhookUrl, String channelToken) {
         return withRetry(() -> delegate.watchEvents(accessToken, webhookUrl, channelToken));
     }

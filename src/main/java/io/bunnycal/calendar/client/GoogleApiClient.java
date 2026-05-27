@@ -28,6 +28,22 @@ public interface GoogleApiClient {
 
     SyncWindow listEventsIncremental(String accessToken, String syncCursor);
 
+    /**
+     * Calendar-scoped variants for multi-calendar Google sync.
+     *
+     * <p>{@code listEventsFull} bootstraps a fresh {@code syncToken} for the given
+     * Google calendar id (the user's primary or any secondary calendar id returned
+     * by {@code calendarList.list}). {@code listEventsIncremental} follows a
+     * previously-persisted token. Both paginate via {@code nextPageToken} until
+     * Google surfaces the terminal {@code nextSyncToken}, and return only the
+     * {@code nextSyncToken} in {@link SyncWindow#nextSyncToken()} — never a page
+     * token. This mirrors Microsoft's {@code listCalendarViewDelta} contract so
+     * the two provider clients can be driven by structurally identical sync code.
+     */
+    SyncWindow listEventsFull(String accessToken, String externalCalendarId);
+
+    SyncWindow listEventsIncremental(String accessToken, String externalCalendarId, String syncCursor);
+
     WatchChannel watchEvents(String accessToken, String webhookUrl, String channelToken);
 
     void stopWatchChannel(String accessToken, String channelId, String resourceId);

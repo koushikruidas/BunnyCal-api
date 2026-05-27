@@ -65,7 +65,11 @@ public class ProviderCalendarSelectionService {
                     continue;
                 }
                 if (selected.add(calendarId)) {
-                    log.info("microsoft_calendar_selected_for_availability connectionId={} calendarId={} source=availabilityCalendarsJson",
+                    // Provider-neutral log name; the actual provider is on the connection.
+                    // Legacy emitters used `microsoft_calendar_selected_for_availability`
+                    // which was provider-specific and made Google selection invisible.
+                    log.info("provider_calendar_selected_for_availability provider={} connectionId={} calendarId={} source=availabilityCalendarsJson",
+                            binding.provider() == null ? "unknown" : binding.provider(),
                             connectionId, calendarId);
                 }
             }
