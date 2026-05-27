@@ -129,30 +129,6 @@ class HttpGoogleApiClientTest {
     }
 
     @Test
-    void encodeGoogleCalendarIdForPath_emailStyle() {
-        assertEquals("koushikruidas%40gmail.com",
-                HttpGoogleApiClient.encodeGoogleCalendarIdForPath("koushikruidas@gmail.com"));
-    }
-
-    @Test
-    void encodeGoogleCalendarIdForPath_groupCalendar() {
-        assertEquals("family17130278116817796873%40group.calendar.google.com",
-                HttpGoogleApiClient.encodeGoogleCalendarIdForPath("family17130278116817796873@group.calendar.google.com"));
-    }
-
-    @Test
-    void encodeGoogleCalendarIdForPath_holidayCalendar() {
-        assertEquals("en.indian%23holiday%40group.v.calendar.google.com",
-                HttpGoogleApiClient.encodeGoogleCalendarIdForPath("en.indian#holiday@group.v.calendar.google.com"));
-    }
-
-    @Test
-    void encodeGoogleCalendarIdForPath_noDoubleEncoding() {
-        assertEquals("koushikruidas%40gmail.com",
-                HttpGoogleApiClient.encodeGoogleCalendarIdForPath("koushikruidas%40gmail.com"));
-    }
-
-    @Test
     void normalizeGoogleCalendarId_stripsMailtoMarkdownWrapper() {
         assertEquals("koushikruidas@gmail.com",
                 HttpGoogleApiClient.normalizeGoogleCalendarId("[koushikruidas@gmail.com](mailto:koushikruidas@gmail.com)"));
