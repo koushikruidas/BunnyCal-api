@@ -13,11 +13,12 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import org.slf4j.Logger;
@@ -28,6 +29,13 @@ import org.springframework.stereotype.Service;
 public class CalendarBusyTimeService {
 
     private static final Logger log = LoggerFactory.getLogger(CalendarBusyTimeService.class);
+
+    // Sentinel values for the calendar-scoped query. JPQL `IN ()` against an empty
+    // collection is invalid in Hibernate, so when a partition bucket is empty we
+    // pass a single deliberately-impossible value that cannot match any real row.
+    private static final UUID NO_CONNECTION_SENTINEL = new UUID(0L, 0L);
+    private static final String NO_CALENDAR_SENTINEL =
+            "__bunnycal_no_calendar_sentinel__";
 
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
@@ -44,11 +52,21 @@ public class CalendarBusyTimeService {
     /**
      * Returns busy intervals for the given day.
      *
-     * When {@code availabilityBindings} is non-empty only events belonging to the
-     * explicitly selected connections are included.  When it is empty (no explicit
-     * selection) ALL active connections contribute — preserving the original
-     * "use everything" behaviour for event types that were created before per-type
-     * selection was introduced.
+     * <p>Selection semantics:
+     *
+     * <ul>
+     *   <li>When {@code availabilityBindings} is null or empty: no explicit selection.
+     *       Every active connection's events contribute (legacy {@code ALL_CONNECTED}
+     *       behaviour for event types created before per-type selection existed).</li>
+     *   <li>When at least one binding has a null {@code externalCalendarId}: that
+     *       binding selects the whole connection (legacy connection-level selection
+     *       shape). Mixing with calendar-scoped bindings is supported — the whole
+     *       connection wins for its own connectionId.</li>
+     *   <li>When every binding for a connection carries a real
+     *       {@code externalCalendarId}: only events stamped with one of those calendar
+     *       ids contribute, plus events whose {@code external_calendar_id} is NULL
+     *       (legacy-compatibility wildcard documented on {@link CalendarEventRepository#findBusySelected}).</li>
+     * </ul>
      */
     public List<TimeInterval> busyIntervalsForDate(
             UUID userId,
@@ -83,14 +101,26 @@ public class CalendarBusyTimeService {
         List<CalendarEvent> events;
 
         if (availabilityBindings != null && !availabilityBindings.isEmpty()) {
-            // Explicit calendar selection: only query the nominated connections.
-            Set<UUID> connectionIds = availabilityBindings.stream()
-                    .map(AvailabilityBinding::connectionId)
-                    .collect(Collectors.toSet());
-            log.debug("availability[userId={} date={}] explicit connections={}", userId, date, connectionIds);
-            events = eventRepository
-                    .findByConnectionIdInAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan(
-                            connectionIds, dayEndUtc, dayStartUtc);
+            BindingPartition partition = partition(availabilityBindings);
+            if (partition.isEmpty()) {
+                // Every binding was malformed (null connection id). Treat as
+                // "no events block" rather than silently falling back to all-connections —
+                // explicit selection that resolves to nothing should not behave like
+                // no-selection-at-all.
+                log.warn("availability[userId={} date={}] all bindings malformed (null connectionId) — returning empty",
+                        userId, date);
+                return List.of();
+            }
+            log.debug("availability[userId={} date={}] wholeConnections={} scopedConnections={} selectedCalendars={}",
+                    userId, date,
+                    partition.wholeConnectionIds, partition.calendarScopedConnectionIds, partition.selectedExternalCalendarIds);
+            events = eventRepository.findBusySelected(
+                    nonEmptyOrSentinel(partition.wholeConnectionIds, NO_CONNECTION_SENTINEL),
+                    nonEmptyOrSentinel(partition.calendarScopedConnectionIds, NO_CONNECTION_SENTINEL),
+                    nonEmptyOrSentinel(partition.selectedExternalCalendarIds, NO_CALENDAR_SENTINEL),
+                    dayEndUtc,
+                    dayStartUtc);
+            recordLegacyNullMetrics(events, partition);
         } else {
             // No explicit selection: fall back to all active connections (backward-compatible).
             if (connectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE).isEmpty()) {
@@ -166,5 +196,72 @@ public class CalendarBusyTimeService {
             }
         }
         return List.copyOf(intervals);
+    }
+
+    /**
+     * Partition the binding list into:
+     *
+     * <ul>
+     *   <li>Whole-connection ids — bindings with null externalCalendarId. The entire
+     *       connection contributes events.</li>
+     *   <li>Calendar-scoped connection ids + selected external calendar ids — bindings
+     *       with a real externalCalendarId.</li>
+     * </ul>
+     *
+     * <p>If the same connection appears in both buckets the whole-connection entry
+     * subsumes the scoped entries — we remove it from the scoped bucket so the
+     * connection contributes via the wholeConnectionIds branch only.
+     */
+    static BindingPartition partition(List<AvailabilityBinding> bindings) {
+        Set<UUID> whole = new LinkedHashSet<>();
+        Set<UUID> scoped = new LinkedHashSet<>();
+        Set<String> calendars = new LinkedHashSet<>();
+        for (AvailabilityBinding b : bindings) {
+            if (b == null || b.connectionId() == null) continue;
+            String calendarId = b.externalCalendarId();
+            if (calendarId == null || calendarId.isBlank()) {
+                whole.add(b.connectionId());
+            } else {
+                scoped.add(b.connectionId());
+                calendars.add(calendarId);
+            }
+        }
+        scoped.removeAll(whole);
+        return new BindingPartition(whole, scoped, calendars);
+    }
+
+    private static <T> Collection<T> nonEmptyOrSentinel(Set<T> values, T sentinel) {
+        return values.isEmpty() ? List.of(sentinel) : values;
+    }
+
+    /**
+     * Telemetry hook for the legacy null-row decay curve (audit fix #1, telemetry
+     * variant). Emits a counter for every event row matched by the calendar-scoped
+     * branch whose {@code external_calendar_id} is null — these are rows ingested
+     * before per-calendar attribution existed and are being kept eligible only by
+     * the compatibility wildcard. When this counter trends to zero from real
+     * traffic, the wildcard rule can be retired and the query made strict.
+     */
+    private void recordLegacyNullMetrics(List<CalendarEvent> events, BindingPartition partition) {
+        if (partition.calendarScopedConnectionIds.isEmpty()) return;
+        long legacyNullMatches = events.stream()
+                .filter(e -> partition.calendarScopedConnectionIds.contains(e.getConnectionId()))
+                .filter(e -> e.getExternalCalendarId() == null)
+                .count();
+        if (legacyNullMatches > 0) {
+            meterRegistry.counter("calendar.busy_query.legacy_null_external_calendar_id.matches",
+                    "scope", "calendar_scoped_bucket")
+                    .increment(legacyNullMatches);
+            log.info("calendar_busy_legacy_null_external_calendar_id matches={} scopedConnections={}",
+                    legacyNullMatches, partition.calendarScopedConnectionIds.size());
+        }
+    }
+
+    record BindingPartition(Set<UUID> wholeConnectionIds,
+                            Set<UUID> calendarScopedConnectionIds,
+                            Set<String> selectedExternalCalendarIds) {
+        boolean isEmpty() {
+            return wholeConnectionIds.isEmpty() && calendarScopedConnectionIds.isEmpty();
+        }
     }
 }
