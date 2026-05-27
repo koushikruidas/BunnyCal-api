@@ -85,7 +85,7 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
     private SyncBatch syncSelectedCalendars(CalendarConnection connection,
                                             SyncSourceAttribution sourceAttribution,
                                             boolean forceBootstrap) {
-        Set<String> selected = resolveCalendarsToSync(connection);
+        Set<String> selected = resolveCalendarsToSync(connection, sourceAttribution);
         if (selected.isEmpty()) {
             log.info("microsoft_calendar_sync_no_selection connectionId={} action=skip", connection.getId());
             // Stamp the sentinel so the scheduler doesn't loop into full-resync mode.
@@ -131,8 +131,9 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
      *         calendar when no event types reference any (otherwise sync would silently
      *         stop producing busy intervals after a fresh connect).
      */
-    private Set<String> resolveCalendarsToSync(CalendarConnection connection) {
-        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection);
+    private Set<String> resolveCalendarsToSync(CalendarConnection connection,
+                                               SyncSourceAttribution sourceAttribution) {
+        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
         if (!selected.isEmpty()) {
             return selected;
         }

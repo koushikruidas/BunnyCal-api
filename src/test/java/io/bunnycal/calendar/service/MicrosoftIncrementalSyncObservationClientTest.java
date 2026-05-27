@@ -69,7 +69,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
         String calA = "AQMkAD-cal-A";
         String calB = "AQMkAD-cal-B";
 
-        when(selectionService.selectedAvailabilityCalendarIds(connection))
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
                 .thenReturn(Set.of(calA, calB));
 
         // calA already has a persisted deltaLink — should be followed.
@@ -126,7 +126,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
         String legacy = connection.getId().toString(); // the legacy-corruption shape
         String real = "AQMkAD-real-calendar";
 
-        when(selectionService.selectedAvailabilityCalendarIds(connection))
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
                 .thenReturn(Set.of(legacy, real));
         when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), real))
                 .thenReturn(Optional.empty());
@@ -148,7 +148,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
     @Test
     void fetchIncremental_no_selection_returns_empty_with_sentinel_cursor_when_no_inventory() {
         CalendarConnection connection = connection();
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of());
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
         when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
                 .thenReturn(List.of());
 
@@ -165,7 +165,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
     void fetchIncremental_no_event_type_selection_falls_back_to_primary_inventory_calendar() {
         CalendarConnection connection = connection();
         String primary = "AQMkAD-primary";
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of());
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
 
         CalendarConnectionCalendar inv = new CalendarConnectionCalendar();
         inv.setConnectionId(connection.getId());
@@ -191,7 +191,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
     void fetchFull_forces_bootstrap_even_when_cursor_exists() {
         CalendarConnection connection = connection();
         String cal = "AQMkAD-cal";
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of(cal));
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of(cal));
 
         CalendarConnectionSyncCursor existing = new CalendarConnectionSyncCursor();
         existing.setConnectionId(connection.getId());

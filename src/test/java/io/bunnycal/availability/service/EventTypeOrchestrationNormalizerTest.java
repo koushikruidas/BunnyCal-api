@@ -2,6 +2,7 @@ package io.bunnycal.availability.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
@@ -229,6 +230,41 @@ class EventTypeOrchestrationNormalizerTest {
                 projection("microsoft", connId, "cal-id")
         );
         assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+    }
+
+    @Test
+    void availabilityExternalCalendarId_uuidShaped_rejected() {
+        UUID userId = UUID.randomUUID();
+        UUID connId = UUID.randomUUID();
+        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(
+                        connId.toString(), "google", UUID.randomUUID().toString())),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
+                projection("google", connId, "primary")
+        );
+        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        assertTrue(ex.getMessage().contains("externalCalendarId"));
+    }
+
+    @Test
+    void projectionCalendarId_uuidShaped_rejected() {
+        UUID userId = UUID.randomUUID();
+        UUID connId = UUID.randomUUID();
+        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
+                projection("google", connId, UUID.randomUUID().toString())
+        );
+        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        assertTrue(ex.getMessage().contains("projectionDestination.calendarId"));
     }
 
     private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {

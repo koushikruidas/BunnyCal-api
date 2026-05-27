@@ -104,7 +104,14 @@ public class EventTypeOrchestrationNormalizer {
                     .filter(c -> userId.equals(c.getUserId()))
                     .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
                     .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "availability calendar connection is invalid."));
-            bindings.add(new AvailabilityBinding(connection.getId(), connection.getProvider().name().toLowerCase(Locale.ROOT), trimToNull(entry.externalCalendarId())));
+            String externalCalendarId = trimToNull(entry.externalCalendarId());
+            if (externalCalendarId != null
+                    && (isUuidShaped(externalCalendarId)
+                    || connection.getId().toString().equalsIgnoreCase(externalCalendarId))) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "availabilityCalendars[].externalCalendarId must be a provider calendar id, not a UUID/connectionId.");
+            }
+            bindings.add(new AvailabilityBinding(connection.getId(), connection.getProvider().name().toLowerCase(Locale.ROOT), externalCalendarId));
         }
         return List.copyOf(bindings);
     }
@@ -172,6 +179,16 @@ public class EventTypeOrchestrationNormalizer {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private static boolean isUuidShaped(String value) {
+        if (value == null) return false;
+        try {
+            UUID.fromString(value.trim());
+            return true;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
     private ProjectionDestination normalizeProjectionDestination(UUID userId,
                                                                  CreateEventTypeRequest.ProjectionDestinationRequest projectionDestination) {
         if (projectionDestination == null) {
@@ -200,6 +217,10 @@ public class EventTypeOrchestrationNormalizer {
                 .filter(c -> userId.equals(c.getUserId()))
                 .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
                 .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "projection destination connection is invalid."));
+        if (isUuidShaped(calendarId) || connectionId.toString().equalsIgnoreCase(calendarId)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "projectionDestination.calendarId must be a provider calendar id, not a UUID/connectionId.");
+        }
         if (connection.getProvider() != providerType) {
             meterRegistry.counter("ownership_resolution_failures_total", "reason", "provider_mismatch").increment();
             log.warn("projection_destination_validation_failed userId={} provider={} connectionId={} calendarId={} reason=provider_mismatch",

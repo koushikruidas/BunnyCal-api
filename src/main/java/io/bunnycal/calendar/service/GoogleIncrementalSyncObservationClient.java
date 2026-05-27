@@ -92,7 +92,7 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
     private SyncBatch syncSelectedCalendars(CalendarConnection connection,
                                             SyncSourceAttribution sourceAttribution,
                                             boolean forceBootstrap) {
-        Set<String> selected = resolveCalendarsToSync(connection);
+        Set<String> selected = resolveCalendarsToSync(connection, sourceAttribution);
         if (selected.isEmpty()) {
             log.info("google_calendar_sync_no_selection connectionId={} action=skip", connection.getId());
             return new SyncBatch(List.of(), MULTI_CALENDAR_SENTINEL_CURSOR, false, false, "no_selected_calendars");
@@ -154,8 +154,9 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
      *         gets availability blocking for their primary calendar (same fallback the
      *         Microsoft client uses).
      */
-    private Set<String> resolveCalendarsToSync(CalendarConnection connection) {
-        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection);
+    private Set<String> resolveCalendarsToSync(CalendarConnection connection,
+                                               SyncSourceAttribution sourceAttribution) {
+        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
         if (!selected.isEmpty()) {
             return selected;
         }

@@ -69,7 +69,7 @@ class GoogleIncrementalSyncObservationClientTest {
         String primary = "primary";
         String secondary = "team@group.calendar.google.com";
 
-        when(selectionService.selectedAvailabilityCalendarIds(connection))
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
                 .thenReturn(Set.of(primary, secondary));
 
         // primary already has a persisted syncToken — should be followed.
@@ -124,7 +124,7 @@ class GoogleIncrementalSyncObservationClientTest {
         String legacy = connection.getId().toString();
         String real = "primary";
 
-        when(selectionService.selectedAvailabilityCalendarIds(connection))
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
                 .thenReturn(Set.of(legacy, real));
         when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), real))
                 .thenReturn(Optional.empty());
@@ -149,7 +149,7 @@ class GoogleIncrementalSyncObservationClientTest {
         String stale = "stale-cal";
         String live = "live-cal";
 
-        when(selectionService.selectedAvailabilityCalendarIds(connection))
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
                 .thenReturn(Set.of(stale, live));
 
         // stale has a cursor that Google will reject.
@@ -191,7 +191,7 @@ class GoogleIncrementalSyncObservationClientTest {
     void fetchIncremental_410_on_only_calendar_surfaces_SyncTokenInvalidException() {
         CalendarConnection connection = connection();
         String only = "only-cal";
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of(only));
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of(only));
         CalendarConnectionSyncCursor cur = new CalendarConnectionSyncCursor();
         cur.setConnectionId(connection.getId());
         cur.setExternalCalendarId(only);
@@ -211,7 +211,7 @@ class GoogleIncrementalSyncObservationClientTest {
         // hydrator hasn't run). Falls back to the Google "primary" alias so we
         // still produce events.
         CalendarConnection connection = connection();
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of());
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
         when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
                 .thenReturn(List.of());
         when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), "primary"))
@@ -233,7 +233,7 @@ class GoogleIncrementalSyncObservationClientTest {
     void fetchIncremental_no_event_type_selection_falls_back_to_primary_inventory_calendar() {
         CalendarConnection connection = connection();
         String primary = "user@gmail.com";
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of());
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
 
         CalendarConnectionCalendar inv = new CalendarConnectionCalendar();
         inv.setConnectionId(connection.getId());
@@ -259,7 +259,7 @@ class GoogleIncrementalSyncObservationClientTest {
     void fetchFull_forces_bootstrap_even_when_cursor_exists() {
         CalendarConnection connection = connection();
         String cal = "team@group.calendar.google.com";
-        when(selectionService.selectedAvailabilityCalendarIds(connection)).thenReturn(Set.of(cal));
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of(cal));
 
         CalendarConnectionSyncCursor existing = new CalendarConnectionSyncCursor();
         existing.setConnectionId(connection.getId());

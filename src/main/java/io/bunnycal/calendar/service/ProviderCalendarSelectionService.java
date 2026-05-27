@@ -5,6 +5,7 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.sync.state.SyncSourceAttribution;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -44,10 +45,17 @@ public class ProviderCalendarSelectionService {
      *         silently no-op sync).
      */
     public Set<String> selectedAvailabilityCalendarIds(CalendarConnection connection) {
+        return selectedAvailabilityCalendarIds(connection, null);
+    }
+
+    public Set<String> selectedAvailabilityCalendarIds(CalendarConnection connection,
+                                                       SyncSourceAttribution syncMode) {
         if (connection == null || connection.getUserId() == null || connection.getId() == null) {
             return Set.of();
         }
         UUID connectionId = connection.getId();
+        String provider = connection.getProvider() == null ? "unknown" : connection.getProvider().name().toLowerCase();
+        String syncModeTag = syncMode == null ? "unknown" : syncMode.name();
         Set<String> selected = new LinkedHashSet<>();
         List<EventType> eventTypes = eventTypeRepository.findByUserIdOrderByNameAsc(connection.getUserId());
         for (EventType eventType : eventTypes) {
@@ -60,17 +68,38 @@ public class ProviderCalendarSelectionService {
                 String calendarId = binding.externalCalendarId();
                 if (calendarId == null || calendarId.isBlank()) continue;
                 if (isLegacyCorruption(connectionId, calendarId)) {
-                    log.warn("legacy_invalid_calendar_mapping connectionId={} calendarId={} reason=uuid_instead_of_provider_calendar_id eventTypeId={}",
-                            connectionId, calendarId, eventType.getId());
+                    log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=connection_id_used_as_calendar_id",
+                            provider, connectionId, eventType.getId(), calendarId, syncModeTag);
+                    continue;
+                }
+                if (isUuidShaped(calendarId)) {
+                    log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=uuid_shaped_provider_calendar_id",
+                            provider, connectionId, eventType.getId(), calendarId, syncModeTag);
                     continue;
                 }
                 if (selected.add(calendarId)) {
-                    // Provider-neutral log name; the actual provider is on the connection.
-                    // Legacy emitters used `microsoft_calendar_selected_for_availability`
-                    // which was provider-specific and made Google selection invisible.
-                    log.info("provider_calendar_selected_for_availability provider={} connectionId={} calendarId={} source=availabilityCalendarsJson",
-                            binding.provider() == null ? "unknown" : binding.provider(),
-                            connectionId, calendarId);
+                    log.info("provider_calendar_selected_for_availability provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} source=availabilityCalendarsJson",
+                            provider, connectionId, eventType.getId(), calendarId, syncModeTag);
+                }
+            }
+            if (connectionId.equals(eventType.getProjectionConnectionId())) {
+                String projectionCalendarId = eventType.getProjectionCalendarId();
+                if (projectionCalendarId != null && !projectionCalendarId.isBlank()) {
+                    String trimmed = projectionCalendarId.trim();
+                    if (isLegacyCorruption(connectionId, trimmed)) {
+                        log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=projection_connection_id_used_as_calendar_id",
+                                provider, connectionId, eventType.getId(), trimmed, syncModeTag);
+                        continue;
+                    }
+                    if (isUuidShaped(trimmed)) {
+                        log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=projection_uuid_shaped_provider_calendar_id",
+                                provider, connectionId, eventType.getId(), trimmed, syncModeTag);
+                        continue;
+                    }
+                    if (selected.add(trimmed)) {
+                        log.info("provider_calendar_selected_for_availability provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} source=projectionDestination.calendarId",
+                                provider, connectionId, eventType.getId(), trimmed, syncModeTag);
+                    }
                 }
             }
         }
@@ -85,5 +114,15 @@ public class ProviderCalendarSelectionService {
     public static boolean isLegacyCorruption(UUID connectionId, String calendarId) {
         if (connectionId == null || calendarId == null) return false;
         return connectionId.toString().equalsIgnoreCase(calendarId);
+    }
+
+    public static boolean isUuidShaped(String calendarId) {
+        if (calendarId == null) return false;
+        try {
+            UUID.fromString(calendarId.trim());
+            return true;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
     }
 }
