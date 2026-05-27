@@ -388,7 +388,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 firstUrl = deltaCursor;
             } else {
                 String encodedCalendarId = URLEncoder.encode(externalCalendarId, StandardCharsets.UTF_8);
-                firstUrl = "/v1.0/me/calendars/" + encodedCalendarId + "/calendarView/delta"
+                firstUrl = "/v1.0/me/calendars('" + encodedCalendarId + "')/calendarView/delta"
                         + "?startDateTime=" + windowStart.toString()
                         + "&endDateTime=" + windowEnd.toString();
             }

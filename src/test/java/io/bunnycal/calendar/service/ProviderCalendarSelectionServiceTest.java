@@ -88,6 +88,28 @@ class ProviderCalendarSelectionServiceTest {
         assertThat(selected).isEmpty();
     }
 
+    @Test
+    void selection_rejects_microsoft_primary_alias() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        CalendarConnection connection = connection(connectionId, userId, CalendarProviderType.MICROSOFT);
+
+        EventType et = new EventType();
+        et.setId(UUID.randomUUID());
+        et.setUserId(userId);
+        et.setAvailabilityCalendarsJson("""
+                [{"connectionId":"%s","provider":"microsoft","externalCalendarId":"primary"}]
+                """.formatted(connectionId));
+        et.setProjectionConnectionId(connectionId);
+        et.setProjectionCalendarId("primary");
+
+        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of(et));
+
+        Set<String> selected = service.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC);
+
+        assertThat(selected).isEmpty();
+    }
+
     private static CalendarConnection connection(UUID id, UUID userId, CalendarProviderType provider) {
         CalendarConnection c = new CalendarConnection();
         c.setUserId(userId);

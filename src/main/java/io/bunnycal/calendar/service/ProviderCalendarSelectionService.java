@@ -67,6 +67,11 @@ public class ProviderCalendarSelectionService {
                 if (!connectionId.equals(binding.connectionId())) continue;
                 String calendarId = binding.externalCalendarId();
                 if (calendarId == null || calendarId.isBlank()) continue;
+                if ("microsoft".equalsIgnoreCase(provider) && "primary".equalsIgnoreCase(calendarId.trim())) {
+                    log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=microsoft_primary_alias_not_allowed",
+                            provider, connectionId, eventType.getId(), calendarId, syncModeTag);
+                    continue;
+                }
                 if (isLegacyCorruption(connectionId, calendarId)) {
                     log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=connection_id_used_as_calendar_id",
                             provider, connectionId, eventType.getId(), calendarId, syncModeTag);
@@ -86,6 +91,11 @@ public class ProviderCalendarSelectionService {
                 String projectionCalendarId = eventType.getProjectionCalendarId();
                 if (projectionCalendarId != null && !projectionCalendarId.isBlank()) {
                     String trimmed = projectionCalendarId.trim();
+                    if ("microsoft".equalsIgnoreCase(provider) && "primary".equalsIgnoreCase(trimmed)) {
+                        log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=microsoft_projection_primary_alias_not_allowed",
+                                provider, connectionId, eventType.getId(), trimmed, syncModeTag);
+                        continue;
+                    }
                     if (isLegacyCorruption(connectionId, trimmed)) {
                         log.warn("legacy_invalid_calendar_mapping provider={} connectionId={} eventTypeId={} providerCalendarId={} syncMode={} reason=projection_connection_id_used_as_calendar_id",
                                 provider, connectionId, eventType.getId(), trimmed, syncModeTag);

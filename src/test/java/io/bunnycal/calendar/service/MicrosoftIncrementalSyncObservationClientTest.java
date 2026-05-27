@@ -12,10 +12,8 @@ import static org.mockito.Mockito.when;
 import io.bunnycal.calendar.auth.TokenRefresher;
 import io.bunnycal.calendar.client.MicrosoftApiClient;
 import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionSyncCursor;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionSyncCursorRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -38,7 +36,6 @@ class MicrosoftIncrementalSyncObservationClientTest {
     @Mock private MicrosoftApiClient microsoftApiClient;
     @Mock private TokenRefresher tokenRefresher;
     @Mock private ProviderCalendarSelectionService selectionService;
-    @Mock private CalendarConnectionCalendarRepository inventoryRepository;
     @Mock private CalendarConnectionSyncCursorRepository cursorRepository;
 
     private MicrosoftIncrementalSyncObservationClient client;
@@ -50,7 +47,6 @@ class MicrosoftIncrementalSyncObservationClientTest {
                 tokenRefresher,
                 new SimpleMeterRegistry(),
                 selectionService,
-                inventoryRepository,
                 cursorRepository,
                 30, 90);
         // executeWithValidToken delegates to the lambda; emulate it inline. Lenient
@@ -149,8 +145,6 @@ class MicrosoftIncrementalSyncObservationClientTest {
     void fetchIncremental_no_selection_returns_empty_with_sentinel_cursor_when_no_inventory() {
         CalendarConnection connection = connection();
         when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
-        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
-                .thenReturn(List.of());
 
         ExternalCalendarSyncClient.SyncBatch batch =
                 client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
@@ -162,29 +156,30 @@ class MicrosoftIncrementalSyncObservationClientTest {
     }
 
     @Test
-    void fetchIncremental_no_event_type_selection_falls_back_to_primary_inventory_calendar() {
+    void fetchIncremental_no_event_type_selection_does_not_fallback_to_primary_inventory_calendar() {
         CalendarConnection connection = connection();
-        String primary = "AQMkAD-primary";
         when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
-
-        CalendarConnectionCalendar inv = new CalendarConnectionCalendar();
-        inv.setConnectionId(connection.getId());
-        inv.setExternalCalendarId(primary);
-        inv.setPrimary(true);
-        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
-                .thenReturn(List.of(inv));
-        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), primary))
-                .thenReturn(Optional.empty());
-        when(microsoftApiClient.listCalendarViewDelta(any(), eq(primary), any(), any(), any()))
-                .thenReturn(new MicrosoftApiClient.SyncWindow(
-                        List.of(observation("evt-p", false)),
-                        "https://graph/...deltaLink-p"));
 
         ExternalCalendarSyncClient.SyncBatch batch =
                 client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
 
-        assertThat(batch.events()).hasSize(1);
-        assertThat(batch.events().get(0).externalCalendarId()).isEqualTo(primary);
+        verify(microsoftApiClient, never()).listCalendarViewDelta(any(), anyString(), any(), any(), any());
+        assertThat(batch.events()).isEmpty();
+        assertThat(batch.nextCursor())
+                .isEqualTo(MicrosoftIncrementalSyncObservationClient.MULTI_CALENDAR_SENTINEL_CURSOR);
+    }
+
+    @Test
+    void fetchIncremental_rejects_primary_alias_even_if_selected() {
+        CalendarConnection connection = connection();
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
+                .thenReturn(Set.of("primary"));
+
+        ExternalCalendarSyncClient.SyncBatch batch =
+                client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
+
+        verify(microsoftApiClient, never()).listCalendarViewDelta(any(), anyString(), any(), any(), any());
+        assertThat(batch.events()).isEmpty();
     }
 
     @Test

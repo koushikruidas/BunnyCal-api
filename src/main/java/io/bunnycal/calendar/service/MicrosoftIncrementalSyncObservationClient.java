@@ -4,17 +4,14 @@ import io.bunnycal.calendar.auth.TokenRefresher;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.MicrosoftApiClient;
 import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionSyncCursor;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionSyncCursorRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -40,7 +37,6 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
     private final TokenRefresher tokenRefresher;
     private final MeterRegistry meterRegistry;
     private final ProviderCalendarSelectionService selectionService;
-    private final CalendarConnectionCalendarRepository inventoryRepository;
     private final CalendarConnectionSyncCursorRepository cursorRepository;
     private final Duration bootstrapLookback;
     private final Duration bootstrapLookahead;
@@ -49,7 +45,6 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                                                      TokenRefresher tokenRefresher,
                                                      MeterRegistry meterRegistry,
                                                      ProviderCalendarSelectionService selectionService,
-                                                     CalendarConnectionCalendarRepository inventoryRepository,
                                                      CalendarConnectionSyncCursorRepository cursorRepository,
                                                      @Value("${calendar.sync.microsoft.bootstrap-lookback-days:30}") int bootstrapLookbackDays,
                                                      @Value("${calendar.sync.microsoft.bootstrap-lookahead-days:90}") int bootstrapLookaheadDays) {
@@ -57,7 +52,6 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
         this.tokenRefresher = tokenRefresher;
         this.meterRegistry = meterRegistry;
         this.selectionService = selectionService;
-        this.inventoryRepository = inventoryRepository;
         this.cursorRepository = cursorRepository;
         this.bootstrapLookback = Duration.ofDays(Math.max(1, bootstrapLookbackDays));
         this.bootstrapLookahead = Duration.ofDays(Math.max(1, bootstrapLookaheadDays));
@@ -85,9 +79,10 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
     private SyncBatch syncSelectedCalendars(CalendarConnection connection,
                                             SyncSourceAttribution sourceAttribution,
                                             boolean forceBootstrap) {
-        Set<String> selected = resolveCalendarsToSync(connection, sourceAttribution);
+        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
         if (selected.isEmpty()) {
-            log.info("microsoft_calendar_sync_no_selection connectionId={} action=skip", connection.getId());
+            log.info("microsoft_calendar_sync_no_selection connectionId={} action=skip reason=no_event_type_calendar_ids",
+                    connection.getId());
             // Stamp the sentinel so the scheduler doesn't loop into full-resync mode.
             return new SyncBatch(List.of(), MULTI_CALENDAR_SENTINEL_CURSOR, false, false, "no_selected_calendars");
         }
@@ -125,42 +120,6 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                 forceBootstrap ? "microsoft_multi_calendar_full" : "microsoft_multi_calendar_incremental");
     }
 
-    /**
-     * @return list of provider-native calendar ids to poll. Prefers the user's selected
-     *         availability calendars; falls back to the connection's primary inventory
-     *         calendar when no event types reference any (otherwise sync would silently
-     *         stop producing busy intervals after a fresh connect).
-     */
-    private Set<String> resolveCalendarsToSync(CalendarConnection connection,
-                                               SyncSourceAttribution sourceAttribution) {
-        Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
-        if (!selected.isEmpty()) {
-            return selected;
-        }
-        // Fallback: poll the inventory's primary calendar (deterministically the first
-        // entry returned by findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc).
-        List<CalendarConnectionCalendar> inventory =
-                inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId());
-        Set<String> fallback = new LinkedHashSet<>();
-        for (CalendarConnectionCalendar cal : inventory) {
-            if (cal.isPrimary() && cal.getExternalCalendarId() != null && !cal.getExternalCalendarId().isBlank()) {
-                fallback.add(cal.getExternalCalendarId());
-                break;
-            }
-        }
-        if (fallback.isEmpty() && !inventory.isEmpty()) {
-            // No primary marked: use the first available calendar so we still produce
-            // busy intervals. Better than a silent no-op sync.
-            String first = inventory.get(0).getExternalCalendarId();
-            if (first != null && !first.isBlank()) fallback.add(first);
-        }
-        if (!fallback.isEmpty()) {
-            log.info("microsoft_calendar_sync_fallback_to_primary connectionId={} calendarId={} reason=no_event_type_selection",
-                    connection.getId(), fallback.iterator().next());
-        }
-        return fallback;
-    }
-
     private int syncOneCalendar(CalendarConnection connection,
                                 String calendarId,
                                 Instant windowStart,
@@ -170,6 +129,11 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                                 List<CalendarEventIngestionService.IncomingCalendarEvent> mergedOut) {
         if (ProviderCalendarSelectionService.isLegacyCorruption(connection.getId(), calendarId)) {
             log.warn("legacy_invalid_calendar_mapping connectionId={} calendarId={} reason=uuid_instead_of_provider_calendar_id stage=pre_graph",
+                    connection.getId(), calendarId);
+            return 0;
+        }
+        if ("primary".equalsIgnoreCase(calendarId)) {
+            log.warn("legacy_invalid_calendar_mapping connectionId={} calendarId={} reason=microsoft_primary_alias_not_allowed stage=pre_graph",
                     connection.getId(), calendarId);
             return 0;
         }
