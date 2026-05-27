@@ -539,8 +539,12 @@ public class HttpGoogleApiClient implements GoogleApiClient {
             }
             String etag = asStringLoose(item.get("etag"));
             Long sequence = asLong(item.get("sequence"));
-            String payloadHash = stableObservationHash(id, sequence, updated, etag, cancelled, start, end);
-            out.add(new CalendarEventObservation(id, start, end, cancelled, sequence, updated, etag, payloadHash));
+            String title = asStringLoose(item.get("summary"));
+            String location = asStringLoose(item.get("location"));
+            String organizerEmail = nestedString(item, "organizer", "email");
+            String payloadHash = stableObservationHash(id, sequence, updated, etag, cancelled, start, end, title, location, organizerEmail);
+            out.add(new CalendarEventObservation(id, start, end, cancelled, sequence, updated, etag, payloadHash,
+                    title, location, organizerEmail));
         }
         return out;
     }
@@ -551,7 +555,10 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                                                 String etag,
                                                 boolean cancelled,
                                                 Instant start,
-                                                Instant end) {
+                                                Instant end,
+                                                String title,
+                                                String location,
+                                                String organizerEmail) {
         String canonical = String.join("|",
                 id == null ? "" : id,
                 sequence == null ? "" : String.valueOf(sequence),
@@ -559,7 +566,10 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                 etag == null ? "" : etag,
                 String.valueOf(cancelled),
                 start == null ? "" : start.toString(),
-                end == null ? "" : end.toString());
+                end == null ? "" : end.toString(),
+                title == null ? "" : title,
+                location == null ? "" : location,
+                organizerEmail == null ? "" : organizerEmail);
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return Base64.getUrlEncoder().withoutPadding()

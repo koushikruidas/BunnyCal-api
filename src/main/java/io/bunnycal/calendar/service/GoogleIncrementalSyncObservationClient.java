@@ -282,7 +282,10 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
                     obs.providerUpdatedAt(),
                     obs.providerEtag(),
                     obs.payloadHash(),
-                    calendarId));
+                    calendarId,
+                    obs.title(),
+                    obs.location(),
+                    obs.organizerEmail()));
         }
         return out;
     }

@@ -260,7 +260,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
 
     @Override
     public SyncWindow listEventsFull(String accessToken) {
-        return listEvents(accessToken, "/v1.0/me/calendar/events?$select=id,start,end,isCancelled,lastModifiedDateTime,changeKey");
+        return listEvents(accessToken, "/v1.0/me/calendar/events?$select=id,start,end,isCancelled,lastModifiedDateTime,changeKey,subject,location,organizer");
     }
 
     @Override
@@ -357,7 +357,12 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     boolean cancelled = asBooleanLoose(map.get("isCancelled"));
                     Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
                     String etag = asStringLoose(map.get("changeKey"));
-                    events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag, hashPayload(id, start, end, cancelled, etag)));
+                    String title = asStringLoose(map.get("subject"));
+                    String location = nestedString(map, "location", "displayName");
+                    String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
+                    events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag,
+                            hashPayload(id, start, end, cancelled, etag, title, location, organizerEmail),
+                            title, location, organizerEmail));
                 }
             }
             String delta = response.getBody() == null ? null : asStringLoose(response.getBody().get("@odata.deltaLink"));
@@ -390,7 +395,8 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 String encodedCalendarId = URLEncoder.encode(externalCalendarId, StandardCharsets.UTF_8);
                 firstUrl = "/v1.0/me/calendars('" + encodedCalendarId + "')/calendarView/delta"
                         + "?startDateTime=" + windowStart.toString()
-                        + "&endDateTime=" + windowEnd.toString();
+                        + "&endDateTime=" + windowEnd.toString()
+                        + "&$select=id,start,end,isCancelled,lastModifiedDateTime,changeKey,subject,location,organizer";
             }
             List<CalendarEventObservation> events = new ArrayList<>();
             String nextUrl = firstUrl;
@@ -442,7 +448,12 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 boolean cancelled = asBooleanLoose(map.get("isCancelled"));
                 Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
                 String etag = asStringLoose(map.get("changeKey"));
-                events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag, hashPayload(id, start, end, cancelled, etag)));
+                String title = asStringLoose(map.get("subject"));
+                String location = nestedString(map, "location", "displayName");
+                String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
+                events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag,
+                        hashPayload(id, start, end, cancelled, etag, title, location, organizerEmail),
+                        title, location, organizerEmail));
             }
         }
         String deltaLink = body == null ? null : asStringLoose(body.get("@odata.deltaLink"));
@@ -584,7 +595,26 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         }
     }
 
-    private static String hashPayload(String id, Instant start, Instant end, boolean cancelled, String etag) {
-        return Integer.toHexString((id + "|" + start + "|" + end + "|" + cancelled + "|" + etag).hashCode());
+    private static String hashPayload(String id,
+                                      Instant start,
+                                      Instant end,
+                                      boolean cancelled,
+                                      String etag,
+                                      String title,
+                                      String location,
+                                      String organizerEmail) {
+        return Integer.toHexString((id + "|" + start + "|" + end + "|" + cancelled + "|" + etag + "|"
+                + title + "|" + location + "|" + organizerEmail).hashCode());
+    }
+
+    private static String nestedString(Map<?, ?> source, String... keys) {
+        Object current = source;
+        for (String key : keys) {
+            if (!(current instanceof Map<?, ?> map)) {
+                return null;
+            }
+            current = map.get(key);
+        }
+        return asStringLoose(current);
     }
 }

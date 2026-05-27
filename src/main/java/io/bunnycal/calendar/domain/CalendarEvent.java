@@ -59,6 +59,15 @@ public class CalendarEvent extends BaseEntity {
     @Column(name = "external_calendar_id", length = 512)
     private String externalCalendarId;
 
+    @Column(name = "title", length = 1024)
+    private String title;
+
+    @Column(name = "location", length = 1024)
+    private String location;
+
+    @Column(name = "organizer_email", length = 320)
+    private String organizerEmail;
+
     public UUID getId() { return id; }
     public UUID getUserId() { return userId; }
     public void setUserId(UUID userId) { this.userId = userId; }
@@ -76,4 +85,10 @@ public class CalendarEvent extends BaseEntity {
     public void setCancelled(boolean cancelled) { this.cancelled = cancelled; }
     public String getExternalCalendarId() { return externalCalendarId; }
     public void setExternalCalendarId(String externalCalendarId) { this.externalCalendarId = externalCalendarId; }
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+    public String getLocation() { return location; }
+    public void setLocation(String location) { this.location = location; }
+    public String getOrganizerEmail() { return organizerEmail; }
+    public void setOrganizerEmail(String organizerEmail) { this.organizerEmail = organizerEmail; }
 }

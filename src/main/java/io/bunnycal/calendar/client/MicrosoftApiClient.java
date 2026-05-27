@@ -75,8 +75,23 @@ public interface MicrosoftApiClient {
             Long providerSequence,
             Instant providerUpdatedAt,
             String providerEtag,
-            String payloadHash
-    ) {}
+            String payloadHash,
+            String title,
+            String location,
+            String organizerEmail
+    ) {
+        public CalendarEventObservation(String externalEventId,
+                                        Instant startsAt,
+                                        Instant endsAt,
+                                        boolean cancelled,
+                                        Long providerSequence,
+                                        Instant providerUpdatedAt,
+                                        String providerEtag,
+                                        String payloadHash) {
+            this(externalEventId, startsAt, endsAt, cancelled, providerSequence, providerUpdatedAt, providerEtag, payloadHash,
+                    null, null, null);
+        }
+    }
 
     record WebhookSubscription(String subscriptionId, String resourceId, Instant expiresAt, String clientState) {}
 }

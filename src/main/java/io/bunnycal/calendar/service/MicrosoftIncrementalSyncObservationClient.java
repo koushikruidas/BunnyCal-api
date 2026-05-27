@@ -209,7 +209,10 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     obs.providerUpdatedAt(),
                     obs.providerEtag(),
                     obs.payloadHash(),
-                    calendarId));
+                    calendarId,
+                    obs.title(),
+                    obs.location(),
+                    obs.organizerEmail()));
         }
         return out;
     }
