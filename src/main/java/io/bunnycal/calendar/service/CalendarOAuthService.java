@@ -42,6 +42,7 @@ public class CalendarOAuthService {
     private final CalendarConnectionWriteService connectionWriteService;
     private final MeterRegistry meterRegistry;
     private final CalendarWebhookProperties webhookProperties;
+    private final CalendarInventoryHydrator inventoryHydrator;
 
     public CalendarOAuthService(CalendarConnectionRepository repository,
                                 GoogleApiClient googleApiClient,
@@ -53,7 +54,8 @@ public class CalendarOAuthService {
                                 SlotCacheVersionService slotCacheVersionService,
                                 CalendarConnectionWriteService connectionWriteService,
                                 MeterRegistry meterRegistry,
-                                CalendarWebhookProperties webhookProperties) {
+                                CalendarWebhookProperties webhookProperties,
+                                CalendarInventoryHydrator inventoryHydrator) {
         this.repository = repository;
         this.googleApiClient = googleApiClient;
         this.properties = properties;
@@ -65,6 +67,7 @@ public class CalendarOAuthService {
         this.connectionWriteService = connectionWriteService;
         this.meterRegistry = meterRegistry;
         this.webhookProperties = webhookProperties;
+        this.inventoryHydrator = inventoryHydrator;
     }
 
     public String buildGoogleConnectUrl(UUID userId) {
@@ -171,6 +174,9 @@ public class CalendarOAuthService {
             log.warn("initial calendar sync failed for userId={} connectionId={}", userId, saved.getId(), ex);
         }
         connectionWriteService.saveSnapshot(saved, "oauth_callback_final");
+        // Best-effort: hydrate the canonical provider calendar inventory using the freshly-issued
+        // access token. Failures are swallowed inside the hydrator so they cannot fail the connect.
+        inventoryHydrator.hydrateWithAccessToken(saved, token.accessToken());
         log.info("{{\"event\":\"calendar_connected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
         return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }

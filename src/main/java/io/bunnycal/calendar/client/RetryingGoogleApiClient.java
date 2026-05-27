@@ -63,6 +63,11 @@ public class RetryingGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
+    public List<ProviderCalendarInventoryEntry> listCalendars(String accessToken) {
+        return withRetry(() -> delegate.listCalendars(accessToken));
+    }
+
+    @Override
     public List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end) {
         return withRetry(() -> delegate.fetchBusyIntervals(accessToken, start, end));
     }

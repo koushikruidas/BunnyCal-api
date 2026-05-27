@@ -83,7 +83,8 @@ class CalendarOAuthServiceTest {
         service = new CalendarOAuthService(
                 repository, googleApiClient, properties, stateService, tokenCipher, ingestionService, syncClientRegistry, slotCacheVersionService, connectionWriteService,
                 new SimpleMeterRegistry(),
-                webhookProperties);
+                webhookProperties,
+                org.mockito.Mockito.mock(io.bunnycal.calendar.service.CalendarInventoryHydrator.class));
         when(repository.save(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(repository.saveAndFlush(any(CalendarConnection.class))).thenAnswer(inv -> inv.getArgument(0));
         when(connectionWriteService.saveSnapshot(any(CalendarConnection.class), any())).thenAnswer(inv -> inv.getArgument(0));

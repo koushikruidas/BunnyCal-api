@@ -243,6 +243,65 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     }
 
     @Override
+    public List<ProviderCalendarInventoryEntry> listCalendars(String accessToken) {
+        try {
+            ResponseEntity<Map> response = restClient.get()
+                    .uri("/calendar/v3/users/me/calendarList?minAccessRole=reader&showHidden=true")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            Object items = response.getBody() == null ? null : response.getBody().get("items");
+            if (!(items instanceof List<?> list)) {
+                return List.of();
+            }
+            List<ProviderCalendarInventoryEntry> entries = new ArrayList<>();
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                String id = stringField(map, "id");
+                if (id == null || id.isBlank()) {
+                    continue;
+                }
+                String name = firstNonBlank(stringField(map, "summaryOverride"), stringField(map, "summary"));
+                boolean primary = booleanField(map, "primary");
+                String accessRole = stringField(map, "accessRole");
+                // Google accessRole values: freeBusyReader, reader, writer, owner.
+                // Reader and above can read events; writer/owner can mutate them.
+                boolean canRead = accessRole != null;
+                boolean canWrite = "writer".equals(accessRole) || "owner".equals(accessRole);
+                boolean hidden = booleanField(map, "hidden") || booleanField(map, "deleted");
+                entries.add(new ProviderCalendarInventoryEntry(id, name, primary, canRead, canWrite, hidden));
+            }
+            return List.copyOf(entries);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    private static String stringField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static boolean booleanField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if (value instanceof String s) {
+            return "true".equalsIgnoreCase(s);
+        }
+        return false;
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) return a;
+        if (b != null && !b.isBlank()) return b;
+        return null;
+    }
+
+    @Override
     public List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end) {
         try {
             ResponseEntity<Map> response = restClient.post()

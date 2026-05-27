@@ -178,6 +178,44 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     }
 
     @Override
+    public List<ProviderCalendarInventoryEntry> listCalendars(String accessToken) {
+        try {
+            ResponseEntity<Map> response = graphClient.get()
+                    .uri("/v1.0/me/calendars?$select=id,name,isDefaultCalendar,canEdit,canShare,canViewPrivateItems,owner")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            Object values = response.getBody() == null ? null : response.getBody().get("value");
+            if (!(values instanceof List<?> list)) {
+                return List.of();
+            }
+            List<ProviderCalendarInventoryEntry> entries = new ArrayList<>();
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                String id = asStringLoose(map.get("id"));
+                if (id == null || id.isBlank()) {
+                    continue;
+                }
+                String name = asStringLoose(map.get("name"));
+                boolean primary = asBooleanLoose(map.get("isDefaultCalendar"));
+                // Graph only exposes canEdit (write) + canViewPrivateItems (read). Absent flags
+                // mean the field wasn't returned (e.g. delegated/shared scenarios); treat as
+                // best-effort permissive on the read side and strict on write.
+                boolean canEdit = asBooleanLoose(map.get("canEdit"));
+                Object canView = map.get("canViewPrivateItems");
+                boolean canRead = canView == null || asBooleanLoose(canView);
+                boolean canWrite = canEdit;
+                entries.add(new ProviderCalendarInventoryEntry(id, name, primary, canRead, canWrite, false));
+            }
+            return List.copyOf(entries);
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
     public List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end) {
         try {
             Map<String, Object> body = Map.of(

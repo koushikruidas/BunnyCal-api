@@ -1,5 +1,6 @@
 package io.bunnycal.calendar.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
 
 public record CalendarRuntimeStatusResponse(
@@ -18,7 +19,8 @@ public record CalendarRuntimeStatusResponse(
             String status,
             boolean actionRequired,
             Capabilities capabilities,
-            Roles roles
+            Roles roles,
+            @JsonInclude(JsonInclude.Include.NON_NULL) List<Calendar> calendars
     ) {}
 
     public record Capabilities(
@@ -39,5 +41,14 @@ public record CalendarRuntimeStatusResponse(
             boolean googleMeetAvailable,
             boolean teamsAvailable
     ) {}
-}
 
+    public record Calendar(
+            String calendarId,
+            String name,
+            boolean isPrimary,
+            boolean canRead,
+            boolean canWrite,
+            boolean selectedForAvailability,
+            boolean selectedForProjection
+    ) {}
+}

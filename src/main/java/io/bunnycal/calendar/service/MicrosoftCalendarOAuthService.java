@@ -39,6 +39,7 @@ public class MicrosoftCalendarOAuthService {
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final CalendarWebhookProperties webhookProperties;
+    private final CalendarInventoryHydrator inventoryHydrator;
 
     public MicrosoftCalendarOAuthService(CalendarConnectionRepository repository,
                                          MicrosoftApiClient microsoftApiClient,
@@ -49,7 +50,8 @@ public class MicrosoftCalendarOAuthService {
                                          CalendarSyncClientRegistry syncClientRegistry,
                                          SlotCacheVersionService slotCacheVersionService,
                                          CalendarConnectionWriteService connectionWriteService,
-                                         CalendarWebhookProperties webhookProperties) {
+                                         CalendarWebhookProperties webhookProperties,
+                                         CalendarInventoryHydrator inventoryHydrator) {
         this.repository = repository;
         this.microsoftApiClient = microsoftApiClient;
         this.properties = properties;
@@ -60,6 +62,7 @@ public class MicrosoftCalendarOAuthService {
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.webhookProperties = webhookProperties;
+        this.inventoryHydrator = inventoryHydrator;
     }
 
     public String buildMicrosoftConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
@@ -140,6 +143,9 @@ public class MicrosoftCalendarOAuthService {
             createWebhookSubscription(saved.getId(), token.accessToken());
         }
         connectionWriteService.saveSnapshot(saved, "oauth_callback_final");
+        // Best-effort: hydrate the canonical provider calendar inventory using the freshly-issued
+        // access token. Failures are swallowed inside the hydrator so they cannot fail the connect.
+        inventoryHydrator.hydrateWithAccessToken(saved, token.accessToken());
         return new CalendarOAuthService.OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 

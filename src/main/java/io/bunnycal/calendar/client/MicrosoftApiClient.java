@@ -20,6 +20,8 @@ public interface MicrosoftApiClient {
 
     String fetchProviderUserId(String accessToken);
 
+    List<ProviderCalendarInventoryEntry> listCalendars(String accessToken);
+
     List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end);
 
     SyncWindow listEventsFull(String accessToken);
