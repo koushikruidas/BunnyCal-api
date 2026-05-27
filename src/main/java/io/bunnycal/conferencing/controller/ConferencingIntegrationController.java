@@ -9,12 +9,16 @@ import io.bunnycal.conferencing.service.ConferencingOAuthServiceRegistry;
 import io.bunnycal.conferencing.service.ConferencingProviderCapabilities;
 import io.bunnycal.integration.ProviderCapabilityRegistry;
 import io.bunnycal.integration.ProviderCatalogService;
+import io.bunnycal.integration.ProviderDescriptor;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -24,21 +28,31 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/integrations/conferencing")
 public class ConferencingIntegrationController {
+    private static final Logger log = LoggerFactory.getLogger(ConferencingIntegrationController.class);
+
+    // Capability-only providers that the canonical providerCatalog exposes but the
+    // legacy providers map historically did not. Excluding them keeps the legacy
+    // projection wire-compatible with what frontends consume today.
+    private static final java.util.Set<String> LEGACY_PROVIDERS_EXCLUDED_FROM_PROJECTION =
+            java.util.Set.of("custom_url");
 
     private final ConferencingOAuthServiceRegistry oauthRegistry;
     private final ProviderCapabilityRegistry capabilityRegistry;
     private final ProviderCatalogService providerCatalogService;
+    private final MeterRegistry meterRegistry;
     private final String frontendErrorRedirect;
     private final String frontendSuccessRedirect;
 
     public ConferencingIntegrationController(ConferencingOAuthServiceRegistry oauthRegistry,
                                              ProviderCapabilityRegistry capabilityRegistry,
                                              ProviderCatalogService providerCatalogService,
+                                             MeterRegistry meterRegistry,
                                              @Value("${zoom.oauth.frontend-error-redirect:http://localhost:5173/calendar-error}") String frontendErrorRedirect,
                                              @Value("${zoom.oauth.frontend-success-redirect:http://localhost:5173/dashboard/integrations}") String frontendSuccessRedirect) {
         this.oauthRegistry = oauthRegistry;
         this.capabilityRegistry = capabilityRegistry;
         this.providerCatalogService = providerCatalogService;
+        this.meterRegistry = meterRegistry;
         this.frontendErrorRedirect = frontendErrorRedirect;
         this.frontendSuccessRedirect = frontendSuccessRedirect;
     }
@@ -91,18 +105,33 @@ public class ConferencingIntegrationController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> status(Authentication authentication) {
         UUID userId = extractUserId(authentication);
         Map<String, Object> payload = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> providers = new LinkedHashMap<>();
-        oauthRegistry.all().forEach((type, service) -> providers.put(type.externalId(), buildProviderEntry(service, userId)));
-        payload.put("providers", providers);
-        payload.put("capabilities", Map.of("conferencing", capabilityRegistry.allConferencing()));
         var catalog = providerCatalogService.catalogForUser(userId);
-        payload.put("providerCatalog", providerCatalogService.conferencingProviderSubset(userId));
+        Map<String, ProviderDescriptor> conferencingCatalog = providerCatalogService.conferencingProviderSubset(userId);
+
+        // providerCatalog is now the canonical source. The legacy `providers` map is a
+        // strict compatibility projection of the same data: same provider state, same
+        // capability flags, fewer fields. Independent construction (the old walk over
+        // oauthRegistry calling .status() per service) has been removed to prevent
+        // semantic drift from re-emerging — every field in the legacy entry now comes
+        // from the corresponding ProviderDescriptor.
+        payload.put("providers", legacyProvidersProjection(conferencingCatalog));
+        payload.put("capabilities", Map.of("conferencing", capabilityRegistry.allConferencing()));
+        payload.put("providerCatalog", conferencingCatalog);
         payload.put("authority", Map.of(
                 "conferencingProviders", catalog.authority().conferencingProviders(),
                 "lifecycleAuthority", catalog.authority().lifecycleAuthority(),
                 "identityProvider", catalog.authority().identityProvider()
         ));
-        return ResponseEntity.ok(ApiResponse.success(payload));
+        // Frozen-surface signal for clients. Mirrors the pattern used by
+        // /integrations/calendar/status/providers (RFC 8594-style headers) so the
+        // deprecation is visible at the protocol layer, not only in docs.
+        payload.put("_deprecations", Map.of(
+                "providers", "Legacy provider map. Use providerCatalog instead."
+        ));
+        return ResponseEntity.ok()
+                .header("Deprecation", "true")
+                .header("Link", "</integrations/conferencing/status>; rel=\"successor-version\"; field=\"providerCatalog\"")
+                .body(ApiResponse.success(payload));
     }
 
     @DeleteMapping("/{provider}")
@@ -124,17 +153,55 @@ public class ConferencingIntegrationController {
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
-    private static Map<String, Object> buildProviderEntry(ConferencingOAuthService service, UUID userId) {
-        String status = service.status(userId);
-        ConferencingProviderCapabilities capabilities = service.capabilities();
-        Map<String, Object> entry = new LinkedHashMap<>();
-        entry.put("status", status);
-        entry.put("connected", "CONNECTED".equals(status));
-        entry.put("type", capabilities.lifecycleType().externalId());
-        entry.put("standaloneOAuth", capabilities.standaloneOAuth());
-        entry.put("disconnectSupported", capabilities.standaloneDisconnect());
-        entry.put("managedBy", capabilities.managedBy());
-        return entry;
+    /**
+     * Build the legacy {@code providers} map as a strict projection of the canonical
+     * {@code providerCatalog}. Same wire shape the frontend has consumed historically
+     * (status / connected / type / standaloneOAuth / disconnectSupported / managedBy),
+     * derived from a single source of truth so the two surfaces cannot drift.
+     *
+     * <p>Capability-only providers without an OAuth service (e.g. {@code custom_url})
+     * are excluded — they were never present in the legacy map and adding them now
+     * would be an unintended widening on the way out.
+     *
+     * @deprecated The {@code providers} map is frozen. New consumers must read
+     *     {@code providerCatalog}. This projection will be removed once the frontend
+     *     migration is complete.
+     */
+    @Deprecated(forRemoval = true, since = "v1alpha-provider-catalog")
+    private Map<String, Map<String, Object>> legacyProvidersProjection(Map<String, ProviderDescriptor> catalog) {
+        Map<String, Map<String, Object>> projection = new LinkedHashMap<>();
+        for (Map.Entry<String, ProviderDescriptor> entry : catalog.entrySet()) {
+            String providerId = entry.getKey();
+            if (LEGACY_PROVIDERS_EXCLUDED_FROM_PROJECTION.contains(providerId)) {
+                continue;
+            }
+            ProviderDescriptor descriptor = entry.getValue();
+            ConferencingOAuthService oauthService = resolveOAuthService(providerId);
+            if (oauthService == null) {
+                // Only providers that existed in the legacy registry-walk appear in the
+                // projection. This is what keeps the wire shape unchanged.
+                continue;
+            }
+            ConferencingProviderCapabilities capabilities = oauthService.capabilities();
+
+            Map<String, Object> legacy = new LinkedHashMap<>();
+            legacy.put("status", descriptor.status().connectionStatus());
+            legacy.put("connected", descriptor.status().isConnected());
+            legacy.put("type", capabilities.lifecycleType().externalId());
+            legacy.put("standaloneOAuth", capabilities.standaloneOAuth());
+            legacy.put("disconnectSupported", capabilities.standaloneDisconnect());
+            legacy.put("managedBy", capabilities.managedBy());
+            projection.put(providerId, legacy);
+
+            log.info("legacy_provider_surface_consumed consumer=conferencing_status_endpoint provider={}", providerId);
+            meterRegistry.counter("integration.conferencing.legacy_providers_surface_emitted",
+                    "provider", providerId).increment();
+        }
+        return projection;
+    }
+
+    private ConferencingOAuthService resolveOAuthService(String providerId) {
+        return oauthRegistry.find(providerId).orElse(null);
     }
 
     private static String disconnectNotSupportedMessage(ConferencingOAuthService service,

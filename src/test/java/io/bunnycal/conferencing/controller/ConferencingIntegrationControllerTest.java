@@ -21,9 +21,16 @@ import io.bunnycal.conferencing.service.ConferencingProviderCapabilities;
 import io.bunnycal.conferencing.service.GoogleMeetConferencingOAuthService;
 import io.bunnycal.conferencing.service.ZoomConferencingOAuthService;
 import io.bunnycal.integration.ProviderAuthoritySummary;
+import io.bunnycal.integration.ProviderCapabilityFlags;
 import io.bunnycal.integration.ProviderCatalogResponse;
 import io.bunnycal.integration.ProviderCatalogService;
 import io.bunnycal.integration.ProviderCapabilityRegistry;
+import io.bunnycal.integration.ProviderDescriptor;
+import io.bunnycal.integration.ProviderLifecycleSourceOfTruth;
+import io.bunnycal.integration.ProviderRoleAssignments;
+import io.bunnycal.integration.ProviderStatusView;
+import io.bunnycal.integration.ProviderType;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -58,8 +65,36 @@ class ConferencingIntegrationControllerTest {
                 registry,
                 new ProviderCapabilityRegistry(),
                 providerCatalogService,
+                new SimpleMeterRegistry(),
                 "http://localhost:3000/error",
                 "http://localhost:3000/success");
+    }
+
+    private static ProviderDescriptor zoomDescriptor(boolean connected) {
+        return new ProviderDescriptor(
+                "zoom",
+                ProviderType.CONFERENCING,
+                new ProviderCapabilityFlags(false, false, false, true, true, false, false, false, true, false, false),
+                ProviderLifecycleSourceOfTruth.NONE,
+                null,
+                ProviderStatusView.standalone(connected ? "CONNECTED" : "NOT_CONNECTED", connected, false),
+                new ProviderRoleAssignments(false, false, connected),
+                Map.of("conferencingProviderType", "ZOOM"));
+    }
+
+    private static ProviderDescriptor googleMeetDescriptor(boolean googleCalendarConnected) {
+        return new ProviderDescriptor(
+                "google_meet",
+                ProviderType.CONFERENCING,
+                new ProviderCapabilityFlags(false, false, false, true, false, false, false, false, true, false, false),
+                ProviderLifecycleSourceOfTruth.NONE,
+                "google_calendar",
+                ProviderStatusView.derived(
+                        googleCalendarConnected ? "CONNECTED" : "NOT_CONNECTED",
+                        googleCalendarConnected,
+                        "google"),
+                new ProviderRoleAssignments(false, false, googleCalendarConnected),
+                Map.of("conferencingProviderType", "GOOGLE_MEET"));
     }
 
     @Test
@@ -158,17 +193,17 @@ class ConferencingIntegrationControllerTest {
     void status_includesCapabilityMetadataPerProvider() {
         UUID userId = UUID.randomUUID();
         Authentication authentication = new UsernamePasswordAuthenticationToken(userId, null);
-        when(zoomOAuthService.status(userId)).thenReturn("CONNECTED");
         when(zoomOAuthService.capabilities()).thenReturn(ConferencingProviderCapabilities.standalone());
-        when(googleMeetOAuthService.status(userId)).thenReturn("CONNECTED");
         when(googleMeetOAuthService.capabilities())
                 .thenReturn(ConferencingProviderCapabilities.managedBy("google_calendar"));
         ProviderCatalogResponse response = new ProviderCatalogResponse(
                 "v1alpha-provider-catalog",
                 List.of(),
-                new ProviderAuthoritySummary("google", List.of("google"), "application", List.of("zoom")));
+                new ProviderAuthoritySummary("google", List.of("google"), "application", List.of("zoom", "google_meet")));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(response);
-        when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of());
+        when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of(
+                "zoom", zoomDescriptor(true),
+                "google_meet", googleMeetDescriptor(true)));
 
         ApiResponse<Map<String, Object>> body = controller.status(authentication).getBody();
 
@@ -196,21 +231,27 @@ class ConferencingIntegrationControllerTest {
         assertNotNull(body.getData().get("capabilities"));
         assertNotNull(body.getData().get("providerCatalog"));
         assertNotNull(body.getData().get("authority"));
+        // Deprecation surface advertised in the response body.
+        @SuppressWarnings("unchecked")
+        Map<String, String> deprecations =
+                (Map<String, String>) body.getData().get("_deprecations");
+        assertNotNull(deprecations);
+        assertTrue(deprecations.get("providers").contains("providerCatalog"));
     }
 
     @Test
     void status_reflectsDisconnectedManagedProvider() {
         UUID userId = UUID.randomUUID();
         Authentication authentication = new UsernamePasswordAuthenticationToken(userId, null);
-        when(zoomOAuthService.status(userId)).thenReturn("NOT_CONNECTED");
         when(zoomOAuthService.capabilities()).thenReturn(ConferencingProviderCapabilities.standalone());
-        when(googleMeetOAuthService.status(userId)).thenReturn("NOT_CONNECTED");
         when(googleMeetOAuthService.capabilities())
                 .thenReturn(ConferencingProviderCapabilities.managedBy("google_calendar"));
         when(providerCatalogService.catalogForUser(userId)).thenReturn(new ProviderCatalogResponse(
                 "v1alpha-provider-catalog", List.of(),
                 new ProviderAuthoritySummary("google", List.of(), "application", List.of())));
-        when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of());
+        when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(Map.of(
+                "zoom", zoomDescriptor(false),
+                "google_meet", googleMeetDescriptor(false)));
 
         @SuppressWarnings("unchecked")
         Map<String, Map<String, Object>> providers = (Map<String, Map<String, Object>>) controller.status(authentication)
@@ -218,6 +259,40 @@ class ConferencingIntegrationControllerTest {
 
         assertEquals(Boolean.FALSE, providers.get("zoom").get("connected"));
         assertEquals(Boolean.FALSE, providers.get("google_meet").get("connected"));
+    }
+
+    @Test
+    void status_legacyProvidersAreAStrictProjectionOfProviderCatalog() {
+        // Locks in the post-refactor invariant: providers.* values MUST match
+        // providerCatalog.* values. There is no independent code path that could drift.
+        UUID userId = UUID.randomUUID();
+        Authentication authentication = new UsernamePasswordAuthenticationToken(userId, null);
+        when(zoomOAuthService.capabilities()).thenReturn(ConferencingProviderCapabilities.standalone());
+        when(googleMeetOAuthService.capabilities())
+                .thenReturn(ConferencingProviderCapabilities.managedBy("google_calendar"));
+        Map<String, ProviderDescriptor> catalog = Map.of(
+                "zoom", zoomDescriptor(true),
+                "google_meet", googleMeetDescriptor(false));
+        when(providerCatalogService.conferencingProviderSubset(userId)).thenReturn(catalog);
+        when(providerCatalogService.catalogForUser(userId)).thenReturn(new ProviderCatalogResponse(
+                "v1alpha-provider-catalog", List.of(),
+                new ProviderAuthoritySummary("google", List.of(), "application", List.of("zoom"))));
+
+        ApiResponse<Map<String, Object>> body = controller.status(authentication).getBody();
+        @SuppressWarnings("unchecked")
+        Map<String, Map<String, Object>> providers =
+                (Map<String, Map<String, Object>>) body.getData().get("providers");
+
+        for (Map.Entry<String, ProviderDescriptor> entry : catalog.entrySet()) {
+            String providerId = entry.getKey();
+            ProviderDescriptor descriptor = entry.getValue();
+            Map<String, Object> legacy = providers.get(providerId);
+            assertNotNull(legacy, "providerCatalog entry " + providerId + " missing from legacy projection");
+            assertEquals(descriptor.status().connectionStatus(), legacy.get("status"),
+                    "status drift for " + providerId);
+            assertEquals(descriptor.status().isConnected(), legacy.get("connected"),
+                    "connected drift for " + providerId);
+        }
     }
 
     @Test

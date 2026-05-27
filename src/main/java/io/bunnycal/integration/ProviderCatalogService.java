@@ -16,10 +16,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ProviderCatalogService {
+    private static final Logger log = LoggerFactory.getLogger(ProviderCatalogService.class);
     private static final String VERSION = "v1alpha-provider-catalog";
     private static final String LIFECYCLE_AUTHORITY_APPLICATION = "application";
     private static final String GOOGLE = "google";
@@ -28,6 +31,10 @@ public class ProviderCatalogService {
     private static final String GOOGLE_MEET = "google_meet";
     private static final String MICROSOFT_TEAMS = "microsoft_teams";
     private static final String CUSTOM_URL = "custom_url";
+    // Parent-integration identifiers that the capability-derived conferencing
+    // providers report via their lifecycleAuthority field.
+    private static final String GOOGLE_CALENDAR_AUTHORITY = "google_calendar";
+    private static final String MICROSOFT_CALENDAR_AUTHORITY = "microsoft_calendar";
 
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final ZoomConferencingOAuthService zoomConferencingOAuthService;
@@ -50,24 +57,36 @@ public class ProviderCatalogService {
                 .distinct()
                 .toList();
 
+        boolean googleCalendarConnected = availabilityProviders.contains(GOOGLE);
+        boolean microsoftCalendarConnected = availabilityProviders.contains(MICROSOFT);
+
         String identityProvider = resolveIdentityProvider(userId);
         String zoomStatus = zoomConferencingOAuthService.status(userId);
         boolean zoomConnected = "CONNECTED".equals(zoomStatus);
-        List<String> conferencingProviders = zoomConnected ? List.of(ZOOM) : List.of();
+
+        // Conferencing-provider authority is now derived from the underlying calendar
+        // identities, not from standalone OAuth state. Google Meet rides on Google
+        // Calendar; Teams rides on Microsoft Calendar. Without the parent integration
+        // these capabilities are not usable, so they must not appear in the authority
+        // list either.
+        List<String> conferencingProviders = new ArrayList<>();
+        if (zoomConnected) conferencingProviders.add(ZOOM);
+        if (googleCalendarConnected) conferencingProviders.add(GOOGLE_MEET);
+        if (microsoftCalendarConnected) conferencingProviders.add(MICROSOFT_TEAMS);
 
         ProviderAuthoritySummary authoritySummary = new ProviderAuthoritySummary(
                 identityProvider,
                 availabilityProviders,
                 LIFECYCLE_AUTHORITY_APPLICATION,
-                conferencingProviders
+                List.copyOf(conferencingProviders)
         );
 
         List<ProviderDescriptor> providers = new ArrayList<>();
         providers.add(calendarProviderDescriptor(userId, CalendarProviderType.GOOGLE, authoritySummary));
         providers.add(calendarProviderDescriptor(userId, CalendarProviderType.MICROSOFT, authoritySummary));
         providers.add(zoomDescriptor(zoomStatus, authoritySummary));
-        providers.add(googleMeetDescriptor(authoritySummary));
-        providers.add(microsoftTeamsDescriptor(authoritySummary));
+        providers.add(googleMeetDescriptor(googleCalendarConnected, authoritySummary));
+        providers.add(microsoftTeamsDescriptor(microsoftCalendarConnected, authoritySummary));
         providers.add(customUrlDescriptor(authoritySummary));
 
         return new ProviderCatalogResponse(VERSION, providers, authoritySummary);
@@ -107,9 +126,6 @@ public class ProviderCatalogService {
                     true, true, true, true, true, false, true, true, true, true, true
             );
         };
-        ProviderLifecycleSourceOfTruth lifecycleSourceOfTruth = providerType == CalendarProviderType.GOOGLE
-                ? ProviderLifecycleSourceOfTruth.WEBHOOK_AND_POLL
-                : ProviderLifecycleSourceOfTruth.WEBHOOK_AND_POLL;
         ProviderRoleAssignments roles = new ProviderRoleAssignments(
                 providerId.equals(authoritySummary.identityProvider()),
                 authoritySummary.availabilityProviders().contains(providerId),
@@ -119,8 +135,9 @@ public class ProviderCatalogService {
                 providerId,
                 ProviderType.HYBRID,
                 flags,
-                lifecycleSourceOfTruth,
-                new ProviderStatusView(status, connected, actionRequired),
+                ProviderLifecycleSourceOfTruth.WEBHOOK_AND_POLL,
+                null,
+                ProviderStatusView.standalone(status, connected, actionRequired),
                 roles,
                 Map.of("calendarProviderType", providerType.name())
         );
@@ -131,12 +148,15 @@ public class ProviderCatalogService {
         ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
                 false, false, false, true, true, false, false, false, true, false, false
         );
+        log.info("conferencing_provider_status provider={} standaloneOAuth={} derivedCapability={}",
+                ZOOM, true, false);
         return new ProviderDescriptor(
                 ZOOM,
                 ProviderType.CONFERENCING,
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
-                new ProviderStatusView(zoomStatus, connected, "ERROR".equals(zoomStatus)),
+                null,
+                ProviderStatusView.standalone(zoomStatus, connected, "ERROR".equals(zoomStatus)),
                 new ProviderRoleAssignments(
                         false,
                         false,
@@ -146,18 +166,53 @@ public class ProviderCatalogService {
         );
     }
 
-    private static ProviderDescriptor googleMeetDescriptor(ProviderAuthoritySummary authoritySummary) {
+    private static ProviderDescriptor googleMeetDescriptor(boolean googleCalendarConnected,
+                                                           ProviderAuthoritySummary authoritySummary) {
         ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
                 false, false, false, true, false, false, false, false, true, false, false
         );
+        log.info("conferencing_capability_derived provider={} lifecycleSource={} available={}",
+                GOOGLE_MEET, GOOGLE_CALENDAR_AUTHORITY, googleCalendarConnected);
+        log.info("conferencing_provider_status provider={} standaloneOAuth={} derivedCapability={}",
+                GOOGLE_MEET, false, true);
+        ProviderStatusView status = ProviderStatusView.derived(
+                googleCalendarConnected ? "CONNECTED" : "NOT_CONNECTED",
+                googleCalendarConnected,
+                GOOGLE);
         return new ProviderDescriptor(
                 GOOGLE_MEET,
                 ProviderType.CONFERENCING,
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
-                new ProviderStatusView(null, false, false),
+                GOOGLE_CALENDAR_AUTHORITY,
+                status,
                 new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(GOOGLE_MEET)),
                 Map.of("conferencingProviderType", ConferencingProviderType.GOOGLE_MEET.name())
+        );
+    }
+
+    private static ProviderDescriptor microsoftTeamsDescriptor(boolean microsoftCalendarConnected,
+                                                               ProviderAuthoritySummary authoritySummary) {
+        ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
+                false, false, false, true, false, false, false, false, true, false, false
+        );
+        log.info("conferencing_capability_derived provider={} lifecycleSource={} available={}",
+                MICROSOFT_TEAMS, MICROSOFT_CALENDAR_AUTHORITY, microsoftCalendarConnected);
+        log.info("conferencing_provider_status provider={} standaloneOAuth={} derivedCapability={}",
+                MICROSOFT_TEAMS, false, true);
+        ProviderStatusView status = ProviderStatusView.derived(
+                microsoftCalendarConnected ? "CONNECTED" : "NOT_CONNECTED",
+                microsoftCalendarConnected,
+                MICROSOFT);
+        return new ProviderDescriptor(
+                MICROSOFT_TEAMS,
+                ProviderType.CONFERENCING,
+                flags,
+                ProviderLifecycleSourceOfTruth.NONE,
+                MICROSOFT_CALENDAR_AUTHORITY,
+                status,
+                new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(MICROSOFT_TEAMS)),
+                Map.of("conferencingProviderType", ConferencingProviderType.MICROSOFT_TEAMS.name())
         );
     }
 
@@ -165,29 +220,18 @@ public class ProviderCatalogService {
         ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
                 false, false, false, true, false, false, false, false, false, false, false
         );
+        // Custom URL is a manual user-entered field, not a backed integration. It is
+        // "available" whenever the conferencing feature itself is available, which is
+        // always — there's no lifecycle to mirror.
         return new ProviderDescriptor(
                 CUSTOM_URL,
                 ProviderType.CONFERENCING,
                 flags,
                 ProviderLifecycleSourceOfTruth.NONE,
-                new ProviderStatusView(null, false, false),
+                null,
+                new ProviderStatusView(null, false, false, true, null),
                 new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(CUSTOM_URL)),
                 Map.of("conferencingProviderType", ConferencingProviderType.CUSTOM_URL.name())
-        );
-    }
-
-    private static ProviderDescriptor microsoftTeamsDescriptor(ProviderAuthoritySummary authoritySummary) {
-        ProviderCapabilityFlags flags = new ProviderCapabilityFlags(
-                false, false, false, true, false, false, false, false, true, false, false
-        );
-        return new ProviderDescriptor(
-                MICROSOFT_TEAMS,
-                ProviderType.CONFERENCING,
-                flags,
-                ProviderLifecycleSourceOfTruth.NONE,
-                new ProviderStatusView(null, false, false),
-                new ProviderRoleAssignments(false, false, authoritySummary.conferencingProviders().contains(MICROSOFT_TEAMS)),
-                Map.of("conferencingProviderType", ConferencingProviderType.MICROSOFT_TEAMS.name())
         );
     }
 
