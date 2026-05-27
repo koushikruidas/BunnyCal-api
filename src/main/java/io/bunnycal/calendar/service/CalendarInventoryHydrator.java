@@ -110,6 +110,15 @@ public class CalendarInventoryHydrator {
             if (entry == null || entry.externalCalendarId() == null || entry.externalCalendarId().isBlank()) {
                 continue;
             }
+            if (provider == CalendarProviderType.GOOGLE) {
+                log.info("google_calendar_inventory_entry connectionId={} rawId={} summary={} primary={} accessRoleDerivedWrite={} persistedProviderCalendarId={}",
+                        connectionId,
+                        entry.externalCalendarId(),
+                        entry.name(),
+                        entry.primary(),
+                        entry.canWrite(),
+                        entry.externalCalendarId());
+            }
             keep.add(entry.externalCalendarId());
             CalendarConnectionCalendar row = existing.get(entry.externalCalendarId());
             if (row == null) {

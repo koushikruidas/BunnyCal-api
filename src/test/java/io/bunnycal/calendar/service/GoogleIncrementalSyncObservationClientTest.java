@@ -256,6 +256,59 @@ class GoogleIncrementalSyncObservationClientTest {
     }
 
     @Test
+    void fetchIncremental_selected_markdown_mailto_calendarId_is_normalized_to_canonical_inventory_id() {
+        CalendarConnection connection = connection();
+        String canonical = "koushikruidas@gmail.com";
+        String wrapped = "[koushikruidas@gmail.com](mailto:koushikruidas@gmail.com)";
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
+                .thenReturn(Set.of(wrapped));
+        CalendarConnectionCalendar inv = new CalendarConnectionCalendar();
+        inv.setConnectionId(connection.getId());
+        inv.setExternalCalendarId(canonical);
+        inv.setPrimary(true);
+        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
+                .thenReturn(List.of(inv));
+        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), canonical))
+                .thenReturn(Optional.empty());
+        when(googleApiClient.listEventsFull(any(), eq(canonical)))
+                .thenReturn(new GoogleApiClient.SyncWindow(List.of(observation("evt-c", false)), "c-token"));
+
+        ExternalCalendarSyncClient.SyncBatch batch =
+                client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
+
+        verify(googleApiClient).listEventsFull(any(), eq(canonical));
+        assertThat(batch.events()).hasSize(1);
+        assertThat(batch.events().get(0).externalCalendarId()).isEqualTo(canonical);
+    }
+
+    @Test
+    void fetchIncremental_selected_calendar_not_in_inventory_skips_and_falls_back_to_primary() {
+        CalendarConnection connection = connection();
+        String invalid = "not-in-inventory@group.calendar.google.com";
+        String primary = "primary";
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
+                .thenReturn(Set.of(invalid));
+        CalendarConnectionCalendar inv = new CalendarConnectionCalendar();
+        inv.setConnectionId(connection.getId());
+        inv.setExternalCalendarId(primary);
+        inv.setPrimary(true);
+        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
+                .thenReturn(List.of(inv));
+        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), primary))
+                .thenReturn(Optional.empty());
+        when(googleApiClient.listEventsFull(any(), eq(primary)))
+                .thenReturn(new GoogleApiClient.SyncWindow(List.of(observation("evt-p", false)), "p-token"));
+
+        ExternalCalendarSyncClient.SyncBatch batch =
+                client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
+
+        verify(googleApiClient, never()).listEventsFull(any(), eq(invalid));
+        verify(googleApiClient).listEventsFull(any(), eq(primary));
+        assertThat(batch.events()).hasSize(1);
+        assertThat(batch.events().get(0).externalCalendarId()).isEqualTo(primary);
+    }
+
+    @Test
     void fetchFull_forces_bootstrap_even_when_cursor_exists() {
         CalendarConnection connection = connection();
         String cal = "team@group.calendar.google.com";

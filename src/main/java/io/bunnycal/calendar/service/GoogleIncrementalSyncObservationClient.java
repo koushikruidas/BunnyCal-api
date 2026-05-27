@@ -13,6 +13,7 @@ import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -157,11 +158,33 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
     private Set<String> resolveCalendarsToSync(CalendarConnection connection,
                                                SyncSourceAttribution sourceAttribution) {
         Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
-        if (!selected.isEmpty()) {
-            return selected;
-        }
         List<CalendarConnectionCalendar> inventory =
                 inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId());
+        Set<String> inventoryIds = new HashSet<>();
+        for (CalendarConnectionCalendar cal : inventory) {
+            if (cal.getExternalCalendarId() != null && !cal.getExternalCalendarId().isBlank()) {
+                inventoryIds.add(cal.getExternalCalendarId().trim());
+            }
+        }
+        if (!selected.isEmpty()) {
+            Set<String> normalizedSelected = new LinkedHashSet<>();
+            for (String raw : selected) {
+                String normalized = normalizeGoogleCalendarId(raw);
+                if (normalized == null || normalized.isBlank()) continue;
+                if (!inventoryIds.isEmpty() && !"primary".equalsIgnoreCase(normalized) && !inventoryIds.contains(normalized)) {
+                    log.warn("google_calendar_inventory_mismatch connectionId={} selectedCalendarId={} availableInventoryIds={}",
+                            connection.getId(), normalized, inventoryIds);
+                    continue;
+                }
+                normalizedSelected.add(normalized);
+            }
+            if (!normalizedSelected.isEmpty()) {
+                return normalizedSelected;
+            }
+            log.info("google_calendar_sync_selection_invalid connectionId={} action=fallback reason=all_selected_calendars_missing_from_inventory",
+                    connection.getId());
+        }
+
         Set<String> fallback = new LinkedHashSet<>();
         for (CalendarConnectionCalendar cal : inventory) {
             if (cal.isPrimary() && cal.getExternalCalendarId() != null && !cal.getExternalCalendarId().isBlank()) {
@@ -185,6 +208,19 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
                     connection.getId(), fallback.iterator().next());
         }
         return fallback;
+    }
+
+    private static String normalizeGoogleCalendarId(String value) {
+        if (value == null || value.isBlank()) return null;
+        String raw = value.trim();
+        if (raw.startsWith("[") && raw.contains("](mailto:") && raw.endsWith(")")) {
+            int start = raw.indexOf("](mailto:");
+            String mailto = raw.substring(start + "](mailto:".length(), raw.length() - 1);
+            if (!mailto.isBlank()) raw = mailto;
+        } else if (raw.toLowerCase().startsWith("mailto:")) {
+            raw = raw.substring("mailto:".length());
+        }
+        return raw.trim();
     }
 
     private void syncOneCalendar(CalendarConnection connection,
