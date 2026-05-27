@@ -28,6 +28,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -195,11 +196,18 @@ public class CalendarRuntimeStatusService {
                         selection.isProjection(connection.getId(), c.getExternalCalendarId())
                 ))
                 .toList();
+        String displayName = connection.getProviderUserId();
+        String email = connection.getProviderUserId();
+        if (connection.getProvider() == CalendarProviderType.GOOGLE) {
+            Optional<User> user = userRepository.findById(connection.getUserId());
+            displayName = user.map(User::getName).orElse(displayName);
+            email = user.map(User::getEmail).orElse(email);
+        }
         return new CalendarRuntimeStatusResponse.ConnectionStatus(
                 connection.getId() == null ? null : connection.getId().toString(),
                 connection.getProvider() == null ? null : connection.getProvider().name().toLowerCase(Locale.ROOT),
-                connection.getProviderUserId(),
-                connection.getProviderUserId(),
+                displayName,
+                email,
                 mapCalendarStatus(connection.getStatus()),
                 isActionRequired(connection.getStatus()),
                 capabilityView,

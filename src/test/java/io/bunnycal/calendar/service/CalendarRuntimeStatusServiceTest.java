@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
@@ -193,6 +194,57 @@ class CalendarRuntimeStatusServiceTest {
         service.runtimeStatus(userId);
 
         verify(hydrator).hydrateBestEffort(connection);
+    }
+
+    @Test
+    void runtimeStatus_googleConnection_usesUserDisplayNameAndEmail_notProviderSubjectId() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+
+        CalendarConnection connection = new CalendarConnection();
+        setId(connection, connectionId);
+        connection.setUserId(userId);
+        connection.setProvider(CalendarProviderType.GOOGLE);
+        connection.setProviderUserId("110128961967336207135");
+        connection.setStatus(CalendarConnectionStatus.ACTIVE);
+
+        CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
+        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(connection));
+
+        CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
+        when(inventoryRepo.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
+                .thenReturn(List.of());
+
+        ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
+        when(capabilityRegistry.forCalendar(CalendarProviderType.GOOGLE))
+                .thenReturn(new ProviderCapabilities(true, true, true, true, true));
+        ZoomConferencingOAuthService zoom = mock(ZoomConferencingOAuthService.class);
+        when(zoom.status(userId)).thenReturn("DISCONNECTED");
+        AuthIdentityRepository authIdentityRepository = mock(AuthIdentityRepository.class);
+        when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
+        UserRepository userRepository = mock(UserRepository.class);
+        User user = new User();
+        user.setId(userId);
+        user.setName("Koushik Ruidas");
+        user.setEmail("koushikruidas@gmail.com");
+        when(userRepository.findById(userId)).thenReturn(java.util.Optional.of(user));
+        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
+        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
+        CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
+
+        CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
+                connectionRepo, inventoryRepo, capabilityRegistry, zoom,
+                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+
+        CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
+        CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);
+
+        assertThat(status.displayName()).isEqualTo("Koushik Ruidas");
+        assertThat(status.email()).isEqualTo("koushikruidas@gmail.com");
     }
 
     private static void setId(CalendarConnection connection, UUID id) {

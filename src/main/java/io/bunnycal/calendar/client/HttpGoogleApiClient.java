@@ -27,6 +27,8 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 
 @Component("rawGoogleApiClient")
 public class HttpGoogleApiClient implements GoogleApiClient {
@@ -442,14 +444,11 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     }
 
     private SyncWindow listEvents(String accessToken, String externalCalendarId, String syncCursor) {
-        // Google calendar ids contain '@' / ':' / '.' on secondary calendars
-        // (e.g. "user@group.calendar.google.com"). RestClient's UriBuilder pattern
-        // does not encode path variables uniformly across versions, so we hand
-        // RestClient an already-encoded path segment to avoid surprises.
-        String effectiveCalendarId = (externalCalendarId == null || externalCalendarId.isBlank())
-                ? "primary"
-                : externalCalendarId;
-        String encodedCalendarId = java.net.URLEncoder.encode(effectiveCalendarId, java.nio.charset.StandardCharsets.UTF_8);
+        String calendarIdRaw = normalizeGoogleCalendarId(externalCalendarId);
+        String encodedCalendarId = encodeGoogleCalendarIdForPath(calendarIdRaw);
+        String requestPath = "/calendar/v3/calendars/" + encodedCalendarId + "/events";
+        log.info("google_calendar_request_build calendarIdRaw={} calendarIdEncoded={} requestUrl={}",
+                calendarIdRaw, encodedCalendarId, requestPath);
         try {
             List<CalendarEventObservation> observations = new ArrayList<>();
             String pageToken = null;
@@ -458,7 +457,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                 String currentPageToken = pageToken;
                 ResponseEntity<Map> response = restClient.get()
                         .uri(uriBuilder -> {
-                            uriBuilder.path("/calendar/v3/calendars/" + encodedCalendarId + "/events")
+                            uriBuilder.path(requestPath)
                                     .queryParam("showDeleted", "true")
                                     .queryParam("singleEvents", "true")
                                     .queryParam("maxResults", "2500");
@@ -487,6 +486,31 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         } catch (RestClientException ex) {
             throw classify(ex);
         }
+    }
+
+    static String normalizeGoogleCalendarId(String externalCalendarId) {
+        String raw = (externalCalendarId == null || externalCalendarId.isBlank()) ? "primary" : externalCalendarId.trim();
+        if (raw.startsWith("[") && raw.contains("](mailto:") && raw.endsWith(")")) {
+            int start = raw.indexOf("](mailto:");
+            String mailto = raw.substring(start + "](mailto:".length(), raw.length() - 1);
+            if (!mailto.isBlank()) {
+                raw = mailto;
+            }
+        } else if (raw.toLowerCase().startsWith("mailto:")) {
+            raw = raw.substring("mailto:".length());
+        }
+        return raw;
+    }
+
+    static String encodeGoogleCalendarIdForPath(String calendarIdRaw) {
+        String normalized = normalizeGoogleCalendarId(calendarIdRaw);
+        String decoded;
+        try {
+            decoded = URLDecoder.decode(normalized, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException ex) {
+            decoded = normalized;
+        }
+        return URLEncoder.encode(decoded, StandardCharsets.UTF_8);
     }
 
     private static CalendarClientException classify(RestClientException ex) {
