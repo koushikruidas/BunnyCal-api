@@ -129,7 +129,7 @@ public class CalendarBusyTimeService {
             }
             log.debug("availability[userId={} date={}] no explicit selection — using all active connections", userId, date);
             events = eventRepository
-                    .findByUserIdAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+                    .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
                             userId, dayEndUtc, dayStartUtc);
         }
 

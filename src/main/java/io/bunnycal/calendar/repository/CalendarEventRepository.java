@@ -11,12 +11,12 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UUID> {
-    List<CalendarEvent> findByUserIdAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+    List<CalendarEvent> findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
             UUID userId,
             Instant windowEnd,
             Instant windowStart);
 
-    List<CalendarEvent> findByConnectionIdInAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+    List<CalendarEvent> findByConnectionIdInAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
             java.util.Collection<UUID> connectionIds,
             Instant windowEnd,
             Instant windowStart);
@@ -55,11 +55,12 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
      * </ul>
      *
      * <p>Either bucket may be empty; the caller is responsible for not calling this
-     * method when both are empty (fall back to {@link #findByUserIdAndCancelledFalseAndStartsAtLessThanAndEndsAtGreaterThan}).
+     * method when both are empty (fall back to {@link #findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan}).
      */
     @Query("""
             select e from CalendarEvent e
             where e.cancelled = false
+              and e.deleted = false
               and e.startsAt < :windowEnd
               and e.endsAt > :windowStart
               and (

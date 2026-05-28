@@ -352,16 +352,17 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                         continue;
                     }
                     String id = asStringLoose(map.get("id"));
+                    boolean deleted = isDeltaDeletedTombstone(map);
                     Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
                     Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
-                    boolean cancelled = asBooleanLoose(map.get("isCancelled"));
+                    boolean cancelled = deleted || asBooleanLoose(map.get("isCancelled"));
                     Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
                     String etag = asStringLoose(map.get("changeKey"));
                     String title = asStringLoose(map.get("subject"));
                     String location = nestedString(map, "location", "displayName");
                     String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
-                    events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag,
-                            hashPayload(id, start, end, cancelled, etag, title, location, organizerEmail),
+                    events.add(new CalendarEventObservation(id, start, end, cancelled, deleted, null, updatedAt, etag,
+                            hashPayload(id, start, end, cancelled, deleted, etag, title, location, organizerEmail),
                             title, location, organizerEmail));
                 }
             }
@@ -443,16 +444,17 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
             for (Object item : list) {
                 if (!(item instanceof Map<?, ?> map)) continue;
                 String id = asStringLoose(map.get("id"));
+                boolean deleted = isDeltaDeletedTombstone(map);
                 Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
                 Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
-                boolean cancelled = asBooleanLoose(map.get("isCancelled"));
+                boolean cancelled = deleted || asBooleanLoose(map.get("isCancelled"));
                 Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
                 String etag = asStringLoose(map.get("changeKey"));
                 String title = asStringLoose(map.get("subject"));
                 String location = nestedString(map, "location", "displayName");
                 String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
-                events.add(new CalendarEventObservation(id, start, end, cancelled, null, updatedAt, etag,
-                        hashPayload(id, start, end, cancelled, etag, title, location, organizerEmail),
+                events.add(new CalendarEventObservation(id, start, end, cancelled, deleted, null, updatedAt, etag,
+                        hashPayload(id, start, end, cancelled, deleted, etag, title, location, organizerEmail),
                         title, location, organizerEmail));
             }
         }
@@ -566,6 +568,15 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         return false;
     }
 
+    private static boolean isDeltaDeletedTombstone(Map<?, ?> map) {
+        Object removed = map.get("@removed");
+        if (!(removed instanceof Map<?, ?> removedMap)) {
+            return false;
+        }
+        String reason = asStringLoose(removedMap.get("reason"));
+        return reason != null && "deleted".equalsIgnoreCase(reason.trim());
+    }
+
     private static Instant parseDateTimeFromDateTimeTimeZoneMap(Object value) {
         if (!(value instanceof Map<?, ?> map)) {
             return null;
@@ -599,11 +610,12 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                                       Instant start,
                                       Instant end,
                                       boolean cancelled,
+                                      boolean deleted,
                                       String etag,
                                       String title,
                                       String location,
                                       String organizerEmail) {
-        return Integer.toHexString((id + "|" + start + "|" + end + "|" + cancelled + "|" + etag + "|"
+        return Integer.toHexString((id + "|" + start + "|" + end + "|" + cancelled + "|" + deleted + "|" + etag + "|"
                 + title + "|" + location + "|" + organizerEmail).hashCode());
     }
 

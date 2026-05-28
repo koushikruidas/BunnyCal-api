@@ -78,6 +78,7 @@ class CalendarEventIngestionServiceTest {
                         Instant.parse("2026-06-05T15:00:00Z"),
                         Instant.parse("2026-06-05T15:30:00Z"),
                         false,
+                        false,
                         null,
                         Instant.parse("2026-06-05T09:59:00Z"),
                         "etag-v2",

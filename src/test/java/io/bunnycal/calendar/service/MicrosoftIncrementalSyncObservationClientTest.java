@@ -203,6 +203,36 @@ class MicrosoftIncrementalSyncObservationClientTest {
         verify(microsoftApiClient).listCalendarViewDelta(any(), eq(cal), any(), any(), eq(null));
     }
 
+    @Test
+    void fetchIncremental_propagates_deleted_tombstones_to_ingestion_events() {
+        CalendarConnection connection = connection();
+        String cal = "AQMkAD-cal-del";
+        when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC))
+                .thenReturn(Set.of(cal));
+        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), cal))
+                .thenReturn(Optional.empty());
+        MicrosoftApiClient.CalendarEventObservation deletedObs = new MicrosoftApiClient.CalendarEventObservation(
+                "evt-del",
+                Instant.parse("2026-06-01T10:00:00Z"),
+                Instant.parse("2026-06-01T11:00:00Z"),
+                true,
+                true,
+                null,
+                Instant.parse("2026-05-27T09:00:00Z"),
+                "etag-del",
+                "hash-del"
+        );
+        when(microsoftApiClient.listCalendarViewDelta(any(), eq(cal), any(), any(), eq(null)))
+                .thenReturn(new MicrosoftApiClient.SyncWindow(List.of(deletedObs), "delta-next"));
+
+        ExternalCalendarSyncClient.SyncBatch batch =
+                client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
+
+        assertThat(batch.events()).hasSize(1);
+        assertThat(batch.events().get(0).deleted()).isTrue();
+        assertThat(batch.events().get(0).cancelled()).isTrue();
+    }
+
     private static CalendarConnection connection() {
         CalendarConnection c = new CalendarConnection();
         c.setUserId(UUID.randomUUID());
@@ -222,6 +252,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
                 Instant.parse("2026-06-01T10:00:00Z"),
                 Instant.parse("2026-06-01T11:00:00Z"),
                 cancelled,
+                false,
                 null,
                 Instant.parse("2026-05-27T09:00:00Z"),
                 "etag-" + id,

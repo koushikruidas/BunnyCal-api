@@ -205,6 +205,7 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                     obs.startsAt() == null ? Instant.EPOCH : obs.startsAt(),
                     obs.endsAt() == null ? Instant.EPOCH.plusSeconds(60) : obs.endsAt(),
                     obs.cancelled(),
+                    obs.deleted(),
                     obs.providerSequence(),
                     obs.providerUpdatedAt(),
                     obs.providerEtag(),

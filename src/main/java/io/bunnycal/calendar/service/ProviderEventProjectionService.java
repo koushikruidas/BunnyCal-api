@@ -1,6 +1,7 @@
 package io.bunnycal.calendar.service;
 
 import io.bunnycal.calendar.domain.ProviderEventProjection;
+import io.bunnycal.calendar.domain.ProviderEventProjectionStatus;
 import io.bunnycal.calendar.repository.ProviderEventProjectionRepository;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
@@ -18,6 +19,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -76,12 +78,17 @@ public class ProviderEventProjectionService {
                     counter("sync.projection.retry.success.total", provider, "attempt", String.valueOf(attempt)).increment();
                 }
                 return Boolean.TRUE.equals(applied);
-            } catch (DataIntegrityViolationException ex) {
+            } catch (DuplicateKeyException ex) {
                 counter("sync.projection.concurrent_retry.total", provider, "reason", "unique_conflict").increment();
                 if (attempt == MAX_ATTEMPTS) {
                     counter("sync.projection.retry.exhausted.total", provider, "reason", "unique_conflict").increment();
                     throw ex;
                 }
+            } catch (DataIntegrityViolationException ex) {
+                // Non-retriable integrity violations (e.g. check-constraint failures with SQLState 23514).
+                // Surface immediately so the root cause is not masked by retries on the same poisoned row.
+                counter("sync.projection.constraint_violation.total", provider, "reason", "non_retriable").increment();
+                throw ex;
             } catch (PessimisticLockingFailureException ex) {
                 counter("sync.projection.lock_failure.total", provider, "reason", classifyLockFailure(ex)).increment();
                 if (attempt == MAX_ATTEMPTS) {
@@ -181,8 +188,8 @@ public class ProviderEventProjectionService {
 
             ProviderEventProjection projection = existing.orElseGet(ProviderEventProjection::new);
             if (existing.isPresent()
-                    && "TOMBSTONED_HARD".equals(existing.get().getProjectionStatus())
-                    && !incoming.cancelled()) {
+                    && ProviderEventProjectionStatus.TOMBSTONED_HARD.name().equals(existing.get().getProjectionStatus())
+                    && !incoming.cancelled() && !incoming.deleted()) {
                 counter("sync.projection.resurrection_attempt.total", provider, "reason", "hard_tombstone_to_active").increment();
                 counter("sync.projection.resurrection_blocked.total", provider, "reason", "hard_tombstone_guard").increment();
                 counter("sync.projection.rejected.total", provider, "reason", "hard_tombstone_guard").increment();
@@ -196,7 +203,7 @@ public class ProviderEventProjectionService {
             projection.setBookingId(linkedBookingId);
             projection.setProvider(provider);
             projection.setExternalEventId(incoming.externalEventId());
-            projection.setProjectionStatus(incoming.cancelled() ? "TOMBSTONED_SOFT" : "ACTIVE");
+            projection.setProjectionStatus(projectionStatusFor(incoming));
             projection.setProjectionVersion(existing.map(e -> e.getProjectionVersion() + 1).orElse(1L));
             projection.setProviderSequence(incoming.providerSequence());
             projection.setProviderUpdatedAt(incoming.providerUpdatedAt());
@@ -211,7 +218,11 @@ public class ProviderEventProjectionService {
                     lineage.asLogLine());
             log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=true projectionVersion={} projectionStatus={}",
                     provider, connectionId, incoming.externalEventId(), projection.getProjectionVersion(), projection.getProjectionStatus());
-            if (incoming.cancelled()) {
+            if (incoming.deleted()) {
+                log.info("projection_removed provider={} connectionId={} externalEventId={} projectionStatus={}",
+                        provider, connectionId, incoming.externalEventId(), projection.getProjectionStatus());
+            }
+            if (incoming.cancelled() || incoming.deleted()) {
                 if (linkedBookingId == null) {
                     if (linkResolution.classification() == LinkageClassification.BENIGN_UNMANAGED) {
                         meterRegistry.counter("sync.projection.unmanaged_external.total",
@@ -259,9 +270,9 @@ public class ProviderEventProjectionService {
             }
             invariantMonitor.assertState(
                     "projection_mutation",
-                    incoming.cancelled() ? BookingState.CANCELLED : BookingState.CONFIRMED,
+                    (incoming.cancelled() || incoming.deleted()) ? BookingState.CANCELLED : BookingState.CONFIRMED,
                     SyncJobStatus.SYNCED,
-                    incoming.cancelled()
+                    (incoming.cancelled() || incoming.deleted())
                             ? CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT
                             : CompositeSyncStateClassifier.ProjectionLifecycle.ACTIVE,
                     CompositeSyncStateClassifier.ParticipationLifecycle.NEEDS_ACTION,
@@ -353,8 +364,17 @@ public class ProviderEventProjectionService {
         boolean sameWindow = existing.getProviderUpdatedAt() != null
                 && incoming.providerUpdatedAt() != null
                 && existing.getProviderUpdatedAt().equals(incoming.providerUpdatedAt());
-        boolean sameStatus = ("TOMBSTONED_SOFT".equals(existing.getProjectionStatus())) == incoming.cancelled();
-        return sameWindow && sameStatus;
+        boolean incomingTerminal = incoming.cancelled() || incoming.deleted();
+        String existingStatus = existing.getProjectionStatus();
+        boolean existingTerminal = ProviderEventProjectionStatus.TOMBSTONED_SOFT.name().equals(existingStatus)
+                || ProviderEventProjectionStatus.TOMBSTONED_HARD.name().equals(existingStatus);
+        return sameWindow && existingTerminal == incomingTerminal;
+    }
+
+    private static String projectionStatusFor(CalendarEventIngestionService.IncomingCalendarEvent incoming) {
+        if (incoming.deleted()) return ProviderEventProjectionStatus.TOMBSTONED_HARD.name();
+        if (incoming.cancelled()) return ProviderEventProjectionStatus.TOMBSTONED_SOFT.name();
+        return ProviderEventProjectionStatus.ACTIVE.name();
     }
 
     private enum LinkageClassification {

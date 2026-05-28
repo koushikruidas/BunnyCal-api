@@ -151,9 +151,15 @@ public class PersistedReconcileSnapshotAssembler {
     }
 
     private static CompositeSyncStateClassifier.ProjectionLifecycle mapProjectionLifecycle(ProviderEventProjection projection) {
+        // DELETED/CANCELLED are legacy pre-V69 string literals; the V69 migration rewrites them in
+        // place and the writer now only emits canonical names. Kept as defensive read-side fallback.
         String status = projection.getProjectionStatus();
-        if ("TOMBSTONED_HARD".equals(status)) return CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_HARD;
-        if ("TOMBSTONED_SOFT".equals(status)) return CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT;
+        if ("TOMBSTONED_HARD".equals(status) || "DELETED".equals(status)) {
+            return CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_HARD;
+        }
+        if ("TOMBSTONED_SOFT".equals(status) || "CANCELLED".equals(status)) {
+            return CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT;
+        }
         return CompositeSyncStateClassifier.ProjectionLifecycle.ACTIVE;
     }
 

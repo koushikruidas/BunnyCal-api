@@ -72,6 +72,7 @@ public interface MicrosoftApiClient {
             Instant startsAt,
             Instant endsAt,
             boolean cancelled,
+            boolean deleted,
             Long providerSequence,
             Instant providerUpdatedAt,
             String providerEtag,
@@ -84,11 +85,12 @@ public interface MicrosoftApiClient {
                                         Instant startsAt,
                                         Instant endsAt,
                                         boolean cancelled,
+                                        boolean deleted,
                                         Long providerSequence,
                                         Instant providerUpdatedAt,
                                         String providerEtag,
                                         String payloadHash) {
-            this(externalEventId, startsAt, endsAt, cancelled, providerSequence, providerUpdatedAt, providerEtag, payloadHash,
+            this(externalEventId, startsAt, endsAt, cancelled, deleted, providerSequence, providerUpdatedAt, providerEtag, payloadHash,
                     null, null, null);
         }
     }

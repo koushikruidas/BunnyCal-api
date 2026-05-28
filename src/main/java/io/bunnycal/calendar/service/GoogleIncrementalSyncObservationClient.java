@@ -314,6 +314,7 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
                     obs.startsAt() == null ? Instant.EPOCH : obs.startsAt(),
                     obs.endsAt() == null ? Instant.EPOCH.plusSeconds(60) : obs.endsAt(),
                     obs.cancelled(),
+                    false,
                     obs.providerSequence(),
                     obs.providerUpdatedAt(),
                     obs.providerEtag(),

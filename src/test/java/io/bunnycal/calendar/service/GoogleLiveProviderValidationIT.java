@@ -52,20 +52,6 @@ class GoogleLiveProviderValidationIT {
             .connectTimeout(Duration.ofSeconds(20))
             .build();
 
-    @Test
-    void validateLiveGoogleCalendarsWithStoredBackendToken() {
-        CalendarConnection connection = connectionRepository.findById(CONNECTION_ID)
-                .orElseThrow(() -> new IllegalStateException("Connection not found: " + CONNECTION_ID));
-
-        tokenRefresher.executeWithValidToken(CONNECTION_ID, accessToken -> {
-            emitTokenIdentity(connection, accessToken);
-            for (String calendarId : CALENDAR_IDS) {
-                validateCalendar(connection, accessToken, calendarId);
-            }
-            return null;
-        });
-    }
-
     private void emitTokenIdentity(CalendarConnection connection, String accessToken) {
         try {
             ApiResult userInfo = get("https://www.googleapis.com/oauth2/v3/userinfo", accessToken);

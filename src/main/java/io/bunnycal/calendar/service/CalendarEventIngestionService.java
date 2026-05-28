@@ -73,8 +73,8 @@ public class CalendarEventIngestionService {
                         connectionId,
                         connection.getProvider().name(),
                         incoming);
-                log.info("microsoft_event_filter_decision connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} apply={}",
-                        connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(), apply);
+                log.info("provider_event_filter_decision provider={} connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} apply={}",
+                        connection.getProvider().name(), connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(), apply);
                 if (!apply) {
                     continue;
                 }
@@ -86,6 +86,7 @@ public class CalendarEventIngestionService {
                 Instant previousStartsAt = event.getStartsAt();
                 Instant previousEndsAt = event.getEndsAt();
                 boolean previousCancelled = event.isCancelled();
+                boolean previousDeleted = event.isDeleted();
                 String previousTitle = event.getTitle();
                 String previousLocation = event.getLocation();
                 String previousOrganizerEmail = event.getOrganizerEmail();
@@ -98,6 +99,7 @@ public class CalendarEventIngestionService {
                 event.setStartsAt(incoming.startsAt());
                 event.setEndsAt(incoming.endsAt());
                 event.setCancelled(incoming.cancelled());
+                event.setDeleted(incoming.deleted());
                 event.setTitle(incoming.title());
                 event.setLocation(incoming.location());
                 event.setOrganizerEmail(incoming.organizerEmail());
@@ -112,6 +114,7 @@ public class CalendarEventIngestionService {
                         connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(),
                         sourceAttribution == null ? "unknown" : sourceAttribution.name());
                 if (existed && (timeWindowChanged(previousStartsAt, previousEndsAt, incoming.startsAt(), incoming.endsAt())
+                        || previousDeleted != incoming.deleted()
                         || previousCancelled != incoming.cancelled()
                         || !Objects.equals(previousTitle, incoming.title())
                         || !Objects.equals(previousLocation, incoming.location())
@@ -127,21 +130,29 @@ public class CalendarEventIngestionService {
                             previousLocation, incoming.location(),
                             previousOrganizerEmail, incoming.organizerEmail());
                     if (!previousCancelled && previousStartsAt != null && previousEndsAt != null) {
-                        log.info("busy_interval_removed connectionId={} provider={} externalEventId={} start={} end={} reason=external_event_updated",
+                        log.info("busy_interval_removed connectionId={} provider={} externalEventId={} start={} end={} reason={}",
                                 connectionId, connection.getProvider().name().toLowerCase(), incoming.externalEventId(),
-                                previousStartsAt, previousEndsAt);
+                                previousStartsAt, previousEndsAt,
+                                incoming.deleted() ? "external_event_deleted" : "external_event_updated");
                     }
-                    if (!incoming.cancelled()) {
+                    if (!incoming.cancelled() && !incoming.deleted()) {
                         log.info("busy_interval_added connectionId={} provider={} externalEventId={} start={} end={} reason=external_event_updated",
                                 connectionId, connection.getProvider().name().toLowerCase(), incoming.externalEventId(),
                                 incoming.startsAt(), incoming.endsAt());
                     }
                 }
+                if (incoming.deleted()) {
+                    log.info("external_event_deleted connectionId={} provider={} externalEventId={} syncMode={} projectionStatus=TOMBSTONED_HARD",
+                            connectionId,
+                            connection.getProvider().name().toLowerCase(),
+                            incoming.externalEventId(),
+                        sourceAttribution == null ? "unknown" : sourceAttribution.name());
+                }
                 invariantMonitor.assertState(
                         sourceAttribution == null ? "provider_ingestion_acceptance" : sourceAttribution.name().toLowerCase() + "_ingestion_acceptance",
-                        incoming.cancelled() ? BookingState.CANCELLED : BookingState.CONFIRMED,
+                        (incoming.cancelled() || incoming.deleted()) ? BookingState.CANCELLED : BookingState.CONFIRMED,
                         SyncJobStatus.PROCESSING,
-                        incoming.cancelled()
+                        (incoming.cancelled() || incoming.deleted())
                                 ? CompositeSyncStateClassifier.ProjectionLifecycle.TOMBSTONED_SOFT
                                 : CompositeSyncStateClassifier.ProjectionLifecycle.ACTIVE,
                         CompositeSyncStateClassifier.ParticipationLifecycle.NEEDS_ACTION,
@@ -174,6 +185,7 @@ public class CalendarEventIngestionService {
                                         Instant startsAt,
                                         Instant endsAt,
                                         boolean cancelled,
+                                        boolean deleted,
                                         Long providerSequence,
                                         Instant providerUpdatedAt,
                                         String providerEtag,
@@ -186,7 +198,7 @@ public class CalendarEventIngestionService {
                                      Instant startsAt,
                                      Instant endsAt,
                                      boolean cancelled) {
-            this(externalEventId, startsAt, endsAt, cancelled, null, null, null, null, null, null, null, null);
+            this(externalEventId, startsAt, endsAt, cancelled, false, null, null, null, null, null, null, null, null);
         }
 
         public IncomingCalendarEvent(String externalEventId,
@@ -197,12 +209,24 @@ public class CalendarEventIngestionService {
                                      Instant providerUpdatedAt,
                                      String providerEtag,
                                      String payloadHash) {
-            this(externalEventId, startsAt, endsAt, cancelled, providerSequence, providerUpdatedAt, providerEtag, payloadHash, null, null, null, null);
+            this(externalEventId, startsAt, endsAt, cancelled, false, providerSequence, providerUpdatedAt, providerEtag, payloadHash, null, null, null, null);
+        }
+
+        public IncomingCalendarEvent(String externalEventId,
+                                     Instant startsAt,
+                                     Instant endsAt,
+                                     boolean cancelled,
+                                     boolean deleted,
+                                     Long providerSequence,
+                                     Instant providerUpdatedAt,
+                                     String providerEtag,
+                                     String payloadHash) {
+            this(externalEventId, startsAt, endsAt, cancelled, deleted, providerSequence, providerUpdatedAt, providerEtag, payloadHash, null, null, null, null);
         }
 
         public IncomingCalendarEvent withExternalCalendarId(String externalCalendarId) {
             return new IncomingCalendarEvent(externalEventId, startsAt, endsAt, cancelled,
-                    providerSequence, providerUpdatedAt, providerEtag, payloadHash, externalCalendarId, title, location, organizerEmail);
+                    deleted, providerSequence, providerUpdatedAt, providerEtag, payloadHash, externalCalendarId, title, location, organizerEmail);
         }
 
         public LocalDate startDateUtc() {
