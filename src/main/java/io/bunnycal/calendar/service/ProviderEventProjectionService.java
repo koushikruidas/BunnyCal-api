@@ -142,6 +142,26 @@ public class ProviderEventProjectionService {
                 return false;
             }
 
+            // Terminal-tombstone shortcut: a cancel/delete observation against an ACTIVE
+            // projection is monotonically terminal — never a stale signal worth dropping.
+            // Microsoft Graph's @removed payload omits lastModifiedDateTime/changeKey/sequence,
+            // which would otherwise drive the comparator to AMBIGUOUS_NEWER_HINT and (when
+            // sync.projection.accept-ambiguous=false) leave the calendar_events row stuck ACTIVE
+            // forever. For this specific transition, force-accept the comparator verdict so the
+            // downstream apply logic runs unchanged (same projection write, same convergence
+            // hooks, same invariant assertions).
+            boolean incomingTerminalIntent = incoming.cancelled() || incoming.deleted();
+            boolean existingIsActive = existing.isPresent()
+                    && ProviderEventProjectionStatus.ACTIVE.name().equals(existing.get().getProjectionStatus());
+            boolean forceTerminalTombstone = incomingTerminalIntent && existingIsActive;
+            if (forceTerminalTombstone) {
+                counter("sync.projection.terminal_tombstone_forced.total", provider,
+                        "reason", incoming.deleted() ? "deleted" : "cancelled").increment();
+                log.info("projection_tombstone_force_applied provider={} connectionId={} externalEventId={} existingStatus={} incomingDeleted={} incomingCancelled={} reason=terminal_intent_bypass_comparator",
+                        provider, connectionId, incoming.externalEventId(),
+                        existing.get().getProjectionStatus(), incoming.deleted(), incoming.cancelled());
+            }
+
             ProviderEventVersionComparator.ComparisonResult compare = comparator.compare(incomingVector, persistedVector);
             log.info("projection_apply_attempt provider={} connectionId={} externalEventId={} compareResult={} incomingSequence={} persistedSequence={} incomingUpdatedAt={} persistedUpdatedAt={}",
                     provider,
@@ -153,25 +173,37 @@ public class ProviderEventProjectionService {
                     incoming.providerUpdatedAt(),
                     existing.map(ProviderEventProjection::getProviderUpdatedAt).orElse(null));
             if (compare == ProviderEventVersionComparator.ComparisonResult.OLDER_OR_EQUAL) {
-                // For externally-created (unlinked) events, allow the calendar_events write through
-                // even when the projection version hasn't advanced. The projection row is not updated,
-                // but the calendar_events upsert is idempotent and self-heals any gap caused by a
-                // prior transaction split between the projection commit and the calendar_events write.
-                if (linkedBookingId == null && existing.isPresent()) {
-                    counter("sync.projection.external_stable_passthrough.total", provider, "reason", "unlinked_idempotent").increment();
-                    log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=true reason=external_stable_passthrough",
+                // Terminal-tombstone shortcut overrides OLDER_OR_EQUAL too: an ACTIVE row must
+                // be tombstoned even when the incoming version vector looks stale (Microsoft
+                // @removed payloads carry no version info at all and could hash-collide with
+                // a prior observation under unlucky conditions).
+                if (forceTerminalTombstone) {
+                    counter("sync.projection.accepted.total", provider, "reason", "terminal_tombstone_force").increment();
+                } else {
+                    // For externally-created (unlinked) events, allow the calendar_events write through
+                    // even when the projection version hasn't advanced. The projection row is not updated,
+                    // but the calendar_events upsert is idempotent and self-heals any gap caused by a
+                    // prior transaction split between the projection commit and the calendar_events write.
+                    if (linkedBookingId == null && existing.isPresent()) {
+                        counter("sync.projection.external_stable_passthrough.total", provider, "reason", "unlinked_idempotent").increment();
+                        log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=true reason=external_stable_passthrough",
+                                provider, connectionId, incoming.externalEventId());
+                        return true;
+                    }
+                    counter("sync.projection.rejected.total", provider, "reason", "older_or_equal").increment();
+                    log.info("projection_observation_rejected provider={} reason=older_or_equal {}",
+                            provider, lineage.asLogLine());
+                    log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=false reason=older_or_equal",
                             provider, connectionId, incoming.externalEventId());
-                    return true;
+                    return false;
                 }
-                counter("sync.projection.rejected.total", provider, "reason", "older_or_equal").increment();
-                log.info("projection_observation_rejected provider={} reason=older_or_equal {}",
-                        provider, lineage.asLogLine());
-                log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=false reason=older_or_equal",
-                        provider, connectionId, incoming.externalEventId());
-                return false;
-            }
-            if (compare == ProviderEventVersionComparator.ComparisonResult.AMBIGUOUS_NEWER_HINT) {
-                if (!acceptAmbiguous) {
+            } else if (compare == ProviderEventVersionComparator.ComparisonResult.AMBIGUOUS_NEWER_HINT) {
+                if (forceTerminalTombstone) {
+                    counter("sync.projection.ambiguous.total", provider, "decision", "accepted_terminal_tombstone").increment();
+                    counter("sync.projection.accepted.total", provider, "reason", "terminal_tombstone_force").increment();
+                    log.info("projection_ambiguous_tombstone_accepted provider={} connectionId={} externalEventId={} acceptAmbiguous={}",
+                            provider, connectionId, incoming.externalEventId(), acceptAmbiguous);
+                } else if (!acceptAmbiguous) {
                     counter("sync.projection.ambiguous.total", provider, "decision", "rejected").increment();
                     counter("sync.projection.rejected.total", provider, "reason", "ambiguous_rejected").increment();
                     log.info("projection_observation_rejected provider={} reason=ambiguous_disabled {}",
@@ -179,9 +211,10 @@ public class ProviderEventProjectionService {
                     log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=false reason=ambiguous_disabled",
                             provider, connectionId, incoming.externalEventId());
                     return false;
+                } else {
+                    counter("sync.projection.ambiguous.total", provider, "decision", "accepted").increment();
+                    counter("sync.projection.accepted.total", provider, "reason", "ambiguous_newer_hint").increment();
                 }
-                counter("sync.projection.ambiguous.total", provider, "decision", "accepted").increment();
-                counter("sync.projection.accepted.total", provider, "reason", "ambiguous_newer_hint").increment();
             } else {
                 counter("sync.projection.accepted.total", provider, "reason", "strict_newer").increment();
             }

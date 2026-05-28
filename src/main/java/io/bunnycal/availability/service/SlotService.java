@@ -218,6 +218,20 @@ public class SlotService {
                                     List<BusyInterval> canonicalBusy,
                                     List<SlotUtc> acceptedSlots,
                                     Instant generatedAt) {
+        // Base-window visibility: prints the host's working-hours intervals for this
+        // date (after override) so a "no slots before X" symptom can be traced to the
+        // schedule directly, before any calendar/busy filtering enters the picture.
+        List<TimeInterval> baseAvailability =
+                SlotGenerationEngine.debugBaseAvailabilityIntervals(date, zoneId, input.rules(), input.override());
+        log.info("availability_base_window_resolved requestId={} userId={} eventTypeId={} date={} timezone={} ruleCount={} overridePresent={} baseIntervalCount={}",
+                requestId, userId, eventTypeId, date, zoneId, input.rules() == null ? 0 : input.rules().size(),
+                input.override() != null, baseAvailability.size());
+        for (TimeInterval interval : baseAvailability) {
+            log.info("availability_base_window_interval requestId={} userId={} eventTypeId={} date={} startLocal={} endLocal={} startUtc={} endUtc={}",
+                    requestId, userId, eventTypeId, date,
+                    interval.start(), interval.end(),
+                    interval.start().toInstant(), interval.end().toInstant());
+        }
         List<SlotUtc> candidateSlots = SlotGenerationEngine.compute(new SlotInput(
                 input.date(),
                 input.zoneId(),
@@ -227,6 +241,13 @@ public class SlotService {
                 List.of(),
                 List.of(),
                 input.now()));
+        // Candidate count before any busy filtering. If this number already excludes
+        // the disputed window (e.g. 11:00 IST not present), the cause is rules/override
+        // — not calendar busy aggregation.
+        log.info("availability_candidate_slots_pre_filter requestId={} userId={} eventTypeId={} date={} candidateCount={} firstCandidateStartUtc={} lastCandidateStartUtc={}",
+                requestId, userId, eventTypeId, date, candidateSlots.size(),
+                candidateSlots.isEmpty() ? null : candidateSlots.get(0).start(),
+                candidateSlots.isEmpty() ? null : candidateSlots.get(candidateSlots.size() - 1).start());
         Set<String> acceptedKeys = acceptedSlots.stream()
                 .map(s -> s.start() + "|" + s.end())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));

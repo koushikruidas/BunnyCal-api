@@ -351,19 +351,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     if (!(item instanceof Map<?, ?> map)) {
                         continue;
                     }
-                    String id = asStringLoose(map.get("id"));
-                    boolean deleted = isDeltaDeletedTombstone(map);
-                    Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
-                    Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
-                    boolean cancelled = deleted || asBooleanLoose(map.get("isCancelled"));
-                    Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
-                    String etag = asStringLoose(map.get("changeKey"));
-                    String title = asStringLoose(map.get("subject"));
-                    String location = nestedString(map, "location", "displayName");
-                    String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
-                    events.add(new CalendarEventObservation(id, start, end, cancelled, deleted, null, updatedAt, etag,
-                            hashPayload(id, start, end, cancelled, deleted, etag, title, location, organizerEmail),
-                            title, location, organizerEmail));
+                    events.add(parseDeltaItem(map));
                 }
             }
             String delta = response.getBody() == null ? null : asStringLoose(response.getBody().get("@odata.deltaLink"));
@@ -443,19 +431,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         if (values instanceof List<?> list) {
             for (Object item : list) {
                 if (!(item instanceof Map<?, ?> map)) continue;
-                String id = asStringLoose(map.get("id"));
-                boolean deleted = isDeltaDeletedTombstone(map);
-                Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
-                Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
-                boolean cancelled = deleted || asBooleanLoose(map.get("isCancelled"));
-                Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
-                String etag = asStringLoose(map.get("changeKey"));
-                String title = asStringLoose(map.get("subject"));
-                String location = nestedString(map, "location", "displayName");
-                String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
-                events.add(new CalendarEventObservation(id, start, end, cancelled, deleted, null, updatedAt, etag,
-                        hashPayload(id, start, end, cancelled, deleted, etag, title, location, organizerEmail),
-                        title, location, organizerEmail));
+                events.add(parseDeltaItem(map));
             }
         }
         String deltaLink = body == null ? null : asStringLoose(body.get("@odata.deltaLink"));
@@ -566,6 +542,48 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
             return "true".equalsIgnoreCase(s);
         }
         return false;
+    }
+
+    /**
+     * Parses one delta-feed item into a {@link CalendarEventObservation}.
+     *
+     * <p>Microsoft Graph's {@code @removed} tombstone payload contains only
+     * {@code id} and the removed-reason; {@code lastModifiedDateTime},
+     * {@code changeKey}, and {@code sequence} are all absent. Feeding that
+     * shape into {@link io.bunnycal.calendar.service.ProviderEventVersionComparator}
+     * causes {@code AMBIGUOUS_NEWER_HINT}, which under
+     * {@code sync.projection.accept-ambiguous=false} leaves the
+     * {@code calendar_events} row stuck ACTIVE — busy interval never released.
+     *
+     * <p>For tombstones, synthesize a non-null {@code updatedAt} anchored at
+     * {@link Instant#now()} so the comparator can return {@code NEWER} against
+     * any pre-existing observation. The synthesized timestamp is monotonically
+     * after the prior persisted {@code provider_updated_at} (which was taken
+     * from an earlier Graph response that did include it), so the version
+     * vector remains coherent.
+     */
+    static CalendarEventObservation parseDeltaItem(Map<?, ?> map) {
+        String id = asStringLoose(map.get("id"));
+        boolean deleted = isDeltaDeletedTombstone(map);
+        Instant start = parseDateTimeFromDateTimeTimeZoneMap(map.get("start"));
+        Instant end = parseDateTimeFromDateTimeTimeZoneMap(map.get("end"));
+        boolean cancelled = deleted || asBooleanLoose(map.get("isCancelled"));
+        Instant updatedAt = parseInstantLoose(asStringLoose(map.get("lastModifiedDateTime")));
+        String etag = asStringLoose(map.get("changeKey"));
+        String title = asStringLoose(map.get("subject"));
+        String location = nestedString(map, "location", "displayName");
+        String organizerEmail = nestedString(map, "organizer", "emailAddress", "address");
+        if (deleted && updatedAt == null) {
+            // Anchor the synthesized timestamp at sync-observation time so the comparator
+            // has a real Instant to work with. Logged for visibility — every Microsoft
+            // tombstone now produces one of these lines.
+            updatedAt = Instant.now();
+            graphLog.info("microsoft_tombstone_received externalEventId={} synthesizedUpdatedAt={} reason=tombstone_payload_missing_lastModifiedDateTime",
+                    id, updatedAt);
+        }
+        return new CalendarEventObservation(id, start, end, cancelled, deleted, null, updatedAt, etag,
+                hashPayload(id, start, end, cancelled, deleted, etag, title, location, organizerEmail),
+                title, location, organizerEmail);
     }
 
     private static boolean isDeltaDeletedTombstone(Map<?, ?> map) {

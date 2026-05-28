@@ -74,6 +74,26 @@ public final class SlotGenerationEngine {
         return compute(new SlotInput(date, zoneId, rules, override, eventType, bookings, calendarBusy, now));
     }
 
+    /**
+     * Debug-only helper: returns the normalized base-availability window for the day
+     * (working-hours rules + override applied, before any candidate-grid expansion).
+     * Used by the {@code debug=true} trace path to show what the engine considered
+     * the host's working hours for that date — answers "why are there no slots
+     * before X o'clock" without needing to step through the engine.
+     */
+    public static List<TimeInterval> debugBaseAvailabilityIntervals(
+            LocalDate date,
+            ZoneId zoneId,
+            List<AvailabilityRule> rules,
+            AvailabilityOverride override) {
+        ZonedDateTime dayStart = date.atStartOfDay(zoneId);
+        ZonedDateTime dayEnd = dayStart.plusDays(1);
+        List<AvailabilityRule> safeRules = rules == null ? List.of() : rules;
+        List<TimeInterval> baseIntervals = buildBaseIntervals(dayStart, dayEnd, safeRules);
+        List<TimeInterval> effectiveIntervals = applyOverride(dayStart, dayEnd, override, baseIntervals);
+        return IntervalUtils.normalize(effectiveIntervals);
+    }
+
     private static void validateEventType(EventType eventType) {
         if (eventType.getDuration() == null || eventType.getDuration().isZero() || eventType.getDuration().isNegative()) {
             throw new IllegalArgumentException("eventType.duration must be positive");
