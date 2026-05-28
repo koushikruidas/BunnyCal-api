@@ -97,7 +97,7 @@ public class ExternalUpdateConvergenceService {
             return new ConvergenceResult(0, "cas_miss_or_state_drift");
         }
 
-        slotCacheVersionService.bumpVersion(state.getHostId());
+        slotCacheVersionService.bumpVersionAfterCommit(state.getHostId());
         meterRegistry.counter("sync.external_update_slot_invalidation.total", "source", safeSource(source)).increment();
         metric(source, "applied");
         log.info("external_update_projection_applied bookingId={} hostId={} provider={} source={} externalEventId={} rowsUpdated={} startAfter={} endAfter={}",

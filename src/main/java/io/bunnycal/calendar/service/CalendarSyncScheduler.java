@@ -173,7 +173,7 @@ public class CalendarSyncScheduler {
                     }
                 }
                 if (previousStatus != CalendarConnectionStatus.ACTIVE) {
-                    slotCacheVersionService.bumpVersion(connection.getUserId());
+                    slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
                 }
                 connectionWriteService.markActive(
                         connection.getId(),
@@ -192,7 +192,7 @@ public class CalendarSyncScheduler {
                     connectionWriteService.advanceProviderCursor(
                             connection.getId(), null, fullBatch.nextCursor(), Instant.now(), "scheduler_full_cursor_advance");
                 }
-                slotCacheVersionService.bumpVersion(connection.getUserId());
+                slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
                 connectionWriteService.markActive(
                         connection.getId(),
                         connection.getLastTokenExpiresAt(),

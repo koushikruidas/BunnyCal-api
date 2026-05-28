@@ -168,7 +168,7 @@ public class ExternalTerminalDeleteConvergenceService {
                 ? bookingRepository.findProjectionStateByIdAndHostId(bookingId, hostId).orElse(null)
                 : bookingRepository.findProjectionStateById(bookingId).orElse(null);
         if (after != null) {
-            slotCacheVersionService.bumpVersion(after.getHostId());
+            slotCacheVersionService.bumpVersionAfterCommit(after.getHostId());
             meterRegistry.counter("sync.external_terminal_slot_release.total", "source", safeSource(source)).increment();
             log.info("authoritative_terminal_projection_applied bookingId={} hostId={} provider={} source={} syncJobId={} externalEventId={} lifecycleState={} lifecycleRows={} rowsUpdated={} statusAfter={} availabilityReleasedAtAfter={}",
                     bookingId,

@@ -166,4 +166,29 @@ class SlotCacheServiceTest {
         assertSame(slots, result);
         assertEquals(1, calls.get());
     }
+
+    @Test
+    void v2_versionUnavailable_bypassesCacheAndDoesNotWrite() throws Exception {
+        UUID userId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        LocalDate date = LocalDate.of(2026, 4, 30);
+
+        List<SlotGenerationEngine.SlotUtc> computed = List.of(
+                new SlotGenerationEngine.SlotUtc(Instant.parse("2026-04-30T10:00:00Z"), Instant.parse("2026-04-30T10:30:00Z")));
+        Instant generatedAt = Instant.parse("2026-04-30T09:59:59Z");
+
+        SlotCacheService.CachedSlots result = slotCacheService.getOrCompute(
+                userId,
+                eventTypeId,
+                date,
+                SlotCacheVersionService.VERSION_UNAVAILABLE,
+                () -> new SlotCacheService.ComputeOutcome(computed, generatedAt, true));
+
+        assertEquals(computed, result.slots());
+        assertEquals(generatedAt, result.generatedAt());
+        // Bypass path must NOT read or write Redis — neither poisons the next request,
+        // nor reads a key that might collide across users when the version is unknown.
+        verify(valueOperations, never()).get(any(String.class));
+        verify(valueOperations, never()).set(any(String.class), any(String.class), any());
+    }
 }

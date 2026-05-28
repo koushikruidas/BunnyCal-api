@@ -91,7 +91,7 @@ class CalendarEventIngestionServiceTest {
         service.upsertEvents(connectionId, List.of(incoming), SyncSourceAttribution.PULL_SYNC);
 
         verify(eventRepository).save(existing);
-        verify(slotCacheVersionService).incrementVersion(userId);
+        verify(slotCacheVersionService).bumpVersionAfterCommit(userId);
         verify(connectionWriteService).updateLastSyncedAt(eq(connectionId), any(), eq("event_ingestion_upsert"));
 
         org.assertj.core.api.Assertions.assertThat(existing.getStartsAt()).isEqualTo(Instant.parse("2026-06-05T15:00:00Z"));
@@ -121,8 +121,57 @@ class CalendarEventIngestionServiceTest {
         service.upsertEvents(connectionId, List.of(incoming), SyncSourceAttribution.PULL_SYNC);
 
         verify(eventRepository, never()).save(any());
+        verify(slotCacheVersionService, never()).bumpVersionAfterCommit(any());
         verify(slotCacheVersionService, never()).incrementVersion(any());
         verify(connectionWriteService).updateLastSyncedAt(eq(connectionId), any(), eq("event_ingestion_upsert"));
+    }
+
+    @Test
+    void upsertEvents_googleCancellation_deferssCacheBumpAndPersistsCancelledFlag() {
+        UUID connectionId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        CalendarConnection connection = connection(connectionId, userId, CalendarProviderType.GOOGLE);
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
+
+        CalendarEvent existing = new CalendarEvent();
+        existing.setUserId(userId);
+        existing.setConnectionId(connectionId);
+        existing.setProvider("GOOGLE");
+        existing.setExternalEventId("303o3fl2d2c7domvpspksf6upd");
+        existing.setStartsAt(Instant.parse("2026-05-28T05:00:00Z"));
+        existing.setEndsAt(Instant.parse("2026-05-28T06:00:00Z"));
+        existing.setCancelled(false);
+
+        when(providerEventProjectionService.shouldApplyAndAdvance(eq(connectionId), eq("GOOGLE"), any()))
+                .thenReturn(true);
+        when(eventRepository.findByConnectionIdAndProviderAndExternalEventId(connectionId, "GOOGLE", "303o3fl2d2c7domvpspksf6upd"))
+                .thenReturn(Optional.of(existing));
+
+        // Simulate the Google incremental observation: status=cancelled → cancelled=true, deleted=false.
+        CalendarEventIngestionService.IncomingCalendarEvent incoming =
+                new CalendarEventIngestionService.IncomingCalendarEvent(
+                        "303o3fl2d2c7domvpspksf6upd",
+                        Instant.parse("2026-05-28T05:00:00Z"),
+                        Instant.parse("2026-05-28T06:00:00Z"),
+                        true,
+                        false,
+                        null,
+                        Instant.parse("2026-05-28T04:59:00Z"),
+                        "etag-cancelled",
+                        "hash-cancelled",
+                        "primary",
+                        null, null, null);
+
+        service.upsertEvents(connectionId, List.of(incoming), SyncSourceAttribution.PULL_SYNC);
+
+        verify(eventRepository).save(existing);
+        // The cancelled-true transition MUST flow into calendar_events so the busy query
+        // can exclude the row. Without this, busy_interval_removed would log but the row
+        // would still appear in availability scans.
+        org.assertj.core.api.Assertions.assertThat(existing.isCancelled()).isTrue();
+        // Cache bump MUST go through the deferred path so it lands after commit, not before.
+        verify(slotCacheVersionService).bumpVersionAfterCommit(userId);
+        verify(slotCacheVersionService, never()).incrementVersion(userId);
     }
 
     private static CalendarConnection connection(UUID id, UUID userId, CalendarProviderType provider) {

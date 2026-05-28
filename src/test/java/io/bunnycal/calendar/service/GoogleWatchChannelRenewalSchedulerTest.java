@@ -88,7 +88,7 @@ class GoogleWatchChannelRenewalSchedulerTest {
         verify(connectionWriteService).updateWebhookChannelIfActive(
                 eq(connection.getId()), eq("new-channel"), eq("new-resource"), any(), any(), eq("google_watch_renewal"));
         verify(googleApiClient).stopWatchChannel("access-token", "old-channel", "old-resource");
-        verify(slotCacheVersionService).bumpVersion(connection.getUserId());
+        verify(slotCacheVersionService).bumpVersionAfterCommit(connection.getUserId());
     }
 
     @Test

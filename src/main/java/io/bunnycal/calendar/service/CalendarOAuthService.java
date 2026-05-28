@@ -166,7 +166,7 @@ public class CalendarOAuthService {
                 }
             }
             saved.setStatus(CalendarConnectionStatus.ACTIVE);
-            slotCacheVersionService.bumpVersion(userId);
+            slotCacheVersionService.bumpVersionAfterCommit(userId);
         } catch (RuntimeException ex) {
             saved.setStatus(CalendarConnectionStatus.FAILED);
             saved.setLastErrorCode("INITIAL_SYNC_FAILED");

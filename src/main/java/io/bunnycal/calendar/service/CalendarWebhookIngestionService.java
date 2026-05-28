@@ -166,7 +166,7 @@ public class CalendarWebhookIngestionService {
                     }
                 }
                 if (prevStatus != CalendarConnectionStatus.ACTIVE) {
-                    slotCacheVersionService.bumpVersion(connection.getUserId());
+                    slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
                 }
                 connectionWriteService.markActive(
                         connection.getId(),
@@ -192,7 +192,7 @@ public class CalendarWebhookIngestionService {
                 }
                 meterRegistry.counter("calendar.sync.replay_recovery_action.total", "provider", provider, "action", "webhook_full_recovery")
                         .increment();
-                slotCacheVersionService.bumpVersion(connection.getUserId());
+                slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
                 connectionWriteService.markActive(
                         connection.getId(),
                         connection.getLastTokenExpiresAt(),

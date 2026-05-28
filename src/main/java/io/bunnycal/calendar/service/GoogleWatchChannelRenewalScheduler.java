@@ -181,7 +181,7 @@ public class GoogleWatchChannelRenewalScheduler {
             stopChannelBestEffort(connection.getId(), oldChannelId, oldResourceId);
         }
 
-        slotCacheVersionService.bumpVersion(connection.getUserId());
+        slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
     }
 
     private void stopChannelBestEffort(java.util.UUID connectionId, String channelId, String resourceId) {

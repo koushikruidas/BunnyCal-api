@@ -61,7 +61,7 @@ class ExternalTerminalDeleteConvergenceServiceTest {
         assertEquals(1, result.bookingRows());
         assertEquals("applied", result.result());
         verify(bookingRepository).projectExternalTerminalToCancelled(bookingId);
-        verify(slotCacheVersionService).bumpVersion(hostId);
+        verify(slotCacheVersionService).bumpVersionAfterCommit(hostId);
         verify(outboxPublisher).publish(eq("Booking"), eq(bookingId), any());
     }
 
@@ -81,7 +81,7 @@ class ExternalTerminalDeleteConvergenceServiceTest {
         assertEquals(0, result.bookingRows());
         assertEquals("already_terminal", result.result());
         verify(bookingRepository, never()).projectExternalTerminalToCancelled(bookingId);
-        verify(slotCacheVersionService, never()).bumpVersion(any());
+        verify(slotCacheVersionService, never()).bumpVersionAfterCommit(any());
         verify(outboxPublisher, never()).publish(any(), any(), any());
     }
 

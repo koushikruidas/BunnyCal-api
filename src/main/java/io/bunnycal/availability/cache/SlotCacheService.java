@@ -17,12 +17,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
 public class SlotCacheService {
 
+    private static final Logger log = LoggerFactory.getLogger(SlotCacheService.class);
     private static final Duration TTL = Duration.ofSeconds(60); // inside required 30-120s range
 
     private final StringRedisTemplate redisTemplate;
@@ -77,7 +80,7 @@ public class SlotCacheService {
     }
 
     public void invalidateUser(UUID userId) {
-        slotCacheVersionService.incrementVersion(userId);
+        slotCacheVersionService.bumpVersionAfterCommit(userId);
     }
 
     private List<SlotGenerationEngine.SlotUtc> readFromCache(String key) {
@@ -127,6 +130,15 @@ public class SlotCacheService {
             LocalDate date,
             long version,
             Supplier<ComputeOutcome> computer) {
+        if (version == SlotCacheVersionService.VERSION_UNAVAILABLE) {
+            // Redis version read failed — bypass cache entirely rather than collapsing
+            // every caller onto a synthetic shared version, which would risk
+            // cross-user/stale-data contamination during a Redis blip.
+            log.warn("slots_cache_bypass userId={} eventTypeId={} date={} reason=version_unavailable",
+                    userId, eventTypeId, date);
+            ComputeOutcome outcome = computer.get();
+            return new CachedSlots(outcome.slots(), outcome.generatedAt());
+        }
         String key = cacheKeyV2(userId, eventTypeId, date, version);
 
         CachedSlots cached = readV2FromCache(key);
@@ -214,6 +226,7 @@ public class SlotCacheService {
                 pair.add(slot.end().toEpochMilli());
             }
             redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(root), TTL);
+            log.info("slots_cache_write key={} slotCount={} generatedAt={}", key, slots.size(), generatedAt);
         } catch (Exception ignored) {
             // Cache failures must not break the response path.
         }

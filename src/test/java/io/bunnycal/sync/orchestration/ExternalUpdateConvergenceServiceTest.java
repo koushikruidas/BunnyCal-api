@@ -48,7 +48,7 @@ class ExternalUpdateConvergenceServiceTest {
 
         assertEquals("applied", result.result());
         assertEquals(1, result.bookingRows());
-        verify(slotCacheVersionService).bumpVersion(hostId);
+        verify(slotCacheVersionService).bumpVersionAfterCommit(hostId);
     }
 
     @Test
@@ -66,7 +66,7 @@ class ExternalUpdateConvergenceServiceTest {
         assertEquals("already_terminal", result.result());
         assertEquals(0, result.bookingRows());
         verify(bookingRepository, never()).projectExternalActiveWindow(bookingId, start, end);
-        verify(slotCacheVersionService, never()).bumpVersion(hostId);
+        verify(slotCacheVersionService, never()).bumpVersionAfterCommit(hostId);
     }
 
     @Test

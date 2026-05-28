@@ -133,7 +133,7 @@ public class MicrosoftCalendarOAuthService {
                         saved.getId(), null, fullBatch.nextCursor(), Instant.now(), "oauth_initial_full_cursor_advance");
             }
             saved.setStatus(CalendarConnectionStatus.ACTIVE);
-            slotCacheVersionService.bumpVersion(userId);
+            slotCacheVersionService.bumpVersionAfterCommit(userId);
         } catch (RuntimeException ex) {
             saved.setStatus(CalendarConnectionStatus.FAILED);
             saved.setLastErrorCode("INITIAL_SYNC_FAILED");

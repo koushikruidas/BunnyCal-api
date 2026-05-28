@@ -175,7 +175,7 @@ public class CalendarEventIngestionService {
         }
 
         if (changed) {
-            slotCacheVersionService.incrementVersion(connection.getUserId());
+            slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
         }
 
         connectionWriteService.updateLastSyncedAt(connection.getId(), Instant.now(), "event_ingestion_upsert");
