@@ -43,6 +43,7 @@ public class BookingNotificationService {
 
     private static final Set<String> SUPPORTED_EVENTS = Set.of(
             "BOOKING_CONFIRMED",
+            "BOOKING_CONFIRMED_READY",
             "BOOKING_UPDATED",
             "BOOKING_CANCELLED",
             "BOOKING_EXTERNAL_TERMINATED"
@@ -192,6 +193,7 @@ public class BookingNotificationService {
         int sequence = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, booking.getCalendarSequence()));
         String eventMethod = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
         boolean includeManageLink = "BOOKING_CONFIRMED".equals(event.getEventType())
+                || "BOOKING_CONFIRMED_READY".equals(event.getEventType())
                 || "BOOKING_UPDATED".equals(event.getEventType());
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
@@ -418,6 +420,21 @@ public class BookingNotificationService {
                         "conferencing_event_mapping",
                         java.time.Instant.now()))
                 .orElse(ConferenceDetails.none("conferencing_mapping_missing", java.time.Instant.now()));
+        if ((details.joinUrl() == null || details.joinUrl().isBlank()) && eventType.getId() != null) {
+            details = bookingRepository.findManageRow(booking.getId(), booking.getHostId(), eventType.getId())
+                    .map(row -> row.getConferenceUrl())
+                    .filter(url -> url != null && !url.isBlank())
+                    .map(url -> new ConferenceDetails(
+                            providerType.name(),
+                            url,
+                            null,
+                            null,
+                            null,
+                            java.util.Map.of(),
+                            "projection_sync_metadata",
+                            java.time.Instant.now()))
+                    .orElse(details);
+        }
         log.info("conference_details_projection_verified bookingId={} provider={} source={} hasJoinUrl={}",
                 booking.getId(), details.provider(), details.sourceOfTruth(), details.joinUrl() != null);
         return details;

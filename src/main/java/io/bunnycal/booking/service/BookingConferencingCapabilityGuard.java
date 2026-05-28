@@ -34,13 +34,27 @@ public class BookingConferencingCapabilityGuard {
         if (eventType == null) {
             return;
         }
-        if (eventType.getProjectionProvider() != CalendarProviderType.MICROSOFT) {
+        ConferencingProviderType conferencingProvider = eventType.getConferencingProvider();
+        if (conferencingProvider == null
+                || conferencingProvider == ConferencingProviderType.NONE
+                || conferencingProvider == ConferencingProviderType.CUSTOM_URL
+                || conferencingProvider == ConferencingProviderType.ZOOM) {
             return;
         }
-        if (eventType.getConferencingProvider() != ConferencingProviderType.MICROSOFT_TEAMS) {
-            return;
+        CalendarProviderType projectionProvider = eventType.getProjectionProvider();
+        if (conferencingProvider == ConferencingProviderType.GOOGLE_MEET
+                && projectionProvider != CalendarProviderType.GOOGLE) {
+            throw new CustomException(
+                    ErrorCode.VALIDATION_ERROR,
+                    "Google Meet conferencing requires a Google projection calendar.");
         }
-        if (eventType.getProjectionConnectionId() == null) {
+        if (conferencingProvider == ConferencingProviderType.MICROSOFT_TEAMS
+                && projectionProvider != CalendarProviderType.MICROSOFT) {
+            throw new CustomException(
+                    ErrorCode.VALIDATION_ERROR,
+                    "Microsoft Teams conferencing requires a Microsoft projection calendar.");
+        }
+        if (conferencingProvider != ConferencingProviderType.MICROSOFT_TEAMS || eventType.getProjectionConnectionId() == null) {
             return;
         }
         CalendarConnection projectionConnection =
@@ -56,4 +70,3 @@ public class BookingConferencingCapabilityGuard {
         }
     }
 }
-

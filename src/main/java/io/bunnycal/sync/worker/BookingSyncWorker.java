@@ -1,6 +1,8 @@
 package io.bunnycal.sync.worker;
 
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.ownership.BookingOwnership;
 import io.bunnycal.calendar.client.CalendarClientException;
@@ -23,6 +25,7 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.Map;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -54,6 +57,7 @@ public class BookingSyncWorker {
     private final ConferencingCoordinator conferencingCoordinator;
     private final ConferencingExecutionPolicy conferencingExecutionPolicy;
     private final BookingOwnershipService bookingOwnershipService;
+    private final OutboxPublisher outboxPublisher;
     private final MeterRegistry meterRegistry;
     private final Counter syncSuccessCount;
     private final Counter syncFailureCount;
@@ -74,6 +78,7 @@ public class BookingSyncWorker {
                              ObjectProvider<ConferencingCoordinator> conferencingCoordinatorProvider,
                              ConferencingExecutionPolicy conferencingExecutionPolicy,
                              BookingOwnershipService bookingOwnershipService,
+                             OutboxPublisher outboxPublisher,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry,
                              ObjectMapper objectMapper) {
@@ -87,6 +92,7 @@ public class BookingSyncWorker {
         this.conferencingCoordinator = conferencingCoordinatorProvider.getIfAvailable();
         this.conferencingExecutionPolicy = conferencingExecutionPolicy;
         this.bookingOwnershipService = bookingOwnershipService;
+        this.outboxPublisher = outboxPublisher;
         log.info("conferencing_coordinator_injection coordinatorAvailable={}",
                 this.conferencingCoordinator != null);
         this.meterRegistry = meterRegistry;
@@ -110,12 +116,13 @@ public class BookingSyncWorker {
                       IdempotencyKeyFactory idempotencyKeyFactory,
                       ConferencingExecutionPolicy conferencingExecutionPolicy,
                       BookingOwnershipService bookingOwnershipService,
+                      OutboxPublisher outboxPublisher,
                       PlatformTransactionManager transactionManager,
                       MeterRegistry meterRegistry,
                       ObjectMapper objectMapper) {
         this(syncJobRepository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
                 rateLimitBreaker, idempotencyKeyFactory, new DefaultListableBeanFactory().getBeanProvider(ConferencingCoordinator.class),
-                conferencingExecutionPolicy, bookingOwnershipService,
+                conferencingExecutionPolicy, bookingOwnershipService, outboxPublisher,
                 transactionManager, meterRegistry, objectMapper);
     }
 
@@ -240,6 +247,7 @@ public class BookingSyncWorker {
             if (attachResult == BookingOwnershipService.LinkageAttachResult.CONFLICT) {
                 meterRegistry.counter("external_event_linkage_conflict_total").increment();
             }
+            publishDeferredConfirmationNotification(job, instruction);
             return;
         }
         handleFailure(job, result.errorCode() == null ? "PROVIDER_ERROR" : result.errorCode());
@@ -490,7 +498,8 @@ public class BookingSyncWorker {
     private static boolean isPermanent(String errorCode) {
         return "INVALID_REQUEST".equals(errorCode)
                 || "AUTH_REVOKED".equals(errorCode)
-                || "UNSUPPORTED_ACCOUNT_CAPABILITY".equals(errorCode);
+                || "UNSUPPORTED_ACCOUNT_CAPABILITY".equals(errorCode)
+                || "INVALID_CONFERENCING_CONFIGURATION".equals(errorCode);
     }
 
     private static String classify(CalendarClientException ex) {
@@ -512,6 +521,12 @@ public class BookingSyncWorker {
                     || message.contains("personal outlook.com account")) {
                 return "UNSUPPORTED_ACCOUNT_CAPABILITY";
             }
+            if (message.contains("requires a google projection calendar")
+                    || message.contains("requires a microsoft projection calendar")
+                    || message.contains("requires a google calendar connection for provisioning")
+                    || message.contains("requires a microsoft calendar connection for provisioning")) {
+                return "INVALID_CONFERENCING_CONFIGURATION";
+            }
         }
         return "PROVIDER_DOWN";
     }
@@ -526,5 +541,25 @@ public class BookingSyncWorker {
             return job.getPartitionKey().toString();
         }
         return job.getInternalRefId().toString();
+    }
+
+    private void publishDeferredConfirmationNotification(CalendarSyncJob job, ConferencingInstruction instruction) {
+        if (instruction == null
+                || !instruction.requestsNativeMeet()
+                || instruction.providerType() != io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET) {
+            return;
+        }
+        UUID readyEventId = UUID.nameUUIDFromBytes(
+                ("BOOKING_CONFIRMED_READY:" + job.getInternalRefId()).getBytes(StandardCharsets.UTF_8));
+        outboxPublisher.publishIfAbsent(
+                readyEventId,
+                "Booking",
+                job.getInternalRefId(),
+                job.getPartitionKey(),
+                new OutboxPayloadEnvelope(
+                        UUID.randomUUID().toString(),
+                        "BOOKING_CONFIRMED_READY",
+                        1,
+                        Map.of("bookingId", String.valueOf(job.getInternalRefId()))));
     }
 }

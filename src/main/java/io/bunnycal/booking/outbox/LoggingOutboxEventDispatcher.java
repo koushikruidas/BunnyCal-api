@@ -6,6 +6,7 @@ import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.booking.notification.BookingNotificationService;
 import io.bunnycal.booking.contract.BookingState;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.invariants.CompositeSyncStateClassifier;
 import io.bunnycal.sync.invariants.LineageContext;
@@ -54,7 +55,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     @Override
     public void dispatch(OutboxEvent event) {
-        if (bookingNotificationService != null) {
+        if (bookingNotificationService != null && !shouldDeferNotificationUntilProjection(event)) {
             bookingNotificationService.handleOutboxEvent(event);
         }
 
@@ -110,6 +111,19 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         return event != null
                 && BOOKING_AGGREGATE.equals(event.getAggregateType())
                 && event.getAggregateId() != null;
+    }
+
+    private boolean shouldDeferNotificationUntilProjection(OutboxEvent event) {
+        if (event == null
+                || !"Booking".equals(event.getAggregateType())
+                || event.getAggregateId() == null
+                || !"BOOKING_CONFIRMED".equals(event.getEventType())) {
+            return false;
+        }
+        return bookingRepository.findAnyById(event.getAggregateId())
+                .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
+                .map(eventType -> eventType.getConferencingProvider() == ConferencingProviderType.GOOGLE_MEET)
+                .orElse(false);
     }
 
     private record SchedulingResolution(UUID connectionId, String provider) {}

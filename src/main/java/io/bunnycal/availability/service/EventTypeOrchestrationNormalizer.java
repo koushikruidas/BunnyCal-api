@@ -71,18 +71,32 @@ public class EventTypeOrchestrationNormalizer {
     }
 
     /**
-     * Cross-validates the chosen conferencing provider against the projection
-     * destination. Currently enforces the single rule: Microsoft Teams conferencing
-     * requires the projection connection to be a work/school (Entra) account —
-     * consumer MSAs (outlook.com / hotmail.com / live.com) cannot provision
-     * Teams-for-Business meetings via Graph and would silently land an event
-     * without an {@code onlineMeeting.joinUrl}.
+     * Cross-validates conferencing + projection compatibility.
+     *
+     * Matrix:
+     * - GOOGLE_MEET       -> projection provider must be google
+     * - MICROSOFT_TEAMS   -> projection provider must be microsoft and account must be M365
+     * - ZOOM/CUSTOM_URL   -> projection provider can be google or microsoft
      */
     private void validateConferencingAgainstProjection(ConferencingConfig conferencing,
                                                        ProjectionDestination projection) {
         if (conferencing == null || projection == null) return;
-        if (conferencing.provider() != ConferencingProviderType.MICROSOFT_TEAMS) return;
-        if (!"microsoft".equalsIgnoreCase(projection.provider())) return;
+        ConferencingProviderType providerType = conferencing.provider();
+        if (providerType == null || providerType == ConferencingProviderType.NONE || providerType == ConferencingProviderType.CUSTOM_URL) {
+            return;
+        }
+        if (providerType == ConferencingProviderType.GOOGLE_MEET
+                && !"google".equalsIgnoreCase(projection.provider())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Google Meet conferencing requires a Google projection calendar.");
+        }
+        if (providerType != ConferencingProviderType.MICROSOFT_TEAMS) {
+            return;
+        }
+        if (!"microsoft".equalsIgnoreCase(projection.provider())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Microsoft Teams conferencing requires a Microsoft projection calendar.");
+        }
         CalendarConnection connection = calendarConnectionRepository.findById(projection.connectionId())
                 .orElse(null);
         if (connection == null) return; // earlier normalization already validated existence

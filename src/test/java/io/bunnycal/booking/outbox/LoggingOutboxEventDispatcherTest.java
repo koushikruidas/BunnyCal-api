@@ -14,6 +14,7 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -219,6 +220,64 @@ class LoggingOutboxEventDispatcherTest {
                 eq(null),
                 eq(hostId),
                 eq(authoritativeConnectionId),
+                org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void dispatch_bookingConfirmed_googleMeet_defersImmediateNotificationDispatch() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Booking")
+                .aggregateId(bookingId)
+                .eventType("BOOKING_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+        when(bookingRepository.findAnyById(bookingId))
+                .thenReturn(java.util.Optional.of(Booking.builder()
+                        .id(bookingId)
+                        .hostId(hostId)
+                        .eventTypeId(eventTypeId)
+                        .build()));
+        EventType configured = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Google Meet")
+                .slug("google-meet")
+                .duration(java.time.Duration.ofMinutes(30))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofMinutes(30))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(5))
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionConnectionId(projectionConnectionId)
+                .projectionCalendarId("primary")
+                .conferencingProvider(ConferencingProviderType.GOOGLE_MEET)
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
+                .thenReturn(java.util.Optional.of(configured));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(java.util.Optional.of(connection(projectionConnectionId, CalendarProviderType.GOOGLE)));
+
+        dispatcher.dispatch(event);
+
+        verify(bookingNotificationService, never()).handleOutboxEvent(event);
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                eq("BOOKING"),
+                eq(bookingId),
+                eq("google"),
+                eq("CREATE"),
+                eq(null),
+                eq(hostId),
+                eq(projectionConnectionId),
                 org.mockito.ArgumentMatchers.anyLong());
     }
 

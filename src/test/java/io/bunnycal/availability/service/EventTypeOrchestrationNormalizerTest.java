@@ -151,7 +151,7 @@ class EventTypeOrchestrationNormalizerTest {
     }
 
     @Test
-    void decoupledMode_allowsGoogleMeetWithMicrosoftProjectionDestination() {
+    void googleMeetWithMicrosoftProjectionDestination_rejectedAtNormalization() {
         UUID userId = UUID.randomUUID();
         UUID msConnId = UUID.randomUUID();
         CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
@@ -164,9 +164,7 @@ class EventTypeOrchestrationNormalizerTest {
                 projection("microsoft", msConnId, "proj-m")
         );
 
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-        assertEquals(ConferencingProviderType.GOOGLE_MEET, normalized.conferencing().provider());
-        assertEquals(msConnId, normalized.projectionDestination().connectionId());
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
     }
 
     @Test

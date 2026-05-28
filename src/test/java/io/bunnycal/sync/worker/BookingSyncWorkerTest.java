@@ -78,7 +78,7 @@ class BookingSyncWorkerTest {
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         worker = new BookingSyncWorker(
                 repository, bookingRepository, calendarService, terminalDeleteConvergenceService, retryPolicy,
-                rateLimitBreaker, idempotencyKeyFactory, conferencingExecutionPolicy, bookingOwnershipService,
+                rateLimitBreaker, idempotencyKeyFactory, conferencingExecutionPolicy, bookingOwnershipService, outboxPublisher,
                 txManager, new SimpleMeterRegistry(), new ObjectMapper());
         when(rateLimitBreaker.isOpen(any())).thenReturn(false);
         BookingOwnership ownership = new BookingOwnership();
@@ -173,6 +173,25 @@ class BookingSyncWorkerTest {
         worker.processPending(5);
 
         verify(repository).markFailure(eq(id), eq(4L), any(), eq("UNSUPPORTED_ACCOUNT_CAPABILITY"), eq(true));
+    }
+
+    @Test
+    void unsupportedNativeProviderPairing_isPermanentWithoutRetry() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 6L, null);
+        when(repository.claimPendingBatch(any(), eq(5))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        when(calendarService.createEvent(any()))
+                .thenThrow(new CustomException(
+                        ErrorCode.VALIDATION_ERROR,
+                        "Conferencing provider google_meet requires a google calendar connection for provisioning."));
+        Instant next = Instant.parse("2030-01-01T00:00:00Z");
+        when(retryPolicy.nextRetryAt(1)).thenReturn(next);
+        when(retryPolicy.isRetryExhausted(1)).thenReturn(false);
+
+        worker.processPending(5);
+
+        verify(repository).markFailure(eq(id), eq(6L), any(), eq("INVALID_CONFERENCING_CONFIGURATION"), eq(true));
     }
 
     @Test
