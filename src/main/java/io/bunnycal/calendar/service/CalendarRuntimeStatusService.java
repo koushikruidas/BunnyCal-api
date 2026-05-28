@@ -12,6 +12,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.dto.CalendarRuntimeStatusResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
@@ -89,7 +90,7 @@ public class CalendarRuntimeStatusService {
                 .toList();
 
         boolean googleConnected = connections.stream().anyMatch(c -> c.getProvider() == CalendarProviderType.GOOGLE);
-        boolean microsoftConnected = connections.stream().anyMatch(c -> c.getProvider() == CalendarProviderType.MICROSOFT);
+        boolean microsoftTeamsCapable = connections.stream().anyMatch(this::supportsNativeTeamsForConnection);
         boolean zoomConnected = "CONNECTED".equalsIgnoreCase(zoomConferencingOAuthService.status(userId));
 
         return new CalendarRuntimeStatusResponse(
@@ -99,7 +100,7 @@ public class CalendarRuntimeStatusService {
                 new CalendarRuntimeStatusResponse.Conferencing(
                         zoomConnected,
                         googleConnected,
-                        microsoftConnected
+                        microsoftTeamsCapable
                 )
         );
     }
@@ -212,8 +213,26 @@ public class CalendarRuntimeStatusService {
                 isActionRequired(connection.getStatus()),
                 capabilityView,
                 roles,
+                toAccountMetadata(connection),
                 calendars
         );
+    }
+
+    private CalendarRuntimeStatusResponse.Account toAccountMetadata(CalendarConnection connection) {
+        if (connection == null || connection.getProvider() != CalendarProviderType.MICROSOFT) {
+            return null;
+        }
+        boolean personal = MicrosoftAccountClassifier.isConsumerMsa(connection);
+        return new CalendarRuntimeStatusResponse.Account(
+                personal ? "PERSONAL_MSA" : "MICROSOFT_365",
+                !personal
+        );
+    }
+
+    private boolean supportsNativeTeamsForConnection(CalendarConnection connection) {
+        return connection != null
+                && connection.getProvider() == CalendarProviderType.MICROSOFT
+                && !MicrosoftAccountClassifier.isConsumerMsa(connection);
     }
 
     private CalendarRuntimeStatusResponse.Identity resolveIdentity(UUID userId) {

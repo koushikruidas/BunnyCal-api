@@ -130,6 +130,9 @@ class CalendarRuntimeStatusServiceTest {
         assertThat(status.status()).isEqualTo("CONNECTED");
         assertThat(status.capabilities().availability()).isTrue();
         assertThat(status.roles().availabilityEligible()).isTrue();
+        assertThat(status.account()).isNotNull();
+        assertThat(status.account().type()).isEqualTo("MICROSOFT_365");
+        assertThat(status.account().supportsNativeTeams()).isTrue();
 
         // Additive: calendars hydrated, hidden filtered.
         assertThat(status.calendars()).hasSize(2);
@@ -245,6 +248,103 @@ class CalendarRuntimeStatusServiceTest {
 
         assertThat(status.displayName()).isEqualTo("Koushik Ruidas");
         assertThat(status.email()).isEqualTo("koushikruidas@gmail.com");
+        assertThat(status.account()).isNull();
+    }
+
+    @Test
+    void runtimeStatus_consumerMsa_marksAccountPersonalAndDisablesTeams() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+
+        CalendarConnection connection = new CalendarConnection();
+        setId(connection, connectionId);
+        connection.setUserId(userId);
+        connection.setProvider(CalendarProviderType.MICROSOFT);
+        connection.setProviderUserId("ed9adb1ac97c0819");
+        connection.setStatus(CalendarConnectionStatus.ACTIVE);
+
+        CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
+        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(connection));
+
+        CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
+        when(inventoryRepo.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
+                .thenReturn(List.of());
+
+        ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
+        when(capabilityRegistry.forCalendar(CalendarProviderType.MICROSOFT))
+                .thenReturn(new ProviderCapabilities(true, true, true, true, true));
+        ZoomConferencingOAuthService zoom = mock(ZoomConferencingOAuthService.class);
+        when(zoom.status(userId)).thenReturn("DISCONNECTED");
+        AuthIdentityRepository authIdentityRepository = mock(AuthIdentityRepository.class);
+        when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
+        UserRepository userRepository = mock(UserRepository.class);
+        when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
+        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
+        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
+        CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
+
+        CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
+                connectionRepo, inventoryRepo, capabilityRegistry, zoom,
+                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+
+        CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
+        CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);
+        assertThat(status.account()).isNotNull();
+        assertThat(status.account().type()).isEqualTo("PERSONAL_MSA");
+        assertThat(status.account().supportsNativeTeams()).isFalse();
+        assertThat(response.conferencing().teamsAvailable()).isFalse();
+    }
+
+    @Test
+    void runtimeStatus_microsoft365_marksAccountOrgAndEnablesTeams() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+
+        CalendarConnection connection = new CalendarConnection();
+        setId(connection, connectionId);
+        connection.setUserId(userId);
+        connection.setProvider(CalendarProviderType.MICROSOFT);
+        connection.setProviderUserId("12345678-1234-1234-1234-123456789012");
+        connection.setStatus(CalendarConnectionStatus.ACTIVE);
+
+        CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
+        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(connection));
+
+        CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
+        when(inventoryRepo.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
+                .thenReturn(List.of());
+
+        ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
+        when(capabilityRegistry.forCalendar(CalendarProviderType.MICROSOFT))
+                .thenReturn(new ProviderCapabilities(true, true, true, true, true));
+        ZoomConferencingOAuthService zoom = mock(ZoomConferencingOAuthService.class);
+        when(zoom.status(userId)).thenReturn("DISCONNECTED");
+        AuthIdentityRepository authIdentityRepository = mock(AuthIdentityRepository.class);
+        when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
+        UserRepository userRepository = mock(UserRepository.class);
+        when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
+        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
+        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
+        CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
+
+        CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
+                connectionRepo, inventoryRepo, capabilityRegistry, zoom,
+                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+
+        CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
+        CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);
+        assertThat(status.account()).isNotNull();
+        assertThat(status.account().type()).isEqualTo("MICROSOFT_365");
+        assertThat(status.account().supportsNativeTeams()).isTrue();
+        assertThat(response.conferencing().teamsAvailable()).isTrue();
     }
 
     private static void setId(CalendarConnection connection, UUID id) {

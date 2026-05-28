@@ -20,7 +20,13 @@ public record CalendarRuntimeStatusResponse(
             boolean actionRequired,
             Capabilities capabilities,
             Roles roles,
+            @JsonInclude(JsonInclude.Include.NON_NULL) Account account,
             @JsonInclude(JsonInclude.Include.NON_NULL) List<Calendar> calendars
+    ) {}
+
+    public record Account(
+            String type,
+            boolean supportsNativeTeams
     ) {}
 
     public record Capabilities(
