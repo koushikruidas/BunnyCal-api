@@ -87,7 +87,7 @@ class BookingSyncWorkerTest {
         ownership.setProjectionCalendarId("primary");
         when(bookingOwnershipService.requireOwnership(any())).thenReturn(ownership);
         when(idempotencyKeyFactory.build(any(), any())).thenReturn("google:idem");
-        when(conferencingExecutionPolicy.adaptForMirrorProvider(any(), any(), any(), any()))
+        when(conferencingExecutionPolicy.adaptForMirrorProvider(any(), any(), any(), any(), any()))
                 .thenAnswer(invocation -> ConferencingExecutionResult.applied(
                         invocation.getArgument(0, ConferencingInstruction.class)));
         when(bookingRepository.findStateById(any())).thenReturn(Optional.of(new BookingRepository.BookingStateRow() {

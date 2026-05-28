@@ -23,6 +23,9 @@ import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
+import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
@@ -63,6 +66,7 @@ class BookingNotificationServiceTest {
     @Mock private NotificationSendDedupService notificationSendDedupService;
     @Mock private ConferencingCoordinator conferencingCoordinator;
     @Mock private ConferencingEventMappingRepository conferencingEventMappingRepository;
+    @Mock private io.bunnycal.calendar.repository.CalendarConnectionRepository calendarConnectionRepository;
 
     @Captor private ArgumentCaptor<MimeMessage> messageCaptor;
 
@@ -83,6 +87,7 @@ class BookingNotificationServiceTest {
                 notificationSendDedupService,
                 conferencingCoordinator,
                 conferencingEventMappingRepository,
+                calendarConnectionRepository,
                 true,
                 "no-reply@example.com",
                 "calendar@example.com",
@@ -138,6 +143,43 @@ class BookingNotificationServiceTest {
         assertTrue(attendeeIcs.contains("ATTENDEE;CN=Guest Name;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:guest@example.com"));
         assertTrue(textBody(hostMsg).contains("Manage your booking"));
         assertTrue(textBody(attendeeMsg).contains("Manage your booking"));
+    }
+
+    @Test
+    void microsoftConsumerMsaProjection_suppressesHostRecipientToAvoidDuplicateAutoImport() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@outlook.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection consumerMsaConnection = new CalendarConnection();
+        consumerMsaConnection.setUserId(hostId);
+        consumerMsaConnection.setProvider(CalendarProviderType.MICROSOFT);
+        consumerMsaConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        consumerMsaConnection.setProviderUserId("ed9adb1ac97c0819");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call")
+                        .slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.MICROSOFT)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(consumerMsaConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@outlook.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(1)).send(messageCaptor.capture());
+        MimeMessage onlyMsg = messageCaptor.getValue();
+        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
+        assertFalse(header(onlyMsg, "To").contains("host@outlook.com"));
     }
 
     @Test

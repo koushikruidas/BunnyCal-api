@@ -5,6 +5,7 @@ import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
@@ -38,6 +39,7 @@ public class EventTypeOrchestrationNormalizer {
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, request.availabilityCalendars());
         ConferencingConfig conferencing = normalizeConference(request.conference());
         ProjectionDestination projectionDestination = normalizeProjectionDestination(userId, request.projectionDestination());
+        validateConferencingAgainstProjection(conferencing, projectionDestination);
         return new NormalizedOrchestration(projectionDestination, availabilityBindings, conferencing);
     }
 
@@ -64,7 +66,35 @@ public class EventTypeOrchestrationNormalizer {
         ProjectionDestination effectiveProjection = projectionDestination != null
                 ? normalizeProjectionDestination(userId, projectionDestination)
                 : projectionDestinationFromExisting(existingEventType, true);
+        validateConferencingAgainstProjection(conferencing, effectiveProjection);
         return new NormalizedOrchestration(effectiveProjection, availabilityBindings, conferencing);
+    }
+
+    /**
+     * Cross-validates the chosen conferencing provider against the projection
+     * destination. Currently enforces the single rule: Microsoft Teams conferencing
+     * requires the projection connection to be a work/school (Entra) account —
+     * consumer MSAs (outlook.com / hotmail.com / live.com) cannot provision
+     * Teams-for-Business meetings via Graph and would silently land an event
+     * without an {@code onlineMeeting.joinUrl}.
+     */
+    private void validateConferencingAgainstProjection(ConferencingConfig conferencing,
+                                                       ProjectionDestination projection) {
+        if (conferencing == null || projection == null) return;
+        if (conferencing.provider() != ConferencingProviderType.MICROSOFT_TEAMS) return;
+        if (!"microsoft".equalsIgnoreCase(projection.provider())) return;
+        CalendarConnection connection = calendarConnectionRepository.findById(projection.connectionId())
+                .orElse(null);
+        if (connection == null) return; // earlier normalization already validated existence
+        if (MicrosoftAccountClassifier.isConsumerMsa(connection)) {
+            meterRegistry.counter("event_type_validation_rejected_total",
+                    "reason", "ms_teams_on_consumer_msa").increment();
+            log.warn("event_type_validation_rejected reason=ms_teams_on_consumer_msa connectionId={} providerUserId={}",
+                    connection.getId(), connection.getProviderUserId());
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Microsoft Teams conferencing requires a work or school Microsoft account; "
+                            + "the chosen projection calendar belongs to a personal Outlook.com account.");
+        }
     }
 
     /**

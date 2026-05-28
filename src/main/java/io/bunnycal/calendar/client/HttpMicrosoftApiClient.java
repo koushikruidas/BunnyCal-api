@@ -451,7 +451,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                                                       ConferencingInstruction instruction) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("subject", title);
-        body.put("body", Map.of("contentType", "text", "content", description == null ? "" : description));
+        body.put("body", Map.of("contentType", "text", "content", appendConferenceUrl(description, instruction)));
         body.put("start", Map.of("dateTime", startsAt.toString(), "timeZone", "UTC"));
         body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
         body.put("attendees", List.of(Map.of(
@@ -468,8 +468,30 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 && instruction.providerType() == ConferencingProviderType.MICROSOFT_TEAMS) {
             body.put("isOnlineMeeting", true);
             body.put("onlineMeetingProvider", "teamsForBusiness");
+        } else if (instruction != null && instruction.embedsExternalUrl()) {
+            // Non-Teams conferencing (Zoom, custom URL): Graph won't provision a meeting
+            // room for us, so we mirror Google's behavior and put the URL in `location`
+            // so Outlook renders it as a clickable join target. The description body is
+            // also augmented (see appendConferenceUrl) so the URL is discoverable in plain
+            // text for clients that don't surface `location`.
+            body.put("location", Map.of("displayName", instruction.joinUrl()));
         }
         return body;
+    }
+
+    private static String appendConferenceUrl(String description, ConferencingInstruction instruction) {
+        String base = description == null ? "" : description.trim();
+        if (instruction == null || !instruction.embedsExternalUrl()) {
+            return base;
+        }
+        String joinLine = "conferenceUrl=" + instruction.joinUrl();
+        if (base.isBlank()) {
+            return joinLine;
+        }
+        if (base.contains(joinLine)) {
+            return base;
+        }
+        return base + "\n\n" + joinLine;
     }
 
     private static MicrosoftEventDetails toDetails(Map<?, ?> body) {

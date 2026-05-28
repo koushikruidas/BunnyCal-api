@@ -24,6 +24,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
@@ -170,7 +171,7 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsGoogleMeetWithMicrosoftMirrorProvider() {
-        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy();
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(Mockito.mock(CalendarConnectionRepository.class));
         ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.GOOGLE_MEET);
 
         assertThrows(CustomException.class,
@@ -179,7 +180,7 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsMicrosoftTeamsWithGoogleMirrorProvider() {
-        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy();
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(Mockito.mock(CalendarConnectionRepository.class));
         ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.MICROSOFT_TEAMS);
 
         assertThrows(CustomException.class,

@@ -10,6 +10,10 @@ import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
+import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
@@ -56,6 +60,7 @@ public class BookingNotificationService {
     private final NotificationSendDedupService notificationSendDedupService;
     private final ConferencingCoordinator conferencingCoordinator;
     private final ConferencingEventMappingRepository conferencingEventMappingRepository;
+    private final CalendarConnectionRepository calendarConnectionRepository;
     private final boolean notificationsEnabled;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -74,6 +79,7 @@ public class BookingNotificationService {
                                       NotificationSendDedupService notificationSendDedupService,
                                       ConferencingCoordinator conferencingCoordinator,
                                       ConferencingEventMappingRepository conferencingEventMappingRepository,
+                                      CalendarConnectionRepository calendarConnectionRepository,
                                       @Value("${booking.notifications.enabled:false}") boolean notificationsEnabled,
                                       @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                       @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
@@ -93,6 +99,7 @@ public class BookingNotificationService {
         this.notificationSendDedupService = notificationSendDedupService;
         this.conferencingCoordinator = conferencingCoordinator;
         this.conferencingEventMappingRepository = conferencingEventMappingRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
         this.notificationsEnabled = notificationsEnabled;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -146,6 +153,15 @@ public class BookingNotificationService {
                     (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
+        } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType)) {
+            // Consumer MSA host whose Outlook calendar IS the projection target:
+            // Outlook would auto-import this iTIP REQUEST and create a second visible
+            // event next to the Graph-projected one. Drop the host from this email's
+            // recipient set — the calendar entry already exists in their calendar via
+            // the Graph projection. Guest still gets the email.
+            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=ms_consumer_msa_projection_self_owned hostEmail={}",
+                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
+            hostRecipient = Optional.empty();
         }
 
         List<String> candidateRecipients = new ArrayList<>(2);
@@ -487,5 +503,28 @@ public class BookingNotificationService {
             builder.append("\n\nManage your booking:\n").append(manageLink);
         }
         return builder.toString();
+    }
+
+    /**
+     * True iff the host's projection calendar is on a consumer Microsoft account
+     * owned by the host themselves. In that case Outlook auto-imports the iTIP
+     * REQUEST ICS we'd attach to the host's email, producing a duplicate event
+     * next to the one already written via Graph. Suppress the host recipient so
+     * only the guest receives the invite.
+     *
+     * <p>Scoped to consumer MSAs only: work/school (Entra) accounts also auto-process
+     * meeting mail but Graph dispatches the invite itself, so we never attach an
+     * ICS for the host in that path. The check stays narrow to the configuration
+     * that produces the visible-duplicate symptom.
+     */
+    private boolean shouldSuppressHostIcsForOwnMsaProjection(EventType eventType) {
+        if (eventType == null) return false;
+        if (eventType.getProjectionProvider() != CalendarProviderType.MICROSOFT) return false;
+        if (eventType.getProjectionConnectionId() == null) return false;
+        CalendarConnection projectionConnection = calendarConnectionRepository
+                .findById(eventType.getProjectionConnectionId())
+                .orElse(null);
+        if (projectionConnection == null) return false;
+        return MicrosoftAccountClassifier.isConsumerMsa(projectionConnection);
     }
 }

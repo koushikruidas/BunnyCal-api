@@ -1,6 +1,9 @@
 package io.bunnycal.conferencing.service;
 
+import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -8,6 +11,7 @@ import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 /**
@@ -19,10 +23,24 @@ import org.springframework.stereotype.Component;
 public class ConferencingExecutionPolicy {
     private static final Logger log = LoggerFactory.getLogger(ConferencingExecutionPolicy.class);
 
+    private final CalendarConnectionRepository calendarConnectionRepository;
+
+    public ConferencingExecutionPolicy(CalendarConnectionRepository calendarConnectionRepository) {
+        this.calendarConnectionRepository = calendarConnectionRepository;
+    }
+
     public ConferencingExecutionResult adaptForMirrorProvider(ConferencingInstruction instruction,
                                                               String mirrorProvider,
                                                               UUID bookingId,
                                                               String action) {
+        return adaptForMirrorProvider(instruction, mirrorProvider, bookingId, action, null);
+    }
+
+    public ConferencingExecutionResult adaptForMirrorProvider(ConferencingInstruction instruction,
+                                                              String mirrorProvider,
+                                                              UUID bookingId,
+                                                              String action,
+                                                              @Nullable UUID schedulingConnectionId) {
         if (instruction == null || !instruction.requestsNativeMeet()) {
             return ConferencingExecutionResult.applied(
                     instruction == null ? ConferencingInstruction.none() : instruction);
@@ -37,6 +55,21 @@ public class ConferencingExecutionPolicy {
                 && mirrorProviderType == CalendarProviderType.MICROSOFT);
 
         if (nativeMatch) {
+            // Consumer-MSA Teams guard: a personal Outlook.com / hotmail.com / live.com
+            // account doesn't have Teams-for-Business; Graph silently lands the event
+            // without an onlineMeeting.joinUrl. Fail explicitly at booking time rather
+            // than producing an event with no join link.
+            if (conferencingProvider == ConferencingProviderType.MICROSOFT_TEAMS
+                    && schedulingConnectionId != null) {
+                CalendarConnection connection = calendarConnectionRepository.findById(schedulingConnectionId).orElse(null);
+                if (connection != null && MicrosoftAccountClassifier.isConsumerMsa(connection)) {
+                    log.warn("conferencing_ms_teams_consumer_msa_rejected bookingId={} action={} connectionId={} providerUserId={}",
+                            bookingId, action, connection.getId(), connection.getProviderUserId());
+                    throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                            "Microsoft Teams conferencing requires a work or school Microsoft account; "
+                                    + "the chosen projection calendar belongs to a personal Outlook.com account.");
+                }
+            }
             log.info("conferencing_native_match bookingId={} action={} mirrorProvider={} conferencingProvider={}",
                     bookingId, action, mirrorProvider, conferencingProvider);
             return ConferencingExecutionResult.applied(instruction);

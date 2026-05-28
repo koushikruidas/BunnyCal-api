@@ -397,7 +397,7 @@ public class BookingSyncWorker {
         }
         ConferencingInstruction instruction = conferencingCoordinator.prepareForCreate(job.getInternalRefId(), hostId);
         ConferencingExecutionResult result = conferencingExecutionPolicy.adaptForMirrorProvider(
-                instruction, job.getProvider(), job.getInternalRefId(), "CREATE");
+                instruction, job.getProvider(), job.getInternalRefId(), "CREATE", job.getSchedulingConnectionId());
         log.info("conferencing_instruction_resolved bookingId={} action=CREATE provider={} mode={} hasJoinUrl={} outcome={} reasonCode={}",
                 job.getInternalRefId(), result.instruction().providerType(), result.instruction().mode(),
                 result.instruction().embedsExternalUrl(), result.outcome(), result.reasonCode());
@@ -442,7 +442,7 @@ public class BookingSyncWorker {
         }
         ConferencingInstruction instruction = conferencingCoordinator.prepareForUpdate(job.getInternalRefId(), hostId);
         ConferencingExecutionResult result = conferencingExecutionPolicy.adaptForMirrorProvider(
-                instruction, job.getProvider(), job.getInternalRefId(), "UPDATE");
+                instruction, job.getProvider(), job.getInternalRefId(), "UPDATE", job.getSchedulingConnectionId());
         log.info("conferencing_instruction_resolved bookingId={} action=UPDATE provider={} mode={} hasJoinUrl={} outcome={} reasonCode={}",
                 job.getInternalRefId(), result.instruction().providerType(), result.instruction().mode(),
                 result.instruction().embedsExternalUrl(), result.outcome(), result.reasonCode());
