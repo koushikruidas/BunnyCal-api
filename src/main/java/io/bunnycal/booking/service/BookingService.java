@@ -75,6 +75,8 @@ public class BookingService {
     private final SyncInvariantMonitor invariantMonitor;
     @Nullable
     private final BookingPendingCounter pendingCounter;
+    @Nullable
+    private final BookingConferencingCapabilityGuard conferencingCapabilityGuard;
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     private final Counter conflictCounter;
@@ -95,7 +97,8 @@ public class BookingService {
             TimeSource timeSource,
             MeterRegistry meterRegistry,
             @Nullable SyncInvariantMonitor invariantMonitor,
-            @Nullable BookingPendingCounter pendingCounter) {
+            @Nullable BookingPendingCounter pendingCounter,
+            @Nullable BookingConferencingCapabilityGuard conferencingCapabilityGuard) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
@@ -103,6 +106,7 @@ public class BookingService {
         this.meterRegistry = meterRegistry;
         this.invariantMonitor = invariantMonitor;
         this.pendingCounter = pendingCounter;
+        this.conferencingCapabilityGuard = conferencingCapabilityGuard;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
@@ -150,7 +154,7 @@ public class BookingService {
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry) {
-        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null);
+        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null, null);
     }
 
     /**
@@ -287,6 +291,14 @@ public class BookingService {
         if (row.getExpiresAt() != null && row.getExpiresAt().isBefore(timeSource.now())) {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION, "Booking hold has expired.");
         }
+        bookingRepository.findAnyById(bookingId).ifPresent(booking -> {
+            if (conferencingCapabilityGuard != null) {
+                conferencingCapabilityGuard.assertBookingConfirmationSupported(
+                        booking.getId(),
+                        booking.getHostId(),
+                        booking.getEventTypeId());
+            }
+        });
         confirmBooking(bookingId, row.getVersion());
     }
 

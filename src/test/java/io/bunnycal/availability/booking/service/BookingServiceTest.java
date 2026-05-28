@@ -17,6 +17,7 @@ import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.service.BookingService;
+import io.bunnycal.booking.service.BookingConferencingCapabilityGuard;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.booking.service.CancellationSource;
 import io.bunnycal.common.exception.CustomException;
@@ -52,6 +53,8 @@ class BookingServiceTest {
 
     @Mock
     private TimeSource timeSource;
+    @Mock
+    private BookingConferencingCapabilityGuard conferencingCapabilityGuard;
 
     private BookingService bookingService;
 
@@ -92,6 +95,41 @@ class BookingServiceTest {
         verify(userRepository, times(1)).findByIdForUpdate(userId);
         verify(bookingRepository, times(1)).saveAndFlush(any(Booking.class));
         verify(outboxPublisher, times(1)).publish(eq("Booking"), eq(saved.getId()), eq(userId), any(OutboxPayloadEnvelope.class));
+    }
+
+    @Test
+    void confirmHeldBooking_rejectsUnsupportedConsumerMsaTeamsBeforeConfirmation() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        Instant end = Instant.parse("2026-05-10T10:30:00Z");
+
+        BookingService guardedService = new BookingService(
+                userRepository, bookingRepository, outboxPublisher, timeSource,
+                new SimpleMeterRegistry(), null, null, conferencingCapabilityGuard);
+
+        when(bookingRepository.findStateById(bookingId))
+                .thenReturn(Optional.of(stateRow(bookingId, hostId, "PENDING", 2L)));
+        when(bookingRepository.findAnyById(bookingId))
+                .thenReturn(Optional.of(Booking.builder()
+                        .id(bookingId)
+                        .hostId(hostId)
+                        .eventTypeId(eventTypeId)
+                        .startTime(start)
+                        .endTime(end)
+                        .build()));
+        org.mockito.Mockito.doThrow(new CustomException(
+                ErrorCode.VALIDATION_ERROR,
+                "Microsoft Teams conferencing requires a Microsoft 365 work/school account. "
+                        + "Personal Outlook.com accounts are not supported for native Teams meeting provisioning."))
+                .when(conferencingCapabilityGuard)
+                .assertBookingConfirmationSupported(bookingId, hostId, eventTypeId);
+
+        CustomException ex = assertThrows(CustomException.class, () -> guardedService.confirmHeldBooking(bookingId));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
+        verify(bookingRepository, never()).updateStatusAndCalendarSequence(any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+        verify(outboxPublisher, never()).publish(eq("Booking"), eq(bookingId), eq(hostId), any(OutboxPayloadEnvelope.class));
     }
 
     @Test

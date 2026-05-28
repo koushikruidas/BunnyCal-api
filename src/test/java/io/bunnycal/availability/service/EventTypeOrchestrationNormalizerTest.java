@@ -170,6 +170,24 @@ class EventTypeOrchestrationNormalizerTest {
     }
 
     @Test
+    void microsoftTeamsWithConsumerMsaProjection_rejectedAtNormalization() {
+        UUID userId = UUID.randomUUID();
+        UUID msConnId = UUID.randomUUID();
+        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
+        msConn.setProviderUserId("ed9adb1ac97c0819");
+        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Teams on MSA", null, null, 30, 0, 0, 30, 0, 30, 10, "teams-msa",
+                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", null)),
+                new CreateEventTypeRequest.ConferenceRequest(true, "microsoft_teams", null),
+                projection("microsoft", msConnId, "proj-m")
+        );
+
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+    }
+
+    @Test
     void conferencingExecutionPolicy_rejectsGoogleMeetWithMicrosoftMirrorProvider() {
         ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(Mockito.mock(CalendarConnectionRepository.class));
         ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.GOOGLE_MEET);

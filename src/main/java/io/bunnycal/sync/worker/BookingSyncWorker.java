@@ -5,6 +5,8 @@ import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.ownership.BookingOwnership;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.service.CalendarService;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
 import io.bunnycal.conferencing.service.ConferencingExecutionPolicy;
 import io.bunnycal.conferencing.service.ConferencingExecutionResult;
@@ -158,6 +160,8 @@ public class BookingSyncWorker {
             }
             syncSuccessCount.increment();
         } catch (CalendarClientException ex) {
+            handleFailure(job, classify(ex));
+        } catch (CustomException ex) {
             handleFailure(job, classify(ex));
         } catch (RuntimeException ex) {
             handleFailure(job, "PROVIDER_DOWN");
@@ -484,7 +488,9 @@ public class BookingSyncWorker {
     }
 
     private static boolean isPermanent(String errorCode) {
-        return "INVALID_REQUEST".equals(errorCode) || "AUTH_REVOKED".equals(errorCode);
+        return "INVALID_REQUEST".equals(errorCode)
+                || "AUTH_REVOKED".equals(errorCode)
+                || "UNSUPPORTED_ACCOUNT_CAPABILITY".equals(errorCode);
     }
 
     private static String classify(CalendarClientException ex) {
@@ -495,6 +501,19 @@ public class BookingSyncWorker {
         if (status >= 500) return "PROVIDER_DOWN";
         if (status >= 400) return "INVALID_REQUEST";
         return "PROVIDER_ERROR";
+    }
+
+    private static String classify(CustomException ex) {
+        if (ex.getErrorCode() == ErrorCode.VALIDATION_ERROR) {
+            String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase(java.util.Locale.ROOT);
+            if (message.contains("microsoft teams conferencing requires a microsoft 365 work/school account")
+                    || message.contains("personal outlook.com accounts are not supported")
+                    || message.contains("work or school microsoft account")
+                    || message.contains("personal outlook.com account")) {
+                return "UNSUPPORTED_ACCOUNT_CAPABILITY";
+            }
+        }
+        return "PROVIDER_DOWN";
     }
 
     private static boolean isDeleteAlreadyConverged(CalendarClientException ex) {

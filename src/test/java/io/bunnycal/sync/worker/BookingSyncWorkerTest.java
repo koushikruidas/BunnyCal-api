@@ -18,6 +18,8 @@ import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.service.CalendarService;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.conferencing.service.ConferencingExecutionPolicy;
 import io.bunnycal.conferencing.service.ConferencingExecutionResult;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
@@ -149,6 +151,28 @@ class BookingSyncWorkerTest {
         worker.processPending(5);
 
         verify(repository).markFailure(id, 9L, Instant.parse("2030-01-01T00:00:00Z"), "INVALID_REQUEST", true);
+    }
+
+    @Test
+    void unsupportedConsumerMsaTeams_isPermanentWithoutProviderCall() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 4L, null);
+        job.setProvider("microsoft");
+        job.setSchedulingConnectionId(UUID.randomUUID());
+        when(repository.claimPendingBatch(any(), eq(5))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        when(calendarService.createEvent(any()))
+                .thenThrow(new CustomException(
+                        ErrorCode.VALIDATION_ERROR,
+                        "Microsoft Teams conferencing requires a Microsoft 365 work/school account. "
+                                + "Personal Outlook.com accounts are not supported for native Teams meeting provisioning."));
+        Instant next = Instant.parse("2030-01-01T00:00:00Z");
+        when(retryPolicy.nextRetryAt(1)).thenReturn(next);
+        when(retryPolicy.isRetryExhausted(1)).thenReturn(false);
+
+        worker.processPending(5);
+
+        verify(repository).markFailure(eq(id), eq(4L), any(), eq("UNSUPPORTED_ACCOUNT_CAPABILITY"), eq(true));
     }
 
     @Test
