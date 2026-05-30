@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -161,6 +162,14 @@ public class BookingNotificationService {
             // recipient set — the calendar entry already exists in their calendar via
             // the Graph projection. Guest still gets the email.
             log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=ms_consumer_msa_projection_self_owned hostEmail={}",
+                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
+            hostRecipient = Optional.empty();
+        } else if (shouldSuppressHostIcsForOwnGoogleProjection(eventType, booking.getHostId())) {
+            // Google host whose Gmail/Calendar account IS the projection target:
+            // Gmail auto-imports the iTIP REQUEST and creates a second event next
+            // to the one already written via the Calendar API. Drop the host from
+            // the recipient set — guest still gets the email.
+            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=google_projection_self_owned hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
             hostRecipient = Optional.empty();
         }
@@ -543,5 +552,29 @@ public class BookingNotificationService {
                 .orElse(null);
         if (projectionConnection == null) return false;
         return MicrosoftAccountClassifier.isConsumerMsa(projectionConnection);
+    }
+
+    /**
+     * True iff the host's projection calendar is on a Google account owned by
+     * the host themselves. Gmail auto-imports any iTIP REQUEST ICS we'd attach
+     * to the host's email, producing a duplicate event next to the one already
+     * written via the Calendar API. Suppress the host recipient so only the
+     * guest receives the invite.
+     *
+     * <p>Scoped narrowly to self-owned Google projections via the connection's
+     * {@code userId}. Shared, delegated, team, or service-account projections
+     * have a connection whose {@code userId} differs from the booking host's
+     * id, so suppression correctly does NOT fire and the host still gets the
+     * ICS email.
+     */
+    private boolean shouldSuppressHostIcsForOwnGoogleProjection(EventType eventType, UUID hostId) {
+        if (eventType == null) return false;
+        if (eventType.getProjectionProvider() != CalendarProviderType.GOOGLE) return false;
+        if (eventType.getProjectionConnectionId() == null) return false;
+        return calendarConnectionRepository
+                .findById(eventType.getProjectionConnectionId())
+                .filter(conn -> conn.getProvider() == CalendarProviderType.GOOGLE)
+                .map(conn -> hostId.equals(conn.getUserId()))
+                .orElse(false);
     }
 }
