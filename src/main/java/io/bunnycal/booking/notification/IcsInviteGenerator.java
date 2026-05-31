@@ -119,8 +119,19 @@ public class IcsInviteGenerator {
         if (!trimmedJoinUrl.isEmpty()) {
             appendLine(builder, "LOCATION:" + escape(trimmedJoinUrl));
             appendLine(builder, "URL:" + trimmedJoinUrl);
-            appendLine(builder, "X-MICROSOFT-SKYPETEAMSMEETINGURL:" + trimmedJoinUrl);
-            appendLine(builder, "X-GOOGLE-CONFERENCE:" + trimmedJoinUrl);
+            // Provider-specific conference hints must match the actual meeting provider.
+            // Emitting X-MICROSOFT-SKYPETEAMSMEETINGURL with a non-Teams URL, or
+            // X-GOOGLE-CONFERENCE with a non-Meet URL, makes Outlook's calendar parser
+            // treat the invite as a malformed/foreign online meeting and can suppress
+            // the meeting banner. For CUSTOM_URL we surface the link via LOCATION/URL only.
+            String provider = conferenceDetails == null || conferenceDetails.provider() == null
+                    ? ""
+                    : conferenceDetails.provider().trim().toUpperCase(Locale.ROOT);
+            if ("MICROSOFT_TEAMS".equals(provider)) {
+                appendLine(builder, "X-MICROSOFT-SKYPETEAMSMEETINGURL:" + trimmedJoinUrl);
+            } else if ("GOOGLE_MEET".equals(provider)) {
+                appendLine(builder, "X-GOOGLE-CONFERENCE:" + trimmedJoinUrl);
+            }
         }
         appendLine(builder, "TRANSP:OPAQUE");
         appendLine(builder, "CLASS:PUBLIC");

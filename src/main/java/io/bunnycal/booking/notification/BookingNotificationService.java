@@ -67,6 +67,7 @@ public class BookingNotificationService {
     private final String fromAddress;
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
+    private final String debugEmlDir;
     private final Duration guestManageTokenTtl;
 
     public BookingNotificationService(BookingRepository bookingRepository,
@@ -88,6 +89,7 @@ public class BookingNotificationService {
                                       String calendarOrganizerEmail,
                                       @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}")
                                       String calendarOrganizerName,
+                                      @Value("${booking.notifications.debug-eml-dir:}") String debugEmlDir,
                                       @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
@@ -106,6 +108,7 @@ public class BookingNotificationService {
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
         this.calendarOrganizerName = calendarOrganizerName;
+        this.debugEmlDir = debugEmlDir == null ? "" : debugEmlDir.trim();
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
     }
 
@@ -291,7 +294,8 @@ public class BookingNotificationService {
                             calendarOrganizerEmail,
                             clientType);
                 }
-                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceDetails);
+                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceDetails,
+                        booking.getId());
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true);
                 log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
@@ -316,7 +320,8 @@ public class BookingNotificationService {
                           String ics,
                           String method,
                           String manageLink,
-                          ConferenceDetails conferenceDetails) throws Exception {
+                          ConferenceDetails conferenceDetails,
+                          UUID bookingId) throws Exception {
         var message = mailSender.createMimeMessage();
         // We must construct the MIME tree manually because the auto-rendering
         // contract that Outlook and Gmail honour requires a specific shape:
@@ -327,7 +332,20 @@ public class BookingNotificationService {
         // alone collapses the calendar part to attachment-only, which is
         // why Outlook previously demanded a manual "Add to calendar" flow.
         var helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
-        helper.setFrom(fromAddress);
+        // Align the SMTP From with the iTIP ORGANIZER identity used inside the ICS.
+        // Outlook treats a REQUEST whose From differs from the ORGANIZER mailbox as a
+        // forwarded/foreign invite and frequently suppresses the meeting banner. Using a
+        // single canonical organizer identity (with Reply-To to the same mailbox) keeps the
+        // message self-consistent. Falls back to the configured from when no organizer is set.
+        String envelopeFrom = (calendarOrganizerEmail != null && !calendarOrganizerEmail.isBlank())
+                ? calendarOrganizerEmail
+                : fromAddress;
+        if (calendarOrganizerName != null && !calendarOrganizerName.isBlank()) {
+            helper.setFrom(envelopeFrom, calendarOrganizerName);
+        } else {
+            helper.setFrom(envelopeFrom);
+        }
+        helper.setReplyTo(envelopeFrom);
         helper.setTo(to);
         helper.setSubject(subject(summary, eventType));
         if (method != null) {
@@ -378,7 +396,47 @@ public class BookingNotificationService {
         // wrapper parts and fail to descend into nested multipart/alternative.
         message.saveChanges();
 
+        maybeDumpEml(message, bookingId, eventType, to, conferenceDetails);
+
         mailSender.send(message);
+    }
+
+    /**
+     * Debug-only: persist the fully rendered MIME message to disk before SES send so the
+     * raw .eml can be diffed across providers/clients. Off unless
+     * {@code booking.notifications.debug-eml-dir} is set. Best-effort — never blocks send.
+     */
+    private void maybeDumpEml(jakarta.mail.internet.MimeMessage message,
+                              UUID bookingId,
+                              String eventType,
+                              String recipient,
+                              ConferenceDetails conferenceDetails) {
+        if (debugEmlDir == null || debugEmlDir.isBlank()) {
+            return;
+        }
+        try {
+            java.nio.file.Path dir = java.nio.file.Path.of(debugEmlDir);
+            java.nio.file.Files.createDirectories(dir);
+            String provider = conferenceDetails == null || conferenceDetails.provider() == null
+                    ? "none"
+                    : conferenceDetails.provider().toLowerCase(Locale.ROOT);
+            String safeRecipient = recipient == null ? "unknown" : recipient.replaceAll("[^a-zA-Z0-9._-]", "_");
+            String fileName = String.format(Locale.ROOT, "%s_%s_%s_%s_%d.eml",
+                    provider,
+                    eventType == null ? "EVENT" : eventType,
+                    bookingId == null ? "nobooking" : bookingId,
+                    safeRecipient,
+                    System.currentTimeMillis());
+            java.nio.file.Path target = dir.resolve(fileName);
+            try (var out = java.nio.file.Files.newOutputStream(target)) {
+                message.writeTo(out);
+            }
+            log.info("booking_notification_eml_dumped bookingId={} eventType={} provider={} recipient={} path={}",
+                    bookingId, eventType, provider, recipient, target.toAbsolutePath());
+        } catch (Exception ex) {
+            log.warn("booking_notification_eml_dump_failed bookingId={} eventType={} message={}",
+                    bookingId, eventType, ex.getMessage());
+        }
     }
 
     private ConferenceDetails resolveConferenceDetails(Booking booking, EventType eventType, String outboxEventType) {

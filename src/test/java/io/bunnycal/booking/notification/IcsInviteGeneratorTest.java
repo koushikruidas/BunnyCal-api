@@ -111,8 +111,8 @@ class IcsInviteGeneratorTest {
     }
 
     @Test
-    void standaloneRequest_embedsConferenceUrlAsLocationAndExtensionProperties() {
-        String joinUrl = "https://zoom.us/j/1234567890?pwd=abc";
+    void standaloneRequest_embedsConferenceUrlAsLocationForGoogleMeet() {
+        String joinUrl = "https://meet.google.com/abc-defg-hij";
         String ics = generator.buildStandaloneRequest(
                 UUID.randomUUID(),
                 "Discovery",
@@ -126,16 +126,47 @@ class IcsInviteGeneratorTest {
                 "Guest Name",
                 "guest@example.com",
                 4,
-                conf(joinUrl)
+                conf(joinUrl, "GOOGLE_MEET")
         );
         String unfolded = unfold(ics);
 
         assertTrue(unfolded.contains("LOCATION:" + joinUrl));
         assertTrue(unfolded.contains("URL:" + joinUrl));
-        assertTrue(unfolded.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + joinUrl));
+        // Provider-matched hint only: Google Meet emits X-GOOGLE-CONFERENCE, never the Teams hint.
         assertTrue(unfolded.contains("X-GOOGLE-CONFERENCE:" + joinUrl));
+        assertFalse(unfolded.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
         assertTrue(unfolded.contains("Join: " + joinUrl));
         assertTrue(unfolded.contains("X-MICROSOFT-CDO-BUSYSTATUS:BUSY"));
+    }
+
+    @Test
+    void standaloneRequest_customUrlEmitsLocationButNoProviderHints() {
+        String joinUrl = "https://meet.example.com/custom-room";
+        String ics = generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                4,
+                conf(joinUrl, "CUSTOM_URL")
+        );
+        String unfolded = unfold(ics);
+
+        // The link is surfaced via LOCATION/URL/DESCRIPTION, but NO provider-specific
+        // conference hints are emitted — a custom URL is neither a Meet nor a Teams meeting.
+        // Emitting a foreign provider hint makes Outlook misparse/suppress the invite.
+        assertTrue(unfolded.contains("LOCATION:" + joinUrl));
+        assertTrue(unfolded.contains("URL:" + joinUrl));
+        assertTrue(unfolded.contains("Join: " + joinUrl));
+        assertFalse(unfolded.contains("X-GOOGLE-CONFERENCE"));
+        assertFalse(unfolded.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
     }
 
     @Test
@@ -204,31 +235,44 @@ class IcsInviteGeneratorTest {
     @Test
     void fixtureConferenceProvidersRenderConsistentCalendarFields() {
         UUID bookingId = UUID.randomUUID();
-        String[] urls = {
-                "https://meet.google.com/abc-defg-hij",
-                "https://teams.microsoft.com/l/meetup-join/xyz",
-                "https://zoom.us/j/123456",
-                "https://example.com/custom-room"
+        // url -> provider, plus the expected provider-specific hint header (or null for none).
+        String[][] fixtures = {
+                {"https://meet.google.com/abc-defg-hij", "GOOGLE_MEET", "X-GOOGLE-CONFERENCE"},
+                {"https://teams.microsoft.com/l/meetup-join/xyz", "MICROSOFT_TEAMS", "X-MICROSOFT-SKYPETEAMSMEETINGURL"},
+                {"https://zoom.us/j/123456", "ZOOM", null},
+                {"https://example.com/custom-room", "CUSTOM_URL", null}
         };
-        for (String url : urls) {
+        for (String[] fixture : fixtures) {
+            String url = fixture[0];
+            String provider = fixture[1];
+            String expectedHint = fixture[2];
             String request = unfold(generator.buildStandaloneRequest(
                     bookingId, "Summary", "Desc",
                     Instant.parse("2026-06-10T10:00:00Z"),
                     Instant.parse("2026-06-10T10:30:00Z"),
                     "App Calendar", "calendar@example.com",
-                    "Host", "host@example.com", "Guest", "guest@example.com", 5, conf(url)));
+                    "Host", "host@example.com", "Guest", "guest@example.com", 5, conf(url, provider)));
             String cancel = unfold(generator.buildStandaloneCancel(
                     bookingId, "Summary", "Desc",
                     Instant.parse("2026-06-10T10:00:00Z"),
                     Instant.parse("2026-06-10T10:30:00Z"),
                     "App Calendar", "calendar@example.com",
-                    "Host", "host@example.com", "Guest", "guest@example.com", 6, conf(url)));
+                    "Host", "host@example.com", "Guest", "guest@example.com", 6, conf(url, provider)));
+            // The link is always surfaced via URL regardless of provider.
             assertTrue(request.contains("URL:" + url));
             assertTrue(cancel.contains("URL:" + url));
-            assertTrue(request.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + url));
-            assertTrue(cancel.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + url));
+            // Only the matching provider hint is emitted; foreign hints must be absent.
+            for (String hint : new String[]{"X-GOOGLE-CONFERENCE", "X-MICROSOFT-SKYPETEAMSMEETINGURL"}) {
+                if (hint.equals(expectedHint)) {
+                    assertTrue(request.contains(hint + ":" + url), provider + " should emit " + hint);
+                    assertTrue(cancel.contains(hint + ":" + url), provider + " should emit " + hint);
+                } else {
+                    assertFalse(request.contains(hint), provider + " must not emit " + hint);
+                    assertFalse(cancel.contains(hint), provider + " must not emit " + hint);
+                }
+            }
         }
-        assertEquals(4, urls.length);
+        assertEquals(4, fixtures.length);
     }
 
     @Test
@@ -260,9 +304,13 @@ class IcsInviteGeneratorTest {
     }
 
     private static ConferenceDetails conf(String joinUrl) {
+        return conf(joinUrl, "UNKNOWN");
+    }
+
+    private static ConferenceDetails conf(String joinUrl, String provider) {
         if (joinUrl == null || joinUrl.isBlank()) {
             return ConferenceDetails.none("test", Instant.now());
         }
-        return new ConferenceDetails("UNKNOWN", joinUrl, null, null, null, java.util.Map.of(), "test", Instant.now());
+        return new ConferenceDetails(provider, joinUrl, null, null, null, java.util.Map.of(), "test", Instant.now());
     }
 }

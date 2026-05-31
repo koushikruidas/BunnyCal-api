@@ -92,6 +92,7 @@ class BookingNotificationServiceTest {
                 "no-reply@example.com",
                 "calendar@example.com",
                 "BunnyCal Calendar",
+                "",
                 14L);
         when(mailSender.createMimeMessage()).thenAnswer(i -> new MimeMessage(Session.getInstance(new Properties())));
         lenient().when(guestCapabilityTokenService.issueToken(any(), any(), eq(BookingActionType.MANAGE_BOOKING), any(), any()))
@@ -425,7 +426,11 @@ class BookingNotificationServiceTest {
 
         String attendeeIcs = unfold(icsBody(attendeeMsg));
         assertTrue(attendeeIcs.contains("LOCATION:" + joinUrl));
-        assertTrue(attendeeIcs.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL:" + joinUrl));
+        // Zoom is a URL-embedded provider, not a native Meet/Teams meeting: the link is
+        // surfaced via LOCATION/URL/DESCRIPTION but NO Google/Teams provider hint is emitted
+        // (a foreign hint causes Outlook to misparse/suppress the invite).
+        assertFalse(attendeeIcs.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
+        assertFalse(attendeeIcs.contains("X-GOOGLE-CONFERENCE"));
         assertTrue(attendeeIcs.contains("Join: " + joinUrl));
         assertTrue(textBody(attendeeMsg).contains("Join the meeting:\n" + joinUrl));
     }

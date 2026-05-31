@@ -229,9 +229,15 @@ booking:
     capability-token-legacy-cutoff: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_LEGACY_CUTOFF:}
   notifications:
     enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
-    from: ${BOOKING_NOTIFICATIONS_FROM:no-reply@logpulse.dev}
+    # From is aligned with the iTIP ORGANIZER identity at send time (Outlook treats
+    # From != ORGANIZER as a foreign invite). Keep this mailbox SPF/DKIM/DMARC-aligned.
+    from: ${BOOKING_NOTIFICATIONS_FROM:calendar@logpulse.dev}
     calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL:calendar@logpulse.dev}
     calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:BunnyCal Calendar}
+    # Debug only: when set to a directory path, the fully rendered outbound MIME
+    # message is written as a .eml file before SES send, for raw cross-client diffing.
+    # Leave empty to disable (no prod impact).
+    debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
 
 draft:
   ttl:
