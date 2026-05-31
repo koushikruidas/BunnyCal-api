@@ -1,55 +1,126 @@
 name: ci-image
 
+# -----------------------------------------------------------------------------
+# CI image pipeline for the BunnyCal backend.
+#
+# Two intentional modes (see DEPLOYMENT.md / README CI section):
+#
+#   1. Push to `main` (or manual dispatch)
+#      → checkout, JDK, cache, tests, docker build, and push an IMMUTABLE
+#        SHA-tagged image only. No semantic version, no `latest`. This proves
+#        every main commit is buildable and gives a deterministic artifact for
+#        debugging — but it is NOT a release.
+#
+#   2. Push a release tag `vX.Y.Z` (e.g. `git tag v1.0.0 && git push origin v1.0.0`)
+#      → the same validation, then validate the semantic version and push:
+#           <repo>:<version>     (e.g. 1.0.0)
+#           <repo>:latest
+#           <repo>:<sha>         (immutable, for rollback/deterministic deploys)
+#
+# Releases are therefore intentional: not every merge ships. Image promotion to
+# production is handled separately (manual) — this workflow does NOT deploy.
+# -----------------------------------------------------------------------------
+
 on:
   push:
     branches: ["main"]
-  pull_request:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+# A newer push to the same ref supersedes an in-flight run, except for tag
+# builds which we never want to cancel (each release tag is unique anyway).
+concurrency:
+  group: ci-image-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Docker Hub repository. Override here if the final org name differs.
+  IMAGE_REPO: banical-cals/bunnycal-api
 
 jobs:
-  test-and-build:
+  build-and-publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 17 + Gradle dependency cache
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          # Caches ~/.gradle/caches and ~/.gradle/wrapper keyed on the build
+          # files, so dependency resolution is not repeated on every run.
+          cache: gradle
 
-      - name: Run tests
+      - name: Run backend tests
         run: ./gradlew --no-daemon test
+
+      # ---- Release-only: derive and validate the semantic version -----------
+      # Runs only for `vX.Y.Z` tag pushes. Strips the leading `v` and validates
+      # the result via scripts/validate-release-version.sh (rejects SNAPSHOT/dev).
+      - name: Validate release version
+        id: version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          raw="${GITHUB_REF_NAME}"          # e.g. v1.0.0
+          version="${raw#v}"                # e.g. 1.0.0
+          chmod +x scripts/validate-release-version.sh
+          scripts/validate-release-version.sh "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
+      # ---- Compute image tags ------------------------------------------------
+      # docker/metadata-action emits:
+      #   - an immutable SHA tag on every run (mandatory for rollbacks)
+      #   - the semantic version + latest ONLY for release tag pushes
+      - name: Extract image metadata (tags + labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/bunnycal-api
+          images: ${{ env.IMAGE_REPO }}
           tags: |
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Docker layer cache via the GitHub Actions cache backend.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published image tags"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+              echo ""
+              echo "**Release build** for version \`${{ steps.version.outputs.version }}\`."
+            else
+              echo ""
+              echo "**CI build** (immutable SHA tag only — not a release)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

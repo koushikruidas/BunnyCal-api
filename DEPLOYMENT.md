@@ -12,11 +12,31 @@
 - Start stack: `docker compose up -d`
 - Check health: `curl http://localhost/actuator/health`
 
-## 3) CI image publishing
-- On pushes to `main`, GitHub Actions runs tests and publishes image to Docker Hub.
-- Required GitHub secrets:
+## 3) CI image publishing (`.github/workflows/ci-image.yml`)
+Releases are intentional — not every merge ships. Two modes:
+
+- **Push to `main`** (or manual `workflow_dispatch`): runs tests, builds the
+  Docker image, and pushes ONLY an immutable short-SHA tag
+  (`banical-cals/bunnycal-api:<sha>`). No semantic version, no `latest`. This is
+  a validated CI artifact, not a release.
+- **Push a release tag `vX.Y.Z`** (`git tag v1.0.0 && git push origin v1.0.0`):
+  runs tests, validates the version via `scripts/validate-release-version.sh`
+  (rejects `-SNAPSHOT` / `dev` / non-semver), then pushes:
+  - `banical-cals/bunnycal-api:1.0.0`  (semantic version — source of truth: the git tag)
+  - `banical-cals/bunnycal-api:latest`
+  - `banical-cals/bunnycal-api:<sha>`  (immutable, for rollback / deterministic deploys)
+
+The workflow fails — and publishes nothing — if tests fail, version validation
+fails, the Docker build fails, or the push fails. Image promotion to production
+is a separate manual step (no CD in this workflow yet).
+
+- Build uses Buildx (`linux/amd64`), Gradle dependency cache, and GitHub Actions
+  Docker layer cache.
+- Required GitHub secrets (use a Docker Hub **access token**, not a password):
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
+- Docker Hub repo is set via the `IMAGE_REPO` env in the workflow
+  (`banical-cals/bunnycal-api`) — change it there if the final org name differs.
 
 ## 4) Production deployment
 - Trigger `deploy-prod` workflow manually and provide image tag (example: `sha-<commit>`).
