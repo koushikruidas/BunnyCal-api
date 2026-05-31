@@ -1,0 +1,28 @@
+name: deploy-prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag (e.g. sha-abc123...)"
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy on Hetzner VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.HETZNER_DEPLOY_PATH }}
+            sed -i.bak "s|^BUNNYCAL_IMAGE=.*|BUNNYCAL_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/bunnycal-api:${{ github.event.inputs.image_tag }}|" .env
+            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}"
+            docker compose pull bunnycal-api
+            docker compose up -d
+            sleep 10
+            curl -fsS https://${{ secrets.APP_DOMAIN }}/actuator/health >/dev/null

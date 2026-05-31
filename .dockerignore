@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gradle
+build
+out
+.idea
+.vscode
+logs
+*.iml
+**/.DS_Store
+docs
+monitoring/grafana
+monitoring/prometheus

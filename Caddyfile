@@ -1,0 +1,11 @@
+{$APP_DOMAIN} {
+  encode gzip
+
+  @health path /actuator/health /actuator/health/*
+  reverse_proxy @health bunnycal-api:8080
+
+  @api path /api/* /auth/* /oauth2/* /integrations/* /public/*
+  reverse_proxy @api bunnycal-api:8080
+
+  respond "Not found" 404
+}
