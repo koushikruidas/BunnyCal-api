@@ -68,7 +68,7 @@ services:
       - bunnycal
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.111.0
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
@@ -86,8 +86,12 @@ services:
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
+    # Internal-only by default: Prometheus is reachable on the Compose network
+    # (e.g. by Grafana at http://prometheus:9090) and is NOT published to the
+    # public internet. Bind to loopback so it is reachable only via an SSH
+    # tunnel to the VM (ssh -L 9090:127.0.0.1:9090 ...).
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       - bunnycal-api
     restart: unless-stopped
@@ -97,15 +101,21 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Credentials come from env vars — fail fast if unset (no admin/admin
+      # fallback). The "?err" form makes `docker compose up` abort with a clear
+      # message when GRAFANA_ADMIN_PASSWORD is missing.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    # Internal-only by default: not published to the public internet. Bind to
+    # loopback so Grafana is reachable only via an SSH tunnel to the VM
+    # (ssh -L 3000:127.0.0.1:3000 ...).
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

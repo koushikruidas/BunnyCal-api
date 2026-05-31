@@ -1,55 +1,281 @@
-calendar:
-  webhook:
-    enabled: true
-    provider:
-      google:
-        enabled: true
-      microsoft:
-        enabled: true
-
 spring:
+  application:
+    name: BunnyCal
+
+  # ---------------------------------------------------------------------------
+  # PRODUCTION profile.
+  #
+  # This profile is merged ON TOP of application.yaml. Everything sensitive or
+  # environment-specific is re-declared here WITHOUT an insecure fallback so the
+  # application FAILS FAST at startup when a required value is missing, instead
+  # of silently booting with a known-weak default.
+  #
+  # Networking uses Docker service names (postgres / redis / otel-collector),
+  # never localhost. All runtime values come from the .env file consumed by
+  # docker-compose.yaml.
+  # ---------------------------------------------------------------------------
+
   datasource:
-    url: ${SPRING_DATASOURCE_URL}
-    username: ${SPRING_DATASOURCE_USERNAME}
-    password: ${SPRING_DATASOURCE_PASSWORD}
+    # Service-name networking inside the Compose network. The full URL is also
+    # injected by docker-compose; this keeps prod correct even if run directly.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/${POSTGRES_DB}}
+    username: ${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:30}
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:5}
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT_MS:5000}
+      # Leak detection is a dev/staging aid; disabled in prod to avoid spurious
+      # WARN noise under sustained load. Re-enable via env if debugging a leak.
+      leak-detection-threshold: ${SPRING_DATASOURCE_HIKARI_LEAK_DETECTION_MS:0}
+      idle-timeout: ${SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT_MS:600000}
+      max-lifetime: ${SPRING_DATASOURCE_HIKARI_MAX_LIFETIME_MS:1800000}
+
   data:
     redis:
-      host: ${SPRING_DATA_REDIS_HOST}
-      port: ${SPRING_DATA_REDIS_PORT}
+      # Docker service name — no localhost in production.
+      host: ${SPRING_DATA_REDIS_HOST:redis}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  mail:
+    host: ${SPRING_MAIL_HOST:email-smtp.ap-south-1.amazonaws.com}
+    port: ${SPRING_MAIL_PORT:587}
+    username: ${AWS_SES_SMTP_USERNAME}
+    password: ${AWS_SES_SMTP_PASSWORD}
+
+  # Spring Boot Docker Compose support is a local-dev convenience only. The
+  # production runtime stack is orchestrated by the top-level docker-compose.yaml.
   docker:
     compose:
       enabled: false
 
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - email
+              - profile
+          microsoft:
+            provider: microsoft
+            client-id: ${MICROSOFT_CLIENT_ID:disabled-microsoft-client-id}
+            client-secret: ${MICROSOFT_CLIENT_SECRET:disabled-microsoft-client-secret}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope:
+              - openid
+              - profile
+              - email
+              - offline_access
+              - User.Read
+              - Calendars.ReadWrite
+              - Calendars.Read
+        provider:
+          microsoft:
+            authorization-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/oauth2/v2.0/authorize
+            token-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/oauth2/v2.0/token
+            user-info-uri: https://graph.microsoft.com/oidc/userinfo
+            jwk-set-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/discovery/v2.0/keys
+            user-name-attribute: sub
+
+jdbc:
+  opentelemetry:
+    analysis:
+      enabled: ${JDBC_OPENTELEMETRY_ANALYSIS_ENABLED:false}
+
 management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,prometheus
-  endpoint:
-    health:
-      show-details: never
+  otlp:
+    metrics:
+      export:
+        # Docker service name — no localhost in production. The collector then
+        # forwards to Prometheus over the internal network.
+        url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://otel-collector:4318/v1/metrics}
+        step: 10s
+        connect-timeout: 2s
+        read-timeout: 5s
+
   metrics:
     export:
       otlp:
-        enabled: false
+        enabled: true
+    tags:
+      application: ${spring.application.name}
 
-springdoc:
-  api-docs:
-    enabled: false
-  swagger-ui:
-    enabled: false
+  # Prometheus scrapes /actuator/prometheus over the internal Docker network
+  # (see monitoring/prometheus/prometheus.yml → target bunnycal-api:8080). That
+  # endpoint is therefore exposed on the app port, but it is NEVER routed by
+  # Caddy — only /actuator/health and the public API paths are. So metrics
+  # remain internal-only. Override the list via env if you need to narrow it
+  # further.
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,prometheus}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
 
 jwt:
+  # Fail fast: no insecure fallback in production.
   secret: ${JWT_SECRET}
+  expiration: ${JWT_EXPIRATION:3600000}
+
+auth:
+  access-token:
+    cookie-fallback-enabled: ${AUTH_ACCESS_TOKEN_COOKIE_FALLBACK_ENABLED:false}
+  refresh-token:
+    bytes: ${REFRESH_TOKEN_BYTES:48}
+    ttl-days: ${REFRESH_TOKEN_TTL_DAYS:1}
+
+logging:
+  level:
+    org.flywaydb: INFO
 
 calendar:
+  sync:
+    incremental:
+      enabled: ${CALENDAR_SYNC_INCREMENTAL_ENABLED:true}
+      shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:false}
+      stale-cursor-max-age-hours: ${CALENDAR_SYNC_INCREMENTAL_STALE_CURSOR_MAX_AGE_HOURS:168}
   webhook:
+    enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
+    auth:
+      require-signature: ${CALENDAR_WEBHOOK_REQUIRE_SIGNATURE:true}
+      max-skew-seconds: ${CALENDAR_WEBHOOK_MAX_SKEW_SECONDS:300}
+    replay-capture:
+      enabled: ${CALENDAR_WEBHOOK_REPLAY_CAPTURE_ENABLED:true}
+    provider:
+      google:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_GOOGLE_ENABLED:true}
+        address: ${GOOGLE_WEBHOOK:https://api.bunnycal.io/integrations/calendar/webhooks/google}
+      microsoft:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_ENABLED:true}
+        address: ${MICROSOFT_WEBHOOK:https://api.bunnycal.io/integrations/calendar/webhooks/microsoft}
+        ttl-seconds: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_TTL_SECONDS:7200}
+    # Fail fast: no insecure fallback in production.
     shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET}
+  google:
+    diagnostics:
+      enabled: ${CALENDAR_GOOGLE_DIAGNOSTICS_ENABLED:false}
   security:
+    # Fail fast: no insecure fallback in production.
     encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64}
     oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET}
 
+sync:
+  projection:
+    accept-ambiguous: ${SYNC_PROJECTION_ACCEPT_AMBIGUOUS:false}
+  reconcile:
+    external-lifecycle:
+      enabled: ${SYNC_RECONCILE_EXTERNAL_LIFECYCLE_ENABLED:true}
+  invariants:
+    fail-fast: ${SYNC_INVARIANTS_FAIL_FAST:false}
+
+google:
+  oauth:
+    # Fail fast: real Google OAuth credentials are required in production.
+    client-id: ${GOOGLE_CLIENT_ID}
+    client-secret: ${GOOGLE_CLIENT_SECRET}
+    redirect-uri: ${GOOGLE_REDIRECT_URI:https://api.bunnycal.io/integrations/calendar/google/callback}
+    frontend-base-url: ${FRONTEND_BASE_URL:https://bunnycal.io}
+    frontend-success-path: ${GOOGLE_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${GOOGLE_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:}
+    scopes:
+      - openid
+      - email
+      - profile
+      - https://www.googleapis.com/auth/calendar.events
+      - https://www.googleapis.com/auth/calendar.readonly
+
+microsoft:
+  oauth:
+    client-id: ${MICROSOFT_CLIENT_ID:}
+    client-secret: ${MICROSOFT_CLIENT_SECRET:}
+    tenant-id: ${MICROSOFT_TENANT_ID:common}
+    redirect-uri: ${MICROSOFT_REDIRECT_URI:https://api.bunnycal.io/integrations/calendar/microsoft/callback}
+    frontend-base-url: ${FRONTEND_BASE_URL:https://bunnycal.io}
+    frontend-success-path: ${MICROSOFT_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${MICROSOFT_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${MICROSOFT_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${MICROSOFT_FRONTEND_ERROR_REDIRECT:}
+    scopes:
+      - openid
+      - profile
+      - email
+      - offline_access
+      - User.Read
+      - Calendars.ReadWrite
+      - Calendars.Read
+
 app:
+  public-base-url: ${APP_PUBLIC_BASE_URL:https://bunnycal.io}
   security:
     cors:
-      allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS}
+      # No localhost origins in production.
+      allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:https://bunnycal.io}
+  docs:
+    # API docs stay private in production unless explicitly enabled.
+    public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
+
+booking:
+  confirm:
+    async-calendar:
+      enabled: ${BOOKING_CONFIRM_ASYNC_CALENDAR_ENABLED:true}
+    shadow-compare:
+      enabled: ${BOOKING_CONFIRM_SHADOW_COMPARE_ENABLED:false}
+  public:
+    require-capability-token: ${BOOKING_PUBLIC_REQUIRE_CAPABILITY_TOKEN:true}
+    capability-token-ttl-days: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_TTL_DAYS:14}
+    capability-token-legacy-cutoff: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_LEGACY_CUTOFF:}
+  notifications:
+    enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
+    # From is aligned with the iTIP ORGANIZER identity at send time (Outlook treats
+    # From != ORGANIZER as a foreign invite). Keep this mailbox SPF/DKIM/DMARC-aligned.
+    from: ${BOOKING_NOTIFICATIONS_FROM}
+    calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL}
+    calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:BunnyCal Calendar}
+    # Debug-only .eml dumping is disabled in production by leaving this empty.
+    debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:}
+
+draft:
+  ttl:
+    days: ${DRAFT_TTL_DAYS:21}
+  reaper:
+    enabled: ${DRAFT_REAPER_ENABLED:true}
+    interval-ms: ${DRAFT_REAPER_INTERVAL_MS:60000}
+
+zoom:
+  oauth:
+    client-id: ${ZOOM_CLIENT_ID:}
+    client-secret: ${ZOOM_CLIENT_SECRET:}
+    redirect-uri: ${ZOOM_REDIRECT_URI:https://api.bunnycal.io/integrations/conferencing/zoom/callback}
+    frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:https://bunnycal.io/dashboard/integrations}
+    frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:https://bunnycal.io/calendar-error}
+
+kind: Application
+
+server:
+  forward-headers-strategy: framework
+  shutdown: graceful
+  error:
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
