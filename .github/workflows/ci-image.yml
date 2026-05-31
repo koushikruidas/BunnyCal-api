@@ -35,7 +35,7 @@ concurrency:
 
 env:
   # Docker Hub repository. Override here if the final org name differs.
-  IMAGE_REPO: banical-cals/bunnycal-api
+  IMAGE_REPO: koushikruidas/bunnycal-api
 
 jobs:
   build-and-publish:
