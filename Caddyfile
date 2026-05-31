@@ -1,0 +1,42 @@
+# BunnyCal API reverse proxy.
+#
+# Caddy terminates TLS and issues/renews certificates automatically for
+# $APP_DOMAIN (api.bunnycal.io in prod) via Let's Encrypt. Only the health
+# probe and the public API surface are proxied; everything else — including
+# the actuator metrics/prometheus endpoints — returns 404 and never reaches
+# the application from the public internet.
+
+{
+	# Operational hardening: drop the Server banner and disable the admin API
+	# (no local control socket exposed inside the container).
+	servers {
+		metrics
+	}
+	admin off
+}
+
+{$APP_DOMAIN} {
+	encode gzip
+
+	# Baseline security headers applied to every response.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Don't leak which server/framework is behind the proxy.
+		-Server
+		-X-Powered-By
+	}
+
+	# Health probe only — NOT the rest of /actuator (metrics, prometheus, env...).
+	@health path /actuator/health /actuator/health/*
+	reverse_proxy @health bunnycal-api:8080
+
+	# Public API surface.
+	@api path /api/* /auth/* /oauth2/* /login/oauth2/* /integrations/* /public/*
+	reverse_proxy @api bunnycal-api:8080
+
+	# Everything else (including /actuator/*, /actuator/prometheus) is rejected.
+	respond "Not found" 404
+}
