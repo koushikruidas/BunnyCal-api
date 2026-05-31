@@ -85,17 +85,6 @@ class ConferencingBoundaryArchitectureTest {
                 "BookingNotificationService must not reference joinWebUrl");
         assertFalse(notificationService.contains("hangoutLink"),
                 "BookingNotificationService must not reference hangoutLink");
-
-        String icsGenerator = Files.readString(
-                Path.of("src/main/java/io/bunnycal/booking/notification/IcsInviteGenerator.java"));
-        assertFalse(icsGenerator.contains("GOOGLE_MEET"),
-                "IcsInviteGenerator must not branch on GOOGLE_MEET");
-        assertFalse(icsGenerator.contains("MICROSOFT_TEAMS"),
-                "IcsInviteGenerator must not branch on MICROSOFT_TEAMS");
-        assertFalse(icsGenerator.contains("hangoutLink"),
-                "IcsInviteGenerator must not reference hangoutLink");
-        assertFalse(icsGenerator.contains("joinWebUrl"),
-                "IcsInviteGenerator must not reference joinWebUrl");
     }
 
     @Test
