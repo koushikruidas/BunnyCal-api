@@ -1,0 +1,66 @@
+{
+  "id": null,
+  "uid": "infra-health",
+  "title": "Infrastructure Health",
+  "tags": ["BunnyCal", "infra"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "JVM Heap Used",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "heap used" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Process CPU",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "process_cpu_usage", "legendFormat": "cpu usage" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM Memory Committed",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "sum(jvm_memory_committed_bytes)", "legendFormat": "committed" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "DB Pool Utilization",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "hikaricp_connections_active", "legendFormat": "active" },
+        { "expr": "hikaricp_connections_pending", "legendFormat": "pending" },
+        { "expr": "hikaricp_connections_max", "legendFormat": "max" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Thread Pool Saturation",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "jvm_threads_live_threads", "legendFormat": "live threads" },
+        { "expr": "executor_active_threads", "legendFormat": "executor active" },
+        { "expr": "executor_queued_tasks", "legendFormat": "executor queued" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Request Latency",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP Error Rate",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [{ "expr": "sum(rate(http_server_requests_seconds_count{status=~\"5..|4..\"}[5m]))", "legendFormat": "errors/s" }]
+    }
+  ]
+}

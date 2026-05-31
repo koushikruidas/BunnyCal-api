@@ -1,0 +1,72 @@
+spring:
+  profiles:
+    active: test
+
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+
+  task:
+    scheduling:
+      enabled: false   # 🔥 CRITICAL: disables @Scheduled (fixes your flakiness)
+
+  docker:
+    compose:
+      enabled: false
+
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: test
+            client-secret: test
+
+management:
+  metrics:
+    export:
+      otlp:
+        enabled: false   # avoid external calls in tests
+
+jwt:
+  secret: test-secret-key-which-is-long-enough-for-tests
+  expiration: 3600000
+
+google:
+  oauth:
+    client-id: test-client-id
+    client-secret: test-client-secret
+    redirect-uri: http://localhost:8080/integrations/calendar/google/callback
+    frontend-success-redirect: http://localhost:5173/calendar-connected
+    frontend-error-redirect: http://localhost:5173/calendar-error
+
+auth:
+  refresh-token:
+    bytes: 48
+    ttl-days: 1
+
+calendar:
+  provider:
+    mode: in-memory
+  sync:
+    incremental:
+      enabled: false
+      shadow-mode: true
+  webhook:
+    auth:
+      require-signature: false
+    replay-capture:
+      enabled: true
+
+sync:
+  projection:
+    accept-ambiguous: true
+  invariants:
+    fail-fast: true

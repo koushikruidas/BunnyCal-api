@@ -1,0 +1,62 @@
+{
+  "id": null,
+  "uid": "provider-health",
+  "title": "Provider Health",
+  "tags": ["BunnyCal", "provider"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Google API Latency",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(provider_latency_bucket{provider=~\"google|GOOGLE\"}[5m])) by (le, provider))", "legendFormat": "{{provider}} p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(calendar_sync_latency_ms_bucket{provider=~\"google|GOOGLE\"}[5m])) by (le, provider))", "legendFormat": "{{provider}} sync p95" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Provider Error Rates",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "sum by (provider, result) (rate(calendar_sync_attempts_total{result=~\"RETRYABLE_FAILURE|PERMANENT_FAILURE\"}[5m]))", "legendFormat": "{{provider}} {{result}}" },
+        { "expr": "sum(rate(sync_provider_failure_total[5m]))", "legendFormat": "sync.provider.failure/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Token Refresh Success/Failure",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(token_refresh_success_count[5m]))", "legendFormat": "success/s" },
+        { "expr": "sum(rate(token_refresh_failures_count[5m]))", "legendFormat": "failure/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate Limit Responses",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(calendar_sync_retries_total{error_code=\"RATE_LIMIT\"}[5m]))", "legendFormat": "sync rate-limit retry/s" },
+        { "expr": "sum(rate(reconciliation_conflict_total{reason=\"RATE_LIMIT\"}[5m]))", "legendFormat": "reconcile RATE_LIMIT/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "State Transition Visibility",
+      "description": "Simple lifecycle/sync transition counters for created->confirmed/cancelled/rescheduled and sync reconciliation behavior.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(booking_completed_total[5m]))", "legendFormat": "booking terminal/s" },
+        { "expr": "sum(rate(booking_cancellation_total[5m]))", "legendFormat": "booking cancelled/s" },
+        { "expr": "sum(rate(sync_external_update_convergence_total[5m]))", "legendFormat": "external update convergence/s" },
+        { "expr": "sum(rate(sync_external_terminal_convergence_total[5m]))", "legendFormat": "terminal convergence/s" },
+        { "expr": "sum(rate(sync_reconcile_drift_detected_total[5m]))", "legendFormat": "reconcile drift/s" }
+      ]
+    }
+  ]
+}

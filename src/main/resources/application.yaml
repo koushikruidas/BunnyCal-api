@@ -1,17 +1,63 @@
 spring:
   application:
-    name: easySchedule
+    name: BunnyCal
 
   datasource:
     url: jdbc:postgresql://localhost:5432/mydatabase
     username: myuser
     password: secret
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # Pool sizing — budget for the busiest concurrent paths per JVM:
+      #   - public booking / availability request threads: ~Tomcat threads (default 200)
+      #     but each request typically holds at most one connection, briefly.
+      #   - OutboxWorker poll (1s interval, REQUIRES_NEW tx): 1
+      #   - BookingSyncWorkerScheduler (per-job REQUIRES_NEW after P1): up to batch-size
+      #     concurrent at the worst case, but the scheduler serializes through
+      #     processPending → so practically 1 at a time per pod.
+      #   - CalendarSyncScheduler (per-connection REQUIRES_NEW after P1): 1 at a time.
+      #   - BookingSyncReconciler (per-job REQUIRES_NEW after P1): 1 at a time.
+      #   - IdempotencyService uses up to 3 nested tx per request (REQUIRES_NEW +
+      #     REQUIRED + REQUIRES_NEW for failure caching) → budget 3 per concurrent
+      #     POST /api/bookings or /public/.../book.
+      # 30 is a generous default for a single 2-vCPU pod. Override via env for
+      # larger pods or when scaling Tomcat thread count.
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:30}
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:5}
+      # Fail fast when the pool is exhausted instead of queuing request threads
+      # indefinitely. The default (30s) hides incidents — 5s surfaces them as
+      # 500s with a clear "could not obtain connection" stack.
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT_MS:5000}
+      # Catch leaked connections in dev/staging. 30s is well above any legitimate
+      # transaction after P1 (per-job sync tx ≤ ~2s). Logged as WARN, not fatal.
+      leak-detection-threshold: ${SPRING_DATASOURCE_HIKARI_LEAK_DETECTION_MS:30000}
+      # Close idle connections after 10 min so the pool shrinks back to
+      # minimum-idle during quiet periods.
+      idle-timeout: ${SPRING_DATASOURCE_HIKARI_IDLE_TIMEOUT_MS:600000}
+      # Validate connections older than 30 min to avoid silently using stale
+      # ones after Postgres-side reconfiguration or transient network blips.
+      max-lifetime: ${SPRING_DATASOURCE_HIKARI_MAX_LIFETIME_MS:1800000}
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
 
   jpa:
     hibernate:
-      ddl-auto: create
-    show-sql: true
+      ddl-auto: none
+    show-sql: false
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  mail:
+    host: email-smtp.ap-south-1.amazonaws.com
+    port: 587
+    username: ${AWS_SES_SMTP_USERNAME}
+    password: ${AWS_SES_SMTP_PASSWORD}
 
   docker:
     compose:
@@ -27,9 +73,185 @@ spring:
             scope:
               - email
               - profile
+          microsoft:
+            provider: microsoft
+            client-id: ${MICROSOFT_CLIENT_ID:disabled-microsoft-client-id}
+            client-secret: ${MICROSOFT_CLIENT_SECRET:disabled-microsoft-client-secret}
+            authorization-grant-type: authorization_code
+            redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+            scope:
+              - openid
+              - profile
+              - email
+              - offline_access
+              - User.Read
+              - Calendars.ReadWrite
+              - Calendars.Read
+        provider:
+          microsoft:
+            authorization-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/oauth2/v2.0/authorize
+            token-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/oauth2/v2.0/token
+            user-info-uri: https://graph.microsoft.com/oidc/userinfo
+            jwk-set-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/discovery/v2.0/keys
+            user-name-attribute: sub
+
+jdbc:
+  opentelemetry:
+    # Prometheus requires stable tag keys per metric name. Query analysis can
+    # conditionally emit db.collection.name, which breaks jdbc_query_* schema.
+    # Keep JDBC metrics enabled but disable conditional query analysis tags.
+    analysis:
+      enabled: ${JDBC_OPENTELEMETRY_ANALYSIS_ENABLED:false}
+
+management:
+  otlp:
+    metrics:
+      export:
+        url: http://localhost:4318/v1/metrics   # change to http://otel-collector:4318 if app runs in Docker
+        step: 10s
+        connect-timeout: 2s
+        read-timeout: 5s
+
+  metrics:
+    export:
+      otlp:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
 
 jwt:
   secret: ${JWT_SECRET:my-super-long-secret-key-which-is-at-least-32-characters}
   expiration: ${JWT_EXPIRATION:3600000}
 
+auth:
+  access-token:
+    cookie-fallback-enabled: ${AUTH_ACCESS_TOKEN_COOKIE_FALLBACK_ENABLED:false}
+  refresh-token:
+    bytes: ${REFRESH_TOKEN_BYTES:48}
+    ttl-days: ${REFRESH_TOKEN_TTL_DAYS:1}
 
+logging:
+  level:
+    org.flywaydb: INFO
+
+calendar:
+  sync:
+    incremental:
+      enabled: ${CALENDAR_SYNC_INCREMENTAL_ENABLED:true}
+      shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:false}
+      stale-cursor-max-age-hours: ${CALENDAR_SYNC_INCREMENTAL_STALE_CURSOR_MAX_AGE_HOURS:168}
+  webhook:
+    enabled: ${CALENDAR_WEBHOOK_ENABLED:false}
+    auth:
+      require-signature: ${CALENDAR_WEBHOOK_REQUIRE_SIGNATURE:true}
+      max-skew-seconds: ${CALENDAR_WEBHOOK_MAX_SKEW_SECONDS:300}
+    replay-capture:
+      enabled: ${CALENDAR_WEBHOOK_REPLAY_CAPTURE_ENABLED:true}
+    provider:
+      google:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_GOOGLE_ENABLED:true}
+        address: ${GOOGLE_WEBHOOK:https://dvbsf-203-163-244-176.run.pinggy-free.link/integrations/calendar/webhooks/google}
+      microsoft:
+        enabled: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_ENABLED:true}
+        address: ${MICROSOFT_WEBHOOK:http://localhost:8080/integrations/calendar/webhooks/microsoft}
+        ttl-seconds: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_TTL_SECONDS:7200}
+    shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET:askjdfhiasuhjuisdfjhfiwuehsjdfbkawdkfhaisuebfkjadsfhailsduh11!#%kjdfha@+=}
+  google:
+    diagnostics:
+      enabled: ${CALENDAR_GOOGLE_DIAGNOSTICS_ENABLED:true}
+  security:
+    encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXphYmNkZWY=}
+    oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET:calendar-oauth-state-secret-change-me}
+
+sync:
+  projection:
+    accept-ambiguous: ${SYNC_PROJECTION_ACCEPT_AMBIGUOUS:false}
+  reconcile:
+    external-lifecycle:
+      enabled: ${SYNC_RECONCILE_EXTERNAL_LIFECYCLE_ENABLED:true}
+  invariants:
+    fail-fast: ${SYNC_INVARIANTS_FAIL_FAST:false}
+
+google:
+  oauth:
+    client-id: ${GOOGLE_CLIENT_ID:}
+    client-secret: ${GOOGLE_CLIENT_SECRET:}
+    redirect-uri: ${GOOGLE_REDIRECT_URI:http://localhost:8080/integrations/calendar/google/callback}
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+    frontend-success-path: ${GOOGLE_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${GOOGLE_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${GOOGLE_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${GOOGLE_FRONTEND_ERROR_REDIRECT:}
+    scopes:
+      - openid
+      - email
+      - profile
+      - https://www.googleapis.com/auth/calendar.events
+      - https://www.googleapis.com/auth/calendar.readonly
+
+microsoft:
+  oauth:
+    client-id: ${MICROSOFT_CLIENT_ID:}
+    client-secret: ${MICROSOFT_CLIENT_SECRET:}
+    tenant-id: ${MICROSOFT_TENANT_ID:common}
+    redirect-uri: ${MICROSOFT_REDIRECT_URI:http://localhost:8080/integrations/calendar/microsoft/callback}
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+    frontend-success-path: ${MICROSOFT_FRONTEND_SUCCESS_PATH:/dashboard/integrations}
+    frontend-error-path: ${MICROSOFT_FRONTEND_ERROR_PATH:/calendar-error}
+    frontend-success-redirect: ${MICROSOFT_FRONTEND_SUCCESS_REDIRECT:}
+    frontend-error-redirect: ${MICROSOFT_FRONTEND_ERROR_REDIRECT:}
+    scopes:
+      - openid
+      - profile
+      - email
+      - offline_access
+      - User.Read
+      - Calendars.ReadWrite
+      - Calendars.Read
+
+app:
+  public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
+
+booking:
+  confirm:
+    async-calendar:
+      enabled: ${BOOKING_CONFIRM_ASYNC_CALENDAR_ENABLED:true}
+    shadow-compare:
+      enabled: ${BOOKING_CONFIRM_SHADOW_COMPARE_ENABLED:false}
+  public:
+    require-capability-token: ${BOOKING_PUBLIC_REQUIRE_CAPABILITY_TOKEN:true}
+    capability-token-ttl-days: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_TTL_DAYS:14}
+    capability-token-legacy-cutoff: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_LEGACY_CUTOFF:}
+  notifications:
+    enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
+    # From is aligned with the iTIP ORGANIZER identity at send time (Outlook treats
+    # From != ORGANIZER as a foreign invite). Keep this mailbox SPF/DKIM/DMARC-aligned.
+    from: ${BOOKING_NOTIFICATIONS_FROM:calendar@logpulse.dev}
+    calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL:calendar@logpulse.dev}
+    calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:BunnyCal Calendar}
+    # Debug only: when set to a directory path, the fully rendered outbound MIME
+    # message is written as a .eml file before SES send, for raw cross-client diffing.
+    # Leave empty to disable (no prod impact).
+    debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
+
+draft:
+  ttl:
+    days: ${DRAFT_TTL_DAYS:21}
+  reaper:
+    enabled: ${DRAFT_REAPER_ENABLED:false}
+    interval-ms: ${DRAFT_REAPER_INTERVAL_MS:60000}
+
+zoom:
+  oauth:
+    client-id: ${ZOOM_CLIENT_ID:}
+    client-secret: ${ZOOM_CLIENT_SECRET:}
+    redirect-uri: ${ZOOM_REDIRECT_URI:http://localhost:8080/integrations/conferencing/zoom/callback}
+    frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:http://localhost:5173/dashboard/integrations}
+    frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:http://localhost:5173/calendar-error}
+
+kind: Application

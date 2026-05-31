@@ -1,0 +1,744 @@
+Booking Cancellation & External Synchronization Architecture
+Production-Grade Lifecycle Management Design
+
+1. Overview
+BunnyCal supports multiple booking lifecycle mutation paths:
+* authenticated host cancellation
+* anonymous guest cancellation
+* external provider synchronization
+* reconciliation repair workflows
+* future workflow automation
+* policy enforcement actions
+* automated lifecycle transitions
+Although lifecycle mutations originate from different actors and systems, all mutations converge into a single authoritative domain boundary:
+BookingAggregate
+This architecture is intentionally designed around:
+* aggregate ownership
+* transactional consistency
+* asynchronous orchestration
+* eventual consistency
+* replay-safe workflows
+* deterministic reconciliation
+* operational resilience
+* horizontal scalability
+
+2. Architectural Goals
+The system must provide:
+* unified lifecycle semantics
+* deterministic aggregate transitions
+* replay-safe distributed workflows
+* reliable asynchronous orchestration
+* provider reconciliation safety
+* scalable background processing
+* operational observability
+* auditability
+* secure anonymous guest management
+* future extensibility
+
+3. Non-Goals
+The system intentionally does NOT guarantee:
+* distributed ACID transactions
+* exactly-once delivery
+* globally ordered events
+* immediate provider convergence
+* perfect webhook reliability
+* provider-side causal ordering
+* real-time synchronization guarantees
+External calendar providers are treated as:
+eventually consistent distributed systems
+
+4. Core Architectural Principles
+
+4.1 Booking Aggregate Is the Sole Lifecycle Authority
+ALL lifecycle mutations MUST execute through:
+
+BookingAggregate
+
+No external system may directly mutate lifecycle state.
+This includes:
+* controllers
+* workers
+* reconciliation jobs
+* webhook handlers
+* provider adapters
+* repair pipelines
+Valid mutations include:
+
+cancelByHost()
+cancelByGuest()
+cancelExternally()
+reschedule()
+markNoShow()
+
+This guarantees:
+* invariant enforcement
+* concurrency correctness
+* deterministic transitions
+* replay safety
+* centralized lifecycle semantics
+
+4.2 Separation of Responsibilities
+Aggregate Layer
+Responsible for:
+* lifecycle invariants
+* legal state transitions
+* aggregate versioning
+* domain event generation
+
+Application Service Layer
+Responsible for:
+* authorization
+* orchestration
+* aggregate loading
+* transaction management
+* command coordination
+Example:
+
+BookingCancellationApplicationService
+
+
+Workflow / Integration Layer
+Responsible for:
+* provider synchronization
+* notifications
+* retries
+* reconciliation
+* analytics
+* async orchestration
+
+5. Aggregate Model
+
+5.1 Booking Aggregate Schema
+
+bookings
+---------
+id
+status
+version
+aggregate_sequence
+cancelled_by
+cancelled_at
+cancellation_reason_code
+cancellation_reason_text
+created_at
+updated_at
+
+
+5.2 Integration State Separation
+Provider synchronization metadata MUST NOT live inside the aggregate.
+Operational integration state belongs in separate infrastructure tables.
+Example:
+
+booking_provider_links
+----------------------
+booking_id
+provider
+provider_event_id
+calendar_id
+created_at
+
+
+booking_provider_sync_state
+----------------------------
+booking_id
+provider
+last_provider_update_at
+last_sync_attempt_at
+sync_status
+sync_failure_reason
+sync_attempts
+
+This separation prevents infrastructure concerns from polluting domain state.
+
+6. Aggregate State Machine
+The lifecycle state machine MUST be explicit and deterministic.
+
+6.1 Supported States
+
+PENDING
+CONFIRMED
+CANCELLED_BY_HOST
+CANCELLED_BY_GUEST
+CANCELLED_EXTERNALLY
+RESCHEDULED
+NO_SHOW
+
+
+6.2 Legal State Transitions
+Current State	Command	Result
+PENDING	confirm	CONFIRMED
+CONFIRMED	cancelByHost	CANCELLED_BY_HOST
+CONFIRMED	cancelByGuest	CANCELLED_BY_GUEST
+CONFIRMED	cancelExternally	CANCELLED_EXTERNALLY
+CONFIRMED	reschedule	RESCHEDULED
+CONFIRMED	markNoShow	NO_SHOW
+RESCHEDULED	cancelByHost	CANCELLED_BY_HOST
+RESCHEDULED	cancelByGuest	CANCELLED_BY_GUEST
+CANCELLED_*	any cancellation	NO-OP
+NO_SHOW	cancellation	REJECTED
+6.3 Invalid Transition Behavior
+Invalid transitions MUST:
+* return deterministic domain errors
+* emit NO domain events
+* trigger NO side effects
+Example:
+
+NO_SHOW -> cancelByGuest()
+
+Result:
+
+BookingAlreadyClosedException
+
+
+7. Aggregate Concurrency Model
+
+7.1 Optimistic Concurrency
+All aggregate mutations use optimistic locking.
+Example:
+
+UPDATE bookings
+SET version = version + 1
+WHERE id = ?
+AND version = ?
+
+
+7.2 Aggregate Sequence
+Every successful lifecycle mutation increments:
+
+aggregate_sequence
+
+The sequence is monotonic per aggregate.
+Purpose:
+* stale event rejection
+* replay protection
+* workflow ordering
+* reconciliation safety
+
+7.3 Stale Workflow Rejection
+Workers MUST reject stale operations.
+Rule:
+
+incoming_sequence < current_aggregate_sequence
+→ reject operation
+
+Example:
+Event	Sequence
+cancel booking	10
+delayed reschedule retry	9
+Result:
+
+retry ignored as stale
+
+
+8. Transaction Boundaries
+
+8.1 Strong Consistency Zone
+The following operations execute atomically:
+1. load aggregate
+2. validate invariants
+3. mutate aggregate
+4. increment version
+5. increment aggregate_sequence
+6. persist domain event
+7. insert outbox event
+8. commit transaction
+These operations MUST occur in one database transaction.
+
+8.2 Eventual Consistency Zone
+The following operations are asynchronous:
+* provider synchronization
+* email delivery
+* ICS delivery
+* analytics
+* reminder invalidation
+* webhook reconciliation
+
+9. Transaction Isolation Requirements
+The system assumes:
+
+READ COMMITTED
+
+with optimistic concurrency enforcement.
+The architecture intentionally avoids:
+
+SERIALIZABLE
+
+due to scalability costs.
+Correctness relies on:
+* version checks
+* aggregate_sequence checks
+* idempotent workflows
+NOT database-level serialization.
+
+10. Domain Events
+
+10.1 Event Types
+
+BookingCreated
+BookingConfirmed
+BookingCancelledByHost
+BookingCancelledByGuest
+BookingCancelledExternally
+BookingRescheduled
+BookingNoShowMarked
+BookingProviderSyncFailed
+
+
+10.2 Immutable Event History
+
+booking_events
+---------------
+id
+booking_id
+aggregate_sequence
+event_type
+actor_type
+actor_id
+command_id
+correlation_id
+causation_id
+payload
+created_at
+
+Purpose:
+* auditability
+* analytics
+* replay support
+* incident recovery
+* forensic debugging
+
+11. Command Metadata
+Every lifecycle command MUST contain:
+
+command_id
+correlation_id
+causation_id
+
+Purpose:
+* distributed tracing
+* replay detection
+* retry correlation
+* workflow debugging
+
+12. Transactional Outbox Architecture
+
+12.1 Outbox Schema
+
+outbox_events
+--------------
+id
+aggregate_id
+aggregate_type
+aggregate_sequence
+event_type
+payload
+status
+attempts
+next_retry_at
+failure_reason
+created_at
+locked_at
+locked_by
+
+
+12.2 Delivery Semantics
+Outbox guarantees:
+at-least-once delivery
+Consumers MUST therefore be idempotent.
+
+12.3 Ordering Guarantees
+Ordering is guaranteed ONLY:
+
+per aggregate
+
+Global ordering is intentionally unsupported.
+
+12.4 Dispatcher Leasing Strategy
+Workers claim events using:
+
+FOR UPDATE SKIP LOCKED
+
+This prevents duplicate dispatcher execution.
+
+12.5 Poison Event Isolation
+Failed events exceeding retry thresholds MUST move into:
+
+dead_letter_queue
+
+Dead-lettered events require operational inspection.
+
+13. Idempotency Strategy
+ALL commands and async workflows MUST be idempotent.
+
+13.1 Command Idempotency
+Duplicate cancellation requests MUST:
+* return success
+* emit NO duplicate events
+* trigger NO duplicate side effects
+
+13.2 Notification Deduplication
+Notifications MUST use semantic deduplication keys.
+Example:
+
+(notification_type, booking_id, aggregate_sequence)
+
+This prevents:
+* duplicate emails
+* duplicate reminders
+* duplicate ICS invalidation
+
+13.3 Webhook Deduplication
+Webhook ingestion MUST enforce uniqueness:
+
+(provider, provider_event_id)
+UNIQUE
+
+Duplicate webhook deliveries MUST become no-ops.
+
+14. Authenticated Host Cancellation
+
+14.1 Authorization Model
+Authentication:
+
+JWT Authentication
+
+Authorization:
+* host owns booking
+* host owns event type
+* host owns provider connection
+
+14.2 API
+
+POST /api/bookings/{bookingId}/cancel
+
+
+14.3 Flow
+
+Dashboard UI
+    ↓
+Authenticated Controller
+    ↓
+BookingCancellationApplicationService
+    ↓
+BookingAggregate.cancelByHost()
+    ↓
+Persist Transaction
+    ↓
+Insert Outbox Event
+    ↓
+Commit
+
+
+15. Anonymous Guest Cancellation
+
+15.1 Authorization Model
+Guests are authorized via:
+capability-based booking tokens
+NOT authenticated accounts.
+
+15.2 Token Requirements
+Tokens MUST be:
+* cryptographically random
+* opaque
+* revocable
+* high entropy
+* time-bound
+
+15.3 Token Schema
+
+booking_action_tokens
+----------------------
+id
+booking_id
+token_hash
+action_scope
+expires_at
+used_at
+revoked
+created_at
+
+
+15.4 Action Scopes
+
+CANCEL_ONLY
+RESCHEDULE_ONLY
+MANAGE_BOOKING
+
+
+15.5 Security Requirements
+Anonymous flows MUST support:
+* rate limiting
+* brute-force protection
+* replay detection
+* anomaly detection
+* token expiration
+* token revocation
+
+15.6 UX Rule
+Management links MUST NOT execute destructive actions immediately.
+Preferred flow:
+
+Email Link
+    ↓
+Manage Booking Page
+    ↓
+Explicit Confirmation
+    ↓
+Cancellation
+
+
+16. External Provider Synchronization
+
+16.1 Synchronization Philosophy
+Provider synchronization is treated as:
+probabilistic reconciliation
+NOT immediate consistency.
+
+16.2 Webhook Handler Rules
+Webhook handlers MAY:
+* validate signatures
+* validate replay windows
+* enqueue sync jobs
+* persist reconciliation tasks
+Webhook handlers MUST NOT:
+* mutate aggregates directly
+* execute heavy reconciliation
+* send notifications inline
+
+16.3 Synchronization Flow
+
+Provider Webhook
+    ↓
+Webhook Validation
+    ↓
+Persist Sync Job
+    ↓
+Return 200
+    ↓
+Background Sync Processor
+    ↓
+Provider Reconciliation
+    ↓
+BookingCancellationApplicationService
+    ↓
+BookingAggregate.cancelExternally()
+
+
+17. Reconciliation Conflict Resolution
+Reconciliation MUST follow deterministic precedence rules.
+
+17.1 Conflict Matrix
+Scenario	Winner
+Internal cancellation vs stale provider state	Internal
+Duplicate provider webhook	Ignore duplicate
+Delayed provider retry	Reject as stale
+Provider deletion after confirmation	External cancellation
+Internal reschedule supersedes old provider state	Internal
+Missing provider event	Repair sync workflow
+17.2 Stale Reconciliation Rejection
+Workers MUST compare:
+
+incoming_sequence
+vs
+current_aggregate_sequence
+
+Older operations MUST be rejected.
+
+18. Worker Architecture
+
+18.1 Outbox Dispatcher
+Responsible ONLY for:
+* reliable event publication
+Dispatcher MUST NOT contain business logic.
+
+18.2 Specialized Workers
+Provider Sync Worker
+Responsible for:
+* provider API writes
+* retries
+* reconciliation
+* repair sync
+
+Notification Worker
+Responsible for:
+* email delivery
+* ICS generation
+* reminder invalidation
+
+Analytics Worker
+Responsible for:
+* reporting
+* metrics
+* aggregation
+
+19. Retry Strategy
+All async systems MUST support:
+* exponential backoff
+* retry exhaustion
+* DLQ routing
+* poison message isolation
+* replay-safe retries
+
+19.1 Retry Metadata
+
+attempts
+max_attempts
+next_retry_at
+last_attempt_at
+failure_reason
+
+
+20. Observability
+
+20.1 Required Observability
+The system MUST support:
+* structured logging
+* distributed tracing
+* correlation IDs
+* retry visibility
+* queue visibility
+* reconciliation visibility
+
+20.2 Recommended Metrics
+
+booking_cancellation_total
+provider_sync_failure_total
+outbox_retry_total
+webhook_processing_latency
+reconciliation_conflict_total
+stale_sync_rejection_total
+
+
+21. Scalability Model
+The architecture assumes:
+* asynchronous workload growth
+* provider API rate limiting
+* horizontally scalable workers
+* queue partitioning
+* aggregate-level ordering
+Global ordering is intentionally avoided.
+
+22. Read Model Strategy
+Write models and read models MUST remain separate.
+
+22.1 Write Model
+Authoritative lifecycle state:
+
+BookingAggregate
+
+
+22.2 Read Models
+Optimized projections for:
+* dashboards
+* analytics
+* host reporting
+* booking lookup
+* search
+Read models MAY be eventually consistent.
+
+23. Operational SLOs
+Capability	Target
+Aggregate mutation latency	<300ms
+Notification dispatch	<1 minute
+Provider synchronization	<5 minutes
+Reconciliation repair	<30 minutes
+Webhook acknowledgement	<2 seconds
+24. Data Retention & Compliance
+The system MUST support:
+* GDPR deletion
+* audit retention policies
+* token cleanup
+* event archival
+* PII minimization
+Event retention policies MUST be configurable.
+
+25. Future Evolution
+As workflow complexity grows, the system may evolve toward:
+* saga orchestration
+* durable execution engines
+* Temporal/Cadence workflows
+* provider-specific reconciliation pipelines
+The current architecture intentionally avoids premature orchestration complexity while preserving migration paths.
+
+26. Final Architectural Rules
+
+Core Rule
+ALL lifecycle mutations MUST converge through:
+
+BookingAggregate
+
+through authorized application services.
+
+Distributed Systems Rule
+The system intentionally avoids:
+* distributed transactions
+* global ordering
+* synchronous provider coupling
+Correctness is achieved through:
+* aggregate ownership
+* optimistic concurrency
+* immutable event history
+* idempotent workflows
+* reconciliation safety
+* asynchronous orchestration
+
+27. Final Summary
+This architecture provides:
+* deterministic lifecycle management
+* replay-safe distributed workflows
+* scalable asynchronous orchestration
+* provider reconciliation safety
+* operational resilience
+* secure guest self-service management
+* future extensibility
+while intentionally avoiding unnecessary distributed systems complexity.
+
+
+
+
+REQUIRED ENGINEERING TASKS
+Before implementation begins, create:
+
+1. Sequence Diagrams
+For:
+* host cancellation,
+* guest cancellation,
+* provider cancellation,
+* retry replay,
+* stale event rejection.
+This helps junior engineers enormously.
+
+2. Aggregate Test Matrix
+You need exhaustive tests for:
+Scenario	Expected
+duplicate cancel	no-op
+stale reschedule retry	rejected
+concurrent host+guest cancel	deterministic winner
+provider replay	ignored
+already cancelled booking	idempotent success
+This is critical.
+
+3. Idempotency Contract Tests
+Mandatory.
+Especially:
+* webhook dedupe,
+* notification dedupe,
+* outbox replay,
+* retry replay.
+
+4. Failure Injection Testing
+You should deliberately test:
+* provider timeouts,
+* duplicate webhooks,
+* worker crashes,
+* outbox retry storms,
+* DB rollback scenarios.
+
+5. Operational Runbooks
+Create:
+* DLQ recovery procedures,
+* replay procedures,
+* provider outage handling,
+* reconciliation repair guides.
+This becomes important surprisingly early.
+

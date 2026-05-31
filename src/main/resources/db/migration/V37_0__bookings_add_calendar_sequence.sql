@@ -1,0 +1,2 @@
+ALTER TABLE bookings
+    ADD COLUMN IF NOT EXISTS calendar_sequence BIGINT NOT NULL DEFAULT 0;

@@ -35,3 +35,10 @@ out/
 
 ### VS Code ###
 .vscode/
+
+.DS_Store
+logs/
+HLD_LLD.pdf
+ER_diagram.pdf
+Implementation.pdf
+Modules.pdf

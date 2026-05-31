@@ -1,0 +1,3 @@
+ALTER TABLE event_types
+    ADD COLUMN IF NOT EXISTS description TEXT,
+    ADD COLUMN IF NOT EXISTS location VARCHAR(255);
