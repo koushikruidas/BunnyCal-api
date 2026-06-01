@@ -47,6 +47,8 @@ class OAuth2AuthenticationSuccessHandlerTest {
         handler = new OAuth2AuthenticationSuccessHandler(identityLinkingService, jwtTokenProvider, refreshTokenService);
         setField(handler, "refreshTokenTtlDays", 7);
         setField(handler, "accessTokenExpirationMs", 3600000L);
+        setField(handler, "frontendBaseUrl", "http://localhost:5173");
+        setField(handler, "frontendSuccessPath", "/dashboard");
     }
 
     @Test

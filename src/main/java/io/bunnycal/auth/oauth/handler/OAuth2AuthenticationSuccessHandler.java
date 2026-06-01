@@ -38,6 +38,12 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     @Value("${jwt.expiration}")
     private long accessTokenExpirationMs;
 
+    @Value("${app.public-base-url:http://localhost:5173}")
+    private String frontendBaseUrl;
+
+    @Value("${auth.oauth2.success-path:/dashboard}")
+    private String frontendSuccessPath;
+
     @Override
     public void onAuthenticationSuccess(
             HttpServletRequest request,
@@ -127,25 +133,27 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
          *
          * */
 
-        String frontendUrl = "http://localhost:5173";
+        String frontendRedirectUrl = resolveFrontendRedirectUrl();
+        boolean secureRequest = request.isSecure();
+        String sameSite = secureRequest ? "None" : "Lax";
 
         // Access Token Cookie
         String accessCookie = ResponseCookie.from("accessToken", accessToken)
                 .httpOnly(true)
-                .secure(false) // must be false for localhost
+                .secure(secureRequest)
                 .path("/")
                 .maxAge(accessTokenExpirationMs / 1000)
-                .sameSite("Lax")
+                .sameSite(sameSite)
                 .build()
                 .toString();
 
         // Refresh Token Cookie
         String refreshCookie = ResponseCookie.from("refreshToken", refreshToken)
                 .httpOnly(true)
-                .secure(false)
+                .secure(secureRequest)
                 .path("/")
                 .maxAge((long) refreshTokenTtlDays * 24 * 60 * 60)
-                .sameSite("Lax")
+                .sameSite(sameSite)
                 .build()
                 .toString();
 
@@ -154,7 +162,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         response.addHeader("Set-Cookie", refreshCookie);
 
         // Redirect
-        response.sendRedirect(frontendUrl + "/dashboard");
+        response.sendRedirect(frontendRedirectUrl);
 
 
         /**
@@ -212,5 +220,18 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
 
     private static String asString(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private String resolveFrontendRedirectUrl() {
+        if (!hasText(frontendBaseUrl)) {
+            throw new IllegalStateException("app.public-base-url must not be empty");
+        }
+        if (!hasText(frontendSuccessPath) || !frontendSuccessPath.startsWith("/")) {
+            throw new IllegalStateException("auth.oauth2.success-path must start with '/'");
+        }
+        String base = frontendBaseUrl.endsWith("/")
+                ? frontendBaseUrl.substring(0, frontendBaseUrl.length() - 1)
+                : frontendBaseUrl;
+        return base + frontendSuccessPath;
     }
 }
