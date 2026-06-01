@@ -135,7 +135,7 @@ jwt:
 
 auth:
   access-token:
-    cookie-fallback-enabled: ${AUTH_ACCESS_TOKEN_COOKIE_FALLBACK_ENABLED:false}
+    cookie-fallback-enabled: ${AUTH_ACCESS_TOKEN_COOKIE_FALLBACK_ENABLED:true}
   refresh-token:
     bytes: ${REFRESH_TOKEN_BYTES:48}
     ttl-days: ${REFRESH_TOKEN_TTL_DAYS:1}
