@@ -18,25 +18,44 @@
 {$APP_DOMAIN} {
 	encode gzip
 
-	# Baseline security headers applied to every response.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		# Don't leak which server/framework is behind the proxy.
 		-Server
 		-X-Powered-By
 	}
 
-	# Health probe only — NOT the rest of /actuator (metrics, prometheus, env...).
-	@health path /actuator/health /actuator/health/*
-	reverse_proxy @health bunnycal-api:8080
+	handle /actuator/health* {
+		reverse_proxy bunnycal-api:8080
+	}
 
-	# Public API surface.
-	@api path /api/* /auth/* /oauth2/* /login/oauth2/* /integrations/* /public/*
-	reverse_proxy @api bunnycal-api:8080
+	handle /api/* {
+		reverse_proxy bunnycal-api:8080
+	}
 
-	# Everything else (including /actuator/*, /actuator/prometheus) is rejected.
-	respond "Not found" 404
+	handle /auth/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /oauth2/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /login/oauth2/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /integrations/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /public/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle {
+		respond "Not found" 404
+	}
 }
