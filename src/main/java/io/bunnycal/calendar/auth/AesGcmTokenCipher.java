@@ -6,23 +6,53 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Set;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class AesGcmTokenCipher implements TokenCipher {
+    private static final Logger log = LoggerFactory.getLogger(AesGcmTokenCipher.class);
     private static final int GCM_TAG_BITS = 128;
     private static final int IV_BYTES = 12;
     private static final String KEY_VERSION_PREFIX = "v1:";
+    private static final Set<Integer> VALID_AES_KEY_BYTES = Set.of(16, 24, 32);
 
     private final SecureRandom secureRandom = new SecureRandom();
     private final SecretKey secretKey;
 
     public AesGcmTokenCipher(CalendarSecurityProperties properties) {
-        byte[] decoded = Base64.getDecoder().decode(properties.getEncryptionKeyBase64());
+        String rawKeyString = properties.getEncryptionKeyBase64();
+        log.info("[KEY-DIAG] raw key string  : {}", rawKeyString);
+        log.info("[KEY-DIAG] raw string length: {}", rawKeyString == null ? "null" : rawKeyString.length());
+
+        if (rawKeyString == null || rawKeyString.isBlank()) {
+            throw new IllegalStateException(
+                "calendar.security.encryption-key-base64 is blank — set CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64 to a base64-encoded 32-byte AES-256 key (generate: openssl rand -base64 32)");
+        }
+
+        byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(rawKeyString.strip());
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalStateException(
+                "calendar.security.encryption-key-base64 is not valid Base64. raw value: [" + rawKeyString + "]", ex);
+        }
+        log.info("[KEY-DIAG] decoded byte length: {}", decoded.length);
+
+        if (!VALID_AES_KEY_BYTES.contains(decoded.length)) {
+            throw new IllegalStateException(
+                "calendar.security.encryption-key-base64 decoded to " + decoded.length
+                + " bytes — AES requires 16, 24, or 32 bytes. "
+                + "Source env var: CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64. "
+                + "Generate a correct key with: openssl rand -base64 32");
+        }
+
         this.secretKey = new SecretKeySpec(decoded, "AES");
     }
 
