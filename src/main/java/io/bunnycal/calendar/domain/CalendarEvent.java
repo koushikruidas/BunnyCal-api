@@ -71,6 +71,15 @@ public class CalendarEvent extends BaseEntity {
     @Column(name = "organizer_email", length = 320)
     private String organizerEmail;
 
+    /**
+     * Session projection rows may exist on a calendar that is also used for
+     * availability selection, but they must not block slots until the session
+     * itself reaches FULL. This flag lets the busy-time pipeline distinguish
+     * actual conflicts from projection echoes.
+     */
+    @Column(name = "blocks_availability", nullable = false)
+    private boolean blocksAvailability = true;
+
     public UUID getId() { return id; }
     public UUID getUserId() { return userId; }
     public void setUserId(UUID userId) { this.userId = userId; }
@@ -96,4 +105,6 @@ public class CalendarEvent extends BaseEntity {
     public void setLocation(String location) { this.location = location; }
     public String getOrganizerEmail() { return organizerEmail; }
     public void setOrganizerEmail(String organizerEmail) { this.organizerEmail = organizerEmail; }
+    public boolean isBlocksAvailability() { return blocksAvailability; }
+    public void setBlocksAvailability(boolean blocksAvailability) { this.blocksAvailability = blocksAvailability; }
 }

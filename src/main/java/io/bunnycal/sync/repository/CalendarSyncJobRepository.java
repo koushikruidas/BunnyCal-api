@@ -294,6 +294,18 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     List<SessionSyncRow> findLatestSessionSyncRow(@Param("sessionId") UUID sessionId);
 
     @Query(value = """
+            SELECT *
+            FROM calendar_sync_jobs j
+            WHERE j.internal_ref_type = 'SESSION'
+              AND LOWER(j.provider) = LOWER(:provider)
+              AND j.external_event_id = :externalEventId
+            ORDER BY j.updated_at DESC
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<CalendarSyncJob> findLatestSessionSyncByProviderAndExternalEventId(@Param("provider") String provider,
+                                                                                @Param("externalEventId") String externalEventId);
+
+    @Query(value = """
             SELECT DISTINCT j.internal_ref_id AS bookingId
             FROM calendar_sync_jobs j
             WHERE j.internal_ref_type = 'BOOKING'

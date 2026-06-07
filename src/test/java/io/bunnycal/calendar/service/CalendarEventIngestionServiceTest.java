@@ -12,6 +12,7 @@ import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.domain.CalendarEvent;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
+import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import java.lang.reflect.Field;
@@ -22,6 +23,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -33,6 +35,7 @@ class CalendarEventIngestionServiceTest {
     @Mock private SlotCacheVersionService slotCacheVersionService;
     @Mock private CalendarConnectionWriteService connectionWriteService;
     @Mock private ProviderEventProjectionService providerEventProjectionService;
+    @Mock private CalendarSyncJobRepository syncJobRepository;
     @Mock private SyncInvariantMonitor invariantMonitor;
 
     private CalendarEventIngestionService service;
@@ -42,6 +45,7 @@ class CalendarEventIngestionServiceTest {
         service = new CalendarEventIngestionService(
                 connectionRepository,
                 eventRepository,
+                syncJobRepository,
                 slotCacheVersionService,
                 connectionWriteService,
                 providerEventProjectionService,
@@ -100,6 +104,42 @@ class CalendarEventIngestionServiceTest {
         org.assertj.core.api.Assertions.assertThat(existing.getLocation()).isEqualTo("New Room");
         org.assertj.core.api.Assertions.assertThat(existing.getOrganizerEmail()).isEqualTo("new@example.com");
         org.assertj.core.api.Assertions.assertThat(existing.getExternalCalendarId()).isEqualTo("AQMkAD123");
+    }
+
+    @Test
+    void upsertEvents_sessionProjectionRowsDoNotBlockAvailability() {
+        UUID connectionId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+        CalendarConnection connection = connection(connectionId, userId, CalendarProviderType.GOOGLE);
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
+        when(providerEventProjectionService.shouldApplyAndAdvance(eq(connectionId), eq("GOOGLE"), any()))
+                .thenReturn(true);
+        when(syncJobRepository.findLatestSessionSyncByProviderAndExternalEventId("GOOGLE", "session-ext"))
+                .thenReturn(Optional.of(io.bunnycal.sync.state.CalendarSyncJob.builder().build()));
+        when(eventRepository.findByConnectionIdAndProviderAndExternalEventId(connectionId, "GOOGLE", "session-ext"))
+                .thenReturn(Optional.empty());
+
+        CalendarEventIngestionService.IncomingCalendarEvent incoming =
+                new CalendarEventIngestionService.IncomingCalendarEvent(
+                        "session-ext",
+                        Instant.parse("2026-06-05T15:00:00Z"),
+                        Instant.parse("2026-06-05T15:30:00Z"),
+                        false,
+                        false,
+                        null,
+                        Instant.parse("2026-06-05T09:59:00Z"),
+                        "etag-v2",
+                        "hash-v2",
+                        "primary",
+                        "Group Session",
+                        null,
+                        "host@example.com");
+
+        service.upsertEvents(connectionId, List.of(incoming), SyncSourceAttribution.PULL_SYNC);
+
+        ArgumentCaptor<CalendarEvent> captured = ArgumentCaptor.forClass(CalendarEvent.class);
+        verify(eventRepository).save(captured.capture());
+        org.assertj.core.api.Assertions.assertThat(captured.getValue().isBlocksAvailability()).isFalse();
     }
 
     @Test

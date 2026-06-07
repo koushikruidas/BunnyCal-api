@@ -18,6 +18,8 @@ import io.bunnycal.calendar.provider.MicrosoftCalendarProvider;
 import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.calendar.provider.UpdateEventResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
@@ -86,14 +88,21 @@ public class SessionSyncWorker {
         List<UUID> claimedIds = syncJobRepository.claimPendingBatchForSessions(Instant.now(), batchSize);
         log.info("session_sync_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
         for (UUID id : claimedIds) {
-            try {
-                txTemplate.executeWithoutResult(status -> syncJobRepository.findById(id).ifPresent(this::processOne));
-            } catch (RuntimeException ex) {
-                meterRegistry.counter("session_sync_failure_count").increment();
-                log.warn("session_sync_uncaught jobId={}", id, ex);
-            }
+            processJob(id);
         }
         return claimedIds.size();
+    }
+
+    public void processJob(UUID jobId) {
+        if (jobId == null) {
+            return;
+        }
+        try {
+            txTemplate.executeWithoutResult(status -> syncJobRepository.findById(jobId).ifPresent(this::processOne));
+        } catch (RuntimeException ex) {
+            meterRegistry.counter("session_sync_failure_count").increment();
+            log.warn("session_sync_uncaught jobId={}", jobId, ex);
+        }
     }
 
     private void processOne(CalendarSyncJob job) {
@@ -161,12 +170,17 @@ public class SessionSyncWorker {
             String description = "sessionId=" + sessionId;
             String targetCalendarId = eventType.getProjectionCalendarId();
             String idempotencyKey = "session-" + connection.getId() + "-" + session.getStartTime().getEpochSecond();
+            ConferencingInstruction conferencingInstruction = resolveConferencingInstruction(eventType);
+            ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(
+                    conferencingInstruction, "session_event_type", Instant.now());
 
             switch (job.getDesiredAction()) {
                 case CREATE -> processCreate(job, session, connection, provider,
-                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey);
+                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                        conferencingInstruction, conferenceDetails);
                 case UPDATE -> processUpdate(job, session, connection, provider,
-                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey);
+                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                        conferencingInstruction, conferenceDetails);
                 case DELETE -> processDelete(job, connection, provider);
             }
             meterRegistry.counter("session_sync_success_count").increment();
@@ -184,7 +198,9 @@ public class SessionSyncWorker {
                                 CalendarConnection connection, CalendarProvider provider,
                                 String title, String description, String organizerEmail,
                                 List<MultiAttendee> attendees, String targetCalendarId,
-                                String idempotencyKey) {
+                                String idempotencyKey,
+                                ConferencingInstruction conferencingInstruction,
+                                ConferenceDetails conferenceDetails) {
         if (job.getExternalEventId() != null && !job.getExternalEventId().isBlank()) {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
@@ -198,8 +214,16 @@ public class SessionSyncWorker {
                 CreateEventRequest.forGroup(connection.getId(), title, description,
                         session.getStartTime(), session.getEndTime(),
                         organizerEmail, attendees, idempotencyKey, targetCalendarId,
-                        ConferencingInstruction.none()));
-        syncJobRepository.markSynced(job.getId(), job.getVersion(), response.externalEventId());
+                        conferencingInstruction));
+        ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_create_result");
+        syncJobRepository.markSyncedWithMetadata(
+                job.getId(),
+                job.getVersion(),
+                response.externalEventId(),
+                response.providerEventUrl(),
+                resolvedConferenceDetails.joinUrl(),
+                resolvedConferenceDetails.provider(),
+                null);
         log.info("session_sync_create_success sessionId={} provider={} externalEventId={}",
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
@@ -208,11 +232,13 @@ public class SessionSyncWorker {
                                 CalendarConnection connection, CalendarProvider provider,
                                 String title, String description, String organizerEmail,
                                 List<MultiAttendee> attendees, String targetCalendarId,
-                                String idempotencyKey) {
+                                String idempotencyKey,
+                                ConferencingInstruction conferencingInstruction,
+                                ConferenceDetails conferenceDetails) {
         String externalId = job.getExternalEventId();
         if (externalId == null || externalId.isBlank()) {
             processCreate(job, session, connection, provider, title, description, organizerEmail,
-                    attendees, targetCalendarId, idempotencyKey);
+                    attendees, targetCalendarId, idempotencyKey, conferencingInstruction, conferenceDetails);
             return;
         }
         if (attendees.isEmpty()) {
@@ -222,8 +248,16 @@ public class SessionSyncWorker {
         UpdateEventResponse response = provider.updateEvent(
                 UpdateEventRequest.forGroup(connection.getId(), externalId, title, description,
                         session.getStartTime(), session.getEndTime(),
-                        organizerEmail, attendees, targetCalendarId, ConferencingInstruction.none()));
-        syncJobRepository.markSynced(job.getId(), job.getVersion(), response.externalEventId());
+                        organizerEmail, attendees, targetCalendarId, conferencingInstruction));
+        ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_update_result");
+        syncJobRepository.markSyncedWithMetadata(
+                job.getId(),
+                job.getVersion(),
+                response.externalEventId(),
+                response.providerEventUrl(),
+                resolvedConferenceDetails.joinUrl(),
+                resolvedConferenceDetails.provider(),
+                null);
         log.info("session_sync_update_success sessionId={} provider={} externalEventId={}",
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
@@ -257,6 +291,27 @@ public class SessionSyncWorker {
                 retryPolicy.nextRetryAt(job.getAttemptCount() + 1), code, permanent);
         log.warn("session_sync_failure sessionId={} jobId={} errorCode={} permanent={}",
                 job.getInternalRefId(), job.getId(), code, permanent);
+    }
+
+    private ConferencingInstruction resolveConferencingInstruction(EventType eventType) {
+        if (eventType == null) {
+            return ConferencingInstruction.none();
+        }
+        ConferencingProviderType providerType = eventType.getConferencingProvider();
+        if (providerType == null || providerType == ConferencingProviderType.NONE) {
+            return ConferencingInstruction.none();
+        }
+        return switch (providerType) {
+            case GOOGLE_MEET, MICROSOFT_TEAMS -> ConferencingInstruction.requestNativeMeet(providerType);
+            case CUSTOM_URL -> {
+                String customUrl = eventType.getCustomConferenceUrl();
+                if (customUrl == null || customUrl.isBlank()) {
+                    yield ConferencingInstruction.none();
+                }
+                yield ConferencingInstruction.urlEmbedded(providerType, customUrl.trim(), null, null);
+            }
+            default -> ConferencingInstruction.none();
+        };
     }
 
     private static boolean isPermanent(String errorCode) {

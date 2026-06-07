@@ -19,6 +19,7 @@ import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import io.bunnycal.sync.state.CalendarSyncJob;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +44,10 @@ class LoggingOutboxEventDispatcherTest {
     @Mock
     private BookingNotificationService bookingNotificationService;
     @Mock
+    private io.bunnycal.session.notification.SessionNotificationService sessionNotificationService;
+    @Mock
+    private io.bunnycal.session.sync.SessionSyncWorker sessionSyncWorker;
+    @Mock
     private BookingOwnershipService bookingOwnershipService;
     @Mock
     private SyncInvariantMonitor invariantMonitor;
@@ -59,7 +64,8 @@ class LoggingOutboxEventDispatcherTest {
                 calendarConnectionRepository,
                 bookingOwnershipService,
                 bookingNotificationService,
-                null,
+                sessionNotificationService,
+                sessionSyncWorker,
                 invariantMonitor,
                 new SimpleMeterRegistry());
     }
@@ -308,9 +314,17 @@ class LoggingOutboxEventDispatcherTest {
                         .hostId(hostId)
                         .calendarSequence(7L)
                         .build()));
+        when(calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
+                io.bunnycal.sync.state.InternalRefType.SESSION,
+                sessionId,
+                "DEFERRED"))
+                .thenReturn(java.util.Optional.of(CalendarSyncJob.builder()
+                        .id(UUID.randomUUID())
+                        .build()));
 
         dispatcher.dispatch(event);
 
+        verify(sessionSyncWorker).processJob(org.mockito.ArgumentMatchers.any(UUID.class));
         verify(calendarSyncJobRepository).upsertPendingJob(
                 org.mockito.ArgumentMatchers.any(UUID.class),
                 eq("SESSION"),

@@ -6,6 +6,10 @@ import io.bunnycal.booking.notification.IcsInviteGenerator;
 import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.conferencing.service.ConferenceDetails;
+import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import jakarta.mail.internet.MimeBodyPart;
+import jakarta.mail.internet.MimeMultipart;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
@@ -29,6 +33,7 @@ public class SessionNotificationService {
     private final IcsInviteGenerator icsInviteGenerator;
     private final BookingManageLinkService manageLinkService;
     private final NotificationSendDedupService dedupService;
+    private final CalendarSyncJobRepository syncJobRepository;
     private final ObjectMapper objectMapper;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -38,6 +43,7 @@ public class SessionNotificationService {
                                        IcsInviteGenerator icsInviteGenerator,
                                        BookingManageLinkService manageLinkService,
                                        NotificationSendDedupService dedupService,
+                                       CalendarSyncJobRepository syncJobRepository,
                                        ObjectMapper objectMapper,
                                        @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                        @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
@@ -48,6 +54,7 @@ public class SessionNotificationService {
         this.icsInviteGenerator = icsInviteGenerator;
         this.manageLinkService = manageLinkService;
         this.dedupService = dedupService;
+        this.syncJobRepository = syncJobRepository;
         this.objectMapper = objectMapper;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -86,6 +93,7 @@ public class SessionNotificationService {
         }
         UUID sessionId = payload.sessionId();
         int sequence = payload.calendarSequence();
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(sessionId);
 
         List<GroupAttendee> allAttendees = payload.allConfirmedAttendees() != null
                 ? payload.allConfirmedAttendees().stream()
@@ -97,14 +105,14 @@ public class SessionNotificationService {
                 sessionId, payload.eventName(), "sessionId=" + sessionId,
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
-                allAttendees, sequence, null);
+                allAttendees, sequence, conferenceDetails);
 
         String manageLink = buildManageLink(payload.registrationId(), payload.capabilityToken(),
                 payload.hostUsername(), payload.eventSlug());
 
         sendWithDedup(event, payload.newAttendeeEmail(), ics, "REQUEST",
                 "Meeting confirmed: " + payload.eventName(),
-                confirmedBody(payload.eventName(), manageLink));
+                confirmedBody(payload.eventName(), manageLink, conferenceDetails));
     }
 
     private void handleRegistrationCancelled(OutboxEvent event, SessionOutboxPayload payload) {
@@ -113,6 +121,7 @@ public class SessionNotificationService {
         }
         UUID sessionId = payload.sessionId();
         int sequence = payload.calendarSequence();
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(sessionId);
 
         List<GroupAttendee> attendees = List.of(
                 new GroupAttendee(payload.cancelledAttendeeName(), payload.cancelledAttendeeEmail()));
@@ -121,7 +130,7 @@ public class SessionNotificationService {
                 sessionId, payload.eventName(), "sessionId=" + sessionId,
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
-                attendees, sequence, null);
+                attendees, sequence, conferenceDetails);
 
         sendWithDedup(event, payload.cancelledAttendeeEmail(), ics, "CANCEL",
                 "Meeting cancelled: " + payload.eventName(),
@@ -134,6 +143,7 @@ public class SessionNotificationService {
         }
         UUID sessionId = payload.sessionId();
         int sequence = payload.calendarSequence();
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(sessionId);
         List<GroupAttendee> attendees = payload.allAttendees().stream()
                 .map(a -> new GroupAttendee(a.name(), a.email()))
                 .toList();
@@ -142,7 +152,7 @@ public class SessionNotificationService {
                 sessionId, payload.eventName(), "sessionId=" + sessionId,
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
-                attendees, sequence, null);
+                attendees, sequence, conferenceDetails);
 
         for (SessionOutboxPayload.AttendeeDto attendee : payload.allAttendees()) {
             if (attendee.email() == null || attendee.email().isBlank()) continue;
@@ -158,6 +168,7 @@ public class SessionNotificationService {
         }
         UUID sessionId = payload.sessionId();
         int sequence = payload.calendarSequence();
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(sessionId);
         List<GroupAttendee> attendees = payload.allAttendees().stream()
                 .map(a -> new GroupAttendee(a.name(), a.email()))
                 .toList();
@@ -166,13 +177,13 @@ public class SessionNotificationService {
                 sessionId, payload.eventName(), "sessionId=" + sessionId,
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
-                attendees, sequence, null);
+                attendees, sequence, conferenceDetails);
 
         for (SessionOutboxPayload.AttendeeDto attendee : payload.allAttendees()) {
             if (attendee.email() == null || attendee.email().isBlank()) continue;
             sendWithDedup(event, attendee.email(), ics, "REQUEST",
                     "Session rescheduled: " + payload.eventName(),
-                    "The session has been rescheduled.\n\nEvent: " + payload.eventName());
+                    rescheduledBody(payload.eventName(), conferenceDetails));
         }
     }
 
@@ -214,16 +225,33 @@ public class SessionNotificationService {
         helper.setSubject(subject);
         if (ics != null && method != null) {
             message.setHeader("X-MS-OLK-FORCEINSPECTOROPEN", "TRUE");
-            jakarta.mail.internet.MimeBodyPart textPart = new jakarta.mail.internet.MimeBodyPart();
+            MimeBodyPart textPart = new MimeBodyPart();
             textPart.setText(bodyText, StandardCharsets.UTF_8.name(), "plain");
-            jakarta.mail.internet.MimeBodyPart calendarPart = new jakarta.mail.internet.MimeBodyPart();
+
+            MimeBodyPart calendarPart = new MimeBodyPart();
             calendarPart.setContent(ics, "text/calendar; charset=UTF-8; method=" + method);
             calendarPart.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
             calendarPart.setHeader("Content-Transfer-Encoding", "8bit");
-            jakarta.mail.internet.MimeMultipart mp = new jakarta.mail.internet.MimeMultipart("mixed");
-            mp.addBodyPart(textPart);
-            mp.addBodyPart(calendarPart);
-            message.setContent(mp);
+
+            MimeMultipart alternative = new MimeMultipart("alternative");
+            alternative.addBodyPart(textPart);
+            alternative.addBodyPart(calendarPart);
+
+            MimeBodyPart alternativeWrapper = new MimeBodyPart();
+            alternativeWrapper.setContent(alternative);
+
+            MimeBodyPart icsAttachment = new MimeBodyPart();
+            icsAttachment.setContent(ics, "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
+            icsAttachment.setFileName("invite.ics");
+            icsAttachment.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
+            icsAttachment.setHeader("Content-Disposition", "attachment; filename=\"invite.ics\"");
+            icsAttachment.setHeader("Content-Transfer-Encoding", "8bit");
+
+            MimeMultipart mixed = new MimeMultipart("mixed");
+            mixed.addBodyPart(alternativeWrapper);
+            mixed.addBodyPart(icsAttachment);
+
+            message.setContent(mixed);
         } else {
             helper.setText(bodyText, false);
         }
@@ -270,11 +298,59 @@ public class SessionNotificationService {
         return manageLinkService.build(registrationId, capabilityToken, hostUsername, eventSlug);
     }
 
-    private static String confirmedBody(String eventName, String manageLink) {
+    private ConferenceDetails resolveConferenceDetails(UUID sessionId) {
+        if (sessionId == null) {
+            return ConferenceDetails.none("session_sync_missing", Instant.now());
+        }
+        return syncJobRepository.findLatestSessionSyncRow(sessionId)
+                .stream()
+                .findFirst()
+                .map(row -> {
+                    String joinUrl = row.getConferenceUrl();
+                    if (joinUrl == null || joinUrl.isBlank()) {
+                        return ConferenceDetails.none("session_sync_no_join_url", row.getUpdatedAt() == null ? Instant.now() : row.getUpdatedAt());
+                    }
+                    String provider = row.getConferenceProvider();
+                    if (provider == null || provider.isBlank()) {
+                        provider = row.getProvider();
+                    }
+                    return new ConferenceDetails(
+                            provider == null ? "NONE" : provider,
+                            joinUrl,
+                            null,
+                            null,
+                            null,
+                            Map.of("providerEventUrl", row.getProviderEventUrl() == null ? "" : row.getProviderEventUrl()),
+                            "session_sync_status",
+                            row.getUpdatedAt() == null ? Instant.now() : row.getUpdatedAt());
+                })
+                .orElseGet(() -> ConferenceDetails.none("session_sync_missing", Instant.now()));
+    }
+
+    private static String confirmedBody(String eventName, String manageLink, ConferenceDetails conferenceDetails) {
         String base = "Your registration is confirmed.\n\nEvent: " + eventName;
+        if (conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank()) {
+            base += "\n\nJoin the meeting:\n" + conferenceDetails.joinUrl();
+            if (conferenceDetails.provider() != null && !conferenceDetails.provider().isBlank()
+                    && !"NONE".equalsIgnoreCase(conferenceDetails.provider())) {
+                base += "\nConference provider: " + conferenceDetails.provider();
+            }
+        }
         if (manageLink != null && !manageLink.isBlank()) {
             return base + "\n\nManage your registration:\n" + manageLink;
         }
         return base;
+    }
+
+    private static String rescheduledBody(String eventName, ConferenceDetails conferenceDetails) {
+        StringBuilder body = new StringBuilder("The session has been rescheduled.\n\nEvent: ").append(eventName);
+        if (conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank()) {
+            body.append("\n\nJoin the meeting:\n").append(conferenceDetails.joinUrl());
+            if (conferenceDetails.provider() != null && !conferenceDetails.provider().isBlank()
+                    && !"NONE".equalsIgnoreCase(conferenceDetails.provider())) {
+                body.append("\nConference provider: ").append(conferenceDetails.provider());
+            }
+        }
+        return body.toString();
     }
 }

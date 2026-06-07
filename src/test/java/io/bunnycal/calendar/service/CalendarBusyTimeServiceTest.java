@@ -60,7 +60,7 @@ class CalendarBusyTimeServiceTest {
                 .thenReturn(List.of(stubConnection(connGoogle), stubConnection(connMsft)));
 
         CalendarEvent ev = event(connGoogle, null, "2026-05-10T10:00:00Z", "2026-05-10T11:00:00Z");
-        when(eventRepository.findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+        when(eventRepository.findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
                 eq(userId), any(), any()))
                 .thenReturn(List.of(ev));
 
@@ -80,14 +80,14 @@ class CalendarBusyTimeServiceTest {
 
         assertTrue(result.isEmpty());
         verify(eventRepository, never())
-                .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
+                .findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
     }
 
     @Test
     void noExplicitSelection_nullBindingsList_treatedAsEmptyFallback() {
         when(connectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(stubConnection(connGoogle)));
-        when(eventRepository.findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+        when(eventRepository.findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
                 eq(userId), any(), any()))
                 .thenReturn(List.of());
 
@@ -126,7 +126,7 @@ class CalendarBusyTimeServiceTest {
         assertEquals(1, result.size());
         // The user-wide fallback must NOT be invoked.
         verify(eventRepository, never())
-                .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
+                .findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
         // Capture and assert the actual arguments — the connection-scoped bucket
         // must NOT include connections we didn't pick.
         ArgumentCaptor<Collection<UUID>> scopedCaptor = uuidCollectionCaptor();
@@ -231,7 +231,7 @@ class CalendarBusyTimeServiceTest {
         assertTrue(result.isEmpty());
         verify(eventRepository, never()).findBusySelected(any(), any(), any(), any(), any());
         verify(eventRepository, never())
-                .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
+                .findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(any(), any(), any());
     }
 
     @Test
