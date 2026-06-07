@@ -348,10 +348,9 @@ class SessionSyncWorkerTest {
         verify(googleCalendarProvider).createEvent(createCaptor.capture());
         verify(googleCalendarProvider).updateEvent(updateCaptor.capture());
 
-        org.assertj.core.api.Assertions.assertThat(createCaptor.getValue().isMultiAttendee()).isTrue();
-        org.assertj.core.api.Assertions.assertThat(createCaptor.getValue().attendees()).hasSize(1);
+        org.assertj.core.api.Assertions.assertThat(createCaptor.getValue().attendees()).isEmpty();
         org.assertj.core.api.Assertions.assertThat(updateCaptor.getValue().externalEventId()).isEqualTo(externalEventId);
-        org.assertj.core.api.Assertions.assertThat(updateCaptor.getValue().attendees()).hasSize(2);
+        org.assertj.core.api.Assertions.assertThat(updateCaptor.getValue().attendees()).isEmpty();
     }
 
     @Test

@@ -68,10 +68,6 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
         var response = microsoftCalendarProvider.createEvent(new CreateEventRequest(
                 connection.getId(),
                 title,
@@ -79,8 +75,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
+                null,
+                null,
                 idempotencyKey,
                 resolveTargetCalendarId(eventType),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
@@ -104,10 +100,6 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
         String updated = microsoftCalendarProvider.updateEvent(new UpdateEventRequest(
                 connection.getId(),
                 externalEventId,
@@ -116,8 +108,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
+                null,
+                null,
                 resolveTargetCalendarId(eventType),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
         )).externalEventId();

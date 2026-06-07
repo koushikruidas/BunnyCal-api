@@ -701,9 +701,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (instruction.embedsExternalUrl()) {
             body.put("location", instruction.joinUrl());
         }
-        body.put("attendees", request.isMultiAttendee()
-                ? attendeesList(request.attendees())
-                : attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
     }
 
@@ -725,9 +722,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (instruction.embedsExternalUrl()) {
             body.put("location", instruction.joinUrl());
         }
-        body.put("attendees", request.isMultiAttendee()
-                ? attendeesList(request.attendees())
-                : attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
     }
 
@@ -748,36 +742,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
             return base;
         }
         return base + "\n" + joinLine;
-    }
-
-    static List<Map<String, Object>> attendees(String attendeeEmail, String attendeeName) {
-        List<Map<String, Object>> attendees = new ArrayList<>();
-        if (attendeeEmail != null && !attendeeEmail.isBlank()) {
-            Map<String, Object> guest = new HashMap<>();
-            guest.put("email", attendeeEmail);
-            if (attendeeName != null && !attendeeName.isBlank()) {
-                guest.put("displayName", attendeeName);
-            }
-            attendees.add(guest);
-        }
-        return attendees;
-    }
-
-    static List<Map<String, Object>> attendeesList(List<io.bunnycal.calendar.provider.CreateEventRequest.MultiAttendee> multi) {
-        if (multi == null || multi.isEmpty()) {
-            return List.of();
-        }
-        List<Map<String, Object>> result = new ArrayList<>(multi.size());
-        for (var a : multi) {
-            if (a.email() == null || a.email().isBlank()) continue;
-            Map<String, Object> entry = new HashMap<>();
-            entry.put("email", a.email());
-            if (a.name() != null && !a.name().isBlank()) {
-                entry.put("displayName", a.name());
-            }
-            result.add(entry);
-        }
-        return result;
     }
 
     private static String extractId(Map body) {

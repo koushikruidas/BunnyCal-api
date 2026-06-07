@@ -43,5 +43,6 @@ class ProviderAuthorityContractTest {
                 "Guest",
                 ConferencingInstruction.requestNativeMeet(ConferencingProviderType.MICROSOFT_TEAMS));
         assertEquals(Boolean.FALSE, body.get("responseRequested"));
+        assertTrue(!body.containsKey("attendees"));
     }
 }

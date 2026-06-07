@@ -1,7 +1,6 @@
 package io.bunnycal.calendar.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -87,12 +86,12 @@ class GoogleCalendarProviderClientTest {
         verify(googleCalendarProvider).createEvent(requestCaptor.capture());
         CreateEventRequest sent = requestCaptor.getValue();
         assertEquals("host@example.com", sent.organizerEmail());
-        assertEquals("guest@example.com", sent.attendeeEmail());
+        assertEquals(null, sent.attendeeEmail());
         assertEquals(ConferencingInstruction.none(), sent.conferencingInstruction());
     }
 
     @Test
-    void createEvent_missingGuestEmailFailsFast() {
+    void createEvent_missingGuestEmailStillCreatesProjectionMirror() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
@@ -116,13 +115,18 @@ class GoogleCalendarProviderClientTest {
         when(connectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(Optional.of(connection));
 
-        CalendarClientException ex = assertThrows(CalendarClientException.class,
-                () -> client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none(), null));
-        assertEquals(400, ex.getStatusCode());
+        when(googleCalendarProvider.createEvent(any())).thenReturn(new CreateEventResponse("ext-1", null, null));
+
+        var created = client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none(), null);
+
+        assertEquals("ext-1", created.externalEventId());
+        ArgumentCaptor<CreateEventRequest> requestCaptor = ArgumentCaptor.forClass(CreateEventRequest.class);
+        verify(googleCalendarProvider).createEvent(requestCaptor.capture());
+        assertEquals(null, requestCaptor.getValue().attendeeEmail());
     }
 
     @Test
-    void updateEvent_propagatesGuestAttendeeDetails() {
+    void updateEvent_omitsGuestAttendeeDetailsFromProjectionMirror() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
@@ -154,8 +158,8 @@ class GoogleCalendarProviderClientTest {
         ArgumentCaptor<UpdateEventRequest> requestCaptor = ArgumentCaptor.forClass(UpdateEventRequest.class);
         verify(googleCalendarProvider).updateEvent(requestCaptor.capture());
         UpdateEventRequest sent = requestCaptor.getValue();
-        assertEquals("guest@example.com", sent.attendeeEmail());
-        assertEquals("Guest User", sent.attendeeName());
+        assertEquals(null, sent.attendeeEmail());
+        assertEquals(null, sent.attendeeName());
         verify(bookingRepository).findAnyById(eq(bookingId));
     }
 

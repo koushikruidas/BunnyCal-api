@@ -71,22 +71,15 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
-        String maskedGuest = maskEmail(attendeeEmail);
         String targetCalendarId = resolveTargetCalendarId(eventType);
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
         log.info("google_calendar_event_create_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} attendeeCount={} attendeeEmails={} sendUpdates=none conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId,
-                1, maskedGuest, instruction.mode(), instruction.providerType());
+                0, "[]", instruction.mode(), instruction.providerType());
         log.info("google_calendar_event_create_time bookingId={} provider={} startTimeUtc={} endTimeUtc={} hostTimezone={} source=booking_instants",
                 booking.getId(), provider, booking.getStartTime(), booking.getEndTime(), host.getTimezone());
-        log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
-                booking.getId(), provider, maskedGuest);
 
         var response = googleCalendarProvider.createEvent(new CreateEventRequest(
                 connection.getId(),
@@ -95,8 +88,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
+                null,
+                null,
                 idempotencyKey,
                 targetCalendarId,
                 instruction
@@ -127,20 +120,13 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
-        String maskedGuest = maskEmail(attendeeEmail);
         String targetCalendarId = resolveTargetCalendarId(eventType);
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
         log.info("google_calendar_event_update_request bookingId={} provider={} connectionId={} providerUserId={} targetCalendarId={} externalEventId={} attendeeCount={} attendeeEmails={} sendUpdates=none conferencingMode={} conferencingProvider={}",
                 booking.getId(), provider, connection.getId(), connection.getProviderUserId(), targetCalendarId, externalEventId,
-                1, maskedGuest, instruction.mode(), instruction.providerType());
-        log.info("google_calendar_attendee_source bookingId={} provider={} attendeeSource=booking.guestEmail attendeeEmail={}",
-                booking.getId(), provider, maskedGuest);
+                0, "[]", instruction.mode(), instruction.providerType());
 
         String updatedExternalId = googleCalendarProvider.updateEvent(new UpdateEventRequest(
                 connection.getId(),
@@ -150,8 +136,8 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
+                null,
+                null,
                 targetCalendarId,
                 instruction
         )).externalEventId();

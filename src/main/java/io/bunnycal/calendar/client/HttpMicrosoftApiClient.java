@@ -459,18 +459,6 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         body.put("body", Map.of("contentType", "text", "content", appendConferenceUrl(description, instruction)));
         body.put("start", Map.of("dateTime", startsAt.toString(), "timeZone", "UTC"));
         body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
-        List<Map<String, Object>> attendeeList = new ArrayList<>();
-        if (attendees != null) {
-            for (var a : attendees) {
-                if (a.email() == null || a.email().isBlank()) continue;
-                attendeeList.add(Map.of(
-                        "emailAddress", Map.of(
-                                "address", a.email(),
-                                "name", a.name() == null || a.name().isBlank() ? a.email() : a.name()),
-                        "type", "required"));
-            }
-        }
-        body.put("attendees", attendeeList);
         body.put("responseRequested", false);
         body.put("isReminderOn", false);
         if (instruction != null && instruction.embedsExternalUrl()) {
@@ -492,11 +480,6 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         body.put("body", Map.of("contentType", "text", "content", appendConferenceUrl(description, instruction)));
         body.put("start", Map.of("dateTime", startsAt.toString(), "timeZone", "UTC"));
         body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
-        body.put("attendees", List.of(Map.of(
-                "emailAddress", Map.of(
-                        "address", attendeeEmail,
-                        "name", attendeeName == null || attendeeName.isBlank() ? attendeeEmail : attendeeName),
-                "type", "required")));
         // App is the canonical organizer and emits its own ICS invites/updates/cancels.
         // Microsoft Graph remains a silent time-block mirror — it must not dispatch parallel invitation emails.
         body.put("responseRequested", false);

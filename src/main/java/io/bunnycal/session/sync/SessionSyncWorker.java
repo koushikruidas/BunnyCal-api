@@ -10,7 +10,6 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.provider.CalendarProvider;
 import io.bunnycal.calendar.provider.CreateEventRequest;
-import io.bunnycal.calendar.provider.CreateEventRequest.MultiAttendee;
 import io.bunnycal.calendar.provider.CreateEventResponse;
 import io.bunnycal.calendar.provider.DeleteEventRequest;
 import io.bunnycal.calendar.provider.GoogleCalendarProvider;
@@ -175,10 +174,7 @@ public class SessionSyncWorker {
                 return;
             }
 
-            List<MultiAttendee> attendees = registrationRepository.findConfirmedBySessionId(sessionId)
-                    .stream()
-                    .map(r -> new MultiAttendee(r.getGuestEmail(), r.getGuestName()))
-                    .toList();
+            List<SessionRegistration> confirmedRegistrations = registrationRepository.findConfirmedBySessionId(sessionId);
 
             String title = eventType.getName() != null && !eventType.getName().isBlank()
                     ? eventType.getName() : "Group Session";
@@ -192,13 +188,13 @@ public class SessionSyncWorker {
             boolean processed = switch (job.getDesiredAction()) {
                 case CREATE -> {
                     processCreate(job, session, connection, provider,
-                            title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                            title, description, host.getEmail(), confirmedRegistrations, targetCalendarId, idempotencyKey,
                             conferencingInstruction, conferenceDetails);
                     yield true;
                 }
                 case UPDATE -> {
                     processUpdate(job, session, connection, provider,
-                            title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                            title, description, host.getEmail(), confirmedRegistrations, targetCalendarId, idempotencyKey,
                             conferencingInstruction, conferenceDetails);
                     yield true;
                 }
@@ -221,7 +217,7 @@ public class SessionSyncWorker {
     private void processCreate(CalendarSyncJob job, EventSession session,
                                 CalendarConnection connection, CalendarProvider provider,
                                 String title, String description, String organizerEmail,
-                                List<MultiAttendee> attendees, String targetCalendarId,
+                                List<SessionRegistration> confirmedRegistrations, String targetCalendarId,
                                 String idempotencyKey,
                                 ConferencingInstruction conferencingInstruction,
                                 ConferenceDetails conferenceDetails) {
@@ -229,7 +225,7 @@ public class SessionSyncWorker {
             syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
             return;
         }
-        if (attendees.isEmpty()) {
+        if (confirmedRegistrations.isEmpty()) {
             log.info("session_sync_create_skip_no_attendees sessionId={}", session.getId());
             syncJobRepository.markSynced(job.getId(), job.getVersion(), null);
             return;
@@ -237,7 +233,7 @@ public class SessionSyncWorker {
         CreateEventResponse response = provider.createEvent(
                 CreateEventRequest.forGroup(connection.getId(), title, description,
                         session.getStartTime(), session.getEndTime(),
-                        organizerEmail, attendees, idempotencyKey, targetCalendarId,
+                        organizerEmail, List.of(), idempotencyKey, targetCalendarId,
                         conferencingInstruction));
         ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_create_result");
         syncJobRepository.markSyncedWithMetadata(
@@ -255,24 +251,24 @@ public class SessionSyncWorker {
     private void processUpdate(CalendarSyncJob job, EventSession session,
                                 CalendarConnection connection, CalendarProvider provider,
                                 String title, String description, String organizerEmail,
-                                List<MultiAttendee> attendees, String targetCalendarId,
+                                List<SessionRegistration> confirmedRegistrations, String targetCalendarId,
                                 String idempotencyKey,
                                 ConferencingInstruction conferencingInstruction,
                                 ConferenceDetails conferenceDetails) {
         String externalId = job.getExternalEventId();
         if (externalId == null || externalId.isBlank()) {
             processCreate(job, session, connection, provider, title, description, organizerEmail,
-                    attendees, targetCalendarId, idempotencyKey, conferencingInstruction, conferenceDetails);
+                    confirmedRegistrations, targetCalendarId, idempotencyKey, conferencingInstruction, conferenceDetails);
             return;
         }
-        if (attendees.isEmpty()) {
+        if (confirmedRegistrations.isEmpty()) {
             processDelete(job, connection, provider);
             return;
         }
         UpdateEventResponse response = provider.updateEvent(
                 UpdateEventRequest.forGroup(connection.getId(), externalId, title, description,
                         session.getStartTime(), session.getEndTime(),
-                        organizerEmail, attendees, targetCalendarId, conferencingInstruction));
+                        organizerEmail, List.of(), targetCalendarId, conferencingInstruction));
         ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_update_result");
         syncJobRepository.markSyncedWithMetadata(
                 job.getId(),
