@@ -26,9 +26,12 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.DateTimeUtils;
 import io.bunnycal.common.time.TimeConversionService;
@@ -53,6 +56,7 @@ public class SlotService {
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
     private final BookingRepository bookingRepository;
+    private final EventSessionRepository eventSessionRepository;
     private final DbClockRepository dbClockRepository;
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
@@ -66,6 +70,7 @@ public class SlotService {
             AvailabilityRuleRepository availabilityRuleRepository,
             AvailabilityOverrideRepository availabilityOverrideRepository,
             BookingRepository bookingRepository,
+            EventSessionRepository eventSessionRepository,
             DbClockRepository dbClockRepository,
             SlotCacheService slotCacheService,
             SlotCacheVersionService slotCacheVersionService,
@@ -77,6 +82,7 @@ public class SlotService {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.bookingRepository = bookingRepository;
+        this.eventSessionRepository = eventSessionRepository;
         this.dbClockRepository = dbClockRepository;
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
@@ -154,14 +160,30 @@ public class SlotService {
         AvailabilityOverride override =
                 availabilityOverrideRepository.findByUserIdAndDate(host.getId(), date).orElse(null);
 
-        // 6.5 Load bookings overlapping the day in UTC.
+        // 6.5 Load conflict windows overlapping the day in UTC.
+        //     ONE_ON_ONE: load PENDING+CONFIRMED bookings from the bookings table.
+        //     GROUP:      load FULL sessions from event_sessions; bookings table unused.
         Instant dayStartUtc = timeConversionService.dayStartUtc(date, host.getTimezone());
         Instant dayEndUtc = timeConversionService.dayEndUtcExclusive(date, host.getTimezone());
-        List<Booking> dayBookings = bookingRepository
-                .findActiveOverlappingBookings(host.getId(), dayStartUtc, dayEndUtc);
-        List<BookingWindow> bookingWindows = new ArrayList<>(dayBookings.size());
-        for (Booking booking : dayBookings) {
-            bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));
+
+        List<BookingWindow> bookingWindows;
+        List<BookingWindow> fullSessionWindows;
+        if (eventType.getKind() == EventKind.GROUP) {
+            bookingWindows = List.of();
+            List<EventSession> fullSessions = eventSessionRepository.findFullSessionsInRange(
+                    host.getId(), eventType.getId(), dayStartUtc, dayEndUtc);
+            fullSessionWindows = new ArrayList<>(fullSessions.size());
+            for (EventSession session : fullSessions) {
+                fullSessionWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
+            }
+        } else {
+            List<Booking> dayBookings = bookingRepository
+                    .findActiveOverlappingBookings(host.getId(), dayStartUtc, dayEndUtc);
+            bookingWindows = new ArrayList<>(dayBookings.size());
+            for (Booking booking : dayBookings) {
+                bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));
+            }
+            fullSessionWindows = List.of();
         }
 
         // 6.6 Calendar busy — resolve bindings according to availabilityMode.
@@ -189,6 +211,7 @@ public class SlotService {
                 override,
                 eventType,
                 bookingWindows,
+                fullSessionWindows,
                 calendarBusy,
                 now);
 
@@ -238,6 +261,7 @@ public class SlotService {
                 input.rules(),
                 input.override(),
                 input.eventType(),
+                List.of(),
                 List.of(),
                 List.of(),
                 input.now()));

@@ -17,6 +17,22 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
         UUID getBookingId();
     }
 
+    interface SessionSyncRow {
+        UUID getSyncJobId();
+        String getProvider();
+        String getSyncStatus();
+        String getDesiredAction();
+        String getExternalEventId();
+        String getProviderEventUrl();
+        String getConferenceUrl();
+        String getConferenceProvider();
+        String getLastError();
+        Integer getAttemptCount();
+        Instant getNextRetryAt();
+        Long getOwnershipVersion();
+        Instant getUpdatedAt();
+    }
+
     Optional<CalendarSyncJob> findByInternalRefTypeAndInternalRefIdAndProvider(
             InternalRefType internalRefType, UUID internalRefId, String provider);
 
@@ -117,6 +133,26 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             RETURNING id
             """, nativeQuery = true)
     List<UUID> claimPendingBatch(@Param("now") Instant now, @Param("batchSize") int batchSize);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'PROCESSING',
+                version = version + 1,
+                updated_at = NOW()
+            WHERE id IN (
+                SELECT id
+                FROM calendar_sync_jobs
+                WHERE status = 'PENDING'
+                  AND internal_ref_type = 'SESSION'
+                  AND next_retry_at <= :now
+                ORDER BY next_retry_at, created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT :batchSize
+            )
+            RETURNING id
+            """, nativeQuery = true)
+    List<UUID> claimPendingBatchForSessions(@Param("now") Instant now, @Param("batchSize") int batchSize);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
@@ -233,6 +269,29 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
 
     @Query("select j from CalendarSyncJob j where j.status = :status")
     List<CalendarSyncJob> findByStatus(@Param("status") SyncJobStatus status);
+
+    @Query(value = """
+            SELECT
+                j.id AS syncJobId,
+                j.provider AS provider,
+                j.status AS syncStatus,
+                j.desired_action AS desiredAction,
+                j.external_event_id AS externalEventId,
+                j.provider_event_url AS providerEventUrl,
+                j.conference_url AS conferenceUrl,
+                j.conference_provider AS conferenceProvider,
+                j.last_error AS lastError,
+                j.attempt_count AS attemptCount,
+                j.next_retry_at AS nextRetryAt,
+                j.ownership_version AS ownershipVersion,
+                j.updated_at AS updatedAt
+            FROM calendar_sync_jobs j
+            WHERE j.internal_ref_type = 'SESSION'
+              AND j.internal_ref_id = :sessionId
+            ORDER BY j.updated_at DESC
+            LIMIT 1
+            """, nativeQuery = true)
+    List<SessionSyncRow> findLatestSessionSyncRow(@Param("sessionId") UUID sessionId);
 
     @Query(value = """
             SELECT DISTINCT j.internal_ref_id AS bookingId

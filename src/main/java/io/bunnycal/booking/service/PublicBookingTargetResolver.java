@@ -1,5 +1,6 @@
 package io.bunnycal.booking.service;
 
+import io.bunnycal.availability.domain.EventKind;
 import java.util.UUID;
 
 public interface PublicBookingTargetResolver {
@@ -16,6 +17,8 @@ public interface PublicBookingTargetResolver {
                           String eventDescription,
                           String eventLocation,
                           java.time.Duration duration,
-                          java.time.Duration holdDuration) {
+                          java.time.Duration holdDuration,
+                          EventKind kind,
+                          int capacity) {
     }
 }

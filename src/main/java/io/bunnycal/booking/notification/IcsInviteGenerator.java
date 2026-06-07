@@ -62,6 +62,48 @@ public class IcsInviteGenerator {
     }
 
 
+    public String buildGroupRequest(UUID sessionId,
+                                     String summary,
+                                     String description,
+                                     Instant start,
+                                     Instant end,
+                                     String organizerName,
+                                     String organizerEmail,
+                                     List<GroupAttendee> attendees,
+                                     int sequence,
+                                     ConferenceDetails conferenceDetails) {
+        List<Participant> participants = buildGroupAttendees(attendees, organizerEmail);
+        return build("REQUEST", sessionId, summary, description, start, end, organizerName, organizerEmail,
+                participants, sequence, true, conferenceDetails);
+    }
+
+    public String buildGroupCancel(UUID sessionId,
+                                    String summary,
+                                    String description,
+                                    Instant start,
+                                    Instant end,
+                                    String organizerName,
+                                    String organizerEmail,
+                                    List<GroupAttendee> attendees,
+                                    int sequence,
+                                    ConferenceDetails conferenceDetails) {
+        List<Participant> participants = buildGroupAttendees(attendees, organizerEmail);
+        return build("CANCEL", sessionId, summary, description, start, end, organizerName, organizerEmail,
+                participants, sequence, true, conferenceDetails);
+    }
+
+    public record GroupAttendee(String name, String email) {}
+
+    private static List<Participant> buildGroupAttendees(List<GroupAttendee> attendees, String organizerEmail) {
+        Map<String, Participant> deduped = new LinkedHashMap<>();
+        if (attendees != null) {
+            for (GroupAttendee a : attendees) {
+                addAttendee(deduped, a.name(), a.email(), organizerEmail, ParticipantRole.GUEST);
+            }
+        }
+        return new ArrayList<>(deduped.values());
+    }
+
     public String buildConnectedSnapshot(UUID bookingId,
                                          String summary,
                                          String description,

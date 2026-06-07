@@ -1,0 +1,383 @@
+package io.bunnycal.session.service;
+
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.outbox.OutboxPublisher;
+import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.booking.service.BookingActionType;
+import io.bunnycal.booking.service.GuestCapabilityTokenService;
+import io.bunnycal.booking.service.TokenCreatorType;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.domain.RegistrationStatus;
+import io.bunnycal.session.domain.SessionRegistration;
+import io.bunnycal.session.domain.SessionStatus;
+import io.bunnycal.session.repository.EventSessionRepository;
+import io.bunnycal.session.repository.SessionRegistrationRepository;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class SessionService {
+
+    private static final Logger log = LoggerFactory.getLogger(SessionService.class);
+
+    private final EventSessionRepository sessionRepository;
+    private final SessionRegistrationRepository registrationRepository;
+    private final OutboxPublisher outboxPublisher;
+    private final GuestCapabilityTokenService tokenService;
+    private final SlotCacheVersionService slotCacheVersionService;
+    private final UserRepository userRepository;
+    private final EventTypeRepository eventTypeRepository;
+
+    public SessionService(EventSessionRepository sessionRepository,
+                          SessionRegistrationRepository registrationRepository,
+                          OutboxPublisher outboxPublisher,
+                          GuestCapabilityTokenService tokenService,
+                          SlotCacheVersionService slotCacheVersionService,
+                          UserRepository userRepository,
+                          EventTypeRepository eventTypeRepository) {
+        this.sessionRepository = sessionRepository;
+        this.registrationRepository = registrationRepository;
+        this.outboxPublisher = outboxPublisher;
+        this.tokenService = tokenService;
+        this.slotCacheVersionService = slotCacheVersionService;
+        this.userRepository = userRepository;
+        this.eventTypeRepository = eventTypeRepository;
+    }
+
+    /**
+     * Finds an existing OPEN session for the given slot, or creates one.
+     * The advisory lock on (hostId, startTime) must be acquired before this is called,
+     * which happens automatically within joinSession's transaction.
+     */
+    @Transactional
+    public JoinSessionResult joinSession(UUID hostId,
+                                         UUID eventTypeId,
+                                         Instant startTime,
+                                         Instant endTime,
+                                         int capacity,
+                                         String guestEmail,
+                                         String guestName,
+                                         Duration holdDuration) {
+        // 1. Acquire advisory lock for this (host, slot) pair — serializes all concurrent joins.
+        sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(startTime.getEpochSecond()));
+
+        // 2. Find or create the session.
+        EventSession session = findOrCreateSession(hostId, eventTypeId, startTime, endTime, capacity);
+
+        // 3. Capacity and status checks (after lock — safe to read confirmed_count).
+        if (session.getStatus() == SessionStatus.CANCELLED) {
+            throw new CustomException(ErrorCode.SESSION_CANCELLED);
+        }
+        if (session.getConfirmedCount() >= session.getCapacity()) {
+            throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
+        }
+
+        // 4. Insert PENDING registration.
+        Instant expiresAt = holdDuration != null ? Instant.now().plus(holdDuration) : null;
+        SessionRegistration registration;
+        try {
+            registration = registrationRepository.save(SessionRegistration.builder()
+                    .sessionId(session.getId())
+                    .hostId(hostId)
+                    .guestEmail(guestEmail)
+                    .guestName(guestName)
+                    .status(RegistrationStatus.PENDING)
+                    .expiresAt(expiresAt)
+                    .build());
+        } catch (DataIntegrityViolationException e) {
+            throw new CustomException(ErrorCode.ALREADY_REGISTERED);
+        }
+
+        // 5. Publish outbox event.
+        outboxPublisher.publish("Session", session.getId(), hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_HELD", 1,
+                        new RegistrationHeldEvent(session.getId(), registration.getId(),
+                                hostId, guestEmail, guestName, startTime, endTime)));
+
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+
+        return new JoinSessionResult(session.getId(), registration.getId(), expiresAt);
+    }
+
+    /**
+     * Confirms a PENDING registration.
+     *
+     * Order: reserve seat first (count++), then flip status to CONFIRMED.
+     * If either step fails, the DB transaction rolls back both atomically — no
+     * compensating write is needed.
+     */
+    @Transactional
+    public ConfirmRegistrationResult confirmRegistration(UUID sessionId,
+                                                          UUID registrationId,
+                                                          UUID hostId) {
+        // 1. Load registration — verify it exists and belongs to this host/session.
+        SessionRegistration reg = registrationRepository.findByIdAndHostId(registrationId, hostId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Registration not found."));
+
+        if (reg.getStatus() == RegistrationStatus.CONFIRMED) {
+            // Idempotent — already confirmed; re-issue token.
+            String token = tokenService.issueToken(registrationId, hostId,
+                    BookingActionType.MANAGE_BOOKING, Duration.ofDays(365),
+                    TokenCreatorType.SYSTEM);
+            return new ConfirmRegistrationResult(sessionId, registrationId, hostId, token);
+        }
+
+        if (reg.getStatus() == RegistrationStatus.CANCELLED) {
+            throw new CustomException(ErrorCode.REGISTRATION_EXPIRED,
+                    "Registration has been cancelled.");
+        }
+
+        // Check expiry before acquiring any write locks.
+        if (reg.getExpiresAt() != null && reg.getExpiresAt().isBefore(Instant.now())) {
+            throw new CustomException(ErrorCode.REGISTRATION_EXPIRED);
+        }
+
+        // 2. Acquire slot-level advisory lock to serialize all confirms for this slot.
+        EventSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Session not found."));
+        sessionRepository.acquireSlotLock(hostId.toString(),
+                String.valueOf(session.getStartTime().getEpochSecond()));
+
+        // 3. Reserve seat first: CAS confirmed_count++ on the session.
+        //    This query also enforces confirmed_count < capacity.
+        int sessionUpdated = sessionRepository.incrementConfirmedCount(sessionId);
+        if (sessionUpdated == 0) {
+            throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
+        }
+
+        // 4. CAS registration PENDING → CONFIRMED.
+        //    If this fails the transaction rolls back step 3 automatically.
+        int regUpdated = registrationRepository.confirmRegistration(
+                registrationId, reg.getVersion(), Instant.now());
+        if (regUpdated == 0) {
+            // Expired or concurrently cancelled between our check and this update.
+            throw new CustomException(ErrorCode.REGISTRATION_EXPIRED);
+        }
+
+        // 5. Issue capability token for future cancellation.
+        String token = tokenService.issueToken(registrationId, hostId,
+                BookingActionType.MANAGE_BOOKING, Duration.ofDays(365),
+                TokenCreatorType.SYSTEM);
+
+        // 6. Publish outbox event with confirmed attendee list embedded in payload.
+        // Re-read session to get the updated calendar_sequence (incremented in step 3).
+        EventSession updatedSession = sessionRepository.findById(sessionId)
+                .orElse(session);
+        List<SessionRegistration> confirmedAttendees =
+                registrationRepository.findConfirmedBySessionId(sessionId);
+        SessionContext ctx = resolveContext(hostId, session.getEventTypeId());
+        outboxPublisher.publish("Session", sessionId, hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CONFIRMED", 1,
+                        new RegistrationConfirmedEvent(sessionId, registrationId, hostId,
+                                ctx.hostUsername(), ctx.eventName(), ctx.eventSlug(),
+                                reg.getGuestEmail(), reg.getGuestName(),
+                                session.getStartTime(), session.getEndTime(),
+                                (int) updatedSession.getCalendarSequence(),
+                                token,
+                                confirmedAttendees.stream()
+                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName()))
+                                        .toList())));
+
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+
+        return new ConfirmRegistrationResult(sessionId, registrationId, hostId, token);
+    }
+
+    /**
+     * Cancels a single registration (attendee self-cancel or host removal).
+     * If the registration was CONFIRMED, the session's confirmed_count is decremented.
+     */
+    @Transactional
+    public void cancelRegistration(UUID sessionId,
+                                   UUID registrationId,
+                                   UUID hostId,
+                                   String rawToken) {
+        // 1. Validate capability token.
+        if (rawToken != null && !tokenService.allows(registrationId, hostId, rawToken,
+                BookingActionType.MANAGE_BOOKING)) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
+
+        SessionRegistration reg = registrationRepository.findByIdAndHostId(registrationId, hostId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Registration not found."));
+
+        if (reg.getStatus() == RegistrationStatus.CANCELLED) {
+            return; // already cancelled — idempotent
+        }
+
+        boolean wasConfirmed = reg.getStatus() == RegistrationStatus.CONFIRMED;
+
+        // 2. CAS cancel the registration.
+        int updated = registrationRepository.cancelRegistration(registrationId, reg.getVersion());
+        if (updated == 0) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Registration was modified concurrently.");
+        }
+
+        // 3. Decrement seat count if it was confirmed.
+        if (wasConfirmed) {
+            sessionRepository.decrementConfirmedCount(sessionId);
+        }
+
+        // 4. Revoke token.
+        if (rawToken != null) {
+            tokenService.revokeByRawToken(rawToken);
+        }
+
+        // 5. Publish outbox event.
+        EventSession sessionForCancel = sessionRepository.findById(sessionId).orElse(null);
+        SessionContext ctxCancel = sessionForCancel != null
+                ? resolveContext(hostId, sessionForCancel.getEventTypeId())
+                : new SessionContext(null, null, null);
+        Instant startTimeForCancel = sessionForCancel != null ? sessionForCancel.getStartTime() : null;
+        Instant endTimeForCancel = sessionForCancel != null ? sessionForCancel.getEndTime() : null;
+        int calSeqForCancel = sessionForCancel != null ? (int) sessionForCancel.getCalendarSequence() : 0;
+        outboxPublisher.publish("Session", sessionId, hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CANCELLED", 1,
+                        new RegistrationCancelledEvent(sessionId, registrationId, hostId,
+                                ctxCancel.hostUsername(), ctxCancel.eventName(), ctxCancel.eventSlug(),
+                                reg.getGuestEmail(), reg.getGuestName(), wasConfirmed,
+                                startTimeForCancel, endTimeForCancel, calSeqForCancel)));
+
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+    }
+
+    /**
+     * Host cancels the entire session. Atomically zeros confirmed_count and cancels
+     * all active registrations in the same transaction.
+     */
+    @Transactional
+    public void cancelSession(UUID sessionId, UUID hostId) {
+        EventSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Session not found."));
+
+        if (!session.getHostId().equals(hostId)) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
+
+        if (session.getStatus() == SessionStatus.CANCELLED
+                || session.getStatus() == SessionStatus.COMPLETED) {
+            return; // idempotent
+        }
+
+        // Load attendee list before cancellation for notification payload.
+        List<SessionRegistration> activeRegs =
+                registrationRepository.findActiveBySessionId(sessionId);
+
+        // CAS cancel session + zero confirmed_count atomically.
+        int updated = sessionRepository.cancelSession(sessionId, hostId);
+        if (updated == 0) {
+            log.warn("cancelSession noop sessionId={} — already terminal", sessionId);
+            return;
+        }
+
+        // Bulk cancel all active registrations.
+        registrationRepository.bulkCancelBySessionId(sessionId);
+
+        // Publish outbox event with full attendee list embedded.
+        SessionContext ctxSessionCancel = resolveContext(hostId, session.getEventTypeId());
+        outboxPublisher.publish("Session", sessionId, hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "SESSION_CANCELLED", 1,
+                        new SessionCancelledEvent(sessionId, hostId,
+                                ctxSessionCancel.hostUsername(), ctxSessionCancel.eventName(), ctxSessionCancel.eventSlug(),
+                                session.getStartTime(), session.getEndTime(),
+                                (int) session.getCalendarSequence(),
+                                activeRegs.stream()
+                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName()))
+                                        .toList())));
+
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+    }
+
+    /**
+     * Expires a single PENDING registration. Called from RegistrationExpiryScheduler.
+     * Does not decrement confirmed_count because PENDING registrations never increment it.
+     */
+    @Transactional
+    public void expireRegistration(UUID registrationId, long version) {
+        registrationRepository.expireRegistration(registrationId, version);
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────────────
+
+    private record SessionContext(String hostUsername, String eventName, String eventSlug) {}
+
+    private SessionContext resolveContext(UUID hostId, UUID eventTypeId) {
+        String username = userRepository.findById(hostId).map(User::getUsername).orElse(null);
+        EventType et = eventTypeRepository.findByIdAndUserId(eventTypeId, hostId).orElse(null);
+        String name = et != null ? et.getName() : null;
+        String slug = et != null ? et.getSlug() : null;
+        return new SessionContext(username, name, slug);
+    }
+
+    private EventSession findOrCreateSession(UUID hostId, UUID eventTypeId,
+                                              Instant startTime, Instant endTime,
+                                              int capacity) {
+        return sessionRepository
+                .findByHostIdAndEventTypeIdAndStartTime(hostId, eventTypeId, startTime)
+                .orElseGet(() -> {
+                    try {
+                        return sessionRepository.save(EventSession.builder()
+                                .hostId(hostId)
+                                .eventTypeId(eventTypeId)
+                                .startTime(startTime)
+                                .endTime(endTime)
+                                .capacity(capacity)
+                                .status(SessionStatus.OPEN)
+                                .build());
+                    } catch (DataIntegrityViolationException e) {
+                        // Concurrent insert won the race; re-select the winner.
+                        return sessionRepository
+                                .findByHostIdAndEventTypeIdAndStartTime(hostId, eventTypeId, startTime)
+                                .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                                        "Session creation race: re-select failed."));
+                    }
+                });
+    }
+
+    // ── Payload types (package-private for test visibility) ──────────────────
+
+    record RegistrationHeldEvent(UUID sessionId, UUID registrationId, UUID hostId,
+                                  String guestEmail, String guestName,
+                                  Instant startTime, Instant endTime) {}
+
+    record RegistrationConfirmedEvent(UUID sessionId, UUID registrationId, UUID hostId,
+                                       String hostUsername, String eventName, String eventSlug,
+                                       String guestEmail, String guestName,
+                                       Instant startTime, Instant endTime,
+                                       int calendarSequence,
+                                       String capabilityToken,
+                                       List<AttendeeInfo> allConfirmedAttendees) {}
+
+    record RegistrationCancelledEvent(UUID sessionId, UUID registrationId, UUID hostId,
+                                       String hostUsername, String eventName, String eventSlug,
+                                       String guestEmail, String guestName,
+                                       boolean wasConfirmed,
+                                       Instant startTime, Instant endTime,
+                                       int calendarSequence) {}
+
+    record SessionCancelledEvent(UUID sessionId, UUID hostId,
+                                  String hostUsername, String eventName, String eventSlug,
+                                  Instant startTime, Instant endTime,
+                                  int calendarSequence,
+                                  List<AttendeeInfo> attendees) {}
+
+    public record AttendeeInfo(String email, String name) {}
+}

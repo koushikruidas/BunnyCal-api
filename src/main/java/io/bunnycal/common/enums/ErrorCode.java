@@ -38,7 +38,17 @@ public enum ErrorCode {
     INVALID_STATE_TRANSITION("INVALID_STATE_TRANSITION",
             "Booking is not in the expected state or version — concurrent update may have occurred."),
     CONFERENCING_DISCONNECT_NOT_SUPPORTED("CONFERENCING_DISCONNECT_NOT_SUPPORTED",
-            "This conferencing provider cannot be disconnected on its own.");
+            "This conferencing provider cannot be disconnected on its own."),
+    GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED("GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED",
+            "Group event attendees cannot reschedule. Cancel your registration and re-book."),
+    SESSION_CAPACITY_FULL("SESSION_CAPACITY_FULL",
+            "This session is fully booked. No seats are available."),
+    SESSION_CANCELLED("SESSION_CANCELLED",
+            "This session has been cancelled."),
+    ALREADY_REGISTERED("ALREADY_REGISTERED",
+            "You are already registered for this session."),
+    REGISTRATION_EXPIRED("REGISTRATION_EXPIRED",
+            "Your registration hold has expired. Please start over.");
 
     private final String code;
     private final String message;

@@ -1,5 +1,6 @@
 package io.bunnycal.booking.service;
 
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
@@ -22,6 +23,10 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
+import io.bunnycal.session.repository.SessionRegistrationRepository;
+import io.bunnycal.session.service.ConfirmRegistrationResult;
+import io.bunnycal.session.service.JoinSessionResult;
+import io.bunnycal.session.service.SessionService;
 import io.bunnycal.sync.FencingTokenGenerator;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -52,6 +57,8 @@ public class PublicBookingService {
     private final TimeConversionService timeConversionService;
     private final BookingLifecycleService bookingLifecycleService;
     private final GuestCapabilityTokenService guestCapabilityTokenService;
+    private final SessionService sessionService;
+    private final SessionRegistrationRepository sessionRegistrationRepository;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
@@ -68,6 +75,8 @@ public class PublicBookingService {
                                 TimeConversionService timeConversionService,
                                 BookingLifecycleService bookingLifecycleService,
                                 GuestCapabilityTokenService guestCapabilityTokenService,
+                                SessionService sessionService,
+                                SessionRegistrationRepository sessionRegistrationRepository,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 // projection-first availability. If the connection's last
@@ -88,6 +97,8 @@ public class PublicBookingService {
         this.timeConversionService = timeConversionService;
         this.bookingLifecycleService = bookingLifecycleService;
         this.guestCapabilityTokenService = guestCapabilityTokenService;
+        this.sessionService = sessionService;
+        this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
@@ -166,6 +177,15 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+
+        if (target.kind() == EventKind.GROUP) {
+            return holdGroupRegistration(target, request);
+        }
+        return holdOneOnOneBooking(target, request);
+    }
+
+    private PublicHoldResponse holdOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                   PublicBookRequest request) {
         Instant start = request.startTime();
         Instant end = start.plus(target.duration());
 
@@ -189,7 +209,7 @@ public class PublicBookingService {
 
         var state = bookingRepository.findStateByIdAndHostAndEventType(booking.getId(), target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
-        return new PublicHoldResponse(
+        return PublicHoldResponse.oneOnOne(
                 booking.getId(),
                 state.getExpiresAt(),
                 booking.getStartTime(),
@@ -197,11 +217,51 @@ public class PublicBookingService {
         );
     }
 
+    private PublicHoldResponse holdGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
+                                                     PublicBookRequest request) {
+        Instant start = request.startTime();
+        Instant end = start.plus(target.duration());
+
+        JoinSessionResult result = sessionService.joinSession(
+                target.userId(),
+                target.eventTypeId(),
+                start,
+                end,
+                target.capacity(),
+                normalizeGuestEmail(request.guestEmail()),
+                normalizeGuestName(request.guestName()),
+                target.holdDuration()
+        );
+        log.info("group_registration_held registrationId={} sessionId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={}",
+                result.registrationId(),
+                result.sessionId(),
+                target.userId(),
+                target.eventTypeId(),
+                start,
+                end,
+                maskEmail(request.guestEmail()));
+
+        return new PublicHoldResponse(
+                result.registrationId(),
+                result.expiresAt(),
+                start,
+                end,
+                result.sessionId()
+        );
+    }
+
     @Transactional
     public PublicConfirmResponse confirm(String username, String eventTypeSlug, UUID bookingId) {
-        // Resolve resources to ensure URL ownership is valid.
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
+        if (target.kind() == EventKind.GROUP) {
+            return confirmGroupRegistration(target, bookingId);
+        }
+        return confirmOneOnOneBooking(target, bookingId);
+    }
+
+    private PublicConfirmResponse confirmOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                         UUID bookingId) {
         bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
@@ -228,7 +288,27 @@ public class PublicBookingService {
                 guestManageTokenTtl,
                 TokenCreatorType.SYSTEM
         );
-        return new PublicConfirmResponse(bookingId, "SYNCING", manageToken);
+        return PublicConfirmResponse.oneOnOne(bookingId, "SYNCING", manageToken);
+    }
+
+    private PublicConfirmResponse confirmGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
+                                                           UUID registrationId) {
+        // GROUP confirm bypasses calendar conflict check — session occupancy is the
+        // authority; the slot was validated when the attendee joined.
+        ConfirmRegistrationResult result = sessionService.confirmRegistration(
+                resolveSessionId(registrationId, target.userId()),
+                registrationId,
+                target.userId()
+        );
+        log.info("group_registration_confirmed registrationId={} sessionId={} hostId={}",
+                registrationId, result.sessionId(), target.userId());
+        return new PublicConfirmResponse(registrationId, "SYNCING", result.capabilityToken(), result.sessionId());
+    }
+
+    private UUID resolveSessionId(UUID registrationId, UUID hostId) {
+        return sessionRegistrationRepository.findByIdAndHostId(registrationId, hostId)
+                .map(r -> r.getSessionId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Registration not found."));
     }
 
     @Transactional(readOnly = true)
@@ -272,6 +352,10 @@ public class PublicBookingService {
     @Transactional
     public PublicBookingStatusResponse cancel(String username, String eventTypeSlug, UUID bookingId, String guestCapabilityToken) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+
+        if (target.kind() == EventKind.GROUP) {
+            return cancelGroupRegistration(target, bookingId, guestCapabilityToken);
+        }
         var booking = bookingLifecycleService.cancelAsGuest(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
         return new PublicBookingStatusResponse(
                 bookingId,
@@ -280,6 +364,17 @@ public class PublicBookingService {
                 booking.getEndTime(),
                 null
         );
+    }
+
+    private PublicBookingStatusResponse cancelGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
+                                                                 UUID registrationId,
+                                                                 String guestCapabilityToken) {
+        UUID sessionId = resolveSessionId(registrationId, target.userId());
+        sessionService.cancelRegistration(sessionId, registrationId, target.userId(), guestCapabilityToken);
+        log.info("group_registration_cancelled registrationId={} sessionId={} hostId={}",
+                registrationId, sessionId, target.userId());
+        // Return a minimal status response; start/end times are on the session, not the registration.
+        return new PublicBookingStatusResponse(registrationId, "CANCELLED", null, null, null);
     }
 
     @Transactional
@@ -292,6 +387,10 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+
+        if (target.kind() == EventKind.GROUP) {
+            throw new CustomException(ErrorCode.GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED);
+        }
         bookingLifecycleService.authorizeGuestReschedule(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
 
         var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())

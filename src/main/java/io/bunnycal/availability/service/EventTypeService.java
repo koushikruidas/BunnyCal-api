@@ -3,6 +3,7 @@ package io.bunnycal.availability.service;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.AvailabilityMode;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
@@ -48,6 +49,9 @@ public class EventTypeService {
                 ? AvailabilityMode.SELECTED
                 : AvailabilityMode.ALL_CONNECTED;
 
+        EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        int capacity = request.capacity() != null ? request.capacity() : 1;
+
         EventType eventType = EventType.builder()
                 .userId(userId)
                 .name(request.name().trim())
@@ -70,6 +74,8 @@ public class EventTypeService {
                 .minNotice(Duration.ofMinutes(request.minNoticeMinutes()))
                 .maxAdvance(Duration.ofDays(request.maxAdvanceDays()))
                 .holdDuration(Duration.ofMinutes(request.holdDurationMinutes()))
+                .kind(kind)
+                .capacity(capacity)
                 .build();
 
         EventType saved = eventTypeRepository.save(eventType);
@@ -103,6 +109,14 @@ public class EventTypeService {
                 || request.maxAdvanceDays() == null || request.maxAdvanceDays() < 0
                 || request.holdDurationMinutes() == null || request.holdDurationMinutes() <= 0) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "buffer/notice/advance/hold values are invalid.");
+        }
+        EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        int capacity = request.capacity() != null ? request.capacity() : 1;
+        if (kind == EventKind.ONE_ON_ONE && capacity != 1) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "ONE_ON_ONE event types must have capacity=1.");
+        }
+        if (kind == EventKind.GROUP && capacity < 2) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "GROUP event types must have capacity >= 2.");
         }
     }
 
@@ -161,6 +175,8 @@ public class EventTypeService {
                 eventType.getName(),
                 eventType.getSlug(),
                 "/public/" + username + "/" + eventType.getSlug(),
+                eventType.getKind(),
+                eventType.getCapacity(),
                 availability,
                 conference,
                 projectionDestination

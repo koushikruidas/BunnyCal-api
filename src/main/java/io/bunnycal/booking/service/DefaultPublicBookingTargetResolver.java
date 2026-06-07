@@ -2,6 +2,7 @@ package io.bunnycal.booking.service;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.draft.domain.DraftLifecycleState;
@@ -49,7 +50,9 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
                     eventType.getDescription(),
                     eventType.getLocation(),
                     eventType.getDuration(),
-                    eventType.getHoldDuration()
+                    eventType.getHoldDuration(),
+                    eventType.getKind() != null ? eventType.getKind() : EventKind.ONE_ON_ONE,
+                    eventType.getCapacity()
             );
         }
         User user = userRepository.findByUsername(username)
@@ -68,7 +71,9 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
                 eventType.getDescription(),
                 eventType.getLocation(),
                 eventType.getDuration(),
-                eventType.getHoldDuration()
+                eventType.getHoldDuration(),
+                eventType.getKind() != null ? eventType.getKind() : EventKind.ONE_ON_ONE,
+                eventType.getCapacity()
         );
     }
 }

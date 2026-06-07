@@ -3,6 +3,9 @@ package io.bunnycal.booking.outbox;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.repository.EventSessionRepository;
+import io.bunnycal.session.notification.SessionNotificationService;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.booking.notification.BookingNotificationService;
 import io.bunnycal.booking.contract.BookingState;
@@ -24,37 +27,54 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingOutboxEventDispatcher.class);
     private static final String BOOKING_AGGREGATE = "Booking";
+    private static final String SESSION_AGGREGATE = "Session";
 
     private final CalendarSyncJobRepository calendarSyncJobRepository;
     private final BookingRepository bookingRepository;
     private final EventTypeRepository eventTypeRepository;
+    private final EventSessionRepository eventSessionRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final BookingOwnershipService bookingOwnershipService;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
+    @Nullable
+    private final SessionNotificationService sessionNotificationService;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
 
     public LoggingOutboxEventDispatcher(CalendarSyncJobRepository calendarSyncJobRepository,
                                         BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
+                                        EventSessionRepository eventSessionRepository,
                                         CalendarConnectionRepository calendarConnectionRepository,
                                         BookingOwnershipService bookingOwnershipService,
                                         @Nullable BookingNotificationService bookingNotificationService,
+                                        @Nullable SessionNotificationService sessionNotificationService,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
+        this.eventSessionRepository = eventSessionRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingOwnershipService = bookingOwnershipService;
         this.bookingNotificationService = bookingNotificationService;
+        this.sessionNotificationService = sessionNotificationService;
         this.invariantMonitor = invariantMonitor;
         this.meterRegistry = meterRegistry;
     }
 
     @Override
     public void dispatch(OutboxEvent event) {
+        // Session aggregate: route to session notification + session sync job creation.
+        if (SESSION_AGGREGATE.equals(event != null ? event.getAggregateType() : null)) {
+            if (sessionNotificationService != null) {
+                sessionNotificationService.handleSessionOutboxEvent(event);
+            }
+            createSessionSyncJobIfNeeded(event);
+            return;
+        }
+
         if (bookingNotificationService != null && !shouldDeferNotificationUntilProjection(event)) {
             bookingNotificationService.handleOutboxEvent(event);
         }
@@ -153,6 +173,41 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
             return "DELETE";
         }
         return null;
+    }
+
+    private void createSessionSyncJobIfNeeded(OutboxEvent event) {
+        if (event == null || event.getAggregateId() == null) return;
+        String desiredAction = mapSessionDesiredAction(event.getEventType());
+        if (desiredAction == null) return;
+        UUID sessionId = event.getAggregateId();
+        UUID hostId = event.getPartitionKey();
+        long sessionSequence = eventSessionRepository.findById(sessionId)
+                .map(EventSession::getCalendarSequence)
+                .orElse(0L);
+        calendarSyncJobRepository.upsertPendingJob(
+                UUID.randomUUID(),
+                "SESSION",
+                sessionId,
+                "DEFERRED",  // provider resolved at execution time by SessionSyncWorker
+                desiredAction,
+                null,
+                hostId,
+                null,
+                sessionSequence
+        );
+        log.info("outbox.session_sync_job_created sessionId={} action={} sessionSequence={}",
+                sessionId, desiredAction, sessionSequence);
+    }
+
+    private static String mapSessionDesiredAction(String eventType) {
+        if (eventType == null) return null;
+        return switch (eventType) {
+            case "REGISTRATION_CONFIRMED" -> "UPDATE";
+            case "REGISTRATION_CANCELLED" -> "UPDATE";
+            case "SESSION_CANCELLED" -> "DELETE";
+            case "SESSION_RESCHEDULED" -> "UPDATE";
+            default -> null;
+        };
     }
 
     private void emitSyncEnqueueInvariant(OutboxEvent event, String desiredAction) {

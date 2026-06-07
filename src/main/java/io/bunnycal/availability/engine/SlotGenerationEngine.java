@@ -42,7 +42,9 @@ public final class SlotGenerationEngine {
 
         List<TimeInterval> candidateSlots = generateGridSlots(normalizedAvailability, input.eventType(), dayStart);
 
-        List<TimeInterval> dbBusy = toBusyIntervals(dayStart, dayEnd, input.bookings(), input.zoneId());
+        List<TimeInterval> bookingsBusy = toBusyIntervals(dayStart, dayEnd, input.bookings(), input.zoneId());
+        List<TimeInterval> fullSessionsBusy = toBusyIntervals(dayStart, dayEnd, input.fullSessions(), input.zoneId());
+        List<TimeInterval> dbBusy = mergeLists(bookingsBusy, fullSessionsBusy);
         List<TimeInterval> withoutDbConflicts = removeOverlaps(candidateSlots, dbBusy);
 
         List<TimeInterval> calendarBusy = clipToDay(dayStart, dayEnd, input.calendarBusy() == null ? List.of() : input.calendarBusy());
@@ -71,7 +73,7 @@ public final class SlotGenerationEngine {
             List<BookingWindow> bookings,
             List<TimeInterval> calendarBusy,
             Instant now) {
-        return compute(new SlotInput(date, zoneId, rules, override, eventType, bookings, calendarBusy, now));
+        return compute(new SlotInput(date, zoneId, rules, override, eventType, bookings, List.of(), calendarBusy, now));
     }
 
     /**
@@ -359,7 +361,8 @@ public final class SlotGenerationEngine {
             List<AvailabilityRule> rules,
             AvailabilityOverride override,
             EventType eventType,
-            List<BookingWindow> bookings,
+            List<BookingWindow> bookings,       // ONE_ON_ONE: PENDING+CONFIRMED; GROUP: empty
+            List<BookingWindow> fullSessions,   // GROUP: FULL sessions to block; ONE_ON_ONE: empty
             List<TimeInterval> calendarBusy,
             Instant now) {}
 }

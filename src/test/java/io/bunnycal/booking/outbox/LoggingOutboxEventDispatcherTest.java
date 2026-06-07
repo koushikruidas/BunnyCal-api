@@ -15,6 +15,8 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -35,6 +37,8 @@ class LoggingOutboxEventDispatcherTest {
     @Mock
     private EventTypeRepository eventTypeRepository;
     @Mock
+    private EventSessionRepository eventSessionRepository;
+    @Mock
     private CalendarConnectionRepository calendarConnectionRepository;
     @Mock
     private BookingNotificationService bookingNotificationService;
@@ -51,9 +55,11 @@ class LoggingOutboxEventDispatcherTest {
                 calendarSyncJobRepository,
                 bookingRepository,
                 eventTypeRepository,
+                eventSessionRepository,
                 calendarConnectionRepository,
                 bookingOwnershipService,
                 bookingNotificationService,
+                null,
                 invariantMonitor,
                 new SimpleMeterRegistry());
     }
@@ -279,6 +285,42 @@ class LoggingOutboxEventDispatcherTest {
                 eq(hostId),
                 eq(projectionConnectionId),
                 org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void dispatch_sessionEvent_usesSessionCalendarSequenceAsOwnershipVersion() {
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Session")
+                .aggregateId(sessionId)
+                .partitionKey(hostId)
+                .eventType("REGISTRATION_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+
+        when(eventSessionRepository.findById(sessionId))
+                .thenReturn(java.util.Optional.of(EventSession.builder()
+                        .id(sessionId)
+                        .hostId(hostId)
+                        .calendarSequence(7L)
+                        .build()));
+
+        dispatcher.dispatch(event);
+
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                eq("SESSION"),
+                eq(sessionId),
+                eq("DEFERRED"),
+                eq("UPDATE"),
+                eq(null),
+                eq(hostId),
+                eq(null),
+                eq(7L));
     }
 
     private static CalendarConnection connection(UUID id, CalendarProviderType provider) {

@@ -58,6 +58,8 @@ class PublicBookingServiceTest {
     @Mock FencingTokenGenerator fencingTokenGenerator;
     @Mock BookingLifecycleService bookingLifecycleService;
     @Mock GuestCapabilityTokenService guestCapabilityTokenService;
+    @Mock io.bunnycal.session.service.SessionService sessionService;
+    @Mock io.bunnycal.session.repository.SessionRegistrationRepository sessionRegistrationRepository;
 
     private PublicBookingService service;
     private TimeConversionService timeConversionService;
@@ -81,6 +83,8 @@ class PublicBookingServiceTest {
                 timeConversionService,
                 bookingLifecycleService,
                 guestCapabilityTokenService,
+                sessionService,
+                sessionRegistrationRepository,
                 new SimpleMeterRegistry(),
                 14L,
                 120L
@@ -629,7 +633,9 @@ class PublicBookingServiceTest {
                 "desc",
                 "location",
                 Duration.ofMinutes(30),
-                Duration.ofMinutes(10)
+                Duration.ofMinutes(10),
+                io.bunnycal.availability.domain.EventKind.ONE_ON_ONE,
+                1
         );
     }
 }
