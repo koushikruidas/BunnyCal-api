@@ -232,6 +232,7 @@ public class SessionNotificationService {
             calendarPart.setContent(ics, "text/calendar; charset=UTF-8; method=" + method);
             calendarPart.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
             calendarPart.setHeader("Content-Transfer-Encoding", "8bit");
+            calendarPart.setHeader("Content-Class", "urn:content-classes:calendarmessage");
 
             MimeMultipart alternative = new MimeMultipart("alternative");
             alternative.addBodyPart(textPart);

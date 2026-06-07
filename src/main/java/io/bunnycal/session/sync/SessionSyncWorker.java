@@ -28,6 +28,7 @@ import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.sync.retry.SyncRetryPolicy;
 import io.bunnycal.sync.state.CalendarSyncJob;
+import io.bunnycal.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -98,7 +99,21 @@ public class SessionSyncWorker {
             return;
         }
         try {
-            txTemplate.executeWithoutResult(status -> syncJobRepository.findById(jobId).ifPresent(this::processOne));
+            txTemplate.executeWithoutResult(status -> {
+                syncJobRepository.claimPendingSessionJobById(jobId);
+                syncJobRepository.findById(jobId)
+                        .filter(job -> {
+                            if (job.getStatus() == SyncJobStatus.PROCESSING) {
+                                return true;
+                            }
+                            if (job.getStatus() == SyncJobStatus.PENDING) {
+                                log.warn("session_sync_skip_unclaimed_pending jobId={} sessionId={}",
+                                        job.getId(), job.getInternalRefId());
+                            }
+                            return false;
+                        })
+                        .ifPresent(this::processOne);
+            });
         } catch (RuntimeException ex) {
             meterRegistry.counter("session_sync_failure_count").increment();
             log.warn("session_sync_uncaught jobId={}", jobId, ex);
@@ -174,14 +189,23 @@ public class SessionSyncWorker {
             ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(
                     conferencingInstruction, "session_event_type", Instant.now());
 
-            switch (job.getDesiredAction()) {
-                case CREATE -> processCreate(job, session, connection, provider,
-                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
-                        conferencingInstruction, conferenceDetails);
-                case UPDATE -> processUpdate(job, session, connection, provider,
-                        title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
-                        conferencingInstruction, conferenceDetails);
+            boolean processed = switch (job.getDesiredAction()) {
+                case CREATE -> {
+                    processCreate(job, session, connection, provider,
+                            title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                            conferencingInstruction, conferenceDetails);
+                    yield true;
+                }
+                case UPDATE -> {
+                    processUpdate(job, session, connection, provider,
+                            title, description, host.getEmail(), attendees, targetCalendarId, idempotencyKey,
+                            conferencingInstruction, conferenceDetails);
+                    yield true;
+                }
                 case DELETE -> processDelete(job, connection, provider);
+            };
+            if (!processed) {
+                return;
             }
             meterRegistry.counter("session_sync_success_count").increment();
         } catch (CalendarClientException ex) {
@@ -262,11 +286,20 @@ public class SessionSyncWorker {
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
 
-    private void processDelete(CalendarSyncJob job, CalendarConnection connection, CalendarProvider provider) {
+    private boolean processDelete(CalendarSyncJob job, CalendarConnection connection, CalendarProvider provider) {
         String externalId = job.getExternalEventId();
         if (externalId == null || externalId.isBlank()) {
-            syncJobRepository.markSynced(job.getId(), job.getVersion(), null);
-            return;
+            externalId = syncJobRepository.findLatestSessionSyncRow(job.getInternalRefId()).stream()
+                    .map(CalendarSyncJobRepository.SessionSyncRow::getExternalEventId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .findFirst()
+                    .orElse(null);
+        }
+        if (externalId == null || externalId.isBlank()) {
+            log.error("session_sync_delete_missing_external_event_id sessionId={} jobId={} provider={}",
+                    job.getInternalRefId(), job.getId(), connection.getProvider());
+            syncJobRepository.markFailedPermanent(job.getId(), job.getVersion(), "MISSING_EXTERNAL_EVENT_ID");
+            return false;
         }
         try {
             provider.deleteEvent(new DeleteEventRequest(connection.getId(), externalId));
@@ -281,6 +314,7 @@ public class SessionSyncWorker {
         syncJobRepository.markSynced(job.getId(), job.getVersion(), externalId);
         log.info("session_sync_delete_success sessionId={} provider={} externalEventId={}",
                 job.getInternalRefId(), connection.getProvider(), externalId);
+        return true;
     }
 
     private void handleFailure(CalendarSyncJob job, String errorCode) {

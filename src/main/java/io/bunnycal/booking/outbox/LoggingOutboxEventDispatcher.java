@@ -22,6 +22,9 @@ import org.springframework.lang.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
@@ -42,6 +45,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final SessionNotificationService sessionNotificationService;
     @Nullable
     private final SessionSyncWorker sessionSyncWorker;
+    private final TransactionTemplate requiresNewTx;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
 
@@ -54,6 +58,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
+                                        PlatformTransactionManager transactionManager,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
         this.calendarSyncJobRepository = calendarSyncJobRepository;
@@ -65,6 +70,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.bookingNotificationService = bookingNotificationService;
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
+        this.requiresNewTx = new TransactionTemplate(transactionManager);
+        this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.invariantMonitor = invariantMonitor;
         this.meterRegistry = meterRegistry;
     }
@@ -74,11 +81,15 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         // Session aggregate: route to session notification + session sync job creation.
         if (SESSION_AGGREGATE.equals(event != null ? event.getAggregateType() : null)) {
             UUID sessionSyncJobId = createSessionSyncJobIfNeeded(event);
-            if (sessionSyncWorker != null && sessionSyncJobId != null) {
-                sessionSyncWorker.processJob(sessionSyncJobId);
-            }
-            if (sessionNotificationService != null) {
-                sessionNotificationService.handleSessionOutboxEvent(event);
+            if ("REGISTRATION_CONFIRMED".equals(event.getEventType())) {
+                ensureSessionConfirmationNotificationReady(event, sessionSyncJobId);
+            } else {
+                if (sessionSyncWorker != null && sessionSyncJobId != null) {
+                    sessionSyncWorker.processJob(sessionSyncJobId);
+                }
+                if (sessionNotificationService != null) {
+                    sessionNotificationService.handleSessionOutboxEvent(event);
+                }
             }
             return;
         }
@@ -192,16 +203,18 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         UUID hostId = event.getPartitionKey();
         SessionSyncResolution resolution = resolveSessionSyncResolution(sessionId);
         long sessionSequence = resolution.sessionSequence();
-        calendarSyncJobRepository.upsertPendingJob(
-                UUID.randomUUID(),
-                "SESSION",
-                sessionId,
-                resolution.provider(),
-                desiredAction,
-                null,
-                hostId,
-                null,
-                sessionSequence
+        requiresNewTx.executeWithoutResult(status ->
+                calendarSyncJobRepository.upsertPendingJob(
+                        UUID.randomUUID(),
+                        "SESSION",
+                        sessionId,
+                        resolution.provider(),
+                        desiredAction,
+                        null,
+                        hostId,
+                        null,
+                        sessionSequence
+                )
         );
         log.info("outbox.session_sync_job_created sessionId={} action={} sessionSequence={}",
                 sessionId, desiredAction, sessionSequence);
@@ -211,6 +224,59 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 resolution.provider())
                 .map(job -> job.getId())
                 .orElse(null);
+    }
+
+    private void ensureSessionConfirmationNotificationReady(OutboxEvent event, UUID sessionSyncJobId) {
+        if (sessionNotificationService == null) {
+            throw new IllegalStateException("session notification service unavailable for confirmation event");
+        }
+        if (sessionSyncWorker == null || sessionSyncJobId == null) {
+            throw new IllegalStateException("session sync worker unavailable for confirmation event");
+        }
+
+        SessionOutboxReadiness readinessBeforeSync = readSessionConfirmationReadiness(event.getAggregateId());
+        if (!readinessBeforeSync.ready()) {
+            sessionSyncWorker.processJob(sessionSyncJobId);
+        }
+
+        SessionOutboxReadiness readinessAfterSync = readSessionConfirmationReadiness(event.getAggregateId());
+        if (!readinessAfterSync.ready()) {
+            log.warn("outbox.session_confirmation_deferred_missing_conference_metadata sessionId={} jobId={} state={} externalEventId={} conferenceUrl={} conferenceProvider={}",
+                    event.getAggregateId(),
+                    sessionSyncJobId,
+                    readinessAfterSync.syncStatus(),
+                    readinessAfterSync.externalEventId(),
+                    readinessAfterSync.conferenceUrl(),
+                    readinessAfterSync.conferenceProvider());
+            throw new IllegalStateException("session confirmation notification deferred until conference metadata is available");
+        }
+
+        sessionNotificationService.handleSessionOutboxEvent(event);
+    }
+
+    private SessionOutboxReadiness readSessionConfirmationReadiness(UUID sessionId) {
+        return calendarSyncJobRepository.findLatestSessionSyncRow(sessionId).stream()
+                .findFirst()
+                .map(row -> new SessionOutboxReadiness(
+                        row.getSyncStatus(),
+                        row.getExternalEventId(),
+                        row.getConferenceUrl(),
+                        row.getConferenceProvider(),
+                        row.getOwnershipVersion()))
+                .orElseGet(() -> new SessionOutboxReadiness(null, null, null, null, null));
+    }
+
+    private record SessionOutboxReadiness(String syncStatus,
+                                          String externalEventId,
+                                          String conferenceUrl,
+                                          String conferenceProvider,
+                                          Long ownershipVersion) {
+        boolean ready() {
+            return SyncJobStatus.SYNCED.name().equals(syncStatus)
+                    && externalEventId != null && !externalEventId.isBlank()
+                    && conferenceUrl != null && !conferenceUrl.isBlank()
+                    && conferenceProvider != null && !conferenceProvider.isBlank();
+        }
     }
 
     private SessionSyncResolution resolveSessionSyncResolution(UUID sessionId) {

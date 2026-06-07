@@ -42,6 +42,107 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 class SessionSyncWorkerTest {
 
     @Test
+    void processJob_claimsPendingSessionJobBeforeProcessing() {
+        CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
+        EventSessionRepository sessionRepository = org.mockito.Mockito.mock(EventSessionRepository.class);
+        SessionRegistrationRepository registrationRepository = org.mockito.Mockito.mock(SessionRegistrationRepository.class);
+        EventTypeRepository eventTypeRepository = org.mockito.Mockito.mock(EventTypeRepository.class);
+        UserRepository userRepository = org.mockito.Mockito.mock(UserRepository.class);
+        CalendarConnectionRepository connectionRepository = org.mockito.Mockito.mock(CalendarConnectionRepository.class);
+        GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
+        MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
+        SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+
+        SessionSyncWorker worker = new SessionSyncWorker(
+                syncJobRepository,
+                sessionRepository,
+                registrationRepository,
+                eventTypeRepository,
+                userRepository,
+                connectionRepository,
+                googleCalendarProvider,
+                microsoftCalendarProvider,
+                retryPolicy,
+                txManager(),
+                new SimpleMeterRegistry());
+
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+
+        when(syncJobRepository.claimPendingSessionJobById(jobId)).thenReturn(1);
+        when(syncJobRepository.findById(jobId)).thenReturn(Optional.of(CalendarSyncJob.builder()
+                .id(jobId)
+                .internalRefType(InternalRefType.SESSION)
+                .internalRefId(sessionId)
+                .partitionKey(hostId)
+                .ownershipVersion(1L)
+                .provider("google")
+                .desiredAction(SyncDesiredAction.UPDATE)
+                .status(SyncJobStatus.PROCESSING)
+                .externalEventId(null)
+                .attemptCount(0)
+                .nextRetryAt(Instant.now())
+                .version(2L)
+                .build()));
+
+        EventType eventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Group Session")
+                .slug("group-session")
+                .duration(java.time.Duration.ofHours(1))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofHours(1))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(15))
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionConnectionId(connectionId)
+                .projectionCalendarId("primary")
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
+                .id(hostId)
+                .email("host@example.test")
+                .username("hostuser")
+                .name("Host")
+                .timezone("UTC")
+                .build()));
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(EventSession.builder()
+                .id(sessionId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-06-15T09:00:00Z"))
+                .endTime(Instant.parse("2026-06-15T10:00:00Z"))
+                .status(SessionStatus.OPEN)
+                .capacity(5)
+                .confirmedCount(1)
+                .calendarSequence(1L)
+                .build()));
+        when(registrationRepository.findConfirmedBySessionId(sessionId))
+                .thenReturn(List.of(registration(sessionId, hostId, "guest@example.test", "Guest")));
+        when(googleCalendarProvider.createEvent(org.mockito.ArgumentMatchers.any(CreateEventRequest.class)))
+                .thenReturn(new CreateEventResponse("ext-1", "provider-url", "https://meet.google.com/test-link"));
+
+        worker.processJob(jobId);
+
+        verify(syncJobRepository).claimPendingSessionJobById(jobId);
+        verify(syncJobRepository).markSyncedWithMetadata(
+                jobId,
+                2L,
+                "ext-1",
+                "provider-url",
+                "https://meet.google.com/test-link",
+                "GOOGLE_MEET",
+                null);
+    }
+
+    @Test
     void processPending_skipsStaleSequenceJobs() {
         CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
         EventSessionRepository sessionRepository = org.mockito.Mockito.mock(EventSessionRepository.class);
@@ -251,6 +352,200 @@ class SessionSyncWorkerTest {
         org.assertj.core.api.Assertions.assertThat(createCaptor.getValue().attendees()).hasSize(1);
         org.assertj.core.api.Assertions.assertThat(updateCaptor.getValue().externalEventId()).isEqualTo(externalEventId);
         org.assertj.core.api.Assertions.assertThat(updateCaptor.getValue().attendees()).hasSize(2);
+    }
+
+    @Test
+    void processPending_deleteFallsBackToLatestSessionSyncExternalEventId() {
+        CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
+        EventSessionRepository sessionRepository = org.mockito.Mockito.mock(EventSessionRepository.class);
+        SessionRegistrationRepository registrationRepository = org.mockito.Mockito.mock(SessionRegistrationRepository.class);
+        EventTypeRepository eventTypeRepository = org.mockito.Mockito.mock(EventTypeRepository.class);
+        UserRepository userRepository = org.mockito.Mockito.mock(UserRepository.class);
+        CalendarConnectionRepository connectionRepository = org.mockito.Mockito.mock(CalendarConnectionRepository.class);
+        GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
+        MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
+        SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+
+        SessionSyncWorker worker = new SessionSyncWorker(
+                syncJobRepository,
+                sessionRepository,
+                registrationRepository,
+                eventTypeRepository,
+                userRepository,
+                connectionRepository,
+                googleCalendarProvider,
+                microsoftCalendarProvider,
+                retryPolicy,
+                txManager(),
+                new SimpleMeterRegistry());
+
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+        String externalEventId = "ext-delete";
+
+        EventType eventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Group Session")
+                .slug("group-session")
+                .duration(java.time.Duration.ofHours(1))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofHours(1))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(15))
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionConnectionId(connectionId)
+                .projectionCalendarId("primary")
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
+                .id(hostId)
+                .email("host@example.test")
+                .username("hostuser")
+                .name("Host")
+                .timezone("UTC")
+                .build()));
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+
+        when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(jobId));
+        when(syncJobRepository.findById(jobId)).thenReturn(Optional.of(CalendarSyncJob.builder()
+                .id(jobId)
+                .internalRefType(InternalRefType.SESSION)
+                .internalRefId(sessionId)
+                .partitionKey(hostId)
+                .schedulingConnectionId(connectionId)
+                .ownershipVersion(1L)
+                .provider("google")
+                .desiredAction(SyncDesiredAction.DELETE)
+                .status(SyncJobStatus.PROCESSING)
+                .externalEventId(null)
+                .attemptCount(0)
+                .nextRetryAt(Instant.now())
+                .version(5L)
+                .build()));
+
+        CalendarSyncJobRepository.SessionSyncRow row = org.mockito.Mockito.mock(CalendarSyncJobRepository.SessionSyncRow.class);
+        when(row.getExternalEventId()).thenReturn(externalEventId);
+        when(syncJobRepository.findLatestSessionSyncRow(sessionId)).thenReturn(List.of(row));
+        when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(EventSession.builder()
+                .id(sessionId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-06-15T09:00:00Z"))
+                .endTime(Instant.parse("2026-06-15T10:00:00Z"))
+                .status(SessionStatus.CANCELLED)
+                .capacity(10)
+                .confirmedCount(0)
+                .calendarSequence(1L)
+                .build()));
+        when(registrationRepository.findConfirmedBySessionId(sessionId)).thenReturn(List.of());
+
+        worker.processPending(10);
+
+        verify(googleCalendarProvider).deleteEvent(org.mockito.ArgumentMatchers.argThat(req ->
+                req != null && connectionId.equals(req.connectionId()) && externalEventId.equals(req.externalEventId())));
+        verify(syncJobRepository).markSynced(jobId, 5L, externalEventId);
+    }
+
+    @Test
+    void processPending_deleteFailsWhenExternalEventIdMissing() {
+        CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
+        EventSessionRepository sessionRepository = org.mockito.Mockito.mock(EventSessionRepository.class);
+        SessionRegistrationRepository registrationRepository = org.mockito.Mockito.mock(SessionRegistrationRepository.class);
+        EventTypeRepository eventTypeRepository = org.mockito.Mockito.mock(EventTypeRepository.class);
+        UserRepository userRepository = org.mockito.Mockito.mock(UserRepository.class);
+        CalendarConnectionRepository connectionRepository = org.mockito.Mockito.mock(CalendarConnectionRepository.class);
+        GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
+        MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
+        SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+
+        SessionSyncWorker worker = new SessionSyncWorker(
+                syncJobRepository,
+                sessionRepository,
+                registrationRepository,
+                eventTypeRepository,
+                userRepository,
+                connectionRepository,
+                googleCalendarProvider,
+                microsoftCalendarProvider,
+                retryPolicy,
+                txManager(),
+                new SimpleMeterRegistry());
+
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+
+        EventType eventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Group Session")
+                .slug("group-session")
+                .duration(java.time.Duration.ofHours(1))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofHours(1))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(15))
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionConnectionId(connectionId)
+                .projectionCalendarId("primary")
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
+                .id(hostId)
+                .email("host@example.test")
+                .username("hostuser")
+                .name("Host")
+                .timezone("UTC")
+                .build()));
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+
+        when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(jobId));
+        when(syncJobRepository.findById(jobId)).thenReturn(Optional.of(CalendarSyncJob.builder()
+                .id(jobId)
+                .internalRefType(InternalRefType.SESSION)
+                .internalRefId(sessionId)
+                .partitionKey(hostId)
+                .schedulingConnectionId(connectionId)
+                .ownershipVersion(1L)
+                .provider("google")
+                .desiredAction(SyncDesiredAction.DELETE)
+                .status(SyncJobStatus.PROCESSING)
+                .externalEventId(null)
+                .attemptCount(0)
+                .nextRetryAt(Instant.now())
+                .version(9L)
+                .build()));
+        when(syncJobRepository.findLatestSessionSyncRow(sessionId)).thenReturn(List.of());
+        when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(EventSession.builder()
+                .id(sessionId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-06-15T09:00:00Z"))
+                .endTime(Instant.parse("2026-06-15T10:00:00Z"))
+                .status(SessionStatus.CANCELLED)
+                .capacity(10)
+                .confirmedCount(0)
+                .calendarSequence(1L)
+                .build()));
+        when(registrationRepository.findConfirmedBySessionId(sessionId)).thenReturn(List.of());
+
+        worker.processPending(10);
+
+        verify(syncJobRepository).markFailedPermanent(jobId, 9L, "MISSING_EXTERNAL_EVENT_ID");
+        verify(googleCalendarProvider, never()).deleteEvent(org.mockito.ArgumentMatchers.any());
+        verify(microsoftCalendarProvider, never()).deleteEvent(org.mockito.ArgumentMatchers.any());
     }
 
     private static CalendarConnection connection(UUID id, CalendarProviderType provider) {

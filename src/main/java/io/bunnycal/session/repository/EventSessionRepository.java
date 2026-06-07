@@ -243,7 +243,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
     int decrementConfirmedCount(@Param("id") UUID id);
 
     // Cancels the session and resets confirmed_count to 0 atomically.
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE event_sessions
                SET status                = 'CANCELLED',

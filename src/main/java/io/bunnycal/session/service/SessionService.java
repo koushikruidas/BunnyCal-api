@@ -288,6 +288,10 @@ public class SessionService {
             return;
         }
 
+        EventSession updatedSession = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Session not found after cancellation."));
+
         // Bulk cancel all active registrations.
         registrationRepository.bulkCancelBySessionId(sessionId);
 
@@ -297,8 +301,8 @@ public class SessionService {
                 new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "SESSION_CANCELLED", 1,
                         new SessionCancelledEvent(sessionId, hostId,
                                 ctxSessionCancel.hostUsername(), ctxSessionCancel.eventName(), ctxSessionCancel.eventSlug(),
-                                session.getStartTime(), session.getEndTime(),
-                                (int) session.getCalendarSequence(),
+                                updatedSession.getStartTime(), updatedSession.getEndTime(),
+                                (int) updatedSession.getCalendarSequence(),
                                 activeRegs.stream()
                                         .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName()))
                                         .toList())));

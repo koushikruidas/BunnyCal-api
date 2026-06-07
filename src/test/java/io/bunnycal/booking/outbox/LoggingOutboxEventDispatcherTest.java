@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.booking.domain.Booking;
@@ -27,6 +28,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 
 @ExtendWith(MockitoExtension.class)
 class LoggingOutboxEventDispatcherTest {
@@ -66,6 +70,7 @@ class LoggingOutboxEventDispatcherTest {
                 bookingNotificationService,
                 sessionNotificationService,
                 sessionSyncWorker,
+                txManager(),
                 invariantMonitor,
                 new SimpleMeterRegistry());
     }
@@ -297,6 +302,7 @@ class LoggingOutboxEventDispatcherTest {
     void dispatch_sessionEvent_usesSessionCalendarSequenceAsOwnershipVersion() {
         UUID sessionId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
+        UUID sessionSyncJobId = UUID.randomUUID();
         OutboxEvent event = OutboxEvent.builder()
                 .id(UUID.randomUUID())
                 .aggregateType("Session")
@@ -314,17 +320,32 @@ class LoggingOutboxEventDispatcherTest {
                         .hostId(hostId)
                         .calendarSequence(7L)
                         .build()));
+        CalendarSyncJobRepository.SessionSyncRow pendingRow = org.mockito.Mockito.mock(CalendarSyncJobRepository.SessionSyncRow.class);
+        when(pendingRow.getSyncStatus()).thenReturn("PENDING");
+        when(pendingRow.getExternalEventId()).thenReturn(null);
+        when(pendingRow.getConferenceUrl()).thenReturn(null);
+        when(pendingRow.getConferenceProvider()).thenReturn(null);
+        when(pendingRow.getOwnershipVersion()).thenReturn(7L);
+        CalendarSyncJobRepository.SessionSyncRow readyRow = org.mockito.Mockito.mock(CalendarSyncJobRepository.SessionSyncRow.class);
+        when(readyRow.getSyncStatus()).thenReturn("SYNCED");
+        when(readyRow.getExternalEventId()).thenReturn("ext-1");
+        when(readyRow.getConferenceUrl()).thenReturn("https://meet.example.test/join");
+        when(readyRow.getConferenceProvider()).thenReturn("GOOGLE_MEET");
+        when(readyRow.getOwnershipVersion()).thenReturn(7L);
+        when(calendarSyncJobRepository.findLatestSessionSyncRow(sessionId))
+                .thenReturn(java.util.List.of(pendingRow), java.util.List.of(readyRow));
         when(calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
                 io.bunnycal.sync.state.InternalRefType.SESSION,
                 sessionId,
                 "DEFERRED"))
                 .thenReturn(java.util.Optional.of(CalendarSyncJob.builder()
-                        .id(UUID.randomUUID())
+                        .id(sessionSyncJobId)
                         .build()));
 
         dispatcher.dispatch(event);
 
-        verify(sessionSyncWorker).processJob(org.mockito.ArgumentMatchers.any(UUID.class));
+        verify(sessionSyncWorker).processJob(sessionSyncJobId);
+        verify(sessionNotificationService).handleSessionOutboxEvent(event);
         verify(calendarSyncJobRepository).upsertPendingJob(
                 org.mockito.ArgumentMatchers.any(UUID.class),
                 eq("SESSION"),
@@ -337,6 +358,50 @@ class LoggingOutboxEventDispatcherTest {
                 eq(7L));
     }
 
+    @Test
+    void dispatch_sessionRegistrationConfirmed_defersNotificationUntilMetadataExists() {
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID sessionSyncJobId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Session")
+                .aggregateId(sessionId)
+                .partitionKey(hostId)
+                .eventType("REGISTRATION_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+
+        when(eventSessionRepository.findById(sessionId))
+                .thenReturn(java.util.Optional.of(EventSession.builder()
+                        .id(sessionId)
+                        .hostId(hostId)
+                        .calendarSequence(8L)
+                        .build()));
+        CalendarSyncJobRepository.SessionSyncRow pendingRow = org.mockito.Mockito.mock(CalendarSyncJobRepository.SessionSyncRow.class);
+        when(pendingRow.getSyncStatus()).thenReturn("PENDING");
+        when(pendingRow.getExternalEventId()).thenReturn(null);
+        when(pendingRow.getConferenceUrl()).thenReturn(null);
+        when(pendingRow.getConferenceProvider()).thenReturn(null);
+        when(pendingRow.getOwnershipVersion()).thenReturn(8L);
+        when(calendarSyncJobRepository.findLatestSessionSyncRow(sessionId))
+                .thenReturn(java.util.List.of(pendingRow), java.util.List.of(pendingRow));
+        when(calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
+                io.bunnycal.sync.state.InternalRefType.SESSION,
+                sessionId,
+                "DEFERRED"))
+                .thenReturn(java.util.Optional.of(CalendarSyncJob.builder()
+                        .id(sessionSyncJobId)
+                        .build()));
+
+        assertThrows(IllegalStateException.class, () -> dispatcher.dispatch(event));
+
+        verify(sessionSyncWorker).processJob(sessionSyncJobId);
+        verify(sessionNotificationService, never()).handleSessionOutboxEvent(event);
+    }
+
     private static CalendarConnection connection(UUID id, CalendarProviderType provider) {
         CalendarConnection connection = new CalendarConnection();
         connection.setProvider(provider);
@@ -346,5 +411,24 @@ class LoggingOutboxEventDispatcherTest {
             f.set(connection, id);
         } catch (Exception ignored) {}
         return connection;
+    }
+
+    private static PlatformTransactionManager txManager() {
+        return new PlatformTransactionManager() {
+            @Override
+            public TransactionStatus getTransaction(TransactionDefinition definition) {
+                return new org.springframework.transaction.support.SimpleTransactionStatus();
+            }
+
+            @Override
+            public void commit(TransactionStatus status) {
+                // no-op
+            }
+
+            @Override
+            public void rollback(TransactionStatus status) {
+                // no-op
+            }
+        };
     }
 }

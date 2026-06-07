@@ -157,6 +157,19 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE calendar_sync_jobs
+            SET status = 'PROCESSING',
+                version = version + 1,
+                updated_at = NOW()
+            WHERE id = :id
+              AND status = 'PENDING'
+              AND internal_ref_type = 'SESSION'
+              AND next_retry_at <= NOW()
+            """, nativeQuery = true)
+    int claimPendingSessionJobById(@Param("id") UUID id);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
             SET status = 'SYNCED',
                 external_event_id = :externalEventId,
                 last_error = NULL,

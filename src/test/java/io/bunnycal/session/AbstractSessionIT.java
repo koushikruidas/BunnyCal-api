@@ -107,7 +107,7 @@ public abstract class AbstractSessionIT {
 
     protected Map<String, Object> querySession(UUID sessionId) {
         return jdbc.queryForMap(
-                "SELECT status, confirmed_count, capacity, version FROM event_sessions WHERE id = ?",
+                "SELECT status, confirmed_count, capacity, version, calendar_sequence FROM event_sessions WHERE id = ?",
                 sessionId);
     }
 

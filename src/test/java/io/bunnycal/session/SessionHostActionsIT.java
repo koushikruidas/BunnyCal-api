@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
 import java.time.Duration;
@@ -47,6 +48,7 @@ class SessionHostActionsIT extends AbstractSessionIT {
                 "b@test.com", "B", Duration.ofMinutes(15));
         sessionService.confirmRegistration(joinA.sessionId(), joinA.registrationId(), host.getId());
         sessionService.confirmRegistration(joinB.sessionId(), joinB.registrationId(), host.getId());
+        long beforeSequence = ((Number) querySession(joinA.sessionId()).get("calendar_sequence")).longValue();
 
         mockMvc.perform(post("/api/sessions/{sessionId}/cancel", joinA.sessionId())
                         .principal(new UsernamePasswordAuthenticationToken(host.getId(), null))
@@ -62,9 +64,13 @@ class SessionHostActionsIT extends AbstractSessionIT {
         assertThat(((Number) sessionRow.get("confirmed_count")).intValue()).isZero();
         assertThat(countRegistrationsByStatus(joinA.sessionId(), "CANCELLED")).isEqualTo(2);
         assertThat(countRegistrationsByStatus(joinA.sessionId(), "CONFIRMED")).isZero();
-        assertThat(jdbc.queryForObject(
-                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_type = 'Session' AND aggregate_id = ? AND event_type = 'SESSION_CANCELLED'",
-                Integer.class, joinA.sessionId())).isEqualTo(1);
+        java.util.List<String> payloads = jdbc.queryForList(
+                "SELECT payload FROM outbox_events WHERE aggregate_type = 'Session' AND aggregate_id = ? AND event_type = 'SESSION_CANCELLED' ORDER BY created_at DESC LIMIT 1",
+                String.class, joinA.sessionId());
+        assertThat(payloads).hasSize(1);
+        String payload = payloads.get(0);
+        long payloadSequence = new ObjectMapper().readTree(payload).path("payload").path("calendarSequence").asLong();
+        assertThat(payloadSequence).isEqualTo(beforeSequence + 1);
     }
 
     @Test
