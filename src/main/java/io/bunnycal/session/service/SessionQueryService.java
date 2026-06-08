@@ -59,7 +59,7 @@ public class SessionQueryService {
                                                    String cursor,
                                                    Integer limit) {
         requireHostAccess(requesterId, hostId);
-        return listSessions(hostId, eventTypeId, status, fromTime, toTime, syncStatus, cursor, limit);
+        return listSessions(hostId, eventTypeId, status, fromTime, toTime, syncStatus, cursor, limit, true);
     }
 
     @Transactional(readOnly = true)
@@ -73,7 +73,7 @@ public class SessionQueryService {
                                                         Integer limit) {
         EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, requesterId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
-        return listSessions(eventType.getUserId(), eventTypeId, status, fromTime, toTime, syncStatus, cursor, limit);
+        return listSessions(eventType.getUserId(), eventTypeId, status, fromTime, toTime, syncStatus, cursor, limit, false);
     }
 
     @Transactional(readOnly = true)
@@ -112,7 +112,8 @@ public class SessionQueryService {
                                              Instant toTime,
                                              SyncJobStatus syncStatus,
                                              String cursor,
-                                             Integer limit) {
+                                             Integer limit,
+                                             boolean hasActiveParticipants) {
         Cursor sessionCursor = decodeSessionCursor(cursor);
         int safeLimit = sanitizeLimit(limit);
         List<EventSessionRepository.SessionSummaryRow> rows = sessionRepository.findSessionSummaries(
@@ -124,6 +125,7 @@ public class SessionQueryService {
                 syncStatus == null ? null : syncStatus.name(),
                 sessionCursor == null ? null : sessionCursor.timestamp(),
                 sessionCursor == null ? null : sessionCursor.id(),
+                hasActiveParticipants,
                 safeLimit + 1);
 
         return new SessionPageResponse(

@@ -120,6 +120,12 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                     OR s.start_time > CAST(:cursorStartTime AS timestamptz)
                     OR (s.start_time = CAST(:cursorStartTime AS timestamptz) AND s.id > CAST(:cursorSessionId AS uuid))
                   )
+              AND (NOT CAST(:hasActiveParticipants AS boolean)
+                    OR s.confirmed_count > 0
+                    OR EXISTS (
+                        SELECT 1 FROM session_registrations r
+                         WHERE r.session_id = s.id AND r.status = 'PENDING'
+                    ))
             ORDER BY s.start_time ASC, s.id ASC
             LIMIT :limit
             """, nativeQuery = true)
@@ -131,6 +137,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                                                  @Param("syncStatus") String syncStatus,
                                                  @Param("cursorStartTime") Instant cursorStartTime,
                                                  @Param("cursorSessionId") UUID cursorSessionId,
+                                                 @Param("hasActiveParticipants") boolean hasActiveParticipants,
                                                  @Param("limit") int limit);
 
     @Query(value = """
