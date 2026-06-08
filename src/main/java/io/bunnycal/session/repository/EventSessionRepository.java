@@ -193,22 +193,29 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """, nativeQuery = true)
     List<SessionDetailRow> findSessionDetail(@Param("sessionId") UUID sessionId);
 
-    // Slot-engine read: returns FULL sessions whose time window overlaps the query range.
-    // Used by SlotService to hide sold-out slots from GROUP event availability pages.
-    // OPEN sessions are NOT returned — they still have seats, so the slot stays visible.
+    // Slot-engine read: returns active session windows that must block availability
+    // for the event type currently being queried.
+    //
+    // Self-reuse rule:
+    // - Same event type + OPEN session: reusable, so do not block.
+    // - Same event type + FULL session: sold out, so block.
+    // - Different event type + OPEN/FULL session: occupied host time, so block.
     @Query(value = """
             SELECT * FROM event_sessions
              WHERE host_id       = :hostId
-               AND event_type_id = :eventTypeId
-               AND status        = 'FULL'
+               AND status        IN ('OPEN', 'FULL')
                AND start_time    < :rangeEnd
                AND end_time      > :rangeStart
+               AND (
+                    event_type_id <> :eventTypeId
+                    OR status = 'FULL'
+               )
             """,
             nativeQuery = true)
-    List<EventSession> findFullSessionsInRange(@Param("hostId") UUID hostId,
-                                               @Param("eventTypeId") UUID eventTypeId,
-                                               @Param("rangeStart") Instant rangeStart,
-                                               @Param("rangeEnd") Instant rangeEnd);
+    List<EventSession> findAvailabilityBlockingSessionsInRange(@Param("hostId") UUID hostId,
+                                                               @Param("eventTypeId") UUID eventTypeId,
+                                                               @Param("rangeStart") Instant rangeStart,
+                                                               @Param("rangeEnd") Instant rangeEnd);
 
     // CAS increment confirmed_count; also flips OPEN→FULL when count reaches capacity.
     // Returns 1 if updated, 0 if capacity exhausted or session not found/wrong state.

@@ -402,6 +402,72 @@ class LoggingOutboxEventDispatcherTest {
         verify(sessionNotificationService, never()).handleSessionOutboxEvent(event);
     }
 
+    @Test
+    void dispatch_sessionCancelled_enqueuesDeleteSyncJobAndProcessesProjectionRemoval() {
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        UUID sessionSyncJobId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Session")
+                .aggregateId(sessionId)
+                .partitionKey(hostId)
+                .eventType("SESSION_CANCELLED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+
+        when(eventSessionRepository.findById(sessionId))
+                .thenReturn(java.util.Optional.of(EventSession.builder()
+                        .id(sessionId)
+                        .hostId(hostId)
+                        .eventTypeId(eventTypeId)
+                        .calendarSequence(12L)
+                        .build()));
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
+                .thenReturn(java.util.Optional.of(EventType.builder()
+                        .id(eventTypeId)
+                        .userId(hostId)
+                        .name("Group Session")
+                        .slug("group-session")
+                        .duration(java.time.Duration.ofMinutes(60))
+                        .bufferBefore(java.time.Duration.ZERO)
+                        .bufferAfter(java.time.Duration.ZERO)
+                        .slotInterval(java.time.Duration.ofMinutes(60))
+                        .minNotice(java.time.Duration.ZERO)
+                        .maxAdvance(java.time.Duration.ofDays(30))
+                        .holdDuration(java.time.Duration.ofMinutes(15))
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .projectionCalendarId("primary")
+                        .build()));
+        when(calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
+                io.bunnycal.sync.state.InternalRefType.SESSION,
+                sessionId,
+                "google"))
+                .thenReturn(java.util.Optional.of(CalendarSyncJob.builder()
+                        .id(sessionSyncJobId)
+                        .build()));
+
+        dispatcher.dispatch(event);
+
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                eq("SESSION"),
+                eq(sessionId),
+                eq("google"),
+                eq("DELETE"),
+                eq(null),
+                eq(hostId),
+                eq(null),
+                eq(12L));
+        verify(sessionSyncWorker).processJob(sessionSyncJobId);
+        verify(sessionNotificationService).handleSessionOutboxEvent(event);
+    }
+
     private static CalendarConnection connection(UUID id, CalendarProviderType provider) {
         CalendarConnection connection = new CalendarConnection();
         connection.setProvider(provider);

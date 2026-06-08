@@ -169,10 +169,48 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
     }
 
     @Test
+    void groupSlot_openSession_blocksDifferentGroupEventType() {
+        User host = createHostWithMondayAvailability();
+        EventType groupA = createGroupType(host.getId(), 5);
+        EventType groupB = createGroupType(host.getId(), 5);
+        Instant start = slotAt(9);
+        Instant end = start.plus(Duration.ofHours(1));
+
+        JoinSessionResult join = sessionService.joinSession(
+                host.getId(), groupA.getId(), start, end, 5, "a@test.com", "A", Duration.ofMinutes(15));
+        sessionService.confirmRegistration(join.sessionId(), join.registrationId(), host.getId());
+
+        assertThat(querySession(join.sessionId()).get("status")).isEqualTo("OPEN");
+
+        assertThat(slotStarts(getSlots(host.getId(), groupA.getId()))).contains(slotAt(9));
+        assertThat(slotStarts(getSlots(host.getId(), groupB.getId()))).doesNotContain(slotAt(9));
+    }
+
+    @Test
+    void groupSlot_openSession_blocksOneOnOneEventType() {
+        User host = createHostWithMondayAvailability();
+        EventType group = createGroupType(host.getId(), 5);
+        EventType oneOnOne = createOneOnOneType(host.getId());
+        Instant start = slotAt(9);
+        Instant end = start.plus(Duration.ofHours(1));
+
+        JoinSessionResult join = sessionService.joinSession(
+                host.getId(), group.getId(), start, end, 5, "a@test.com", "A", Duration.ofMinutes(15));
+        sessionService.confirmRegistration(join.sessionId(), join.registrationId(), host.getId());
+
+        assertThat(querySession(join.sessionId()).get("status")).isEqualTo("OPEN");
+
+        assertThat(slotStarts(getSlots(host.getId(), group.getId()))).contains(slotAt(9));
+        assertThat(slotStarts(getSlots(host.getId(), oneOnOne.getId()))).doesNotContain(slotAt(9));
+    }
+
+    @Test
     void groupSlot_fullSession_slotHidden() {
         User host = createHostWithMondayAvailability();
         int capacity = 2;
         EventType et = createGroupType(host.getId(), capacity);
+        EventType otherGroup = createGroupType(host.getId(), capacity);
+        EventType oneOnOne = createOneOnOneType(host.getId());
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
 
@@ -194,13 +232,16 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
         assertThat(starts).doesNotContain(slotAt(9));
         // Other slots on the day are still visible.
         assertThat(starts).contains(slotAt(10));
+        assertThat(slotStarts(getSlots(host.getId(), otherGroup.getId()))).doesNotContain(slotAt(9));
+        assertThat(slotStarts(getSlots(host.getId(), oneOnOne.getId()))).doesNotContain(slotAt(9));
     }
 
     @Test
-    void groupSlot_attendeeCancels_slotReappears() {
+    void groupSlot_attendeeCancels_slotReappearsForSelfAndRemainsBlockedForOtherEventTypes() {
         User host = createHostWithMondayAvailability();
         int capacity = 1;
         EventType et = createGroupType(host.getId(), capacity);
+        EventType otherGroup = createGroupType(host.getId(), capacity);
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
 
@@ -218,6 +259,7 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
 
         // Slot reappears.
         assertThat(slotStarts(getSlots(host.getId(), et.getId()))).contains(slotAt(9));
+        assertThat(slotStarts(getSlots(host.getId(), otherGroup.getId()))).doesNotContain(slotAt(9));
     }
 
     @Test
@@ -272,21 +314,23 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
     }
 
     @Test
-    void oneOnOne_unaffectedByGroupSessions() {
+    void oneOnOne_blockedByActiveGroupSession() {
         User host = createHostWithMondayAvailability();
         EventType oneOnOne = createOneOnOneType(host.getId());
-        EventType group = createGroupType(host.getId(), 1);
+        EventType group = createGroupType(host.getId(), 5);
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
 
-        // Fill the group session at 09:00 to FULL.
+        // Open group session at 09:00 occupies host time for other event types.
         JoinSessionResult join = sessionService.joinSession(
-                host.getId(), group.getId(), start, end, 1,
+                host.getId(), group.getId(), start, end, 5,
                 "g@test.com", "G", Duration.ofMinutes(15));
         sessionService.confirmRegistration(join.sessionId(), join.registrationId(), host.getId());
 
-        // ONE_ON_ONE event for same host/time must still show 09:00.
+        assertThat(querySession(join.sessionId()).get("status")).isEqualTo("OPEN");
+
+        // ONE_ON_ONE event for same host/time must not show 09:00.
         List<Instant> starts = slotStarts(getSlots(host.getId(), oneOnOne.getId()));
-        assertThat(starts).contains(slotAt(9));
+        assertThat(starts).doesNotContain(slotAt(9));
     }
 }

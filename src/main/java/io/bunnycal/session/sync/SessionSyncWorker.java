@@ -236,7 +236,7 @@ public class SessionSyncWorker {
                         organizerEmail, List.of(), idempotencyKey, targetCalendarId,
                         conferencingInstruction));
         ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_create_result");
-        syncJobRepository.markSyncedWithMetadata(
+        int marked = syncJobRepository.markSyncedWithMetadata(
                 job.getId(),
                 job.getVersion(),
                 response.externalEventId(),
@@ -244,6 +244,12 @@ public class SessionSyncWorker {
                 resolvedConferenceDetails.joinUrl(),
                 resolvedConferenceDetails.provider(),
                 null);
+        attachSessionExternalIdentityIfCompletionLostRace(job, response.externalEventId(), response.providerEventUrl(),
+                resolvedConferenceDetails.joinUrl(), resolvedConferenceDetails.provider());
+        if (marked == 0) {
+            log.warn("session_sync_create_completion_lost_race sessionId={} jobId={} provider={} externalEventId={}",
+                    session.getId(), job.getId(), connection.getProvider(), response.externalEventId());
+        }
         log.info("session_sync_create_success sessionId={} provider={} externalEventId={}",
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
@@ -255,7 +261,11 @@ public class SessionSyncWorker {
                                 String idempotencyKey,
                                 ConferencingInstruction conferencingInstruction,
                                 ConferenceDetails conferenceDetails) {
+        SessionSyncProjectionState projectionState = findLatestProjectionState(job.getInternalRefId());
         String externalId = job.getExternalEventId();
+        if (externalId == null || externalId.isBlank()) {
+            externalId = projectionState.externalEventId();
+        }
         if (externalId == null || externalId.isBlank()) {
             processCreate(job, session, connection, provider, title, description, organizerEmail,
                     confirmedRegistrations, targetCalendarId, idempotencyKey, conferencingInstruction, conferenceDetails);
@@ -265,12 +275,20 @@ public class SessionSyncWorker {
             processDelete(job, connection, provider);
             return;
         }
+        ConferenceDetails persistedConferenceDetails = projectionState.conferenceDetails();
+        ConferencingInstruction updateInstruction = suppressNativeConferenceRegeneration(
+                conferencingInstruction,
+                persistedConferenceDetails);
+        ConferenceDetails authoritativeConferenceDetails = persistedConferenceDetails != null
+                ? persistedConferenceDetails
+                : conferenceDetails;
         UpdateEventResponse response = provider.updateEvent(
                 UpdateEventRequest.forGroup(connection.getId(), externalId, title, description,
                         session.getStartTime(), session.getEndTime(),
-                        organizerEmail, List.of(), targetCalendarId, conferencingInstruction));
-        ConferenceDetails resolvedConferenceDetails = conferenceDetails.withJoinUrlIfMissing(response.conferenceUrl(), "provider_update_result");
-        syncJobRepository.markSyncedWithMetadata(
+                        organizerEmail, List.of(), targetCalendarId, updateInstruction));
+        ConferenceDetails resolvedConferenceDetails = authoritativeConferenceDetails
+                .withJoinUrlIfMissing(response.conferenceUrl(), "provider_update_result");
+        int marked = syncJobRepository.markSyncedWithMetadata(
                 job.getId(),
                 job.getVersion(),
                 response.externalEventId(),
@@ -278,6 +296,12 @@ public class SessionSyncWorker {
                 resolvedConferenceDetails.joinUrl(),
                 resolvedConferenceDetails.provider(),
                 null);
+        attachSessionExternalIdentityIfCompletionLostRace(job, response.externalEventId(), response.providerEventUrl(),
+                resolvedConferenceDetails.joinUrl(), resolvedConferenceDetails.provider());
+        if (marked == 0) {
+            log.warn("session_sync_update_completion_lost_race sessionId={} jobId={} provider={} externalEventId={}",
+                    session.getId(), job.getId(), connection.getProvider(), response.externalEventId());
+        }
         log.info("session_sync_update_success sessionId={} provider={} externalEventId={}",
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
@@ -285,11 +309,7 @@ public class SessionSyncWorker {
     private boolean processDelete(CalendarSyncJob job, CalendarConnection connection, CalendarProvider provider) {
         String externalId = job.getExternalEventId();
         if (externalId == null || externalId.isBlank()) {
-            externalId = syncJobRepository.findLatestSessionSyncRow(job.getInternalRefId()).stream()
-                    .map(CalendarSyncJobRepository.SessionSyncRow::getExternalEventId)
-                    .filter(id -> id != null && !id.isBlank())
-                    .findFirst()
-                    .orElse(null);
+            externalId = findLatestExternalEventId(job.getInternalRefId());
         }
         if (externalId == null || externalId.isBlank()) {
             log.error("session_sync_delete_missing_external_event_id sessionId={} jobId={} provider={}",
@@ -311,6 +331,74 @@ public class SessionSyncWorker {
         log.info("session_sync_delete_success sessionId={} provider={} externalEventId={}",
                 job.getInternalRefId(), connection.getProvider(), externalId);
         return true;
+    }
+
+    private String findLatestExternalEventId(UUID sessionId) {
+        return findLatestProjectionState(sessionId).externalEventId();
+    }
+
+    private SessionSyncProjectionState findLatestProjectionState(UUID sessionId) {
+        return syncJobRepository.findLatestSessionSyncRow(sessionId).stream()
+                .findFirst()
+                .map(row -> new SessionSyncProjectionState(
+                        blankToNull(row.getExternalEventId()),
+                        conferenceDetailsFromRow(row)))
+                .orElseGet(SessionSyncProjectionState::empty);
+    }
+
+    private static ConferenceDetails conferenceDetailsFromRow(CalendarSyncJobRepository.SessionSyncRow row) {
+        String conferenceUrl = blankToNull(row.getConferenceUrl());
+        String conferenceProvider = blankToNull(row.getConferenceProvider());
+        if (conferenceUrl == null && conferenceProvider == null) {
+            return null;
+        }
+        return new ConferenceDetails(
+                conferenceProvider == null ? "NONE" : conferenceProvider,
+                conferenceUrl,
+                null,
+                null,
+                null,
+                Map.of(),
+                "session_sync_status",
+                Instant.now());
+    }
+
+    private static ConferencingInstruction suppressNativeConferenceRegeneration(ConferencingInstruction requestedInstruction,
+                                                                                ConferenceDetails persistedConferenceDetails) {
+        if (requestedInstruction == null || !requestedInstruction.requestsNativeMeet()) {
+            return requestedInstruction == null ? ConferencingInstruction.none() : requestedInstruction;
+        }
+        if (persistedConferenceDetails == null || persistedConferenceDetails.joinUrl() == null
+                || persistedConferenceDetails.joinUrl().isBlank()) {
+            return requestedInstruction;
+        }
+        return ConferencingInstruction.none();
+    }
+
+    private static String blankToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private void attachSessionExternalIdentityIfCompletionLostRace(CalendarSyncJob job,
+                                                                   String externalEventId,
+                                                                   String providerEventUrl,
+                                                                   String conferenceUrl,
+                                                                   String conferenceProvider) {
+        if (externalEventId == null || externalEventId.isBlank()) {
+            return;
+        }
+        syncJobRepository.attachSessionExternalEventMetadata(
+                job.getInternalRefId(),
+                job.getProvider(),
+                externalEventId,
+                providerEventUrl,
+                conferenceUrl,
+                conferenceProvider,
+                null);
     }
 
     private void handleFailure(CalendarSyncJob job, String errorCode) {
@@ -356,5 +444,12 @@ public class SessionSyncWorker {
         if (status >= 500) return "PROVIDER_DOWN";
         if (status >= 400) return "INVALID_REQUEST";
         return "PROVIDER_ERROR";
+    }
+
+    private record SessionSyncProjectionState(String externalEventId,
+                                              ConferenceDetails conferenceDetails) {
+        private static SessionSyncProjectionState empty() {
+            return new SessionSyncProjectionState(null, null);
+        }
     }
 }

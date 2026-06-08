@@ -210,6 +210,30 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE calendar_sync_jobs
+            SET external_event_id = COALESCE(external_event_id, :externalEventId),
+                provider_event_url = COALESCE(:providerEventUrl, provider_event_url),
+                conference_url = COALESCE(:conferenceUrl, conference_url),
+                conference_provider = COALESCE(:conferenceProvider, conference_provider),
+                conference_metadata_json = COALESCE(:conferenceMetadataJson, conference_metadata_json),
+                last_error = NULL,
+                version = version + 1
+            WHERE internal_ref_type = 'SESSION'
+              AND internal_ref_id = :sessionId
+              AND provider = :provider
+              AND (:externalEventId IS NULL OR external_event_id IS NULL OR external_event_id = :externalEventId)
+            """, nativeQuery = true)
+    int attachSessionExternalEventMetadata(
+            @Param("sessionId") UUID sessionId,
+            @Param("provider") String provider,
+            @Param("externalEventId") String externalEventId,
+            @Param("providerEventUrl") String providerEventUrl,
+            @Param("conferenceUrl") String conferenceUrl,
+            @Param("conferenceProvider") String conferenceProvider,
+            @Param("conferenceMetadataJson") String conferenceMetadataJson);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
             SET status = 'SYNCED',
                 external_event_id = :externalEventId,
                 last_error = :lifecycleCode,

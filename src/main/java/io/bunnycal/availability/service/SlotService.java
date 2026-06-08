@@ -162,20 +162,16 @@ public class SlotService {
 
         // 6.5 Load conflict windows overlapping the day in UTC.
         //     ONE_ON_ONE: load PENDING+CONFIRMED bookings from the bookings table.
-        //     GROUP:      load FULL sessions from event_sessions; bookings table unused.
+        //     GROUP:      bookings table unused.
+        //     Sessions:   active cross-event sessions block every event type; the
+        //                 current event type can reuse its own non-FULL sessions.
         Instant dayStartUtc = timeConversionService.dayStartUtc(date, host.getTimezone());
         Instant dayEndUtc = timeConversionService.dayEndUtcExclusive(date, host.getTimezone());
 
         List<BookingWindow> bookingWindows;
-        List<BookingWindow> fullSessionWindows;
+        List<BookingWindow> sessionBlockerWindows;
         if (eventType.getKind() == EventKind.GROUP) {
             bookingWindows = List.of();
-            List<EventSession> fullSessions = eventSessionRepository.findFullSessionsInRange(
-                    host.getId(), eventType.getId(), dayStartUtc, dayEndUtc);
-            fullSessionWindows = new ArrayList<>(fullSessions.size());
-            for (EventSession session : fullSessions) {
-                fullSessionWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
-            }
         } else {
             List<Booking> dayBookings = bookingRepository
                     .findActiveOverlappingBookings(host.getId(), dayStartUtc, dayEndUtc);
@@ -183,7 +179,12 @@ public class SlotService {
             for (Booking booking : dayBookings) {
                 bookingWindows.add(new BookingWindow(booking.getStartTime(), booking.getEndTime()));
             }
-            fullSessionWindows = List.of();
+        }
+        List<EventSession> blockingSessions = eventSessionRepository.findAvailabilityBlockingSessionsInRange(
+                host.getId(), eventType.getId(), dayStartUtc, dayEndUtc);
+        sessionBlockerWindows = new ArrayList<>(blockingSessions.size());
+        for (EventSession session : blockingSessions) {
+            sessionBlockerWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
         }
 
         // 6.6 Calendar busy — resolve bindings according to availabilityMode.
@@ -211,7 +212,7 @@ public class SlotService {
                 override,
                 eventType,
                 bookingWindows,
-                fullSessionWindows,
+                sessionBlockerWindows,
                 calendarBusy,
                 now);
 

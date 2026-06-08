@@ -203,11 +203,15 @@ public class IdempotencyService {
         return switch (errorCode) {
             case IDEMPOTENCY_KEY_REQUIRED, VALIDATION_ERROR -> 400;
             case IDEMPOTENCY_HASH_MISMATCH -> 422;
-            // SLOT_ALREADY_BOOKED and TOO_MANY_PENDING_BOOKINGS must map to
-            // < 500 so shouldCacheFailure() caches them. Otherwise a same-key
-            // retry would re-execute the booking work instead of replaying
-            // the cached error response.
-            case IDEMPOTENCY_IN_PROGRESS, SLOT_ALREADY_BOOKED -> 409;
+            // All deterministic client-facing errors must map to < 500 so
+            // shouldCacheFailure() caches them.  Otherwise a same-key retry
+            // would re-execute the booking work instead of replaying the
+            // cached error response, and the idempotency row would be left
+            // stuck in IN_PROGRESS until the reaper fires (≥60 s window).
+            case IDEMPOTENCY_IN_PROGRESS, SLOT_ALREADY_BOOKED,
+                 SLOT_UNAVAILABLE, SESSION_CAPACITY_FULL,
+                 SESSION_CANCELLED, ALREADY_REGISTERED,
+                 REGISTRATION_EXPIRED -> 409;
             case TOO_MANY_PENDING_BOOKINGS -> 429;
             case UNAUTHORIZED, TOKEN_EXPIRED, TOKEN_INVALID -> 401;
             case FORBIDDEN -> 403;

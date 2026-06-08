@@ -313,6 +313,44 @@ class IdempotencyIT extends AbstractBookingIT {
                 "replayed SLOT_ALREADY_BOOKED must carry HTTP 409");
     }
 
+    // ── Scenario 16b ───────────────────────────────────────────────────────────
+
+    // SESSION_CANCELLED (and other session-domain 4xx failures) must be cached
+    // and replayed, not leave the idempotency row stuck in IN_PROGRESS until the
+    // reaper fires.
+    //
+    // Regression for: SESSION_CANCELLED/SESSION_CAPACITY_FULL/ALREADY_REGISTERED/
+    // REGISTRATION_EXPIRED were missing from IdempotencyService.mapStatus(), so
+    // they fell to the default→500 branch.  shouldCacheFailure() returned false,
+    // phase3StoreFailure() was never called, and the row stayed IN_PROGRESS for
+    // up to 60 s (until the reaper).  Any retry within that window got 409
+    // IDEMPOTENCY_IN_PROGRESS even though the booking had already been cancelled.
+    @Test
+    void sessionCancelledFailure_cachedImmediately_notLeftInProgress() {
+        UUID userId = createHost().getId();
+        String key  = "session-cancelled-key-" + UUID.randomUUID();
+        String hash = "b".repeat(64);
+
+        // Work throws SESSION_CANCELLED — a deterministic 4xx that must be cached.
+        assertThrows(CustomException.class,
+                () -> idempotencyService.execute(key, userId, ROUTE, hash,
+                        () -> { throw new CustomException(ErrorCode.SESSION_CANCELLED); }));
+
+        String status = jdbc.queryForObject(
+                "SELECT status FROM idempotency_keys WHERE user_id = ? AND key = ?",
+                String.class, userId, key);
+        assertEquals("FAILED", status,
+                "SESSION_CANCELLED must be cached immediately as FAILED — row must not be left IN_PROGRESS");
+
+        // Verify the cached row carries a sub-500 response_status so the reaper
+        // does not need to save it and retries replay instead of re-executing work.
+        Integer responseStatus = jdbc.queryForObject(
+                "SELECT response_status FROM idempotency_keys WHERE user_id = ? AND key = ?",
+                Integer.class, userId, key);
+        assertTrue(responseStatus < 500,
+                "cached SESSION_CANCELLED must have response_status < 500, got " + responseStatus);
+    }
+
     // ── Scenario 17 ────────────────────────────────────────────────────────────
 
     // A request with a DIFFERENT idempotency key targeting an already-booked slot
