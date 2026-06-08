@@ -1,6 +1,7 @@
 package io.bunnycal.booking.service;
 
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -30,7 +31,7 @@ public class BookingConferencingCapabilityGuard {
     }
 
     public void assertBookingConfirmationSupported(UUID bookingId, UUID hostId, UUID eventTypeId) {
-        EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, hostId).orElse(null);
+        EventType eventType = eventTypeRepository.findById(eventTypeId).orElse(null);
         if (eventType == null) {
             return;
         }
@@ -54,11 +55,19 @@ public class BookingConferencingCapabilityGuard {
                     ErrorCode.VALIDATION_ERROR,
                     "Microsoft Teams conferencing requires a Microsoft projection calendar.");
         }
-        if (conferencingProvider != ConferencingProviderType.MICROSOFT_TEAMS || eventType.getProjectionConnectionId() == null) {
+        CalendarConnection projectionConnection;
+        if (eventType.getKind() == EventKind.ROUND_ROBIN) {
+            if (projectionProvider == null) {
+                return;
+            }
+            projectionConnection = calendarConnectionRepository
+                    .findByUserIdAndProviderAndStatus(hostId, projectionProvider, io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
+                    .orElse(null);
+        } else if (eventType.getProjectionConnectionId() != null) {
+            projectionConnection = calendarConnectionRepository.findById(eventType.getProjectionConnectionId()).orElse(null);
+        } else {
             return;
         }
-        CalendarConnection projectionConnection =
-                calendarConnectionRepository.findById(eventType.getProjectionConnectionId()).orElse(null);
         if (projectionConnection == null) {
             return;
         }

@@ -415,6 +415,27 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                                                 @Param("eventTypeId") UUID eventTypeId);
 
     @Query(value = """
+            SELECT id, host_id, status, version, expires_at
+                   , terminal_intent_epoch
+            FROM bookings
+            WHERE id = :id
+              AND event_type_id = :eventTypeId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<BookingStateRow> findStateByIdAndEventTypeId(@Param("id") UUID id,
+                                                          @Param("eventTypeId") UUID eventTypeId);
+
+    @Query(value = """
+            SELECT *
+            FROM bookings
+            WHERE id = :id
+              AND event_type_id = :eventTypeId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<Booking> findAnyByIdAndEventTypeId(@Param("id") UUID id,
+                                                @Param("eventTypeId") UUID eventTypeId);
+
+    @Query(value = """
             SELECT
                 b.id AS bookingId,
                 b.event_type_id AS eventTypeId,
@@ -614,4 +635,69 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     Optional<MeetingRow> findManageRow(@Param("bookingId") UUID bookingId,
                                        @Param("hostId") UUID hostId,
                                        @Param("eventTypeId") UUID eventTypeId);
+
+    @Query(value = """
+            SELECT
+                b.id AS bookingId,
+                b.event_type_id AS eventTypeId,
+                et.name AS eventTypeName,
+                b.start_time AS startTime,
+                b.end_time AS endTime,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'CANCELLED'
+                    ELSE b.status
+                END AS bookingStatus,
+                b.guest_email AS guestEmail,
+                b.guest_name AS guestName,
+                COALESCE(LOWER(csj.provider), LOWER(conf.provider::text), cem.provider) AS provider,
+                COALESCE(csj.status, cem.status) AS calendarSyncStatus,
+                COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
+                COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
+                COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                CASE
+                    WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
+                    WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
+                    WHEN csj.last_error = 'PROVIDER_STATE_ORPHANED' THEN 'PROVIDER_STATE_ORPHANED'
+                    WHEN csj.last_error LIKE 'DRIFT_%' THEN 'ACTIVE_DRIFT'
+                    ELSE 'STABLE'
+                END AS externalLifecycleState,
+                csj.last_error AS externalLifecycleReason,
+                CASE
+                    WHEN csj.last_error IN ('TERMINAL_EXTERNAL_DELETE', 'EXTERNAL_ACTION_REQUIRED', 'PROVIDER_STATE_ORPHANED')
+                    THEN TRUE
+                    ELSE FALSE
+                END AS reconcileSuppressed
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            LEFT JOIN calendar_event_mappings cem
+                ON cem.booking_id = b.id
+               AND cem.provider = b.scheduling_provider
+            LEFT JOIN LATERAL (
+                SELECT m.provider, m.join_url
+                FROM conferencing_event_mappings m
+                WHERE m.booking_id = b.id
+                  AND m.status = 'ACTIVE'
+                ORDER BY m.updated_at DESC
+                LIMIT 1
+            ) conf ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT j.provider,
+                       j.status,
+                       j.external_event_id,
+                       j.provider_event_url,
+                       j.conference_url,
+                       j.last_error
+                FROM calendar_sync_jobs j
+                WHERE j.internal_ref_type = 'BOOKING'
+                  AND j.internal_ref_id = b.id
+                  AND j.provider = b.scheduling_provider
+                ORDER BY j.updated_at DESC, j.created_at DESC, j.id DESC
+                LIMIT 1
+            ) csj ON TRUE
+            WHERE b.id = :bookingId
+              AND b.event_type_id = :eventTypeId
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<MeetingRow> findManageRowByEventType(@Param("bookingId") UUID bookingId,
+                                                  @Param("eventTypeId") UUID eventTypeId);
 }

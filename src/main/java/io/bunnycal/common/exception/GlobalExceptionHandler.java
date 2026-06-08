@@ -103,6 +103,8 @@ public class GlobalExceptionHandler {
             case PARTICIPANTS_NOT_ALLOWED_FOR_KIND:
             case PARTICIPANT_NOT_IN_TEAM:
                 return HttpStatus.BAD_REQUEST;
+            case HOST_NOT_SCHEDULABLE:
+                return HttpStatus.GONE;
             default:
                 return HttpStatus.INTERNAL_SERVER_ERROR;
         }

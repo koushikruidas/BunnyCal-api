@@ -6,7 +6,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.booking.domain.Booking;
-import io.bunnycal.booking.domain.BookingId;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -43,15 +42,15 @@ class BookingLifecycleServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
-        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, hostId, eventTypeId))
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(stateRow(bookingId, hostId, "PENDING", 2L)));
-        when(bookingRepository.findById(new BookingId(bookingId, hostId)))
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(booking(bookingId, hostId)));
         when(guestCapabilityTokenService.allows(bookingId, hostId, null, BookingActionType.CANCEL)).thenReturn(false);
         when(guestCapabilityTokenService.allows(bookingId, hostId, null, BookingActionType.MANAGE_BOOKING)).thenReturn(false);
 
         CustomException ex = assertThrows(CustomException.class,
-                () -> service.cancelAsGuest(bookingId, hostId, eventTypeId, null));
+                () -> service.cancelAsGuest(bookingId, eventTypeId, null));
         org.junit.jupiter.api.Assertions.assertEquals(ErrorCode.FORBIDDEN, ex.getErrorCode());
         verify(bookingService, never()).cancelBooking(bookingId, hostId, 2L, CancellationSource.GUEST, null);
     }
@@ -61,13 +60,15 @@ class BookingLifecycleServiceTest {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
         UUID eventTypeId = UUID.randomUUID();
-        when(bookingRepository.findStateByIdAndHostAndEventType(bookingId, hostId, eventTypeId))
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(stateRow(bookingId, hostId, "PENDING", 2L)));
-        when(bookingRepository.findById(new BookingId(bookingId, hostId)))
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(booking(bookingId, hostId)));
         when(guestCapabilityTokenService.allows(bookingId, hostId, "tok", BookingActionType.CANCEL)).thenReturn(true);
+        when(bookingRepository.findById(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(Optional.of(booking(bookingId, hostId)));
 
-        service.cancelAsGuest(bookingId, hostId, eventTypeId, "tok");
+        service.cancelAsGuest(bookingId, eventTypeId, "tok");
 
         verify(bookingService).cancelBooking(bookingId, hostId, 2L, CancellationSource.GUEST, null);
     }

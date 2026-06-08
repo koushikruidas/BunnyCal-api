@@ -139,8 +139,7 @@ public class BookingNotificationService {
             return;
         }
         User host = maybeHost.get();
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
-                .orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
 
         String summary = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()

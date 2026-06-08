@@ -6,6 +6,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -38,19 +39,22 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarConnectionCalendarRepository calendarRepository;
     private final GoogleCalendarProvider googleCalendarProvider;
+    private final BookingOwnershipRepository bookingOwnershipRepository;
 
     public GoogleCalendarProviderClient(BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
                                         UserRepository userRepository,
                                         CalendarConnectionRepository connectionRepository,
                                         CalendarConnectionCalendarRepository calendarRepository,
-                                        GoogleCalendarProvider googleCalendarProvider) {
+                                        GoogleCalendarProvider googleCalendarProvider,
+                                        BookingOwnershipRepository bookingOwnershipRepository) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.connectionRepository = connectionRepository;
         this.calendarRepository = calendarRepository;
         this.googleCalendarProvider = googleCalendarProvider;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
     }
 
     @Override
@@ -61,8 +65,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                                           @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
-                .orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
         CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
@@ -71,7 +74,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String targetCalendarId = resolveTargetCalendarId(eventType);
+        String targetCalendarId = resolveTargetCalendarId(booking.getId());
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
@@ -110,8 +113,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                               @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
-                .orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
         CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
@@ -120,7 +122,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String targetCalendarId = resolveTargetCalendarId(eventType);
+        String targetCalendarId = resolveTargetCalendarId(booking.getId());
         ConferencingInstruction instruction = conferencingInstruction == null
                 ? ConferencingInstruction.none()
                 : conferencingInstruction;
@@ -205,11 +207,14 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
         }
     }
 
-    private static String resolveTargetCalendarId(EventType eventType) {
-        if (eventType == null || eventType.getProjectionCalendarId() == null || eventType.getProjectionCalendarId().isBlank()) {
+    private String resolveTargetCalendarId(UUID bookingId) {
+        String calendarId = bookingOwnershipRepository.findByBookingId(bookingId)
+                .map(ownership -> ownership.getProjectionCalendarId())
+                .orElse(null);
+        if (calendarId == null || calendarId.isBlank()) {
             throw new CalendarClientException(400, "projection calendar ownership is missing");
         }
-        return eventType.getProjectionCalendarId().trim();
+        return calendarId.trim();
     }
 
     private static String maskEmail(String email) {

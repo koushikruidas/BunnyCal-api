@@ -9,6 +9,7 @@ import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
@@ -32,6 +33,8 @@ import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.service.RoundRobinAssignmentService;
+import io.bunnycal.booking.service.RoundRobinSlotTokenService;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.session.domain.EventSession;
@@ -46,6 +49,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -70,6 +74,11 @@ public class SlotService {
     private final CalendarBusyTimeService calendarBusyTimeService;
     private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final TimeConversionService timeConversionService;
+    private final EventTypeParticipantService eventTypeParticipantService;
+    private final ParticipantEligibilityService participantEligibilityService;
+    private final ParticipantAvailabilityService participantAvailabilityService;
+    private final RoundRobinAssignmentService roundRobinAssignmentService;
+    private final RoundRobinSlotTokenService roundRobinSlotTokenService;
 
     public SlotService(
             UserRepository userRepository,
@@ -85,7 +94,12 @@ public class SlotService {
             SlotCacheVersionService slotCacheVersionService,
             CalendarBusyTimeService calendarBusyTimeService,
             EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
-            TimeConversionService timeConversionService) {
+            TimeConversionService timeConversionService,
+            EventTypeParticipantService eventTypeParticipantService,
+            ParticipantEligibilityService participantEligibilityService,
+            ParticipantAvailabilityService participantAvailabilityService,
+            RoundRobinAssignmentService roundRobinAssignmentService,
+            RoundRobinSlotTokenService roundRobinSlotTokenService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -100,6 +114,11 @@ public class SlotService {
         this.calendarBusyTimeService = calendarBusyTimeService;
         this.orchestrationJsonCodec = orchestrationJsonCodec;
         this.timeConversionService = timeConversionService;
+        this.eventTypeParticipantService = eventTypeParticipantService;
+        this.participantEligibilityService = participantEligibilityService;
+        this.participantAvailabilityService = participantAvailabilityService;
+        this.roundRobinAssignmentService = roundRobinAssignmentService;
+        this.roundRobinSlotTokenService = roundRobinSlotTokenService;
     }
 
     public SlotResponse getSlots(SlotRequest request) {
@@ -123,11 +142,19 @@ public class SlotService {
         EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
 
-        // 4. Read snapshot version FIRST. DB clock is NOT read here — only on cache miss
+        // 4. For ROUND_ROBIN: aggregate slots from all eligible participants (UNION semantics).
+        //    The cache is NOT used for RR in Phase 3A — the cache key is scoped to a single
+        //    userId (the owner), which would incorrectly cache multi-participant results.
+        if (eventType.getKind() == EventKind.ROUND_ROBIN) {
+            long snapshotVersionRr = slotCacheVersionService.getCurrentVersion(userId);
+            return getRoundRobinSlots(host, eventType, date, snapshotVersionRr, request.requestId());
+        }
+
+        // 5. Read snapshot version FIRST. DB clock is NOT read here — only on cache miss
         //    (see supplier below).
         long snapshotVersion = slotCacheVersionService.getCurrentVersion(userId);
 
-        // 5 + 6. Cache lookup. On miss the supplier runs the full compute path.
+        // 6 + 7. Cache lookup. On miss the supplier runs the full compute path.
         CachedSlots cached = slotCacheService.getOrCompute(
                 userId,
                 eventTypeId,
@@ -465,6 +492,114 @@ public class SlotService {
             log.info("slot_timezone_normalization_trace requestId={} eventTypeId={} candidateSlotStartUtc={} candidateSlotEndUtc={} timezone={}",
                     requestId, eventTypeId, slot.start(), slot.end(), zoneId);
         }
+    }
+
+    /**
+     * ROUND_ROBIN slot aggregation: computes the UNION of all eligible participants'
+     * available slots for the given date. The cache is NOT used — the cache key is
+     * scoped to a single userId and would incorrectly cache multi-participant results.
+     *
+     * <p>Phase 3A: slot generation only. Assignment logic is out of scope.
+     */
+    private SlotResponse getRoundRobinSlots(User host,
+                                            EventType eventType,
+                                            LocalDate date,
+                                            long snapshotVersion,
+                                            String requestId) {
+        // 1. Load effective participants.
+        List<UUID> participantIds = eventTypeParticipantService.effectiveParticipantUserIds(eventType);
+        java.util.Map<UUID, RoundRobinAssignmentService.AssignmentStats> assignmentStats =
+                roundRobinAssignmentService.statsForParticipants(eventType.getId(), participantIds);
+
+        // 2. Evaluate eligibility.
+        ParticipantAvailabilityDiagnostics diagnostics = new ParticipantAvailabilityDiagnostics(
+                participantIds.stream()
+                        .map(participantId -> {
+                            ParticipantEligibilityResult result = participantEligibilityService.checkForRoundRobin(participantId);
+                            RoundRobinAssignmentService.AssignmentStats participantStats =
+                                    assignmentStats.getOrDefault(participantId, new RoundRobinAssignmentService.AssignmentStats(0L, null));
+                            boolean calendarMissing = result.eligible()
+                                    && !participantEligibilityService.hasActiveCalendar(participantId);
+                            return new ParticipantAvailabilityDiagnostic(
+                                    participantId,
+                                    result.eligible(),
+                                    result.reason(),
+                                    calendarMissing,
+                                    participantStats.assignmentCount(),
+                                    participantStats.lastAssignedAt());
+                        })
+                        .toList());
+        List<UUID> eligible = diagnostics.eligibleParticipantIds();
+
+        // Log ineligible for diagnostics.
+        diagnostics.ineligibleParticipants()
+                .forEach(row -> log.info("rr_participant_ineligible eventTypeId={} participantId={} reason={}",
+                        eventType.getId(), row.userId(), row.reason()));
+
+        // 3. No eligible participants.
+        if (diagnostics.hasNoEligibleParticipants()) {
+            log.info("rr_no_eligible_participants eventTypeId={} date={} totalParticipants={}",
+                    eventType.getId(), date, participantIds.size());
+            return new SlotResponse(host.getId(), eventType.getId(), date, host.getTimezone(),
+                    snapshotVersion, dbClockRepository.now(), true, List.of(),
+                    AvailabilityStatus.NO_ELIGIBLE_PARTICIPANTS);
+        }
+
+        // 4. Generate slots per eligible participant.
+        Instant now = dbClockRepository.now();
+        boolean anyCalendarMissing = diagnostics.hasCalendarMissingParticipant();
+
+        // Use a LinkedHashSet keyed by (start, end) to deduplicate while preserving
+        // chronological order of first encounter.
+        Set<SlotUtc> unionSet = new LinkedHashSet<>();
+        java.util.Map<SlotUtc, LinkedHashSet<UUID>> candidateMap = new java.util.LinkedHashMap<>();
+
+        for (UUID participantId : eligible) {
+            List<SlotUtc> participantSlots =
+                    participantAvailabilityService.computeForParticipant(participantId, eventType, date, now);
+            for (SlotUtc participantSlot : participantSlots) {
+                unionSet.add(participantSlot);
+                candidateMap.computeIfAbsent(participantSlot, ignored -> new LinkedHashSet<>()).add(participantId);
+            }
+        }
+
+        // 5. Sort and cap at MAX_SLOTS_PER_DAY (200 — match engine limit).
+        List<SlotUtc> unionSlots = unionSet.stream()
+                .sorted(Comparator.comparing(SlotUtc::start)
+                        .thenComparing(SlotUtc::end))
+                .limit(200)
+                .toList();
+
+        // 6. Stamp slot IDs using the event type owner's userId (correct for slot identity).
+        List<SlotDto> slotDtos = new ArrayList<>(unionSlots.size());
+        for (SlotUtc unionSlot : unionSlots) {
+            String slotId = SlotIdGenerator.generate(host.getId(), eventType.getId(), unionSlot.start(), unionSlot.end(), snapshotVersion);
+            List<UUID> candidates = List.copyOf(candidateMap.getOrDefault(unionSlot, new LinkedHashSet<>()));
+            String bookingToken = roundRobinSlotTokenService.issue(
+                    host.getId(),
+                    eventType.getId(),
+                    unionSlot.start(),
+                    unionSlot.end(),
+                    candidates);
+            slotDtos.add(new SlotDto(slotId, unionSlot.start(), unionSlot.end(), true, bookingToken));
+        }
+
+        // 7. Determine status.
+        AvailabilityStatus status;
+        boolean degraded;
+        if (unionSlots.isEmpty()) {
+            status = AvailabilityStatus.NO_SLOTS_AVAILABLE;
+            degraded = false;
+        } else if (anyCalendarMissing) {
+            status = AvailabilityStatus.CALENDAR_NOT_CONNECTED;
+            degraded = true;
+        } else {
+            status = AvailabilityStatus.AVAILABLE;
+            degraded = false;
+        }
+
+        return new SlotResponse(host.getId(), eventType.getId(), date, host.getTimezone(),
+                snapshotVersion, now, degraded, slotDtos, status);
     }
 
     private List<SlotDto> stampSlotIds(

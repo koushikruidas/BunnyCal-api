@@ -37,6 +37,50 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>This service performs NO availability aggregation, assignment, or engine changes —
  * that is Phase 3/4. It is data modeling + validation only.
+ *
+ * <h2>Phase 3 participant ownership model (codified here, implemented in Phase 3)</h2>
+ *
+ * <p>Each participant contributes their OWN availability to the multi-participant
+ * calculation, NOT the event type owner's:
+ * <ul>
+ *   <li><b>availability_rules</b> — per participant's own working hours (keyed by their
+ *       user_id in the availability_rules table).</li>
+ *   <li><b>availability_overrides</b> — per participant's own date overrides.</li>
+ *   <li><b>calendar busy blocks</b> — from the participant's own connected calendars
+ *       (their own calendar_connections rows, using ALL_CONNECTED semantics). The event
+ *       type's availabilityCalendarsJson / availabilityMode is the owner's selection only
+ *       and does NOT apply to participants.</li>
+ *   <li><b>timezone</b> — each participant's own User.timezone. The engine must be called
+ *       once per participant in that participant's timezone, and results converted to UTC
+ *       before aggregation.</li>
+ *   <li><b>bookings / sessions</b> — each participant's own booking conflicts.</li>
+ * </ul>
+ *
+ * <p>Aggregation semantics (Phase 3):
+ * <ul>
+ *   <li>ROUND_ROBIN  — UNION of all eligible participant slot sets. A slot is available
+ *       if at least one participant is free. Assignment follows the configured strategy
+ *       (e.g. round-robin, least-busy).</li>
+ *   <li>COLLECTIVE   — INTERSECTION of all eligible participant slot sets. A slot is
+ *       available only if every participant is simultaneously free.</li>
+ * </ul>
+ *
+ * <p>Participant eligibility for Phase 3 scheduling (enforced in Phase 3 SlotService
+ * extension):
+ * <ol>
+ *   <li>User.status == ACTIVE</li>
+ *   <li>Still a member of the owner's team pool (checked advisory; see note below)</li>
+ *   <li>Has at least one availability_rule row (zero rules → no slots → excluded)</li>
+ *   <li>For COLLECTIVE: must also have at least one ACTIVE calendar connection (a
+ *       calendar-less participant would produce artificially wide intersection windows)</li>
+ * </ol>
+ *
+ * <p><b>Team membership is a selection source only, never a scheduling invariant.</b>
+ * {@code event_type_participants} is the scheduling source of truth. If a user is removed
+ * from a team after being attached to an event type, their participant row is NOT pruned
+ * automatically and scheduling behavior is unchanged. The {@code inTeam} flag on
+ * {@link io.bunnycal.availability.dto.EventTypeParticipantResponse} is advisory metadata
+ * for the UI (to flag stale participants) and must never gate slot generation.
  */
 @Service
 public class EventTypeParticipantService {
@@ -119,6 +163,13 @@ public class EventTypeParticipantService {
      * ONE_ON_ONE / GROUP → always {@code [ownerUserId]} regardless of stored rows.
      * ROUND_ROBIN / COLLECTIVE → stored rows; falls back to {@code [ownerUserId]} only
      * if (unexpectedly) no rows exist, preserving a never-empty contract.
+     *
+     * <p><b>Team membership is deliberately NOT checked here.</b> The scheduling source
+     * of truth is {@code event_type_participants}. If a participant was removed from the
+     * team after being attached, their row persists and they remain schedulable. The
+     * {@code inTeam} flag is advisory UI metadata only. Do not add team-membership
+     * filtering to this method — that would silently remove participants from a live
+     * event type and break existing bookings.
      */
     @Transactional(readOnly = true)
     public List<UUID> effectiveParticipantUserIds(EventType eventType) {

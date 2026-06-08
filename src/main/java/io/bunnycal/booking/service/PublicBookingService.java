@@ -1,5 +1,8 @@
 package io.bunnycal.booking.service;
 
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotRequest;
@@ -12,7 +15,7 @@ import io.bunnycal.booking.dto.PublicEventInfoResponse;
 import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
-import io.bunnycal.booking.domain.BookingId;
+import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.calendar.service.CalendarService;
@@ -59,6 +62,10 @@ public class PublicBookingService {
     private final GuestCapabilityTokenService guestCapabilityTokenService;
     private final SessionService sessionService;
     private final SessionRegistrationRepository sessionRegistrationRepository;
+    private final RoundRobinSlotTokenService roundRobinSlotTokenService;
+    private final RoundRobinAssignmentService roundRobinAssignmentService;
+    private final UserRepository userRepository;
+    private final BookingEventTypeResolver bookingEventTypeResolver;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
@@ -77,6 +84,10 @@ public class PublicBookingService {
                                 GuestCapabilityTokenService guestCapabilityTokenService,
                                 SessionService sessionService,
                                 SessionRegistrationRepository sessionRegistrationRepository,
+                                RoundRobinSlotTokenService roundRobinSlotTokenService,
+                                RoundRobinAssignmentService roundRobinAssignmentService,
+                                UserRepository userRepository,
+                                BookingEventTypeResolver bookingEventTypeResolver,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 // projection-first availability. If the connection's last
@@ -99,6 +110,10 @@ public class PublicBookingService {
         this.guestCapabilityTokenService = guestCapabilityTokenService;
         this.sessionService = sessionService;
         this.sessionRegistrationRepository = sessionRegistrationRepository;
+        this.roundRobinSlotTokenService = roundRobinSlotTokenService;
+        this.roundRobinAssignmentService = roundRobinAssignmentService;
+        this.userRepository = userRepository;
+        this.bookingEventTypeResolver = bookingEventTypeResolver;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
@@ -160,7 +175,12 @@ public class PublicBookingService {
     }
 
     private boolean isProjectionStale(CalendarConnectionStatus status, Instant lastSyncedAt) {
-        if (status == CalendarConnectionStatus.FAILED || status == CalendarConnectionStatus.ERROR) {
+        if (status == CalendarConnectionStatus.FAILED
+                || status == CalendarConnectionStatus.ERROR
+                || status == CalendarConnectionStatus.REVOKED) {
+            // REVOKED means the user intentionally disconnected or the token was invalidated;
+            // the projection is effectively frozen and must not be treated as fresh regardless
+            // of lastSyncedAt.
             return true;
         }
         if (lastSyncedAt == null) {
@@ -180,6 +200,9 @@ public class PublicBookingService {
 
         if (target.kind() == EventKind.GROUP) {
             return holdGroupRegistration(target, request);
+        }
+        if (target.kind() == EventKind.ROUND_ROBIN) {
+            return holdRoundRobinBooking(target, request);
         }
         return holdOneOnOneBooking(target, request);
     }
@@ -214,6 +237,43 @@ public class PublicBookingService {
                 state.getExpiresAt(),
                 booking.getStartTime(),
                 booking.getEndTime()
+        );
+    }
+
+    private PublicHoldResponse holdRoundRobinBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                     PublicBookRequest request) {
+        if (request.slotToken() == null || request.slotToken().isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotToken is required for round robin booking.");
+        }
+        Instant start = request.startTime();
+        Instant end = start.plus(target.duration());
+
+        RoundRobinSlotTokenService.DecodedSlotToken token = roundRobinSlotTokenService.verify(request.slotToken());
+        if (!target.userId().equals(token.ownerUserId())
+                || !target.eventTypeId().equals(token.eventTypeId())
+                || !start.equals(token.start())
+                || !end.equals(token.end())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Round robin slot token does not match the requested slot.");
+        }
+
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        RoundRobinAssignmentService.AssignedRoundRobinBooking assigned =
+                roundRobinAssignmentService.assignAndCreateHeldBooking(
+                        eventType,
+                        start,
+                        end,
+                        token.candidateParticipantIds(),
+                        target.holdDuration(),
+                        normalizeGuestEmail(request.guestEmail()),
+                        normalizeGuestName(request.guestName()));
+
+        var state = bookingRepository.findStateByIdAndEventTypeId(assigned.booking().getId(), target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
+        return PublicHoldResponse.oneOnOne(
+                assigned.booking().getId(),
+                state.getExpiresAt(),
+                assigned.booking().getStartTime(),
+                assigned.booking().getEndTime()
         );
     }
 
@@ -262,20 +322,20 @@ public class PublicBookingService {
 
     private PublicConfirmResponse confirmOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,
                                                          UUID bookingId) {
-        bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
+        var booking = bookingRepository.findAnyByIdAndEventTypeId(bookingId, target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
-
-        var booking = bookingRepository.findById(new BookingId(bookingId, target.userId()))
+        var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         Instant start = booking.getStartTime();
         Instant end = booking.getEndTime();
 
-        long conflicts = bookingRepository.countConflictsExcludingBooking(target.userId(), bookingId, start, end);
+        long conflicts = bookingRepository.countConflictsExcludingBooking(booking.getHostId(), bookingId, start, end);
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        boolean hasProjectionBusy = hasProjectionBusyConflict(target.userId(), target.timezone(), start, end);
+        String actualTimezone = resolveBookingHostTimezone(booking);
+        boolean hasProjectionBusy = hasProjectionBusyConflict(booking.getHostId(), actualTimezone, start, end);
         if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -283,7 +343,7 @@ public class PublicBookingService {
         bookingService.confirmHeldBooking(bookingId);
         String manageToken = guestCapabilityTokenService.issueToken(
                 bookingId,
-                target.userId(),
+                booking.getHostId(),
                 BookingActionType.MANAGE_BOOKING,
                 guestManageTokenTtl,
                 TokenCreatorType.SYSTEM
@@ -317,10 +377,12 @@ public class PublicBookingService {
                                                   UUID bookingId,
                                                   String guestCapabilityToken) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
-        bookingLifecycleService.authorizeGuestManageView(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
+        Booking booking = bookingLifecycleService.authorizeGuestManageView(bookingId, target.eventTypeId(), guestCapabilityToken);
 
-        var row = bookingRepository.findManageRow(bookingId, target.userId(), target.eventTypeId())
+        var row = bookingRepository.findManageRowByEventType(bookingId, target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        User assignedHost = userRepository.findById(booking.getHostId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
         String conferenceUrl = row.getConferenceUrl();
@@ -336,16 +398,16 @@ public class PublicBookingService {
                 target.duration().toMinutes(),
                 row.getStartTime(),
                 row.getEndTime(),
-                target.hostName(),
-                target.hostUsername(),
-                target.hostAvatarUrl(),
+                assignedHost.getName(),
+                assignedHost.getUsername(),
+                assignedHost.getProfileImageUrl(),
                 row.getGuestName(),
                 row.getGuestEmail(),
                 conferenceDetails,
                 row.getBookingStatus(),
                 row.getExternalLifecycleState(),
                 row.getExternalLifecycleReason(),
-                target.timezone()
+                assignedHost.getTimezone()
         );
     }
 
@@ -356,7 +418,7 @@ public class PublicBookingService {
         if (target.kind() == EventKind.GROUP) {
             return cancelGroupRegistration(target, bookingId, guestCapabilityToken);
         }
-        var booking = bookingLifecycleService.cancelAsGuest(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
+        var booking = bookingLifecycleService.cancelAsGuest(bookingId, target.eventTypeId(), guestCapabilityToken);
         return new PublicBookingStatusResponse(
                 bookingId,
                 "CANCELLED",
@@ -391,22 +453,22 @@ public class PublicBookingService {
         if (target.kind() == EventKind.GROUP) {
             throw new CustomException(ErrorCode.GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED);
         }
-        bookingLifecycleService.authorizeGuestReschedule(bookingId, target.userId(), target.eventTypeId(), guestCapabilityToken);
+        Booking booking = bookingLifecycleService.authorizeGuestReschedule(bookingId, target.eventTypeId(), guestCapabilityToken);
 
-        var state = bookingRepository.findStateByIdAndHostAndEventType(bookingId, target.userId(), target.eventTypeId())
+        var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         Instant start = request.startTime();
         Instant end = start.plus(target.duration());
 
-        long conflicts = bookingRepository.countConflictsExcludingBooking(target.userId(), bookingId, start, end);
+        long conflicts = bookingRepository.countConflictsExcludingBooking(booking.getHostId(), bookingId, start, end);
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
-        if (hasProjectionBusyConflict(target.userId(), target.timezone(), start, end)) {
+        if (hasProjectionBusyConflict(booking.getHostId(), resolveBookingHostTimezone(booking), start, end)) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        bookingService.updateBooking(bookingId, target.userId(), start, end, state.getVersion());
+        bookingService.updateBooking(bookingId, booking.getHostId(), start, end, state.getVersion());
         return new PublicBookingStatusResponse(
                 bookingId,
                 state.getStatus(),
@@ -443,6 +505,12 @@ public class PublicBookingService {
         return v.isEmpty() ? null : v;
     }
 
+    private String resolveBookingHostTimezone(Booking booking) {
+        return userRepository.findById(booking.getHostId())
+                .map(User::getTimezone)
+                .orElse("UTC");
+    }
+
     private static String maskEmail(String email) {
         if (email == null || email.isBlank()) {
             return "";
@@ -463,4 +531,3 @@ public class PublicBookingService {
     }
 
 }
-

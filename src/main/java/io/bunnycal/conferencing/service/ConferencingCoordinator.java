@@ -236,7 +236,7 @@ public class ConferencingCoordinator {
     }
 
     private EventType loadEventType(Booking booking) {
-        return eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
+        return eventTypeRepository.findById(booking.getEventTypeId())
                 .orElseThrow(() -> new IllegalStateException("event type not found for conferencing prepare: " + booking.getEventTypeId()));
     }
 

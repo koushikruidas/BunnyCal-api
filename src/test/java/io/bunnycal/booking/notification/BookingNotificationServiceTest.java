@@ -117,7 +117,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -163,7 +163,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
@@ -200,7 +200,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
@@ -241,7 +241,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
@@ -268,7 +268,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -303,7 +303,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("same@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("same@example.com"));
@@ -329,7 +329,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -367,7 +367,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -407,7 +407,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
@@ -445,7 +445,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
@@ -476,7 +476,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -500,7 +500,7 @@ class BookingNotificationServiceTest {
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId)))
+        when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
@@ -545,7 +545,7 @@ class BookingNotificationServiceTest {
                         .conferencingProvider(conferenceProvider)
                         .customConferenceUrl(conferenceProvider == ConferencingProviderType.CUSTOM_URL ? "https://example.com/room" : null)
                         .build();
-                when(eventTypeRepository.findByIdAndUserId(any(), eq(hostId))).thenReturn(Optional.of(eventType));
+                when(eventTypeRepository.findById(any())).thenReturn(Optional.of(eventType));
                 when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@gmail.com"));
                 when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@outlook.com"));
                 when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@outlook.com", "guest@gmail.com"));

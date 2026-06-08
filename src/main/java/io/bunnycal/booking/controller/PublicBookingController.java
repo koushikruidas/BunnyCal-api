@@ -90,7 +90,8 @@ public class PublicBookingController {
         PublicBookRequest normalizedRequest = new PublicBookRequest(
                 normalizedStart,
                 request.guestEmail(),
-                request.guestName());
+                request.guestName(),
+                request.slotToken());
 
         String route = IdempotencyRoutes.PUBLIC_BOOK_HOLD;
         Map<String, Object> hashPayload = new java.util.LinkedHashMap<>();
@@ -99,6 +100,7 @@ public class PublicBookingController {
         hashPayload.put("startTime", normalizedRequest.startTime());
         hashPayload.put("guestEmail", normalizeGuestEmail(request.guestEmail()));
         hashPayload.put("guestName", normalizeGuestName(request.guestName()));
+        hashPayload.put("slotToken", request.slotToken());
         String requestHash = RequestHasher.hash(hashPayload, objectMapper);
 
         IdempotencyOutcome outcome = idempotencyService.execute(

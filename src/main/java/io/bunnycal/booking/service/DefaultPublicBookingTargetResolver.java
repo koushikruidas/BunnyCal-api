@@ -9,6 +9,7 @@ import io.bunnycal.booking.draft.domain.DraftLifecycleState;
 import io.bunnycal.booking.draft.domain.HostDraft;
 import io.bunnycal.booking.draft.repository.HostDraftRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.enums.UserStatus;
 import io.bunnycal.common.exception.CustomException;
 import java.time.Instant;
 import org.springframework.stereotype.Component;
@@ -57,6 +58,9 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
         }
         User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw new CustomException(ErrorCode.HOST_NOT_SCHEDULABLE, "This host is not available for scheduling.");
+        }
         EventType eventType = eventTypeRepository.findByUserIdAndSlug(user.getId(), eventTypeSlug)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         return new ResolvedTarget(

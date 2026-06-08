@@ -9,8 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.notification.BookingNotificationService;
+import io.bunnycal.booking.ownership.BookingOwnership;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.service.BookingEventTypeResolver;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -54,6 +56,8 @@ class LoggingOutboxEventDispatcherTest {
     @Mock
     private BookingOwnershipService bookingOwnershipService;
     @Mock
+    private BookingEventTypeResolver bookingEventTypeResolver;
+    @Mock
     private SyncInvariantMonitor invariantMonitor;
 
     private LoggingOutboxEventDispatcher dispatcher;
@@ -67,6 +71,7 @@ class LoggingOutboxEventDispatcherTest {
                 eventSessionRepository,
                 calendarConnectionRepository,
                 bookingOwnershipService,
+                bookingEventTypeResolver,
                 bookingNotificationService,
                 sessionNotificationService,
                 sessionSyncWorker,
@@ -222,8 +227,21 @@ class LoggingOutboxEventDispatcherTest {
                 .projectionConnectionId(authoritativeConnectionId)
                 .projectionCalendarId("primary")
                 .build();
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
-                .thenReturn(java.util.Optional.of(configured));
+        Booking booking = Booking.builder()
+                .id(bookingId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .build();
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(authoritativeConnectionId);
+        ownership.setProjectionCalendarId("primary");
+        ownership.setOwnershipVersion(3L);
+        when(bookingRepository.findAnyById(bookingId))
+                .thenReturn(java.util.Optional.of(booking));
+        when(bookingEventTypeResolver.requireForBooking(booking)).thenReturn(configured);
+        when(bookingOwnershipService.ensureOwnership(booking, configured)).thenReturn(ownership);
         when(calendarConnectionRepository.findById(authoritativeConnectionId))
                 .thenReturn(java.util.Optional.of(connection(authoritativeConnectionId, CalendarProviderType.GOOGLE)));
 
@@ -242,6 +260,60 @@ class LoggingOutboxEventDispatcherTest {
     }
 
     @Test
+    void dispatch_bookingConfirmed_roundRobinUsesAssignedParticipantConnection() {
+        UUID bookingId = UUID.randomUUID();
+        UUID participantHostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID participantConnectionId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Booking")
+                .aggregateId(bookingId)
+                .eventType("BOOKING_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+        Booking booking = Booking.builder()
+                .id(bookingId)
+                .hostId(participantHostId)
+                .eventTypeId(eventTypeId)
+                .build();
+        EventType roundRobin = EventType.builder()
+                .id(eventTypeId)
+                .userId(UUID.randomUUID())
+                .kind(io.bunnycal.availability.domain.EventKind.ROUND_ROBIN)
+                .projectionProvider(CalendarProviderType.GOOGLE)
+                .projectionCalendarId("primary")
+                .build();
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(participantConnectionId);
+        ownership.setProjectionCalendarId("primary");
+        ownership.setOwnershipVersion(7L);
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(java.util.Optional.of(booking));
+        when(bookingEventTypeResolver.requireForBooking(booking)).thenReturn(roundRobin);
+        when(bookingOwnershipService.ensureOwnership(booking, roundRobin)).thenReturn(ownership);
+        when(calendarConnectionRepository.findById(participantConnectionId))
+                .thenReturn(java.util.Optional.of(connection(participantConnectionId, CalendarProviderType.GOOGLE)));
+
+        dispatcher.dispatch(event);
+
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class),
+                eq("BOOKING"),
+                eq(bookingId),
+                eq("google"),
+                eq("CREATE"),
+                eq(null),
+                eq(participantHostId),
+                eq(participantConnectionId),
+                eq(7L));
+    }
+
+    @Test
     void dispatch_bookingConfirmed_googleMeet_defersImmediateNotificationDispatch() {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
@@ -256,12 +328,11 @@ class LoggingOutboxEventDispatcherTest {
                 .status(OutboxEventStatus.PENDING)
                 .attemptCount(0)
                 .build();
-        when(bookingRepository.findAnyById(bookingId))
-                .thenReturn(java.util.Optional.of(Booking.builder()
-                        .id(bookingId)
-                        .hostId(hostId)
-                        .eventTypeId(eventTypeId)
-                        .build()));
+        Booking booking = Booking.builder()
+                .id(bookingId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .build();
         EventType configured = EventType.builder()
                 .id(eventTypeId)
                 .userId(hostId)
@@ -279,8 +350,15 @@ class LoggingOutboxEventDispatcherTest {
                 .projectionCalendarId("primary")
                 .conferencingProvider(ConferencingProviderType.GOOGLE_MEET)
                 .build();
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
-                .thenReturn(java.util.Optional.of(configured));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setProjectionCalendarId("primary");
+        ownership.setOwnershipVersion(5L);
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(java.util.Optional.of(booking));
+        when(bookingEventTypeResolver.requireForBooking(booking)).thenReturn(configured);
+        when(bookingOwnershipService.ensureOwnership(booking, configured)).thenReturn(ownership);
         when(calendarConnectionRepository.findById(projectionConnectionId))
                 .thenReturn(java.util.Optional.of(connection(projectionConnectionId, CalendarProviderType.GOOGLE)));
 

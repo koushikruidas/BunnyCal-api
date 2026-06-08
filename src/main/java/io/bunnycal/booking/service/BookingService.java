@@ -1,6 +1,7 @@
 package io.bunnycal.booking.service;
 
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.booking.contract.BookingStateTransitions;
 import io.bunnycal.booking.domain.Booking;
@@ -77,6 +78,8 @@ public class BookingService {
     private final BookingPendingCounter pendingCounter;
     @Nullable
     private final BookingConferencingCapabilityGuard conferencingCapabilityGuard;
+    @Nullable
+    private final SlotCacheVersionService slotCacheVersionService;
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     private final Counter conflictCounter;
@@ -98,7 +101,8 @@ public class BookingService {
             MeterRegistry meterRegistry,
             @Nullable SyncInvariantMonitor invariantMonitor,
             @Nullable BookingPendingCounter pendingCounter,
-            @Nullable BookingConferencingCapabilityGuard conferencingCapabilityGuard) {
+            @Nullable BookingConferencingCapabilityGuard conferencingCapabilityGuard,
+            @Nullable SlotCacheVersionService slotCacheVersionService) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
@@ -107,6 +111,7 @@ public class BookingService {
         this.invariantMonitor = invariantMonitor;
         this.pendingCounter = pendingCounter;
         this.conferencingCapabilityGuard = conferencingCapabilityGuard;
+        this.slotCacheVersionService = slotCacheVersionService;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
@@ -154,7 +159,7 @@ public class BookingService {
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry) {
-        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null, null);
+        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null, null, null);
     }
 
     /**
@@ -239,6 +244,9 @@ public class BookingService {
         bookingCreatedTotal.increment();
         if (pendingCounter != null) {
             pendingCounter.increment();
+        }
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(saved.getHostId());
         }
         return saved;
     }
@@ -375,6 +383,9 @@ public class BookingService {
         if (pendingCounter != null) {
             pendingCounter.decrement();
         }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
         assertInvariant("booking_transition_confirmed", id, BookingState.CONFIRMED);
         bookingRepository.findAnyById(id).ifPresent(booking ->
                 outboxPublisher.publish("Booking", id, booking.getHostId(), new OutboxPayloadEnvelope(
@@ -390,11 +401,17 @@ public class BookingService {
         if (pendingCounter != null) {
             pendingCounter.decrement();
         }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
     }
 
     @Transactional
     public void cancelConfirmedBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.CANCELLED);
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
     }
 
     @Transactional
@@ -408,6 +425,9 @@ public class BookingService {
         recordCompletionLatency(id);
         if (pendingCounter != null) {
             pendingCounter.decrement();
+        }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
         }
     }
 
@@ -425,6 +445,9 @@ public class BookingService {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
         bookingRescheduledTotal.increment();
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(hostId);
+        }
         assertInvariant("booking_transition_rescheduled", id, BookingState.CONFIRMED);
 
         outboxPublisher.publish("Booking", id, hostId, new OutboxPayloadEnvelope(
@@ -475,6 +498,9 @@ public class BookingService {
                 metadata));
         meterRegistry.counter("booking_cancellation_total",
                 "source", source == null ? CancellationSource.EXTERNAL.name() : source.name()).increment();
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(hostId);
+        }
     }
 
     private static BookingState parseBookingState(String status) {

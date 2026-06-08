@@ -11,6 +11,8 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.ownership.BookingOwnership;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -42,13 +44,15 @@ class GoogleCalendarProviderClientTest {
     @Mock private CalendarConnectionRepository connectionRepository;
     @Mock private CalendarConnectionCalendarRepository calendarRepository;
     @Mock private GoogleCalendarProvider googleCalendarProvider;
+    @Mock private BookingOwnershipRepository bookingOwnershipRepository;
 
     private GoogleCalendarProviderClient client;
 
     @BeforeEach
     void setUp() {
         client = new GoogleCalendarProviderClient(
-                bookingRepository, eventTypeRepository, userRepository, connectionRepository, calendarRepository, googleCalendarProvider);
+                bookingRepository, eventTypeRepository, userRepository, connectionRepository, calendarRepository, googleCalendarProvider,
+                bookingOwnershipRepository);
     }
 
     @Test
@@ -72,10 +76,13 @@ class GoogleCalendarProviderClientTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(connectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(Optional.of(connection));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setProjectionCalendarId("primary");
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(googleCalendarProvider.createEvent(any())).thenReturn(new CreateEventResponse("ext-1", "https://calendar.google.com/event?eid=1", "https://meet.google.com/a"));
 
         var created = client.createEvent(bookingId, "google", "idem-1", ConferencingInstruction.none(), null);
@@ -110,10 +117,13 @@ class GoogleCalendarProviderClientTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(connectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(Optional.of(connection));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setProjectionCalendarId("primary");
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
 
         when(googleCalendarProvider.createEvent(any())).thenReturn(new CreateEventResponse("ext-1", null, null));
 
@@ -146,10 +156,13 @@ class GoogleCalendarProviderClientTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
         when(connectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(Optional.of(connection));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setProjectionCalendarId("primary");
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(googleCalendarProvider.updateEvent(any())).thenReturn(new UpdateEventResponse("ext-2", "https://calendar.google.com/event?eid=2", "https://meet.google.com/b"));
 
         String externalId = client.updateEvent(bookingId, "google", "ext-1", "idem-1", ConferencingInstruction.none(), null);

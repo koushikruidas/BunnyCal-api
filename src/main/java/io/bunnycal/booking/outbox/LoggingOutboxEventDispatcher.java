@@ -1,6 +1,7 @@
 package io.bunnycal.booking.outbox;
 
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.service.BookingEventTypeResolver;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.session.domain.EventSession;
@@ -40,6 +41,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final EventSessionRepository eventSessionRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final BookingOwnershipService bookingOwnershipService;
+    private final BookingEventTypeResolver bookingEventTypeResolver;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
     @Nullable
@@ -58,6 +60,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         EventSessionRepository eventSessionRepository,
                                         CalendarConnectionRepository calendarConnectionRepository,
                                         BookingOwnershipService bookingOwnershipService,
+                                        BookingEventTypeResolver bookingEventTypeResolver,
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
@@ -71,6 +74,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.eventSessionRepository = eventSessionRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingOwnershipService = bookingOwnershipService;
+        this.bookingEventTypeResolver = bookingEventTypeResolver;
         this.bookingNotificationService = bookingNotificationService;
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
@@ -131,8 +135,9 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                     return;
                 }
                 io.bunnycal.booking.ownership.BookingOwnership ownership = bookingRepository.findAnyById(event.getAggregateId())
-                        .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
-                        .map(eventType -> bookingOwnershipService.ensureOwnership(event.getAggregateId(), eventType))
+                        .map(booking -> bookingOwnershipService.ensureOwnership(
+                                booking,
+                                bookingEventTypeResolver.requireForBooking(booking)))
                         .orElse(null);
                 String resolvedProvider = resolution != null ? resolution.provider() : null;
                 UUID schedulingConnectionId = resolution != null ? resolution.connectionId() : null;
@@ -176,7 +181,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
             return false;
         }
         return bookingRepository.findAnyById(event.getAggregateId())
-                .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
+                .map(bookingEventTypeResolver::requireForBooking)
                 .map(eventType -> eventType.getConferencingProvider() == ConferencingProviderType.GOOGLE_MEET)
                 .orElse(false);
     }
@@ -186,14 +191,15 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     @Nullable
     private SchedulingResolution resolveSchedulingConnection(UUID bookingId, @Nullable UUID hostId) {
         return bookingRepository.findAnyById(bookingId)
-                .flatMap(booking -> eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()))
-                .flatMap(eventType -> {
-                    if (eventType.getProjectionConnectionId() == null || eventType.getProjectionProvider() == null) {
-                        return java.util.Optional.empty();
-                    }
-                    return calendarConnectionRepository.findById(eventType.getProjectionConnectionId())
-                            .map(c -> new SchedulingResolution(c.getId(), eventType.getProjectionProvider().name().toLowerCase(java.util.Locale.ROOT)));
-                })
+                .map(booking -> bookingOwnershipService.ensureOwnership(
+                        booking,
+                        bookingEventTypeResolver.requireForBooking(booking)))
+                .flatMap(ownership -> ownership.getProjectionConnectionId() == null || ownership.getProjectionProvider() == null
+                        ? java.util.Optional.empty()
+                        : calendarConnectionRepository.findById(ownership.getProjectionConnectionId())
+                                .map(c -> new SchedulingResolution(
+                                        c.getId(),
+                                        ownership.getProjectionProvider().name().toLowerCase(java.util.Locale.ROOT))))
                 .orElse(null);
     }
 

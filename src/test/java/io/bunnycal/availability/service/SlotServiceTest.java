@@ -74,6 +74,11 @@ class SlotServiceTest {
     @Mock private SlotCacheVersionService slotCacheVersionService;
     @Mock private CalendarBusyTimeService calendarBusyTimeService;
     @Mock private EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    @Mock private EventTypeParticipantService eventTypeParticipantService;
+    @Mock private ParticipantEligibilityService participantEligibilityService;
+    @Mock private ParticipantAvailabilityService participantAvailabilityService;
+    @Mock private io.bunnycal.booking.service.RoundRobinAssignmentService roundRobinAssignmentService;
+    @Mock private io.bunnycal.booking.service.RoundRobinSlotTokenService roundRobinSlotTokenService;
 
     private SlotService slotService;
     private TimeConversionService timeConversionService;
@@ -104,7 +109,12 @@ class SlotServiceTest {
                 slotCacheVersionService,
                 calendarBusyTimeService,
                 orchestrationJsonCodec,
-                timeConversionService);
+                timeConversionService,
+                eventTypeParticipantService,
+                participantEligibilityService,
+                participantAvailabilityService,
+                roundRobinAssignmentService,
+                roundRobinSlotTokenService);
 
         host = User.builder()
                 .id(userId)

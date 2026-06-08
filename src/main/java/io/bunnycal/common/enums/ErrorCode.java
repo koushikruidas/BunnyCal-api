@@ -70,7 +70,9 @@ public enum ErrorCode {
     PARTICIPANTS_NOT_ALLOWED_FOR_KIND("PARTICIPANTS_NOT_ALLOWED_FOR_KIND",
             "This event kind is single-host and cannot have additional participants."),
     PARTICIPANT_NOT_IN_TEAM("PARTICIPANT_NOT_IN_TEAM",
-            "Participant is not a member of any of your teams.");
+            "Participant is not a member of any of your teams."),
+    HOST_NOT_SCHEDULABLE("HOST_NOT_SCHEDULABLE",
+            "This host is not available for scheduling.");
 
     private final String code;
     private final String message;
