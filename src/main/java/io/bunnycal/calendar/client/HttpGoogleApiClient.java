@@ -105,7 +105,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     hasTimezoneMetadata(start) || hasTimezoneMetadata(end),
                     request.startsAt(),
                     request.endsAt());
-            ResponseEntity<Map> response = restClient.put()
+            ResponseEntity<Map> response = restClient.patch()
                      .uri(UPDATE_EVENT_URI_TEMPLATE, effectiveCalendarId(request.targetCalendarId()), request.externalEventId())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)

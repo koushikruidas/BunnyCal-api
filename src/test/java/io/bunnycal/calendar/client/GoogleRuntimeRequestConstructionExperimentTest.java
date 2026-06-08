@@ -2,13 +2,18 @@ package io.bunnycal.calendar.client;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.HttpMethod.GET;
+import static org.springframework.http.HttpMethod.PATCH;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import io.bunnycal.calendar.config.GoogleOAuthProperties;
+import io.bunnycal.calendar.provider.UpdateEventRequest;
+import io.bunnycal.conferencing.service.ConferencingInstruction;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
@@ -111,6 +116,41 @@ class GoogleRuntimeRequestConstructionExperimentTest {
                 .isEqualTo("koushikruidas@gmail.com");
         assertThat(HttpGoogleApiClient.normalizeGoogleCalendarId("koushikruidas@gmail.com"))
                 .isEqualTo("koushikruidas@gmail.com");
+    }
+
+    @Test
+    void updateEvent_usesPatchSoExistingConferenceStateIsNotFullyReplaced() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        HttpGoogleApiClient client = new HttpGoogleApiClient(
+                builder,
+                stubGoogleProps(),
+                new SimpleMeterRegistry(),
+                false);
+
+        server.expect(requestTo("https://www.googleapis.com/calendar/v3/calendars/primary/events/ext-1?sendUpdates=none&conferenceDataVersion=1"))
+                .andExpect(method(PATCH))
+                .andRespond(withSuccess("""
+                        {
+                          "id":"ext-1",
+                          "htmlLink":"https://calendar.google.com/event?eid=1",
+                          "hangoutLink":"https://meet.google.com/existing-link"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        client.updateEvent("token", UpdateEventRequest.forGroup(
+                UUID.randomUUID(),
+                "ext-1",
+                "Group Session",
+                "sessionId=1",
+                Instant.parse("2026-06-15T09:00:00Z"),
+                Instant.parse("2026-06-15T10:00:00Z"),
+                "host@example.com",
+                List.of(),
+                "primary",
+                ConferencingInstruction.none()));
+
+        server.verify();
     }
 
     private static GoogleOAuthProperties stubGoogleProps() {
