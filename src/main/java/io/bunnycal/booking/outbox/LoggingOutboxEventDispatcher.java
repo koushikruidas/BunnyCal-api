@@ -9,6 +9,7 @@ import io.bunnycal.session.notification.SessionNotificationService;
 import io.bunnycal.session.sync.SessionSyncWorker;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.booking.notification.BookingNotificationService;
+import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
@@ -45,6 +46,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final SessionNotificationService sessionNotificationService;
     @Nullable
     private final SessionSyncWorker sessionSyncWorker;
+    @Nullable
+    private final TeamInvitationNotificationService teamInvitationNotificationService;
     private final TransactionTemplate requiresNewTx;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
@@ -58,6 +61,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
+                                        @Nullable TeamInvitationNotificationService teamInvitationNotificationService,
                                         PlatformTransactionManager transactionManager,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
@@ -70,6 +74,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.bookingNotificationService = bookingNotificationService;
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
+        this.teamInvitationNotificationService = teamInvitationNotificationService;
         this.requiresNewTx = new TransactionTemplate(transactionManager);
         this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.invariantMonitor = invariantMonitor;
@@ -78,6 +83,17 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
     @Override
     public void dispatch(OutboxEvent event) {
+        // TeamInvitation aggregate: send invitation email and return.
+        if (TeamInvitationNotificationService.AGGREGATE_TYPE.equals(
+                event != null ? event.getAggregateType() : null)) {
+            if (teamInvitationNotificationService != null) {
+                teamInvitationNotificationService.handleOutboxEvent(event);
+            } else {
+                log.info("team_invitation_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
+            }
+            return;
+        }
+
         // Session aggregate: route to session notification + session sync job creation.
         if (SESSION_AGGREGATE.equals(event != null ? event.getAggregateType() : null)) {
             UUID sessionSyncJobId = createSessionSyncJobIfNeeded(event);

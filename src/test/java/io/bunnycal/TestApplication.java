@@ -24,6 +24,7 @@ import org.springframework.web.client.RestClient;
         "io.bunnycal.availability",
         "io.bunnycal.conferencing",
         "io.bunnycal.integration",
+        "io.bunnycal.team",
         "io.bunnycal.common"
 })
 public class TestApplication {

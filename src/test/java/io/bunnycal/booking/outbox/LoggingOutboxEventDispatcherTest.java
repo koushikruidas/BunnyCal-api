@@ -70,6 +70,7 @@ class LoggingOutboxEventDispatcherTest {
                 bookingNotificationService,
                 sessionNotificationService,
                 sessionSyncWorker,
+                null,
                 txManager(),
                 invariantMonitor,
                 new SimpleMeterRegistry());

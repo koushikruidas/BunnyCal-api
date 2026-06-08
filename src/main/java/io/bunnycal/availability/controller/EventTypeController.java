@@ -1,7 +1,10 @@
 package io.bunnycal.availability.controller;
 
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
+import io.bunnycal.availability.dto.EventTypeParticipantResponse;
+import io.bunnycal.availability.dto.EventTypeParticipantsRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
+import io.bunnycal.availability.service.EventTypeParticipantService;
 import io.bunnycal.availability.service.EventTypeService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
@@ -11,7 +14,9 @@ import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,9 +25,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/event-types")
 public class EventTypeController {
     private final EventTypeService eventTypeService;
+    private final EventTypeParticipantService participantService;
 
-    public EventTypeController(EventTypeService eventTypeService) {
+    public EventTypeController(EventTypeService eventTypeService,
+                              EventTypeParticipantService participantService) {
         this.eventTypeService = eventTypeService;
+        this.participantService = participantService;
     }
 
     @PostMapping
@@ -36,6 +44,28 @@ public class EventTypeController {
     public ResponseEntity<ApiResponse<List<EventTypeSummaryResponse>>> list(Authentication authentication) {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(eventTypeService.list(userId)));
+    }
+
+    // ── Participants (Phase 2) ──────────────────────────────────────────────────
+
+    @GetMapping("/{eventTypeId}/participants")
+    public ResponseEntity<ApiResponse<List<EventTypeParticipantResponse>>> listParticipants(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                participantService.listParticipants(userId, eventTypeId)));
+    }
+
+    @PutMapping("/{eventTypeId}/participants")
+    public ResponseEntity<ApiResponse<List<EventTypeParticipantResponse>>> replaceParticipants(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId,
+            @RequestBody EventTypeParticipantsRequest request) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                participantService.replaceParticipants(userId, eventTypeId,
+                        request == null ? null : request.userIds())));
     }
 
     private UUID extractUserId(Authentication authentication) {

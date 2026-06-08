@@ -87,8 +87,21 @@ public class GlobalExceptionHandler {
             case TOKEN_INVALID:
                 return HttpStatus.UNAUTHORIZED;
             case FORBIDDEN:
+            case TEAM_OWNER_REQUIRED:
+            case TEAM_INVITATION_EMAIL_MISMATCH:
                 return HttpStatus.FORBIDDEN;
+            case RESOURCE_NOT_FOUND:
+            case TEAM_INVITATION_INVALID:
+                return HttpStatus.NOT_FOUND;
+            case TEAM_SLUG_TAKEN:
+            case TEAM_MEMBER_ALREADY_EXISTS:
+            case TEAM_INVITATION_ALREADY_PENDING:
+            case TEAM_LAST_OWNER:
+                return HttpStatus.CONFLICT;
             case VALIDATION_ERROR:
+            case PARTICIPANTS_REQUIRED:
+            case PARTICIPANTS_NOT_ALLOWED_FOR_KIND:
+            case PARTICIPANT_NOT_IN_TEAM:
                 return HttpStatus.BAD_REQUEST;
             default:
                 return HttpStatus.INTERNAL_SERVER_ERROR;

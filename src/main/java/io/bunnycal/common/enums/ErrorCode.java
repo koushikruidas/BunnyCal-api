@@ -50,7 +50,27 @@ public enum ErrorCode {
     REGISTRATION_HOLD_ACTIVE("REGISTRATION_HOLD_ACTIVE",
             "Your registration is currently being held."),
     REGISTRATION_EXPIRED("REGISTRATION_EXPIRED",
-            "Your registration hold has expired. Please start over.");
+            "Your registration hold has expired. Please start over."),
+    TEAM_SLUG_TAKEN("TEAM_SLUG_TAKEN",
+            "A team with this slug already exists for this owner."),
+    TEAM_MEMBER_ALREADY_EXISTS("TEAM_MEMBER_ALREADY_EXISTS",
+            "This user is already a member of the team."),
+    TEAM_INVITATION_ALREADY_PENDING("TEAM_INVITATION_ALREADY_PENDING",
+            "A pending invitation already exists for this email on this team."),
+    TEAM_INVITATION_INVALID("TEAM_INVITATION_INVALID",
+            "Invitation is invalid, expired, or already used."),
+    TEAM_INVITATION_EMAIL_MISMATCH("TEAM_INVITATION_EMAIL_MISMATCH",
+            "This invitation was issued to a different email address."),
+    TEAM_OWNER_REQUIRED("TEAM_OWNER_REQUIRED",
+            "Only the team owner can perform this action."),
+    TEAM_LAST_OWNER("TEAM_LAST_OWNER",
+            "A team must always have exactly one owner."),
+    PARTICIPANTS_REQUIRED("PARTICIPANTS_REQUIRED",
+            "This event type requires at least one participant."),
+    PARTICIPANTS_NOT_ALLOWED_FOR_KIND("PARTICIPANTS_NOT_ALLOWED_FOR_KIND",
+            "This event kind is single-host and cannot have additional participants."),
+    PARTICIPANT_NOT_IN_TEAM("PARTICIPANT_NOT_IN_TEAM",
+            "Participant is not a member of any of your teams.");
 
     private final String code;
     private final String message;

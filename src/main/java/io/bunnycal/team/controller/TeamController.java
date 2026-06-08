@@ -1,0 +1,115 @@
+package io.bunnycal.team.controller;
+
+import io.bunnycal.common.api.ApiResponse;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.team.dto.CreateTeamRequest;
+import io.bunnycal.team.dto.InviteMemberRequest;
+import io.bunnycal.team.dto.TeamInvitationResponse;
+import io.bunnycal.team.dto.TeamMemberResponse;
+import io.bunnycal.team.dto.TeamResponse;
+import io.bunnycal.team.service.TeamService;
+import java.util.List;
+import java.util.UUID;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/api/teams")
+public class TeamController {
+
+    private final TeamService teamService;
+
+    public TeamController(TeamService teamService) {
+        this.teamService = teamService;
+    }
+
+    @PostMapping
+    public ResponseEntity<ApiResponse<TeamResponse>> create(Authentication authentication,
+                                                            @RequestBody CreateTeamRequest request) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.createTeam(userId, request)));
+    }
+
+    @GetMapping
+    public ResponseEntity<ApiResponse<List<TeamResponse>>> list(Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.listTeamsForUser(userId)));
+    }
+
+    @GetMapping("/{teamId}")
+    public ResponseEntity<ApiResponse<TeamResponse>> get(Authentication authentication,
+                                                         @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.getTeam(userId, teamId)));
+    }
+
+    // ── Members ──────────────────────────────────────────────────────────────
+
+    @GetMapping("/{teamId}/members")
+    public ResponseEntity<ApiResponse<List<TeamMemberResponse>>> listMembers(Authentication authentication,
+                                                                            @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.listMembers(userId, teamId)));
+    }
+
+    @DeleteMapping("/{teamId}/members/{memberUserId}")
+    public ResponseEntity<ApiResponse<Void>> removeMember(Authentication authentication,
+                                                          @PathVariable UUID teamId,
+                                                          @PathVariable UUID memberUserId) {
+        UUID userId = extractUserId(authentication);
+        teamService.removeMember(userId, teamId, memberUserId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    // ── Invitations ──────────────────────────────────────────────────────────
+
+    @PostMapping("/{teamId}/invitations")
+    public ResponseEntity<ApiResponse<TeamInvitationResponse>> invite(Authentication authentication,
+                                                                     @PathVariable UUID teamId,
+                                                                     @RequestBody InviteMemberRequest request) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.inviteMember(userId, teamId, request)));
+    }
+
+    @GetMapping("/{teamId}/invitations")
+    public ResponseEntity<ApiResponse<List<TeamInvitationResponse>>> listInvitations(Authentication authentication,
+                                                                                    @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.listInvitations(userId, teamId)));
+    }
+
+    @DeleteMapping("/{teamId}/invitations/{invitationId}")
+    public ResponseEntity<ApiResponse<Void>> revokeInvitation(Authentication authentication,
+                                                             @PathVariable UUID teamId,
+                                                             @PathVariable UUID invitationId) {
+        UUID userId = extractUserId(authentication);
+        teamService.revokeInvitation(userId, teamId, invitationId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    private UUID extractUserId(Authentication authentication) {
+        if (authentication == null || authentication.getPrincipal() == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof UUID uuid) {
+            return uuid;
+        }
+        if (principal instanceof String text) {
+            try {
+                return UUID.fromString(text);
+            } catch (IllegalArgumentException ex) {
+                throw new CustomException(ErrorCode.UNAUTHORIZED);
+            }
+        }
+        throw new CustomException(ErrorCode.UNAUTHORIZED);
+    }
+}
