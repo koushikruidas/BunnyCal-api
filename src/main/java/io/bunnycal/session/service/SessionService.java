@@ -12,6 +12,8 @@ import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.exception.RegistrationHoldActiveException;
+import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.RegistrationStatus;
 import io.bunnycal.session.domain.SessionRegistration;
@@ -40,6 +42,7 @@ public class SessionService {
     private final SlotCacheVersionService slotCacheVersionService;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
+    private final TimeSource timeSource;
 
     public SessionService(EventSessionRepository sessionRepository,
                           SessionRegistrationRepository registrationRepository,
@@ -47,7 +50,8 @@ public class SessionService {
                           GuestCapabilityTokenService tokenService,
                           SlotCacheVersionService slotCacheVersionService,
                           UserRepository userRepository,
-                          EventTypeRepository eventTypeRepository) {
+                          EventTypeRepository eventTypeRepository,
+                          TimeSource timeSource) {
         this.sessionRepository = sessionRepository;
         this.registrationRepository = registrationRepository;
         this.outboxPublisher = outboxPublisher;
@@ -55,6 +59,7 @@ public class SessionService {
         this.slotCacheVersionService = slotCacheVersionService;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
+        this.timeSource = timeSource;
     }
 
     /**
@@ -85,8 +90,35 @@ public class SessionService {
             throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
         }
 
-        // 4. Insert PENDING registration.
-        Instant expiresAt = holdDuration != null ? Instant.now().plus(holdDuration) : null;
+        // 4. Check for an existing non-cancelled registration for this guest.
+        //    The advisory lock above serializes all joinSession calls for this slot,
+        //    so this read-then-write is safe: no other thread is inside this block.
+        //
+        //    CONFIRMED                 → ALREADY_REGISTERED (seat permanently taken).
+        //    PENDING + live hold       → REGISTRATION_HOLD_ACTIVE (hold still valid).
+        //    PENDING + expired hold    → cancel inline so the partial unique index
+        //                               slot is freed before we insert below.
+        //
+        //    expireRegistration is a CAS (version + status = PENDING guard). If the
+        //    background reaper beats us and returns 0, the row is already CANCELLED
+        //    and the index slot is freed regardless. Both outcomes allow the insert.
+        Instant now = timeSource.now();
+        registrationRepository.findActiveBySessionIdAndGuestEmail(session.getId(), guestEmail)
+                .ifPresent(existing -> {
+                    if (existing.getStatus() == RegistrationStatus.CONFIRMED) {
+                        throw new CustomException(ErrorCode.ALREADY_REGISTERED);
+                    }
+                    // PENDING from here: check whether the hold is still live or expired.
+                    boolean liveHold = existing.getExpiresAt() != null
+                            && existing.getExpiresAt().isAfter(now);
+                    if (liveHold) {
+                        throw new RegistrationHoldActiveException(existing.getExpiresAt());
+                    }
+                    registrationRepository.expireRegistration(existing.getId(), existing.getVersion());
+                });
+
+        // 5. Insert PENDING registration.
+        Instant expiresAt = holdDuration != null ? now.plus(holdDuration) : null;
         SessionRegistration registration;
         try {
             registration = registrationRepository.save(SessionRegistration.builder()
@@ -98,6 +130,8 @@ public class SessionService {
                     .expiresAt(expiresAt)
                     .build());
         } catch (DataIntegrityViolationException e) {
+            // Guard against races outside the advisory lock scope (e.g. different
+            // event type on the same session, or a reaper that re-inserted).
             throw new CustomException(ErrorCode.ALREADY_REGISTERED);
         }
 
@@ -142,7 +176,7 @@ public class SessionService {
         }
 
         // Check expiry before acquiring any write locks.
-        if (reg.getExpiresAt() != null && reg.getExpiresAt().isBefore(Instant.now())) {
+        if (reg.getExpiresAt() != null && reg.getExpiresAt().isBefore(timeSource.now())) {
             throw new CustomException(ErrorCode.REGISTRATION_EXPIRED);
         }
 
@@ -163,7 +197,7 @@ public class SessionService {
         // 4. CAS registration PENDING → CONFIRMED.
         //    If this fails the transaction rolls back step 3 automatically.
         int regUpdated = registrationRepository.confirmRegistration(
-                registrationId, reg.getVersion(), Instant.now());
+                registrationId, reg.getVersion(), timeSource.now());
         if (regUpdated == 0) {
             // Expired or concurrently cancelled between our check and this update.
             throw new CustomException(ErrorCode.REGISTRATION_EXPIRED);

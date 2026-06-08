@@ -33,6 +33,20 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
 
     Optional<SessionRegistration> findByIdAndHostId(UUID id, UUID hostId);
 
+    // Returns the one non-cancelled registration for a guest in a session.
+    // At most one row can exist because idx_session_registrations_active_email is a
+    // UNIQUE partial index on (session_id, guest_email) WHERE status <> 'CANCELLED'.
+    @Query(value = """
+            SELECT * FROM session_registrations
+             WHERE session_id  = :sessionId
+               AND guest_email = :guestEmail
+               AND status     != 'CANCELLED'
+             LIMIT 1
+            """, nativeQuery = true)
+    Optional<SessionRegistration> findActiveBySessionIdAndGuestEmail(
+            @Param("sessionId") UUID sessionId,
+            @Param("guestEmail") String guestEmail);
+
     @Query(value = """
             SELECT
                 r.id AS registrationId,

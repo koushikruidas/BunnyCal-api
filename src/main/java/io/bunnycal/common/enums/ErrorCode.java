@@ -47,6 +47,8 @@ public enum ErrorCode {
             "This session has been cancelled."),
     ALREADY_REGISTERED("ALREADY_REGISTERED",
             "You are already registered for this session."),
+    REGISTRATION_HOLD_ACTIVE("REGISTRATION_HOLD_ACTIVE",
+            "Your registration is currently being held."),
     REGISTRATION_EXPIRED("REGISTRATION_EXPIRED",
             "Your registration hold has expired. Please start over.");
 

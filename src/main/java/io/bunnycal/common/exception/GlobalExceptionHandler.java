@@ -2,6 +2,8 @@ package io.bunnycal.common.exception;
 
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.session.dto.HoldActiveResponse;
 import java.util.Optional;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -13,6 +15,27 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private final TimeSource timeSource;
+
+    public GlobalExceptionHandler(TimeSource timeSource) {
+        this.timeSource = timeSource;
+    }
+
+    @ExceptionHandler(RegistrationHoldActiveException.class)
+    public ResponseEntity<ApiResponse<HoldActiveResponse>> handleRegistrationHoldActive(
+            RegistrationHoldActiveException ex) {
+        HoldActiveResponse data = HoldActiveResponse.of(ex.getExpiresAt(), timeSource.now());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.<HoldActiveResponse>builder()
+                        .success(false)
+                        .data(data)
+                        .error(ApiResponse.ErrorResponse.builder()
+                                .code(ex.getErrorCode().getCode())
+                                .message(ex.getMessage())
+                                .build())
+                        .build());
+    }
 
     @ExceptionHandler(CustomException.class)
     public ResponseEntity<ApiResponse<Void>> handleCustomException(CustomException ex) {
@@ -51,6 +74,7 @@ public class GlobalExceptionHandler {
             case SLOT_ALREADY_BOOKED:
             case SLOT_UNAVAILABLE:
             case CALENDAR_SYNC_IN_PROGRESS:
+            case REGISTRATION_HOLD_ACTIVE:
                 return HttpStatus.CONFLICT;
             case GOOGLE_EVENT_CREATION_FAILED:
                 return HttpStatus.BAD_GATEWAY;
