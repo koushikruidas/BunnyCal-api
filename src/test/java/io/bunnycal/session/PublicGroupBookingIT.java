@@ -56,7 +56,13 @@ class PublicGroupBookingIT extends AbstractSessionIT {
     }
 
     private EventType createGroupType(UUID hostId, int capacity) {
-        return createGroupEventType(hostId, capacity);
+        EventType et = createGroupEventType(hostId, capacity);
+        jdbc.update("""
+                INSERT INTO group_event_reservation_windows
+                    (id, event_type_id, day_of_week, start_time, end_time, created_at, updated_at)
+                VALUES (?, ?, 'MONDAY', '09:00'::time, '17:00'::time, NOW(), NOW())
+                """, UUID.randomUUID(), et.getId());
+        return et;
     }
 
     private PublicHoldResponse hold(String username, String slug, Instant start, String email, String name) {

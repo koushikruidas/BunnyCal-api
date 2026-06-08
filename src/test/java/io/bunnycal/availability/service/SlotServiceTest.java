@@ -67,6 +67,8 @@ class SlotServiceTest {
     @Mock private AvailabilityOverrideRepository availabilityOverrideRepository;
     @Mock private BookingRepository bookingRepository;
     @Mock private io.bunnycal.session.repository.EventSessionRepository eventSessionRepository;
+    @Mock private io.bunnycal.availability.repository.GroupEventReservationWindowRepository reservationWindowRepository;
+    @Mock private io.bunnycal.availability.repository.EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
     @Mock private DbClockRepository dbClockRepository;
     @Mock private SlotCacheService slotCacheService;
     @Mock private SlotCacheVersionService slotCacheVersionService;
@@ -95,6 +97,8 @@ class SlotServiceTest {
                 availabilityOverrideRepository,
                 bookingRepository,
                 eventSessionRepository,
+                reservationWindowRepository,
+                eventAvailabilityWindowRepository,
                 dbClockRepository,
                 slotCacheService,
                 slotCacheVersionService,

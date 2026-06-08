@@ -19,10 +19,14 @@ import io.bunnycal.availability.engine.SlotGenerationEngine.SlotUtc;
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.identity.SlotIdGenerator;
+import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
 import io.bunnycal.availability.repository.DbClockRepository;
+import io.bunnycal.availability.repository.EventAvailabilityWindowRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
@@ -35,6 +39,7 @@ import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.DateTimeUtils;
 import io.bunnycal.common.time.TimeConversionService;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -57,6 +62,8 @@ public class SlotService {
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
     private final BookingRepository bookingRepository;
     private final EventSessionRepository eventSessionRepository;
+    private final GroupEventReservationWindowRepository reservationWindowRepository;
+    private final EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
     private final DbClockRepository dbClockRepository;
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
@@ -71,6 +78,8 @@ public class SlotService {
             AvailabilityOverrideRepository availabilityOverrideRepository,
             BookingRepository bookingRepository,
             EventSessionRepository eventSessionRepository,
+            GroupEventReservationWindowRepository reservationWindowRepository,
+            EventAvailabilityWindowRepository eventAvailabilityWindowRepository,
             DbClockRepository dbClockRepository,
             SlotCacheService slotCacheService,
             SlotCacheVersionService slotCacheVersionService,
@@ -83,6 +92,8 @@ public class SlotService {
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.bookingRepository = bookingRepository;
         this.eventSessionRepository = eventSessionRepository;
+        this.reservationWindowRepository = reservationWindowRepository;
+        this.eventAvailabilityWindowRepository = eventAvailabilityWindowRepository;
         this.dbClockRepository = dbClockRepository;
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
@@ -187,6 +198,26 @@ public class SlotService {
             sessionBlockerWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
         }
 
+        // Group Event Reservation Windows: recurring windows a GROUP event type
+        // reserves (e.g. every Wednesday 09:00-11:00). Windows owned by OTHER event
+        // types of this host block the queried type from the configuration alone --
+        // no booking/session/registration/calendar event required. The queried
+        // type's own windows are excluded by the query, so they never block it.
+        addReservationWindowBlockers(host, eventType, date, sessionBlockerWindows);
+
+        // Per-event candidate-window source.
+        //   * GROUP (reservation-driven): the event's OWN reservation windows are the
+        //     candidate source. The engine restricts availability to exactly these
+        //     windows (restrictToFilter=true) -- host availability is only an upper
+        //     bound, never the slot source. No windows on the day => no slots.
+        //   * Demand-driven (ONE_ON_ONE/ROUND_ROBIN/COLLECTIVE): the event's OWN
+        //     availability-filter windows narrow the host's availability. Empty =>
+        //     full host availability (restrictToFilter=false).
+        boolean restrictToFilter = eventType.getKind() == EventKind.GROUP;
+        List<BookingWindow> eventAvailabilityFilter = restrictToFilter
+                ? buildGroupReservationCandidateWindows(host, eventType, date)
+                : buildEventAvailabilityFilter(host, eventType, date);
+
         // 6.6 Calendar busy — resolve bindings according to availabilityMode.
         // SELECTED: use only the explicitly listed connections (empty list = no blocking).
         // ALL_CONNECTED / null: fall back to all active connections (legacy behavior).
@@ -213,8 +244,10 @@ public class SlotService {
                 eventType,
                 bookingWindows,
                 sessionBlockerWindows,
+                eventAvailabilityFilter,
                 calendarBusy,
-                now);
+                now,
+                restrictToFilter);
 
         // 6.8 Run engine.
         List<SlotUtc> slots = SlotGenerationEngine.compute(input);
@@ -231,6 +264,107 @@ public class SlotService {
         boolean cacheable = postFetchVersion == snapshotVersion;
 
         return new ComputeOutcome(slots, now, cacheable);
+    }
+
+    /**
+     * Expands the recurring reservation windows owned by OTHER event types of this
+     * host into concrete busy windows for the queried date, appending them to the
+     * busy-block list.
+     *
+     * Windows are stored as (day_of_week, local start_time, local end_time) in the
+     * host timezone -- the same convention as {@link io.bunnycal.availability.domain.AvailabilityRule}.
+     * Only windows whose day-of-week matches the queried date contribute, and they
+     * are converted to UTC instants using the host timezone so they align exactly
+     * with how the engine clips other busy intervals.
+     */
+    private void addReservationWindowBlockers(User host,
+                                              EventType eventType,
+                                              LocalDate date,
+                                              List<BookingWindow> blockers) {
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        List<GroupEventReservationWindow> windows =
+                reservationWindowRepository.findBlockingWindowsForOtherEventTypes(
+                        host.getId(), eventType.getId(), dayOfWeek.name());
+        if (windows.isEmpty()) {
+            return;
+        }
+        for (GroupEventReservationWindow window : windows) {
+            if (window.getStartTime() == null
+                    || window.getEndTime() == null
+                    || !window.getStartTime().isBefore(window.getEndTime())) {
+                continue;
+            }
+            Instant start = timeConversionService.toUtcInstant(date, window.getStartTime(), host.getTimezone());
+            Instant end = timeConversionService.toUtcInstant(date, window.getEndTime(), host.getTimezone());
+            blockers.add(new BookingWindow(start, end));
+        }
+    }
+
+    /**
+     * Builds this event type's own availability FILTER windows for the queried date,
+     * as UTC busy-style windows the engine intersects with the host's availability.
+     *
+     * Only demand-driven event types (ONE_ON_ONE, ROUND_ROBIN, COLLECTIVE) carry a
+     * filter; GROUP reserves time via {@link GroupEventReservationWindow} instead and
+     * never filters its own availability. An empty result means "no filter" -- the
+     * event sees the host's full availability.
+     */
+    private List<BookingWindow> buildEventAvailabilityFilter(User host,
+                                                             EventType eventType,
+                                                             LocalDate date) {
+        if (eventType.getKind() == EventKind.GROUP) {
+            return List.of();
+        }
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        List<EventAvailabilityWindow> windows =
+                eventAvailabilityWindowRepository.findOwnWindowsForDay(eventType.getId(), dayOfWeek.name());
+        if (windows.isEmpty()) {
+            return List.of();
+        }
+        List<BookingWindow> filter = new ArrayList<>(windows.size());
+        for (EventAvailabilityWindow window : windows) {
+            if (window.getStartTime() == null
+                    || window.getEndTime() == null
+                    || !window.getStartTime().isBefore(window.getEndTime())) {
+                continue;
+            }
+            Instant start = timeConversionService.toUtcInstant(date, window.getStartTime(), host.getTimezone());
+            Instant end = timeConversionService.toUtcInstant(date, window.getEndTime(), host.getTimezone());
+            filter.add(new BookingWindow(start, end));
+        }
+        return filter;
+    }
+
+    /**
+     * Builds a GROUP event type's OWN reservation windows for the queried date, as
+     * UTC windows the engine uses as the candidate-availability source (with
+     * restrictToFilter=true). A GROUP event is reservation-driven: it is bookable
+     * ONLY inside these windows. If the day has no reservation windows the result is
+     * empty, and the engine produces zero slots -- host availability is never the
+     * slot source for GROUP. Host availability still acts as an upper bound via the
+     * engine's intersection (windows are validated to fall within it at write time).
+     */
+    private List<BookingWindow> buildGroupReservationCandidateWindows(User host,
+                                                                      EventType eventType,
+                                                                      LocalDate date) {
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        List<GroupEventReservationWindow> windows =
+                reservationWindowRepository.findOwnWindowsForDay(eventType.getId(), dayOfWeek.name());
+        if (windows.isEmpty()) {
+            return List.of();
+        }
+        List<BookingWindow> candidates = new ArrayList<>(windows.size());
+        for (GroupEventReservationWindow window : windows) {
+            if (window.getStartTime() == null
+                    || window.getEndTime() == null
+                    || !window.getStartTime().isBefore(window.getEndTime())) {
+                continue;
+            }
+            Instant start = timeConversionService.toUtcInstant(date, window.getStartTime(), host.getTimezone());
+            Instant end = timeConversionService.toUtcInstant(date, window.getEndTime(), host.getTimezone());
+            candidates.add(new BookingWindow(start, end));
+        }
+        return candidates;
     }
 
     private void emitSlotDebugTrace(String requestId,
@@ -264,8 +398,10 @@ public class SlotService {
                 input.eventType(),
                 List.of(),
                 List.of(),
+                input.eventAvailabilityFilter(),
                 List.of(),
-                input.now()));
+                input.now(),
+                input.restrictToFilter()));
         // Candidate count before any busy filtering. If this number already excludes
         // the disputed window (e.g. 11:00 IST not present), the cause is rules/override
         // — not calendar busy aggregation.

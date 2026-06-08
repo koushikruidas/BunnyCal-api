@@ -53,8 +53,20 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
         return host;
     }
 
+    /**
+     * Creates a GROUP event type that reserves the full Monday host window
+     * (09:00-17:00). GROUP events are reservation-driven: their bookable slots come
+     * from reservation windows, not host availability. Reserving the whole host
+     * window keeps the session-visibility invariants below (OPEN/FULL/cancel/
+     * cross-event blocking) meaningful without coupling them to the old, removed
+     * "host availability is the GROUP slot source" behavior.
+     */
     private EventType createGroupType(UUID hostId, int capacity) {
-        return eventTypeRepository.save(EventType.builder()
+        return createGroupType(hostId, capacity, "09:00", "17:00");
+    }
+
+    private EventType createGroupType(UUID hostId, int capacity, String reservationStart, String reservationEnd) {
+        EventType et = eventTypeRepository.save(EventType.builder()
                 .userId(hostId)
                 .name("Group Session")
                 .slug("group-" + UUID.randomUUID().toString().substring(0, 8))
@@ -68,6 +80,17 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
                 .kind(EventKind.GROUP)
                 .capacity(capacity)
                 .build());
+        reserveMonday(et.getId(), reservationStart, reservationEnd);
+        return et;
+    }
+
+    /** Reserves MONDAY [start,end) for the given GROUP event type. */
+    private void reserveMonday(UUID eventTypeId, String startTime, String endTime) {
+        jdbc.update("""
+                INSERT INTO group_event_reservation_windows
+                    (id, event_type_id, day_of_week, start_time, end_time, created_at, updated_at)
+                VALUES (?, ?, 'MONDAY', ?::time, ?::time, NOW(), NOW())
+                """, UUID.randomUUID(), eventTypeId, startTime, endTime);
     }
 
     private EventType createOneOnOneType(UUID hostId) {
@@ -172,7 +195,7 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
     void groupSlot_openSession_blocksDifferentGroupEventType() {
         User host = createHostWithMondayAvailability();
         EventType groupA = createGroupType(host.getId(), 5);
-        EventType groupB = createGroupType(host.getId(), 5);
+        EventType groupB = createGroupType(host.getId(), 5, "16:00", "17:00");
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
 
@@ -209,7 +232,7 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
         User host = createHostWithMondayAvailability();
         int capacity = 2;
         EventType et = createGroupType(host.getId(), capacity);
-        EventType otherGroup = createGroupType(host.getId(), capacity);
+        EventType otherGroup = createGroupType(host.getId(), capacity, "16:00", "17:00");
         EventType oneOnOne = createOneOnOneType(host.getId());
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
@@ -241,7 +264,7 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
         User host = createHostWithMondayAvailability();
         int capacity = 1;
         EventType et = createGroupType(host.getId(), capacity);
-        EventType otherGroup = createGroupType(host.getId(), capacity);
+        EventType otherGroup = createGroupType(host.getId(), capacity, "16:00", "17:00");
         Instant start = slotAt(9);
         Instant end = start.plus(Duration.ofHours(1));
 

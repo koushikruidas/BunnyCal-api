@@ -183,7 +183,7 @@ class SlotGenerationEngineTest {
                 now);
 
         List<SlotGenerationEngine.SlotUtc> computed = SlotGenerationEngine.compute(
-                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), List.of(), now));
+                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), List.of(), List.of(), now));
 
         assertEquals(legacy, computed);
     }
@@ -202,6 +202,7 @@ class SlotGenerationEngineTest {
                         rules,
                         null,
                         eventType,
+                        List.of(),
                         List.of(),
                         List.of(),
                         List.of(),
@@ -237,7 +238,7 @@ class SlotGenerationEngineTest {
                         date.atTime(12, 30).atZone(zone).toInstant()));
 
         List<SlotGenerationEngine.SlotUtc> slots = SlotGenerationEngine.compute(
-                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), List.of(), now));
+                new SlotGenerationEngine.SlotInput(date, zone, rules, null, eventType, bookings, List.of(), List.of(), List.of(), now));
 
         assertEquals(2, slots.size());
         assertEquals(date.atTime(9, 0).atZone(zone).toInstant(), slots.get(0).start());
