@@ -55,16 +55,17 @@ public class EventTypeService {
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
         int capacity = request.capacity() != null ? request.capacity() : 1;
 
+        EventTypeOrchestrationNormalizer.ProjectionDestination proj = orchestration.projectionDestination();
         EventType eventType = EventType.builder()
                 .userId(userId)
                 .name(request.name().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .organizerCalendarConnectionId(orchestration.projectionDestination().connectionId())
-                .projectionConnectionId(orchestration.projectionDestination().connectionId())
-                .projectionCalendarId(orchestration.projectionDestination().calendarId())
-                .projectionProvider(io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
-                        orchestration.projectionDestination().provider().toUpperCase(Locale.ROOT)))
+                .organizerCalendarConnectionId(proj != null ? proj.connectionId() : null)
+                .projectionConnectionId(proj != null ? proj.connectionId() : null)
+                .projectionCalendarId(proj != null ? proj.calendarId() : null)
+                .projectionProvider(proj != null ? io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
+                        proj.provider().toUpperCase(Locale.ROOT)) : null)
                 .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
                 .availabilityMode(availabilityMode)
                 .conferencingProvider(orchestration.conferencing().provider())
