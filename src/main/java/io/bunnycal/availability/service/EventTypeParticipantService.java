@@ -89,15 +89,18 @@ public class EventTypeParticipantService {
     private final EventTypeParticipantRepository participantRepository;
     private final UserRepository userRepository;
     private final TeamMemberRepository teamMemberRepository;
+    private final ParticipantEligibilityService eligibilityService;
 
     public EventTypeParticipantService(EventTypeRepository eventTypeRepository,
                                        EventTypeParticipantRepository participantRepository,
                                        UserRepository userRepository,
-                                       TeamMemberRepository teamMemberRepository) {
+                                       TeamMemberRepository teamMemberRepository,
+                                       ParticipantEligibilityService eligibilityService) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
         this.teamMemberRepository = teamMemberRepository;
+        this.eligibilityService = eligibilityService;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -185,6 +188,24 @@ public class EventTypeParticipantService {
         return stored.isEmpty() ? List.of(eventType.getUserId()) : stored;
     }
 
+    // ── Bulk readiness probe (pre-event onboarding) ───────────────────────────
+
+    /**
+     * Returns readiness metadata for an arbitrary list of user IDs without
+     * requiring an existing event type. Used by the RR onboarding wizard to
+     * show participant readiness before the event is created.
+     *
+     * <p>Callers must ensure every user ID belongs to the acting user's team
+     * pool; this method validates that constraint and rejects unknown users.
+     */
+    @Transactional(readOnly = true)
+    public List<EventTypeParticipantResponse> checkReadiness(UUID actingUserId, List<UUID> userIds) {
+        if (userIds == null || userIds.isEmpty()) return List.of();
+        List<UUID> ordered = dedupePreserveOrder(userIds);
+        validateWithinTeamPool(actingUserId, ordered);
+        return enrich(ordered, actingUserId, actingUserId);
+    }
+
     // ── Validation helpers ─────────────────────────────────────────────────────
 
     private EventType requireOwnedEventType(UUID actingUserId, UUID eventTypeId) {
@@ -227,6 +248,15 @@ public class EventTypeParticipantService {
         for (int i = 0; i < userIds.size(); i++) {
             UUID uid = userIds.get(i);
             User u = usersById.get(uid);
+
+            ParticipantEligibilityResult eligibility = eligibilityService.checkForRoundRobin(uid);
+            boolean hasCalendar = eligibilityService.hasActiveCalendar(uid);
+            String calendarProvider = hasCalendar ? eligibilityService.activeCalendarProvider(uid) : null;
+            ParticipantReadinessStatus readiness = computeReadiness(eligibility, hasCalendar);
+
+            boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
+                    || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
+
             out.add(new EventTypeParticipantResponse(
                     uid,
                     u != null ? u.getName() : null,
@@ -234,9 +264,29 @@ public class EventTypeParticipantService {
                     u != null ? u.getProfileImageUrl() : null,
                     i,
                     uid.equals(ownerUserId),
-                    teamPool.contains(uid)));
+                    teamPool.contains(uid),
+                    eligibility.eligible(),
+                    eligibility.reason(),
+                    hasRules,
+                    hasCalendar,
+                    calendarProvider,
+                    hasCalendar,
+                    readiness));
         }
         return out;
+    }
+
+    private static ParticipantReadinessStatus computeReadiness(
+            ParticipantEligibilityResult eligibility, boolean hasCalendar) {
+        return switch (eligibility.reason()) {
+            case ACTIVE -> hasCalendar
+                    ? ParticipantReadinessStatus.READY
+                    : ParticipantReadinessStatus.WARNING_NO_CALENDAR;
+            case NO_AVAILABILITY_RULES -> ParticipantReadinessStatus.WARNING_NO_AVAILABILITY;
+            case USER_INACTIVE -> ParticipantReadinessStatus.INACTIVE;
+            case USER_DELETED, USER_NOT_FOUND -> ParticipantReadinessStatus.REVOKED;
+            case NO_ACTIVE_CALENDAR -> ParticipantReadinessStatus.WARNING_NO_CALENDAR;
+        };
     }
 
     private static List<UUID> dedupePreserveOrder(List<UUID> input) {

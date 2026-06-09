@@ -66,6 +66,8 @@ class PublicBookingServiceTest {
     @Mock io.bunnycal.session.repository.SessionRegistrationRepository sessionRegistrationRepository;
     @Mock RoundRobinSlotTokenService roundRobinSlotTokenService;
     @Mock RoundRobinAssignmentService roundRobinAssignmentService;
+    @Mock io.bunnycal.availability.service.ParticipantEligibilityService participantEligibilityService;
+    @Mock io.bunnycal.booking.repository.BookingAssignmentRepository bookingAssignmentRepository;
     @Mock io.bunnycal.auth.repository.UserRepository userRepository;
     @Mock BookingEventTypeResolver bookingEventTypeResolver;
 
@@ -95,6 +97,8 @@ class PublicBookingServiceTest {
                 sessionRegistrationRepository,
                 roundRobinSlotTokenService,
                 roundRobinAssignmentService,
+                participantEligibilityService,
+                bookingAssignmentRepository,
                 userRepository,
                 bookingEventTypeResolver,
                 new SimpleMeterRegistry(),
@@ -506,6 +510,8 @@ class PublicBookingServiceTest {
         when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
         when(bookingRepository.countConflictsExcludingBooking(participantId, bookingId, booking.getStartTime(), booking.getEndTime()))
                 .thenReturn(0L);
+        when(participantEligibilityService.checkForRoundRobin(participantId))
+                .thenReturn(new io.bunnycal.availability.service.ParticipantEligibilityResult(participantId, true, null));
 
         var response = service.confirm("koushik", "30min", bookingId);
 

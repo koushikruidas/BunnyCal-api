@@ -7,6 +7,7 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
+import io.bunnycal.availability.service.ParticipantEligibilityService;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicBookingStatusResponse;
@@ -16,6 +17,7 @@ import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.calendar.service.CalendarService;
@@ -64,6 +66,8 @@ public class PublicBookingService {
     private final SessionRegistrationRepository sessionRegistrationRepository;
     private final RoundRobinSlotTokenService roundRobinSlotTokenService;
     private final RoundRobinAssignmentService roundRobinAssignmentService;
+    private final ParticipantEligibilityService participantEligibilityService;
+    private final BookingAssignmentRepository bookingAssignmentRepository;
     private final UserRepository userRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
     private final Duration guestManageTokenTtl;
@@ -86,6 +90,8 @@ public class PublicBookingService {
                                 SessionRegistrationRepository sessionRegistrationRepository,
                                 RoundRobinSlotTokenService roundRobinSlotTokenService,
                                 RoundRobinAssignmentService roundRobinAssignmentService,
+                                ParticipantEligibilityService participantEligibilityService,
+                                BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
                                 MeterRegistry meterRegistry,
@@ -112,6 +118,8 @@ public class PublicBookingService {
         this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.roundRobinSlotTokenService = roundRobinSlotTokenService;
         this.roundRobinAssignmentService = roundRobinAssignmentService;
+        this.participantEligibilityService = participantEligibilityService;
+        this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.userRepository = userRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
         this.meterRegistry = meterRegistry;
@@ -317,7 +325,54 @@ public class PublicBookingService {
         if (target.kind() == EventKind.GROUP) {
             return confirmGroupRegistration(target, bookingId);
         }
+        if (target.kind() == EventKind.ROUND_ROBIN) {
+            return confirmRoundRobinBooking(target, bookingId);
+        }
         return confirmOneOnOneBooking(target, bookingId);
+    }
+
+    private PublicConfirmResponse confirmRoundRobinBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                           UUID bookingId) {
+        var booking = bookingRepository.findAnyByIdAndEventTypeId(bookingId, target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        Instant start = booking.getStartTime();
+        Instant end = booking.getEndTime();
+
+        // Re-validate that the assigned participant is still eligible. They may have gone
+        // INACTIVE or deleted their availability rules between the hold and confirm steps.
+        UUID assignedParticipantId = booking.getHostId();
+        var eligibility = participantEligibilityService.checkForRoundRobin(assignedParticipantId);
+        if (!eligibility.eligible()) {
+            log.info("rr_confirm_rejected_participant_no_longer_eligible bookingId={} participantId={} reason={}",
+                    bookingId, assignedParticipantId, eligibility.reason());
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                    "The assigned participant is no longer available. Please select a new time slot.");
+        }
+
+        // Check for competing CONFIRMED bookings on the assigned participant.
+        long conflicts = bookingRepository.countConflictsExcludingBooking(assignedParticipantId, bookingId, start, end);
+        if (conflicts > 0) {
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
+        }
+
+        // Check the assigned participant's calendar busy blocks.
+        String actualTimezone = resolveBookingHostTimezone(booking);
+        boolean hasProjectionBusy = hasProjectionBusyConflict(assignedParticipantId, actualTimezone, start, end);
+        if (hasProjectionBusy) {
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
+        }
+
+        bookingService.confirmHeldBooking(bookingId);
+        String manageToken = guestCapabilityTokenService.issueToken(
+                bookingId,
+                assignedParticipantId,
+                BookingActionType.MANAGE_BOOKING,
+                guestManageTokenTtl,
+                TokenCreatorType.SYSTEM
+        );
+        return PublicConfirmResponse.oneOnOne(bookingId, "SYNCING", manageToken);
     }
 
     private PublicConfirmResponse confirmOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,
@@ -459,6 +514,30 @@ public class PublicBookingService {
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
         Instant start = request.startTime();
         Instant end = start.plus(target.duration());
+
+        if (target.kind() == EventKind.ROUND_ROBIN) {
+            // For RR, re-validate that the assigned participant is still eligible and that
+            // the new time falls within their availability window.
+            UUID assignedParticipantId = booking.getHostId();
+            var eligibility = participantEligibilityService.checkForRoundRobin(assignedParticipantId);
+            if (!eligibility.eligible()) {
+                log.info("rr_reschedule_rejected_participant_no_longer_eligible bookingId={} participantId={} reason={}",
+                        bookingId, assignedParticipantId, eligibility.reason());
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "The assigned participant is no longer available. Please select a new time slot.");
+            }
+
+            // Verify the requested new slot actually falls within the participant's availability.
+            EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+            LocalDate date = start.atZone(ZoneId.of(resolveBookingHostTimezone(booking))).toLocalDate();
+            boolean participantFree = roundRobinAssignmentService
+                    .candidateParticipantsForSlot(eventType, start, end, List.of(assignedParticipantId), Instant.now())
+                    .contains(assignedParticipantId);
+            if (!participantFree) {
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "The assigned participant is not available at the requested time.");
+            }
+        }
 
         long conflicts = bookingRepository.countConflictsExcludingBooking(booking.getHostId(), bookingId, start, end);
         if (conflicts > 0) {

@@ -157,12 +157,14 @@ public class BookingNotificationService {
                     (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
-        } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType)) {
+        } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType, booking.getHostId())) {
             // Consumer MSA host whose Outlook calendar IS the projection target:
             // Outlook would auto-import this iTIP REQUEST and create a second visible
             // event next to the Graph-projected one. Drop the host from this email's
             // recipient set — the calendar entry already exists in their calendar via
             // the Graph projection. Guest still gets the email.
+            // For RR: booking.hostId is the assigned participant, so the check must
+            // resolve that participant's connection, not the event type owner's.
             log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=ms_consumer_msa_projection_self_owned hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
             hostRecipient = Optional.empty();
@@ -171,6 +173,8 @@ public class BookingNotificationService {
             // Gmail auto-imports the iTIP REQUEST and creates a second event next
             // to the one already written via the Calendar API. Drop the host from
             // the recipient set — guest still gets the email.
+            // For RR: booking.hostId is the assigned participant, so checking
+            // conn.getUserId().equals(hostId) correctly scopes to the participant.
             log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=google_projection_self_owned hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
             hostRecipient = Optional.empty();
@@ -589,26 +593,29 @@ public class BookingNotificationService {
     }
 
     /**
-     * True iff the host's projection calendar is on a consumer Microsoft account
+     * True iff the booking host's projection calendar is on a consumer Microsoft account
      * owned by the host themselves. In that case Outlook auto-imports the iTIP
      * REQUEST ICS we'd attach to the host's email, producing a duplicate event
      * next to the one already written via Graph. Suppress the host recipient so
      * only the guest receives the invite.
+     *
+     * <p>For ROUND_ROBIN bookings {@code hostId} is the assigned participant, not the
+     * event owner — so we resolve the participant's own ACTIVE Microsoft connection
+     * rather than the event type's {@code projectionConnectionId}.
      *
      * <p>Scoped to consumer MSAs only: work/school (Entra) accounts also auto-process
      * meeting mail but Graph dispatches the invite itself, so we never attach an
      * ICS for the host in that path. The check stays narrow to the configuration
      * that produces the visible-duplicate symptom.
      */
-    private boolean shouldSuppressHostIcsForOwnMsaProjection(EventType eventType) {
+    private boolean shouldSuppressHostIcsForOwnMsaProjection(EventType eventType, UUID hostId) {
         if (eventType == null) return false;
-        if (eventType.getProjectionProvider() != CalendarProviderType.MICROSOFT) return false;
-        if (eventType.getProjectionConnectionId() == null) return false;
-        CalendarConnection projectionConnection = calendarConnectionRepository
-                .findById(eventType.getProjectionConnectionId())
-                .orElse(null);
-        if (projectionConnection == null) return false;
-        return MicrosoftAccountClassifier.isConsumerMsa(projectionConnection);
+        // Resolve the host's (participant's for RR) own ACTIVE Microsoft connection.
+        return calendarConnectionRepository
+                .findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
+                .map(MicrosoftAccountClassifier::isConsumerMsa)
+                .orElse(false);
     }
 
     /**

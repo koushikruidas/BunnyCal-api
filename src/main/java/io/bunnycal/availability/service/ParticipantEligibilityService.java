@@ -76,4 +76,17 @@ public class ParticipantEligibilityService {
                 .findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE)
                 .isEmpty();
     }
+
+    /**
+     * Returns the provider name of the user's first ACTIVE calendar connection, or
+     * {@code null} if none exist. Used for display-only hints in the UI.
+     */
+    public String activeCalendarProvider(UUID userId) {
+        return calendarConnectionRepository
+                .findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE)
+                .stream()
+                .findFirst()
+                .map(c -> c.getProvider() != null ? c.getProvider().name() : null)
+                .orElse(null);
+    }
 }

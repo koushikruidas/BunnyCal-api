@@ -107,7 +107,7 @@ class BookingServiceTest {
 
         BookingService guardedService = new BookingService(
                 userRepository, bookingRepository, outboxPublisher, timeSource,
-                new SimpleMeterRegistry(), null, null, conferencingCapabilityGuard, null);
+                new SimpleMeterRegistry(), null, null, conferencingCapabilityGuard, null, null);
 
         when(bookingRepository.findStateById(bookingId))
                 .thenReturn(Optional.of(stateRow(bookingId, hostId, "PENDING", 2L)));
@@ -235,6 +235,7 @@ class BookingServiceTest {
                 "io.bunnycal.booking.",
                 "io.bunnycal.auth.",
                 "io.bunnycal.availability.cache.",
+                "io.bunnycal.availability.repository.",
                 "io.bunnycal.sync.",
                 "io.bunnycal.common.",
                 "io.micrometer.",

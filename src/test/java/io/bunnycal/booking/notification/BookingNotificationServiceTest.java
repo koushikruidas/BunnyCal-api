@@ -170,7 +170,8 @@ class BookingNotificationServiceTest {
                         .projectionProvider(CalendarProviderType.MICROSOFT)
                         .projectionConnectionId(projectionConnectionId)
                         .build()));
-        when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(consumerMsaConnection));
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(consumerMsaConnection));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@outlook.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));

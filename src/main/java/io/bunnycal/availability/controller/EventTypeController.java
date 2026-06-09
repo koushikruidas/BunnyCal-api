@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -55,6 +56,15 @@ public class EventTypeController {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 participantService.listParticipants(userId, eventTypeId)));
+    }
+
+    @GetMapping("/participants/readiness")
+    public ResponseEntity<ApiResponse<List<EventTypeParticipantResponse>>> checkReadiness(
+            Authentication authentication,
+            @RequestParam("userIds") List<UUID> userIds) {
+        UUID actingUserId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                participantService.checkReadiness(actingUserId, userIds)));
     }
 
     @PutMapping("/{eventTypeId}/participants")
