@@ -3,6 +3,8 @@ package io.bunnycal.team.service;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
+import io.bunnycal.availability.service.ParticipantEligibilityService;
+import io.bunnycal.availability.service.ParticipantReadinessStatus;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ErrorCode;
@@ -16,6 +18,8 @@ import io.bunnycal.team.dto.CreateTeamRequest;
 import io.bunnycal.team.dto.InviteMemberRequest;
 import io.bunnycal.team.dto.TeamInvitationResponse;
 import io.bunnycal.team.dto.TeamMemberResponse;
+import io.bunnycal.team.dto.TeamReadinessSummaryResponse;
+import io.bunnycal.team.dto.TeamReadinessSummaryResponse.MemberReadinessEntry;
 import io.bunnycal.team.dto.TeamResponse;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.team.notification.TeamInvitationOutboxPayload;
@@ -25,6 +29,7 @@ import io.bunnycal.team.repository.TeamRepository;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -47,6 +52,7 @@ public class TeamService {
     private final UserRepository userRepository;
     private final SessionUserResolver sessionUserResolver;
     private final OutboxPublisher outboxPublisher;
+    private final ParticipantEligibilityService eligibilityService;
     private final String frontendBaseUrl;
 
     public TeamService(TeamRepository teamRepository,
@@ -55,6 +61,7 @@ public class TeamService {
                        UserRepository userRepository,
                        SessionUserResolver sessionUserResolver,
                        OutboxPublisher outboxPublisher,
+                       ParticipantEligibilityService eligibilityService,
                        @Value("${app.public-base-url:http://localhost:5173}") String frontendBaseUrl) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
@@ -62,6 +69,7 @@ public class TeamService {
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
         this.outboxPublisher = outboxPublisher;
+        this.eligibilityService = eligibilityService;
         this.frontendBaseUrl = frontendBaseUrl;
     }
 
@@ -229,6 +237,52 @@ public class TeamService {
         teamInvitationRepository.save(invitation);
 
         return toMemberResponse(member, user);
+    }
+
+    // ── Team readiness summary ────────────────────────────────────────────────
+
+    @Transactional(readOnly = true)
+    public TeamReadinessSummaryResponse getTeamReadinessSummary(UUID actingUserId, UUID teamId) {
+        requireMembership(actingUserId, teamId);
+        List<TeamMember> members = teamMemberRepository.findByTeamIdOrderByJoinedAtAsc(teamId);
+        Map<UUID, User> usersById = loadUsers(members.stream().map(TeamMember::getUserId).toList());
+
+        List<MemberReadinessEntry> entries = new ArrayList<>();
+        int ready = 0;
+        int needsSetup = 0;
+
+        for (TeamMember m : members) {
+            User u = usersById.get(m.getUserId());
+            var eligibility = eligibilityService.checkForRoundRobin(m.getUserId());
+            boolean hasCalendar = eligibilityService.hasActiveCalendar(m.getUserId());
+            boolean hasRules = eligibility.reason() != null
+                    && (eligibility.reason().name().equals("ACTIVE")
+                        || eligibility.reason().name().equals("NO_ACTIVE_CALENDAR"));
+
+            ParticipantReadinessStatus status;
+            if (!eligibility.eligible()) {
+                status = ParticipantReadinessStatus.WARNING_NO_AVAILABILITY;
+            } else if (!hasCalendar) {
+                status = ParticipantReadinessStatus.WARNING_NO_CALENDAR;
+            } else {
+                status = ParticipantReadinessStatus.READY;
+            }
+
+            if (status == ParticipantReadinessStatus.READY) ready++;
+            else needsSetup++;
+
+            entries.add(new MemberReadinessEntry(
+                    m.getUserId().toString(),
+                    u != null ? u.getName() : null,
+                    u != null ? u.getEmail() : null,
+                    u != null ? u.getProfileImageUrl() : null,
+                    status.name(),
+                    hasRules,
+                    hasCalendar,
+                    m.getId().toString()));
+        }
+
+        return new TeamReadinessSummaryResponse(members.size(), ready, needsSetup, entries);
     }
 
     @Transactional

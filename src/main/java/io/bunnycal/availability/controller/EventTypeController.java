@@ -4,8 +4,10 @@ import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.dto.EventTypeParticipantsRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
+import io.bunnycal.availability.dto.RoundRobinStatsResponse;
 import io.bunnycal.availability.service.EventTypeParticipantService;
 import io.bunnycal.availability.service.EventTypeService;
+import io.bunnycal.availability.service.RoundRobinStatsService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -27,11 +29,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class EventTypeController {
     private final EventTypeService eventTypeService;
     private final EventTypeParticipantService participantService;
+    private final RoundRobinStatsService rrStatsService;
 
     public EventTypeController(EventTypeService eventTypeService,
-                              EventTypeParticipantService participantService) {
+                               EventTypeParticipantService participantService,
+                               RoundRobinStatsService rrStatsService) {
         this.eventTypeService = eventTypeService;
         this.participantService = participantService;
+        this.rrStatsService = rrStatsService;
     }
 
     @PostMapping
@@ -65,6 +70,14 @@ public class EventTypeController {
         UUID actingUserId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 participantService.checkReadiness(actingUserId, userIds)));
+    }
+
+    @GetMapping("/{eventTypeId}/rr-stats")
+    public ResponseEntity<ApiResponse<RoundRobinStatsResponse>> getRrStats(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(rrStatsService.getStats(userId, eventTypeId)));
     }
 
     @PutMapping("/{eventTypeId}/participants")

@@ -10,6 +10,7 @@ import io.bunnycal.session.notification.SessionNotificationService;
 import io.bunnycal.session.sync.SessionSyncWorker;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.booking.notification.BookingNotificationService;
+import io.bunnycal.team.notification.ParticipantSetupRequestNotificationService;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.common.enums.ConferencingProviderType;
@@ -50,6 +51,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final SessionSyncWorker sessionSyncWorker;
     @Nullable
     private final TeamInvitationNotificationService teamInvitationNotificationService;
+    @Nullable
+    private final ParticipantSetupRequestNotificationService setupRequestNotificationService;
     private final TransactionTemplate requiresNewTx;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
@@ -65,6 +68,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
                                         @Nullable TeamInvitationNotificationService teamInvitationNotificationService,
+                                        @Nullable ParticipantSetupRequestNotificationService setupRequestNotificationService,
                                         PlatformTransactionManager transactionManager,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
@@ -79,6 +83,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
         this.teamInvitationNotificationService = teamInvitationNotificationService;
+        this.setupRequestNotificationService = setupRequestNotificationService;
         this.requiresNewTx = new TransactionTemplate(transactionManager);
         this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.invariantMonitor = invariantMonitor;
@@ -94,6 +99,17 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 teamInvitationNotificationService.handleOutboxEvent(event);
             } else {
                 log.info("team_invitation_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
+            }
+            return;
+        }
+
+        // ParticipantSetupRequest aggregate: send setup request email and return.
+        if (ParticipantSetupRequestNotificationService.AGGREGATE_TYPE.equals(
+                event != null ? event.getAggregateType() : null)) {
+            if (setupRequestNotificationService != null) {
+                setupRequestNotificationService.handleOutboxEvent(event);
+            } else {
+                log.info("setup_request_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
             }
             return;
         }

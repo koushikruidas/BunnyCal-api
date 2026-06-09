@@ -5,9 +5,12 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.dto.CreateTeamRequest;
 import io.bunnycal.team.dto.InviteMemberRequest;
+import io.bunnycal.team.dto.SetupStatusResponse;
 import io.bunnycal.team.dto.TeamInvitationResponse;
 import io.bunnycal.team.dto.TeamMemberResponse;
+import io.bunnycal.team.dto.TeamReadinessSummaryResponse;
 import io.bunnycal.team.dto.TeamResponse;
+import io.bunnycal.team.service.ParticipantSetupRequestService;
 import io.bunnycal.team.service.TeamService;
 import java.util.List;
 import java.util.UUID;
@@ -26,9 +29,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class TeamController {
 
     private final TeamService teamService;
+    private final ParticipantSetupRequestService setupRequestService;
 
-    public TeamController(TeamService teamService) {
+    public TeamController(TeamService teamService, ParticipantSetupRequestService setupRequestService) {
         this.teamService = teamService;
+        this.setupRequestService = setupRequestService;
     }
 
     @PostMapping
@@ -93,6 +98,34 @@ public class TeamController {
         UUID userId = extractUserId(authentication);
         teamService.revokeInvitation(userId, teamId, invitationId);
         return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    // ── Team readiness summary ────────────────────────────────────────────────
+
+    @GetMapping("/{teamId}/readiness-summary")
+    public ResponseEntity<ApiResponse<TeamReadinessSummaryResponse>> getReadinessSummary(
+            Authentication authentication,
+            @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.getTeamReadinessSummary(userId, teamId)));
+    }
+
+    // ── Member setup requests ────────────────────────────────────────────────
+
+    @PostMapping("/members/{teamMemberId}/setup-request")
+    public ResponseEntity<ApiResponse<SetupStatusResponse>> sendSetupRequest(
+            Authentication authentication,
+            @PathVariable UUID teamMemberId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(setupRequestService.sendSetupRequest(userId, teamMemberId)));
+    }
+
+    @GetMapping("/members/{teamMemberId}/setup-status")
+    public ResponseEntity<ApiResponse<SetupStatusResponse>> getSetupStatus(
+            Authentication authentication,
+            @PathVariable UUID teamMemberId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(setupRequestService.getSetupStatus(userId, teamMemberId)));
     }
 
     private UUID extractUserId(Authentication authentication) {
