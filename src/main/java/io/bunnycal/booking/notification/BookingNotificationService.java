@@ -619,26 +619,26 @@ public class BookingNotificationService {
     }
 
     /**
-     * True iff the host's projection calendar is on a Google account owned by
-     * the host themselves. Gmail auto-imports any iTIP REQUEST ICS we'd attach
-     * to the host's email, producing a duplicate event next to the one already
-     * written via the Calendar API. Suppress the host recipient so only the
-     * guest receives the invite.
+     * True iff the booking host has an active Google calendar connection that they
+     * own themselves. Gmail auto-imports any iTIP REQUEST ICS we'd attach to the
+     * host's email, producing a duplicate event next to the one already written via
+     * the Calendar API. Suppress the host recipient so only the guest receives the invite.
      *
-     * <p>Scoped narrowly to self-owned Google projections via the connection's
-     * {@code userId}. Shared, delegated, team, or service-account projections
-     * have a connection whose {@code userId} differs from the booking host's
-     * id, so suppression correctly does NOT fire and the host still gets the
-     * ICS email.
+     * <p>For ROUND_ROBIN bookings {@code hostId} is the assigned participant, not the
+     * event owner. RR event types have no owner-level projection (projectionProvider and
+     * projectionConnectionId are null), so the old approach of looking up the event
+     * type's projection connection would always return false for RR — leaving the
+     * participant subscribed to a duplicate ICS email on top of their API-written event.
+     *
+     * <p>The fix mirrors the MSA path: resolve the host's (participant's for RR) own
+     * ACTIVE Google connection directly by userId. If such a connection exists, Gmail
+     * will auto-import the invite, so suppress the host recipient.
      */
     private boolean shouldSuppressHostIcsForOwnGoogleProjection(EventType eventType, UUID hostId) {
         if (eventType == null) return false;
-        if (eventType.getProjectionProvider() != CalendarProviderType.GOOGLE) return false;
-        if (eventType.getProjectionConnectionId() == null) return false;
         return calendarConnectionRepository
-                .findById(eventType.getProjectionConnectionId())
-                .filter(conn -> conn.getProvider() == CalendarProviderType.GOOGLE)
-                .map(conn -> hostId.equals(conn.getUserId()))
-                .orElse(false);
+                .findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE,
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
+                .isPresent();
     }
 }

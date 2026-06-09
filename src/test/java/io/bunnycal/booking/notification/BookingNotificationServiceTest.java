@@ -185,10 +185,9 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void googleSelfOwnedProjection_suppressesHostRecipientToAvoidDuplicateAutoImport() throws Exception {
+    void googleActiveConnection_suppressesHostRecipientToAvoidDuplicateAutoImport() throws Exception {
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        UUID projectionConnectionId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
         User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
@@ -206,9 +205,12 @@ class BookingNotificationServiceTest {
                         .name("Discovery Call")
                         .slug("discovery-call")
                         .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
+                        .projectionConnectionId(UUID.randomUUID())
                         .build()));
-        when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(googleConnection));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(googleConnection));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
         when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
@@ -222,23 +224,54 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void googleProjection_sharedConnection_doesNotSuppressHostRecipient() throws Exception {
+    void googleActiveConnection_suppressesHostRecipient_whenEventTypeHasNoProjection() throws Exception {
+        // RR event types have projectionProvider=null and projectionConnectionId=null.
+        // Suppression must still fire when the participant has an active Google connection.
         UUID bookingId = UUID.randomUUID();
         UUID hostId = UUID.randomUUID();
-        UUID otherUserId = UUID.randomUUID();
-        UUID projectionConnectionId = UUID.randomUUID();
         Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
         User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com").username("host-user").timezone("UTC").build();
         OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
 
-        // Projection connection belongs to a DIFFERENT user (shared/delegated/service-account scenario).
-        // The host's Gmail will not auto-import the ICS into the projection calendar, so suppression
-        // must NOT fire and the host must still receive the email.
-        CalendarConnection sharedConnection = new CalendarConnection();
-        sharedConnection.setUserId(otherUserId);
-        sharedConnection.setProvider(CalendarProviderType.GOOGLE);
-        sharedConnection.setStatus(CalendarConnectionStatus.ACTIVE);
-        sharedConnection.setProviderUserId("9876543210");
+        CalendarConnection googleConnection = new CalendarConnection();
+        googleConnection.setUserId(hostId);
+        googleConnection.setProvider(CalendarProviderType.GOOGLE);
+        googleConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        googleConnection.setProviderUserId("1234567890");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("RR Event")
+                        .slug("rr-event")
+                        // No projectionProvider, no projectionConnectionId — RR
+                        .build()));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(googleConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(1)).send(messageCaptor.capture());
+        MimeMessage onlyMsg = messageCaptor.getValue();
+        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
+        assertFalse(header(onlyMsg, "To").contains("host@gmail.com"));
+    }
+
+    @Test
+    void google_noActiveConnection_doesNotSuppressHostRecipient() throws Exception {
+        // Host has no active Google connection — no Calendar API event was written
+        // to their account, so Gmail will not auto-import. Host must receive the ICS.
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
 
         when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
@@ -247,16 +280,105 @@ class BookingNotificationServiceTest {
                         .name("Discovery Call")
                         .slug("discovery-call")
                         .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
+                        .projectionConnectionId(UUID.randomUUID())
                         .build()));
-        when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(sharedConnection));
+        // No active Google connection for this host; MSA check also returns empty
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
-        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@example.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
         verify(mailSender, times(2)).send(messageCaptor.capture());
+    }
+
+    @Test
+    void roundRobin_googleParticipant_suppressesHostIcsToPreventDuplicate() throws Exception {
+        // RR booking: hostId = assigned participant (not event owner).
+        // Participant has an active Google connection — the Calendar API event was written to
+        // their calendar by BookingSchedulingProjectionResolver. Gmail will auto-import
+        // the ICS, so the participant must NOT receive a redundant ICS email.
+        UUID bookingId = UUID.randomUUID();
+        UUID participantId = UUID.randomUUID();
+        UUID eventOwnerId = UUID.randomUUID();
+        Booking booking = booking(bookingId, participantId, "guest@example.com", "Guest Name", 1L);
+        User participant = User.builder().id(participantId).name("Participant").email("participant@gmail.com")
+                .username("participant").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection participantGoogleConn = new CalendarConnection();
+        participantGoogleConn.setUserId(participantId);
+        participantGoogleConn.setProvider(CalendarProviderType.GOOGLE);
+        participantGoogleConn.setStatus(CalendarConnectionStatus.ACTIVE);
+        participantGoogleConn.setProviderUserId("participant-google-id");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(participantId)).thenReturn(Optional.of(participant));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("RR Event")
+                        .slug("rr-event")
+                        .userId(eventOwnerId)
+                        // RR: no projectionProvider, no projectionConnectionId
+                        .build()));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(participantId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(participantId, CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(participantGoogleConn));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(participant)).thenReturn(Optional.of("participant@gmail.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        // Only the guest gets the email — participant suppressed to prevent duplicate
+        verify(mailSender, times(1)).send(messageCaptor.capture());
+        MimeMessage onlyMsg = messageCaptor.getValue();
+        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
+        assertFalse(header(onlyMsg, "To").contains("participant@gmail.com"));
+    }
+
+    @Test
+    void roundRobin_microsoftParticipant_suppressesHostIcsToPreventDuplicate() throws Exception {
+        // Same as above but for a Microsoft consumer MSA participant.
+        UUID bookingId = UUID.randomUUID();
+        UUID participantId = UUID.randomUUID();
+        UUID eventOwnerId = UUID.randomUUID();
+        Booking booking = booking(bookingId, participantId, "guest@example.com", "Guest Name", 1L);
+        User participant = User.builder().id(participantId).name("Participant").email("participant@outlook.com")
+                .username("participant").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection participantMsaConn = new CalendarConnection();
+        participantMsaConn.setUserId(participantId);
+        participantMsaConn.setProvider(CalendarProviderType.MICROSOFT);
+        participantMsaConn.setStatus(CalendarConnectionStatus.ACTIVE);
+        participantMsaConn.setProviderUserId("ed9adb1ac97c0819"); // consumer MSA hex segment
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(participantId)).thenReturn(Optional.of(participant));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("RR Event")
+                        .slug("rr-event")
+                        .userId(eventOwnerId)
+                        .build()));
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(participantId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(participantMsaConn));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(participant)).thenReturn(Optional.of("participant@outlook.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(1)).send(messageCaptor.capture());
+        MimeMessage onlyMsg = messageCaptor.getValue();
+        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
+        assertFalse(header(onlyMsg, "To").contains("participant@outlook.com"));
     }
 
     @Test
