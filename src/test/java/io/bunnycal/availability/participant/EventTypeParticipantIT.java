@@ -11,6 +11,11 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeParticipantService;
+import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.domain.TeamRole;
@@ -75,11 +80,12 @@ class EventTypeParticipantIT {
     @Autowired EventTypeRepository eventTypeRepository;
     @Autowired EventTypeParticipantService participantService;
     @Autowired TeamService teamService;
+    @Autowired CalendarConnectionRepository calendarConnectionRepository;
 
     @BeforeEach
     void setUp() {
         jdbc.execute("TRUNCATE TABLE users, teams, team_members, team_invitations, "
-                + "event_types, event_type_participants CASCADE");
+                + "event_types, event_type_participants, calendar_connections CASCADE");
     }
 
     private User createUser(String email) {
@@ -101,6 +107,9 @@ class EventTypeParticipantIT {
                 .holdDuration(Duration.ofMinutes(15))
                 .kind(kind)
                 .capacity(kind == EventKind.GROUP ? 5 : 1)
+                // Participant management tests are not conferencing tests; use NONE to
+                // prevent the conferencing/participant compatibility check from firing.
+                .conferencingProvider(ConferencingProviderType.NONE)
                 .build());
     }
 
@@ -273,5 +282,211 @@ class EventTypeParticipantIT {
                 .isInstanceOf(CustomException.class)
                 .extracting(e -> ((CustomException) e).getErrorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
+    }
+
+    // ── RR Conferencing compatibility ────────────────────────────────────────────
+
+    private CalendarConnection googleConnection(UUID userId) {
+        CalendarConnection c = new CalendarConnection();
+        c.setUserId(userId);
+        c.setProvider(CalendarProviderType.GOOGLE);
+        c.setProviderUserId("google-uid-" + userId);
+        c.setRefreshTokenCiphertext("tok");
+        c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
+        c.setStatus(CalendarConnectionStatus.ACTIVE);
+        return calendarConnectionRepository.save(c);
+    }
+
+    private CalendarConnection microsoftWorkConnection(UUID userId) {
+        CalendarConnection c = new CalendarConnection();
+        c.setUserId(userId);
+        c.setProvider(CalendarProviderType.MICROSOFT);
+        // Entra OID format — work/school account; supportsNativeTeams = true
+        c.setProviderUserId("12345678-1234-1234-1234-" + userId.toString().replace("-", "").substring(0, 12));
+        c.setRefreshTokenCiphertext("tok");
+        c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
+        c.setStatus(CalendarConnectionStatus.ACTIVE);
+        return calendarConnectionRepository.save(c);
+    }
+
+    private CalendarConnection microsoftPersonalConnection(UUID userId) {
+        CalendarConnection c = new CalendarConnection();
+        c.setUserId(userId);
+        c.setProvider(CalendarProviderType.MICROSOFT);
+        // Consumer puid — 16 hex chars; no Teams-for-Business
+        c.setProviderUserId("ed9adb1ac97c0819");
+        c.setRefreshTokenCiphertext("tok");
+        c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
+        c.setStatus(CalendarConnectionStatus.ACTIVE);
+        return calendarConnectionRepository.save(c);
+    }
+
+    private EventType createEventTypeWithConferencing(UUID ownerId, EventKind kind, ConferencingProviderType conferencing) {
+        return eventTypeRepository.save(EventType.builder()
+                .userId(ownerId)
+                .name(kind + " event")
+                .slug(kind.name().toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 8))
+                .duration(Duration.ofMinutes(30))
+                .bufferBefore(Duration.ZERO)
+                .bufferAfter(Duration.ZERO)
+                .slotInterval(Duration.ofMinutes(30))
+                .minNotice(Duration.ZERO)
+                .maxAdvance(Duration.ofDays(30))
+                .holdDuration(Duration.ofMinutes(15))
+                .kind(kind)
+                .capacity(1)
+                .conferencingProvider(conferencing)
+                .build());
+    }
+
+    @Test
+    void roundRobin_googleMeet_allowedWhenParticipantHasGoogleCalendar() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        googleConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()));
+        assertThat(result).extracting(EventTypeParticipantResponse::userId).containsExactly(alice.getId());
+    }
+
+    @Test
+    void roundRobin_googleMeet_rejectedWhenNoParticipantHasGoogleCalendar() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        microsoftWorkConnection(alice.getId()); // no Google
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+    }
+
+    @Test
+    void roundRobin_microsoftTeams_allowedWhenParticipantHasWorkAccount() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        microsoftWorkConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
+
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()));
+        assertThat(result).extracting(EventTypeParticipantResponse::userId).containsExactly(alice.getId());
+    }
+
+    @Test
+    void roundRobin_microsoftTeams_rejectedWhenOnlyPersonalMsaParticipant() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        microsoftPersonalConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
+
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+    }
+
+    @Test
+    void roundRobin_microsoftTeams_rejectedWhenNoCalendarAtAll() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        // alice has no calendar connection
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
+
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+    }
+
+    @Test
+    void roundRobin_mixedGoogleAndMicrosoftWork_allowsBothConferencingProviders() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        User bob = createUser("bob@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        addToOwnersTeam(owner.getId(), bob);
+        googleConnection(alice.getId());
+        microsoftWorkConnection(bob.getId());
+
+        EventType etGoogleMeet = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        List<EventTypeParticipantResponse> r1 = participantService.replaceParticipants(
+                owner.getId(), etGoogleMeet.getId(), List.of(alice.getId(), bob.getId()));
+        assertThat(r1).hasSize(2);
+
+        EventType etTeams = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
+        List<EventTypeParticipantResponse> r2 = participantService.replaceParticipants(
+                owner.getId(), etTeams.getId(), List.of(alice.getId(), bob.getId()));
+        assertThat(r2).hasSize(2);
+    }
+
+    @Test
+    void roundRobin_zoom_alwaysAllowedRegardlessOfParticipantCalendars() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        // alice has no calendar connection at all
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.ZOOM);
+
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()));
+        assertThat(result).extracting(EventTypeParticipantResponse::userId).containsExactly(alice.getId());
+    }
+
+    @Test
+    void roundRobin_customUrl_alwaysAllowed() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.CUSTOM_URL);
+
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()));
+        assertThat(result).extracting(EventTypeParticipantResponse::userId).containsExactly(alice.getId());
+    }
+
+    @Test
+    void roundRobin_none_alwaysAllowed() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.NONE);
+
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()));
+        assertThat(result).extracting(EventTypeParticipantResponse::userId).containsExactly(alice.getId());
+    }
+
+    @Test
+    void roundRobin_supportsNativeTeams_trueForWorkAccount_falseForPersonalMsa() {
+        User owner = createUser("owner@test.com");
+        User workUser = createUser("work@test.com");
+        User msaUser = createUser("msa@test.com");
+        addToOwnersTeam(owner.getId(), workUser);
+        addToOwnersTeam(owner.getId(), msaUser);
+        microsoftWorkConnection(workUser.getId());
+        microsoftPersonalConnection(msaUser.getId());
+        EventType et = createEventType(owner.getId(), EventKind.ROUND_ROBIN);
+
+        participantService.replaceParticipants(owner.getId(), et.getId(), List.of(workUser.getId(), msaUser.getId()));
+        List<EventTypeParticipantResponse> listed = participantService.listParticipants(owner.getId(), et.getId());
+
+        EventTypeParticipantResponse workRow = listed.stream()
+                .filter(p -> p.userId().equals(workUser.getId())).findFirst().orElseThrow();
+        EventTypeParticipantResponse msaRow = listed.stream()
+                .filter(p -> p.userId().equals(msaUser.getId())).findFirst().orElseThrow();
+        assertThat(workRow.supportsNativeTeams()).isTrue();
+        assertThat(msaRow.supportsNativeTeams()).isFalse();
     }
 }

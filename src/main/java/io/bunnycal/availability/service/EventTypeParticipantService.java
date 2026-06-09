@@ -8,6 +8,11 @@ import io.bunnycal.availability.domain.EventTypeParticipant;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.repository.EventTypeParticipantRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.calendar.domain.CalendarConnectionStatus;
+import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.repository.TeamMemberRepository;
@@ -90,17 +95,20 @@ public class EventTypeParticipantService {
     private final UserRepository userRepository;
     private final TeamMemberRepository teamMemberRepository;
     private final ParticipantEligibilityService eligibilityService;
+    private final CalendarConnectionRepository calendarConnectionRepository;
 
     public EventTypeParticipantService(EventTypeRepository eventTypeRepository,
                                        EventTypeParticipantRepository participantRepository,
                                        UserRepository userRepository,
                                        TeamMemberRepository teamMemberRepository,
-                                       ParticipantEligibilityService eligibilityService) {
+                                       ParticipantEligibilityService eligibilityService,
+                                       CalendarConnectionRepository calendarConnectionRepository) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.eligibilityService = eligibilityService;
+        this.calendarConnectionRepository = calendarConnectionRepository;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -145,6 +153,12 @@ public class EventTypeParticipantService {
         // Participants must be drawn from the owner's team pool (the owner is always in
         // their own pool). This guards against attaching arbitrary users.
         validateWithinTeamPool(eventType.getUserId(), ordered);
+
+        // Validate conferencing/participant-pool compatibility for RR:
+        // the selected conferencing provider must be supportable by at least one participant.
+        if (kind == EventKind.ROUND_ROBIN) {
+            validateConferencingForRoundRobinParticipants(eventType.getConferencingProvider(), ordered);
+        }
 
         participantRepository.deleteByEventTypeId(eventTypeId);
         List<EventTypeParticipant> rows = new ArrayList<>();
@@ -257,6 +271,13 @@ public class EventTypeParticipantService {
             boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
 
+            // Teams capability: requires an active Microsoft work/school (Entra) account.
+            // Consumer MSA accounts (Outlook.com) cannot host native Teams meetings.
+            boolean supportsNativeTeams = calendarConnectionRepository
+                    .findByUserIdAndProviderAndStatus(uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
+                    .filter(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn))
+                    .isPresent();
+
             out.add(new EventTypeParticipantResponse(
                     uid,
                     u != null ? u.getName() : null,
@@ -271,7 +292,8 @@ public class EventTypeParticipantService {
                     hasCalendar,
                     calendarProvider,
                     hasCalendar,
-                    readiness));
+                    readiness,
+                    supportsNativeTeams));
         }
         return out;
     }
@@ -291,5 +313,53 @@ public class EventTypeParticipantService {
 
     private static List<UUID> dedupePreserveOrder(List<UUID> input) {
         return new ArrayList<>(new LinkedHashSet<>(input));
+    }
+
+    /**
+     * Validates that the chosen conferencing provider is compatible with the
+     * given participant pool for a ROUND_ROBIN event type.
+     *
+     * <p>For RR, there is no owner projection calendar; conferencing capability is
+     * derived from participant calendars. The rule is: at least one participant
+     * must be able to support the selected provider.
+     *
+     * <ul>
+     *   <li>GOOGLE_MEET   — at least one participant must have an active Google calendar.</li>
+     *   <li>MICROSOFT_TEAMS — at least one participant must have an active Microsoft calendar
+     *       that is a work/school (Entra) account, not a consumer MSA.</li>
+     *   <li>ZOOM / CUSTOM_URL / NONE — always allowed regardless of participant calendars.</li>
+     * </ul>
+     */
+    private void validateConferencingForRoundRobinParticipants(
+            ConferencingProviderType conferencing, List<UUID> participantIds) {
+        if (conferencing == null
+                || conferencing == ConferencingProviderType.NONE
+                || conferencing == ConferencingProviderType.CUSTOM_URL
+                || conferencing == ConferencingProviderType.ZOOM) {
+            return;
+        }
+
+        if (conferencing == ConferencingProviderType.GOOGLE_MEET) {
+            boolean anyGoogle = participantIds.stream().anyMatch(uid ->
+                    calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                            uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE).isPresent());
+            if (!anyGoogle) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Google Meet requires at least one participant with an active Google Calendar connection.");
+            }
+            return;
+        }
+
+        if (conferencing == ConferencingProviderType.MICROSOFT_TEAMS) {
+            boolean anyTeamsCapable = participantIds.stream().anyMatch(uid ->
+                    calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
+                            .filter(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn))
+                            .isPresent());
+            if (!anyTeamsCapable) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Microsoft Teams requires at least one participant with a Microsoft 365 work or school account.");
+            }
+        }
     }
 }

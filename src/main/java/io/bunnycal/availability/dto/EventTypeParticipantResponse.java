@@ -29,4 +29,5 @@ public record EventTypeParticipantResponse(
         boolean hasActiveCalendar,
         String calendarProvider,
         boolean hasWritebackCapability,
-        ParticipantReadinessStatus readinessStatus) {}
+        ParticipantReadinessStatus readinessStatus,
+        boolean supportsNativeTeams) {}
