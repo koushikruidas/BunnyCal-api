@@ -21,6 +21,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @RestController
 @RequestMapping("/auth")
 @RequiredArgsConstructor
@@ -86,7 +88,10 @@ public class AuthController {
     public ApiResponse<Map<String, Object>> session(Authentication authentication) {
         UUID authenticatedUserId = extractUserId(authentication);
         User user = userRepository.findById(authenticatedUserId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found"));
+                .orElseThrow(() -> {
+                    log.warn("session_user_not_found userId={} endpoint=GET:/auth/session reason=user_not_found", authenticatedUserId);
+                    return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
+                });
         List<AuthIdentity> identities = authIdentityRepository.findByUserIdOrderByCreatedAtDesc(authenticatedUserId);
         String activeProvider = identities.stream()
                 .max(Comparator.comparing(AuthIdentity::getCreatedAt))
@@ -103,12 +108,14 @@ public class AuthController {
                 })
                 .toList();
 
-        return ApiResponse.success(Map.of(
-                "authenticated", true,
-                "user", UserDto.from(user),
-                "activeIdentityProvider", activeProvider,
-                "linkedIdentities", linkedIdentities
-        ));
+        // Use LinkedHashMap instead of Map.of() — Map.of() throws NullPointerException on null values,
+        // and activeProvider is null when the user has no auth identities.
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("authenticated", true);
+        payload.put("user", UserDto.from(user));
+        payload.put("activeIdentityProvider", activeProvider);
+        payload.put("linkedIdentities", linkedIdentities);
+        return ApiResponse.success(payload);
     }
 
     private static Map<String, Object> provider(String providerId,

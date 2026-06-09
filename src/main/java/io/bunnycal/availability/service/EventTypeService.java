@@ -2,6 +2,7 @@ package io.bunnycal.availability.service;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
@@ -22,15 +23,18 @@ import org.springframework.transaction.annotation.Transactional;
 public class EventTypeService {
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;
+    private final SessionUserResolver sessionUserResolver;
     private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
     private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
+                            SessionUserResolver sessionUserResolver,
                             EventTypeOrchestrationNormalizer orchestrationNormalizer,
                             EventTypeOrchestrationJsonCodec orchestrationJsonCodec) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
+        this.sessionUserResolver = sessionUserResolver;
         this.orchestrationNormalizer = orchestrationNormalizer;
         this.orchestrationJsonCodec = orchestrationJsonCodec;
     }
@@ -38,8 +42,7 @@ public class EventTypeService {
     @Transactional
     public EventTypeSummaryResponse create(UUID userId, CreateEventTypeRequest request) {
         validate(request);
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User user = sessionUserResolver.require(userId, "POST:/api/event-types");
 
         String username = ensureUsername(user);
         String slug = uniqueSlug(userId, requestedOrDerivedSlug(request));
@@ -84,8 +87,7 @@ public class EventTypeService {
 
     @Transactional(readOnly = true)
     public List<EventTypeSummaryResponse> list(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User user = sessionUserResolver.require(userId, "GET:/api/event-types");
         String username = user.getUsername() != null ? user.getUsername() : fallbackUsername(user.getId());
 
         return eventTypeRepository.findByUserIdOrderByNameAsc(userId).stream()

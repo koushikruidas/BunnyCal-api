@@ -2,6 +2,7 @@ package io.bunnycal.availability.service;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.dto.AvailabilityOverrideCreateRequest;
@@ -30,6 +31,7 @@ public class AvailabilityService {
     private final AvailabilityOverrideMapper availabilityOverrideMapper;
     private final AvailabilityValidationService validationService;
     private final UserRepository userRepository;
+    private final SessionUserResolver sessionUserResolver;
 
     public AvailabilityService(
             AvailabilityRuleRepository availabilityRuleRepository,
@@ -37,13 +39,15 @@ public class AvailabilityService {
             AvailabilityRuleMapper availabilityRuleMapper,
             AvailabilityOverrideMapper availabilityOverrideMapper,
             AvailabilityValidationService validationService,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            SessionUserResolver sessionUserResolver) {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.availabilityRuleMapper = availabilityRuleMapper;
         this.availabilityOverrideMapper = availabilityOverrideMapper;
         this.validationService = validationService;
         this.userRepository = userRepository;
+        this.sessionUserResolver = sessionUserResolver;
     }
 
     @Transactional
@@ -107,8 +111,7 @@ public class AvailabilityService {
     }
 
     private void ensureUserTimezone(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User user = sessionUserResolver.require(userId, "availability-endpoint");
         validationService.validateTimezone(user.getTimezone());
     }
 }

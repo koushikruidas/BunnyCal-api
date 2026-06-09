@@ -2,6 +2,7 @@ package io.bunnycal.team.service;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ErrorCode;
@@ -44,6 +45,7 @@ public class TeamService {
     private final TeamMemberRepository teamMemberRepository;
     private final TeamInvitationRepository teamInvitationRepository;
     private final UserRepository userRepository;
+    private final SessionUserResolver sessionUserResolver;
     private final OutboxPublisher outboxPublisher;
     private final String frontendBaseUrl;
 
@@ -51,12 +53,14 @@ public class TeamService {
                        TeamMemberRepository teamMemberRepository,
                        TeamInvitationRepository teamInvitationRepository,
                        UserRepository userRepository,
+                       SessionUserResolver sessionUserResolver,
                        OutboxPublisher outboxPublisher,
                        @Value("${app.public-base-url:http://localhost:5173}") String frontendBaseUrl) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.teamInvitationRepository = teamInvitationRepository;
         this.userRepository = userRepository;
+        this.sessionUserResolver = sessionUserResolver;
         this.outboxPublisher = outboxPublisher;
         this.frontendBaseUrl = frontendBaseUrl;
     }
@@ -68,8 +72,7 @@ public class TeamService {
         if (request == null || request.name() == null || request.name().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Team name is required.");
         }
-        User owner = userRepository.findById(ownerUserId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User owner = sessionUserResolver.require(ownerUserId, "POST:/api/teams");
 
         String slug = normalizeSlug(request.slug() != null && !request.slug().isBlank()
                 ? request.slug()
@@ -206,8 +209,7 @@ public class TeamService {
             throw new CustomException(ErrorCode.TEAM_INVITATION_INVALID, "Invitation has expired.");
         }
 
-        User user = userRepository.findById(acceptingUserId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User user = sessionUserResolver.require(acceptingUserId, "POST:/api/invitations/accept");
 
         // Strict email match: the invite is for a specific person.
         if (!user.getEmail().equalsIgnoreCase(invitation.getInvitedEmail())) {
