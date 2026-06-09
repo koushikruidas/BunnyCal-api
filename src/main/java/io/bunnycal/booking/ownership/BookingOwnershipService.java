@@ -1,5 +1,6 @@
 package io.bunnycal.booking.ownership;
 
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
@@ -29,11 +30,23 @@ public class BookingOwnershipService {
         this.projectionResolver = projectionResolver;
     }
 
+    /**
+     * @deprecated Use {@link #ensureOwnership(Booking, EventType)} for ROUND_ROBIN event types.
+     *             This overload reads eventType.projection* directly and is not RR-aware — calling
+     *             it for a ROUND_ROBIN event type would write to the event owner's calendar instead
+     *             of the assigned participant's calendar.
+     */
+    @Deprecated
     @Transactional
     public BookingOwnership ensureOwnership(UUID bookingId, EventType eventType) {
         if (eventType == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "Projection ownership is required for booking sync lifecycle.");
+        }
+        if (EventKind.ROUND_ROBIN.equals(eventType.getKind())) {
+            throw new IllegalStateException(
+                    "ensureOwnership(UUID, EventType) must not be called for ROUND_ROBIN event types. " +
+                    "Use ensureOwnership(Booking, EventType) instead — it resolves the assigned participant's calendar.");
         }
         BookingSchedulingProjectionResolver.SchedulingProjection projection;
         if (eventType.getProjectionProvider() == null

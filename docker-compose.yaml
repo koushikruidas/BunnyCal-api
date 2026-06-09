@@ -1,48 +1,48 @@
 services:
-  bunnycal-api:
-    image: ${BUNNYCAL_IMAGE:-bunnycal/bunnycal-api:latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://otel-collector:4318/v1/metrics
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - bunnycal
+#  bunnycal-api:
+#    image: ${BUNNYCAL_IMAGE:-bunnycal/bunnycal-api:latest}
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+#      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+#      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+#      SPRING_DATA_REDIS_HOST: redis
+#      SPRING_DATA_REDIS_PORT: 6379
+#      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://otel-collector:4318/v1/metrics
+#    restart: unless-stopped
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    networks:
+#      - bunnycal
 
-  caddy:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - bunnycal-api
-    networks:
-      - bunnycal
+#  caddy:
+#    image: caddy:2.8-alpine
+#    restart: unless-stopped
+#    ports:
+#      - "80:80"
+#      - "443:443"
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      APP_DOMAIN: ${APP_DOMAIN}
+#    volumes:
+#      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#      - caddy_data:/data
+#      - caddy_config:/config
+#    depends_on:
+#      - bunnycal-api
+#    networks:
+#      - bunnycal
 
   postgres:
     image: postgres:16-alpine
@@ -58,21 +58,28 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     networks:
       - bunnycal
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "6379:6379"
     networks:
       - bunnycal
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.111.0
+    image: otel/opentelemetry-collector-contrib:0.153.0
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     restart: unless-stopped
+    ports:
+      - "4317:4317"
+      - "4318:4318"
     networks:
       - bunnycal
 
@@ -92,8 +99,8 @@ services:
     # tunnel to the VM (ssh -L 9090:127.0.0.1:9090 ...).
     ports:
       - "127.0.0.1:9090:9090"
-    depends_on:
-      - bunnycal-api
+#    depends_on:
+#      - bunnycal-api
     restart: unless-stopped
     networks:
       - bunnycal
@@ -129,5 +136,5 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
-  caddy_data:
-  caddy_config:
+#  caddy_data:
+#  caddy_config:
