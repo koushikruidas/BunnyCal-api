@@ -42,6 +42,15 @@ public class BookingConferencingCapabilityGuard {
                 || conferencingProvider == ConferencingProviderType.ZOOM) {
             return;
         }
+
+        // ROUND_ROBIN: conferencing link is created from the assigned participant's
+        // calendar at booking time — no owner-level projection exists. Skip the
+        // owner-projection provider checks entirely; the MSA check is not needed
+        // here either because participant capability was validated at setup time.
+        if (eventType.getKind() == EventKind.ROUND_ROBIN) {
+            return;
+        }
+
         CalendarProviderType projectionProvider = eventType.getProjectionProvider();
         if (conferencingProvider == ConferencingProviderType.GOOGLE_MEET
                 && projectionProvider != CalendarProviderType.GOOGLE) {
@@ -56,14 +65,7 @@ public class BookingConferencingCapabilityGuard {
                     "Microsoft Teams conferencing requires a Microsoft projection calendar.");
         }
         CalendarConnection projectionConnection;
-        if (eventType.getKind() == EventKind.ROUND_ROBIN) {
-            if (projectionProvider == null) {
-                return;
-            }
-            projectionConnection = calendarConnectionRepository
-                    .findByUserIdAndProviderAndStatus(hostId, projectionProvider, io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
-                    .orElse(null);
-        } else if (eventType.getProjectionConnectionId() != null) {
+        if (eventType.getProjectionConnectionId() != null) {
             projectionConnection = calendarConnectionRepository.findById(eventType.getProjectionConnectionId()).orElse(null);
         } else {
             return;
