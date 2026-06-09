@@ -9,10 +9,12 @@ import io.bunnycal.availability.dto.AvailabilityOverrideCreateRequest;
 import io.bunnycal.availability.dto.AvailabilityOverrideResponse;
 import io.bunnycal.availability.dto.AvailabilityRuleResponse;
 import io.bunnycal.availability.dto.BulkAvailabilityRulesUpsertRequest;
+import io.bunnycal.availability.dto.GroupReservationBlockerResponse;
 import io.bunnycal.availability.mapper.AvailabilityOverrideMapper;
 import io.bunnycal.availability.mapper.AvailabilityRuleMapper;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
+import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.availability.validation.AvailabilityValidationService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -27,6 +29,7 @@ public class AvailabilityService {
 
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
+    private final GroupEventReservationWindowRepository reservationWindowRepository;
     private final AvailabilityRuleMapper availabilityRuleMapper;
     private final AvailabilityOverrideMapper availabilityOverrideMapper;
     private final AvailabilityValidationService validationService;
@@ -36,6 +39,7 @@ public class AvailabilityService {
     public AvailabilityService(
             AvailabilityRuleRepository availabilityRuleRepository,
             AvailabilityOverrideRepository availabilityOverrideRepository,
+            GroupEventReservationWindowRepository reservationWindowRepository,
             AvailabilityRuleMapper availabilityRuleMapper,
             AvailabilityOverrideMapper availabilityOverrideMapper,
             AvailabilityValidationService validationService,
@@ -43,11 +47,20 @@ public class AvailabilityService {
             SessionUserResolver sessionUserResolver) {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
+        this.reservationWindowRepository = reservationWindowRepository;
         this.availabilityRuleMapper = availabilityRuleMapper;
         this.availabilityOverrideMapper = availabilityOverrideMapper;
         this.validationService = validationService;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
+    }
+
+    @Transactional(readOnly = true)
+    public List<AvailabilityRuleResponse> getRules(UUID userId) {
+        ensureUserTimezone(userId);
+        return availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId).stream()
+                .map(availabilityRuleMapper::toResponse)
+                .toList();
     }
 
     @Transactional
@@ -97,6 +110,20 @@ public class AvailabilityService {
 
         return availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, effectiveFrom, effectiveTo).stream()
                 .map(availabilityOverrideMapper::toResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<GroupReservationBlockerResponse> getReservationBlockers(UUID userId) {
+        sessionUserResolver.require(userId, "GET:/api/availability/reservation-blockers");
+        return reservationWindowRepository.findAllWindowsWithEventNameByHost(userId).stream()
+                .map(v -> new GroupReservationBlockerResponse(
+                        v.getWindowId(),
+                        v.getEventTypeId(),
+                        v.getEventTypeName(),
+                        v.getDayOfWeek(),
+                        v.getStartTime(),
+                        v.getEndTime()))
                 .toList();
     }
 

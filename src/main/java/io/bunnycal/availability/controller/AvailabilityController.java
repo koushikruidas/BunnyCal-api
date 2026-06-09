@@ -4,6 +4,7 @@ import io.bunnycal.availability.dto.AvailabilityOverrideCreateRequest;
 import io.bunnycal.availability.dto.AvailabilityOverrideResponse;
 import io.bunnycal.availability.dto.AvailabilityRuleResponse;
 import io.bunnycal.availability.dto.BulkAvailabilityRulesUpsertRequest;
+import io.bunnycal.availability.dto.GroupReservationBlockerResponse;
 import io.bunnycal.availability.service.AvailabilityService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
@@ -34,6 +35,12 @@ public class AvailabilityController {
         this.availabilityService = availabilityService;
     }
 
+    @GetMapping("/rules")
+    public ResponseEntity<ApiResponse<List<AvailabilityRuleResponse>>> getRules(Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(availabilityService.getRules(userId)));
+    }
+
     @PutMapping("/rules/bulk")
     public ResponseEntity<ApiResponse<List<AvailabilityRuleResponse>>> upsertRules(
             Authentication authentication,
@@ -57,6 +64,13 @@ public class AvailabilityController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(availabilityService.getOverrides(userId, from, to)));
+    }
+
+    @GetMapping("/reservation-blockers")
+    public ResponseEntity<ApiResponse<List<GroupReservationBlockerResponse>>> getReservationBlockers(
+            Authentication authentication) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(availabilityService.getReservationBlockers(userId)));
     }
 
     @DeleteMapping("/overrides/{id}")

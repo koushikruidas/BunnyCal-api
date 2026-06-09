@@ -1,6 +1,7 @@
 package io.bunnycal.availability.repository;
 
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.repository.GroupReservationBlockerView;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -74,4 +75,23 @@ public interface GroupEventReservationWindowRepository
     List<GroupEventReservationWindow> findWindowsOwnedByOtherEventTypes(
             @Param("hostId") UUID hostId,
             @Param("eventTypeId") UUID eventTypeId);
+
+    /**
+     * All reservation windows owned by any GROUP event type of the given host, with
+     * the owning event type's name. Used to surface blocking information in the
+     * availability UI so hosts can see why their other event types lose slots.
+     */
+    @Query(value = """
+            SELECT w.id           AS windowId,
+                   w.event_type_id AS eventTypeId,
+                   et.name        AS eventTypeName,
+                   w.day_of_week  AS dayOfWeek,
+                   w.start_time   AS startTime,
+                   w.end_time     AS endTime
+            FROM group_event_reservation_windows w
+            JOIN event_types et ON et.id = w.event_type_id
+            WHERE et.user_id = :hostId
+            ORDER BY w.day_of_week, w.start_time
+            """, nativeQuery = true)
+    List<GroupReservationBlockerView> findAllWindowsWithEventNameByHost(@Param("hostId") UUID hostId);
 }
