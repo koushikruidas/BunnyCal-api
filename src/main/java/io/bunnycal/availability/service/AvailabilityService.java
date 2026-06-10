@@ -18,6 +18,7 @@ import io.bunnycal.availability.repository.GroupEventReservationWindowRepository
 import io.bunnycal.availability.validation.AvailabilityValidationService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.team.service.ParticipantSetupRequestService;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -35,6 +36,8 @@ public class AvailabilityService {
     private final AvailabilityValidationService validationService;
     private final UserRepository userRepository;
     private final SessionUserResolver sessionUserResolver;
+    private final ParticipantSetupRequestService setupRequestService;
+    private final ParticipantEligibilityService eligibilityService;
 
     public AvailabilityService(
             AvailabilityRuleRepository availabilityRuleRepository,
@@ -44,7 +47,9 @@ public class AvailabilityService {
             AvailabilityOverrideMapper availabilityOverrideMapper,
             AvailabilityValidationService validationService,
             UserRepository userRepository,
-            SessionUserResolver sessionUserResolver) {
+            SessionUserResolver sessionUserResolver,
+            ParticipantSetupRequestService setupRequestService,
+            ParticipantEligibilityService eligibilityService) {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
         this.reservationWindowRepository = reservationWindowRepository;
@@ -53,6 +58,8 @@ public class AvailabilityService {
         this.validationService = validationService;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
+        this.setupRequestService = setupRequestService;
+        this.eligibilityService = eligibilityService;
     }
 
     @Transactional(readOnly = true)
@@ -78,9 +85,13 @@ public class AvailabilityService {
             return List.of();
         }
 
-        return availabilityRuleRepository.saveAll(toSave).stream()
+        List<AvailabilityRuleResponse> saved = availabilityRuleRepository.saveAll(toSave).stream()
                 .map(availabilityRuleMapper::toResponse)
                 .toList();
+        if (eligibilityService.isReady(userId)) {
+            setupRequestService.markAllCompletedForTarget(userId);
+        }
+        return saved;
     }
 
     @Transactional

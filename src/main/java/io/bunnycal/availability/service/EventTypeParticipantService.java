@@ -6,6 +6,7 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.EventTypeParticipant;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
+import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeParticipantRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -220,6 +221,28 @@ public class EventTypeParticipantService {
         return enrich(ordered, actingUserId, actingUserId);
     }
 
+    // ── Publish readiness (RR only) ────────────────────────────────────────────
+
+    /**
+     * Returns per-participant readiness for a ROUND_ROBIN event type and whether
+     * the event can be published (all participants READY). Non-RR event types are
+     * always considered publishable.
+     */
+    @Transactional(readOnly = true)
+    public PublishReadinessResponse publishReadiness(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        if (eventType.getKind() != EventKind.ROUND_ROBIN) {
+            return new PublishReadinessResponse(true, 0, 0, List.of());
+        }
+        List<UUID> ids = effectiveParticipantUserIds(eventType);
+        List<EventTypeParticipantResponse> participants = enrich(ids, eventType.getUserId(), actingUserId);
+        int readyCount = (int) participants.stream()
+                .filter(p -> p.readinessStatus() == ParticipantReadinessStatus.READY)
+                .count();
+        boolean publishable = readyCount == participants.size() && !participants.isEmpty();
+        return new PublishReadinessResponse(publishable, participants.size(), readyCount, participants);
+    }
+
     // ── Validation helpers ─────────────────────────────────────────────────────
 
     private EventType requireOwnedEventType(UUID actingUserId, UUID eventTypeId) {
@@ -265,8 +288,9 @@ public class EventTypeParticipantService {
 
             ParticipantEligibilityResult eligibility = eligibilityService.checkForRoundRobin(uid);
             boolean hasCalendar = eligibilityService.hasActiveCalendar(uid);
+            boolean hasWriteback = hasCalendar && eligibilityService.hasWritebackCapability(uid);
             String calendarProvider = hasCalendar ? eligibilityService.activeCalendarProvider(uid) : null;
-            ParticipantReadinessStatus readiness = computeReadiness(eligibility, hasCalendar);
+            ParticipantReadinessStatus readiness = computeReadiness(eligibility, hasCalendar, hasWriteback);
 
             boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
@@ -291,7 +315,7 @@ public class EventTypeParticipantService {
                     hasRules,
                     hasCalendar,
                     calendarProvider,
-                    hasCalendar,
+                    hasWriteback,
                     readiness,
                     supportsNativeTeams));
         }
@@ -299,15 +323,17 @@ public class EventTypeParticipantService {
     }
 
     private static ParticipantReadinessStatus computeReadiness(
-            ParticipantEligibilityResult eligibility, boolean hasCalendar) {
+            ParticipantEligibilityResult eligibility, boolean hasCalendar, boolean hasWriteback) {
         return switch (eligibility.reason()) {
-            case ACTIVE -> hasCalendar
-                    ? ParticipantReadinessStatus.READY
-                    : ParticipantReadinessStatus.WARNING_NO_CALENDAR;
-            case NO_AVAILABILITY_RULES -> ParticipantReadinessStatus.WARNING_NO_AVAILABILITY;
             case USER_INACTIVE -> ParticipantReadinessStatus.INACTIVE;
             case USER_DELETED, USER_NOT_FOUND -> ParticipantReadinessStatus.REVOKED;
-            case NO_ACTIVE_CALENDAR -> ParticipantReadinessStatus.WARNING_NO_CALENDAR;
+            case NO_AVAILABILITY_RULES -> ParticipantReadinessStatus.NO_AVAILABILITY;
+            case NO_ACTIVE_CALENDAR -> ParticipantReadinessStatus.NO_CALENDAR;
+            case ACTIVE -> {
+                if (!hasCalendar) yield ParticipantReadinessStatus.NO_CALENDAR;
+                if (!hasWriteback) yield ParticipantReadinessStatus.NO_WRITEBACK;
+                yield ParticipantReadinessStatus.READY;
+            }
         };
     }
 

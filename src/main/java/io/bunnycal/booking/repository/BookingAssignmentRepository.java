@@ -23,6 +23,7 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
             JOIN bookings b ON b.id = ba.booking_id
             WHERE b.event_type_id = :eventTypeId
               AND ba.participant_user_id IN (:participantIds)
+              AND b.status IN ('CONFIRMED', 'COMPLETED')
             GROUP BY ba.participant_user_id
             """, nativeQuery = true)
     List<ParticipantAssignmentStatsRow> findStatsForEventTypeAndParticipants(

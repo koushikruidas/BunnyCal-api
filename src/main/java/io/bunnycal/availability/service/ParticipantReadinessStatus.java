@@ -1,29 +1,28 @@
 package io.bunnycal.availability.service;
 
 /**
- * Summarises a participant's readiness for contributing to multi-host scheduling.
+ * Describes the primary blocking dimension of a participant's readiness state.
+ * Combinations are expressed via the separate boolean fields
+ * (hasAvailabilityRules, hasActiveCalendar, hasWritebackCapability) — not via enum values.
+ *
+ * <p>States describe participant state; scheduling policy is enforced in the validation layer.
  *
  * <ul>
- *   <li>{@link #READY} — eligible, has availability rules, has an active calendar with
- *       writeback capability. Fully schedulable for RR and Collective.</li>
- *   <li>{@link #WARNING_NO_CALENDAR} — eligible and has availability rules, but no active
- *       calendar connection. For RR this degrades the response; for Collective it blocks
- *       the participant from contributing.</li>
- *   <li>{@link #WARNING_NO_WRITEBACK} — eligible and has a calendar, but the active
- *       connection has no writeback capability (read-only or limited OAuth scope). Booking
- *       events will not appear on the participant's calendar.</li>
- *   <li>{@link #WARNING_NO_AVAILABILITY} — eligible but has zero availability rules.
- *       Participant contributes no slots until rules are configured.</li>
- *   <li>{@link #INACTIVE} — user account status is INACTIVE. Excluded from scheduling.</li>
+ *   <li>{@link #READY} — all three dimensions satisfied: availability rules configured,
+ *       active calendar connected, writeback scope present.</li>
+ *   <li>{@link #NO_AVAILABILITY} — no availability rules configured.</li>
+ *   <li>{@link #NO_CALENDAR} — no active calendar connection.</li>
+ *   <li>{@link #NO_WRITEBACK} — active calendar connected but lacks writeback scope.</li>
+ *   <li>{@link #INACTIVE} — user account is INACTIVE. Excluded from scheduling.</li>
  *   <li>{@link #REVOKED} — user was deleted or no longer found. Excluded from scheduling.</li>
  *   <li>{@link #NOT_SCHEDULABLE} — any other ineligible state not covered above.</li>
  * </ul>
  */
 public enum ParticipantReadinessStatus {
     READY,
-    WARNING_NO_CALENDAR,
-    WARNING_NO_WRITEBACK,
-    WARNING_NO_AVAILABILITY,
+    NO_AVAILABILITY,
+    NO_CALENDAR,
+    NO_WRITEBACK,
     INACTIVE,
     REVOKED,
     NOT_SCHEDULABLE

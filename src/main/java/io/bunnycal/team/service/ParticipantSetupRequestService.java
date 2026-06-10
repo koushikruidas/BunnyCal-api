@@ -131,6 +131,23 @@ public class ParticipantSetupRequestService {
                 });
     }
 
+    /**
+     * Completes all open setup requests for {@code targetUserId} regardless of which
+     * owner issued them. Called when a participant becomes fully ready (calendar connected
+     * or availability rules saved) so all outstanding requests are closed automatically.
+     */
+    @Transactional
+    public void markAllCompletedForTarget(UUID targetUserId) {
+        Instant now = Instant.now();
+        setupRequestRepository.findByTargetUserId(targetUserId).stream()
+                .filter(req -> "REQUESTED".equals(req.getStatus()))
+                .forEach(req -> {
+                    req.setStatus("COMPLETED");
+                    req.setUpdatedAt(now);
+                    setupRequestRepository.save(req);
+                });
+    }
+
     private void publishSetupRequestEvent(ParticipantSetupRequest req, TeamMember member) {
         Team team = teamRepository.findById(req.getTeamId()).orElse(null);
         User target = userRepository.findById(req.getTargetUserId()).orElse(null);

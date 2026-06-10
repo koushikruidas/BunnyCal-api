@@ -19,6 +19,9 @@ public interface CalendarConnectionCalendarRepository extends JpaRepository<Cale
 
     Optional<CalendarConnectionCalendar> findByConnectionIdAndExternalCalendarId(UUID connectionId, String externalCalendarId);
 
+    /** Returns true if any calendar entry for the given connection IDs has canWrite = true. */
+    boolean existsByConnectionIdInAndCanWriteTrue(Collection<UUID> connectionIds);
+
     @Modifying
     @Query("delete from CalendarConnectionCalendar c where c.connectionId = :connectionId and c.externalCalendarId not in :keep")
     int deleteByConnectionIdAndExternalCalendarIdNotIn(@Param("connectionId") UUID connectionId,

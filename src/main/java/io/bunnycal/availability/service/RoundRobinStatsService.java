@@ -72,15 +72,19 @@ public class RoundRobinStatsService {
         for (UUID uid : participantIds) {
             var eligibility = eligibilityService.checkForRoundRobin(uid);
             boolean hasCalendar = eligibilityService.hasActiveCalendar(uid);
+            boolean hasWriteback = hasCalendar && eligibilityService.hasWritebackCapability(uid);
 
-            ParticipantReadinessStatus status;
-            if (!eligibility.eligible()) {
-                status = ParticipantReadinessStatus.WARNING_NO_AVAILABILITY;
-            } else if (!hasCalendar) {
-                status = ParticipantReadinessStatus.WARNING_NO_CALENDAR;
-            } else {
-                status = ParticipantReadinessStatus.READY;
-            }
+            ParticipantReadinessStatus status = switch (eligibility.reason()) {
+                case USER_INACTIVE -> ParticipantReadinessStatus.INACTIVE;
+                case USER_DELETED, USER_NOT_FOUND -> ParticipantReadinessStatus.REVOKED;
+                case NO_AVAILABILITY_RULES -> ParticipantReadinessStatus.NO_AVAILABILITY;
+                case NO_ACTIVE_CALENDAR -> ParticipantReadinessStatus.NO_CALENDAR;
+                case ACTIVE -> {
+                    if (!hasCalendar) yield ParticipantReadinessStatus.NO_CALENDAR;
+                    if (!hasWriteback) yield ParticipantReadinessStatus.NO_WRITEBACK;
+                    yield ParticipantReadinessStatus.READY;
+                }
+            };
 
             if (status == ParticipantReadinessStatus.READY) ready++;
             else needsSetup++;
