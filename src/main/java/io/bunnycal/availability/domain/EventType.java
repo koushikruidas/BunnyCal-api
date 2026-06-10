@@ -12,6 +12,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import io.bunnycal.availability.domain.EventKind;
 import lombok.AllArgsConstructor;
@@ -110,4 +111,11 @@ public class EventType {
     @Builder.Default
     @Column(name = "capacity", nullable = false)
     private int capacity = 1;
+
+    @Builder.Default
+    @Column(name = "published", nullable = false)
+    private boolean published = true;
+
+    @Column(name = "last_degraded_notification_at")
+    private Instant lastDegradedNotificationAt;
 }

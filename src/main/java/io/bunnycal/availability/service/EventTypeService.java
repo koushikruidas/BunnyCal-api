@@ -8,14 +8,18 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
+import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.booking.outbox.OutboxPublisher;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.time.TimeSource;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import io.bunnycal.common.enums.ConferencingProviderType;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,17 +30,26 @@ public class EventTypeService {
     private final SessionUserResolver sessionUserResolver;
     private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
     private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    private final PublishReadinessService publishReadinessService;
+    private final OutboxPublisher outboxPublisher;
+    private final TimeSource timeSource;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
                             SessionUserResolver sessionUserResolver,
                             EventTypeOrchestrationNormalizer orchestrationNormalizer,
-                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec) {
+                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
+                            PublishReadinessService publishReadinessService,
+                            OutboxPublisher outboxPublisher,
+                            TimeSource timeSource) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
         this.orchestrationNormalizer = orchestrationNormalizer;
         this.orchestrationJsonCodec = orchestrationJsonCodec;
+        this.publishReadinessService = publishReadinessService;
+        this.outboxPublisher = outboxPublisher;
+        this.timeSource = timeSource;
     }
 
     @Transactional
@@ -54,6 +67,9 @@ public class EventTypeService {
 
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
         int capacity = request.capacity() != null ? request.capacity() : 1;
+        // COLLECTIVE events start unpublished — no participants or readiness evaluation has
+        // occurred yet. All other kinds start published (single-host, always ready).
+        boolean startPublished = kind != EventKind.COLLECTIVE;
 
         EventTypeOrchestrationNormalizer.ProjectionDestination proj = orchestration.projectionDestination();
         EventType eventType = EventType.builder()
@@ -80,10 +96,47 @@ public class EventTypeService {
                 .holdDuration(Duration.ofMinutes(request.holdDurationMinutes()))
                 .kind(kind)
                 .capacity(capacity)
+                .published(startPublished)
                 .build();
 
         EventType saved = eventTypeRepository.save(eventType);
         return toSummary(saved, username);
+    }
+
+    @Transactional
+    public PublishReadinessResponse publish(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        PublishReadinessService.CollectiveReadinessSummary summary =
+                publishReadinessService.evaluate(eventType);
+
+        if (!summary.publishable()) {
+            throw new CustomException(ErrorCode.UNPUBLISHABLE_EVENT_TYPE,
+                    "Cannot publish: " + String.join("; ", summary.reasons()));
+        }
+
+        eventType.setPublished(true);
+        eventTypeRepository.save(eventType);
+
+        EventTypeLifecycleOutboxPayload payload = new EventTypeLifecycleOutboxPayload(
+                eventType.getId(), eventType.getName(), eventType.getUserId(),
+                "Owner published.",
+                List.of(), timeSource.now());
+        outboxPublisher.publish(
+                EventTypeLifecycleOutboxPayload.AGGREGATE_TYPE,
+                eventType.getId(),
+                new OutboxPayloadEnvelope(
+                        java.util.UUID.randomUUID().toString(),
+                        EventTypeLifecycleOutboxPayload.EVENT_PUBLISHED, 1, payload));
+
+        return publishReadinessService.publishReadinessResponse(eventType);
+    }
+
+    @Transactional
+    public PublishReadinessResponse unpublish(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        eventType.setPublished(false);
+        eventTypeRepository.save(eventType);
+        return publishReadinessService.publishReadinessResponse(eventType);
     }
 
     @Transactional(readOnly = true)
@@ -94,6 +147,23 @@ public class EventTypeService {
         return eventTypeRepository.findByUserIdOrderByNameAsc(userId).stream()
                 .map(et -> toSummary(et, username))
                 .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public EventTypeSummaryResponse get(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        User user = sessionUserResolver.require(actingUserId, "GET:/api/event-types/" + eventTypeId);
+        String username = user.getUsername() != null ? user.getUsername() : fallbackUsername(user.getId());
+        return toSummary(eventType, username);
+    }
+
+    private EventType requireOwnedEventType(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = eventTypeRepository.findById(eventTypeId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
+        if (!eventType.getUserId().equals(actingUserId)) {
+            throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this event type.");
+        }
+        return eventType;
     }
 
     private static void validate(CreateEventTypeRequest request) {
@@ -173,6 +243,9 @@ public class EventTypeService {
                         eventType.getProjectionProvider() == null ? null : eventType.getProjectionProvider().name(),
                         eventType.getProjectionConnectionId(),
                         eventType.getProjectionCalendarId());
+        // Evaluate degraded only for COLLECTIVE; other kinds are single-host and always non-degraded.
+        boolean degraded = eventType.getKind() == EventKind.COLLECTIVE
+                && publishReadinessService.evaluate(eventType).degraded();
         return new EventTypeSummaryResponse(
                 eventType.getId(),
                 eventType.getName(),
@@ -180,6 +253,8 @@ public class EventTypeService {
                 "/public/" + username + "/" + eventType.getSlug(),
                 eventType.getKind(),
                 eventType.getCapacity(),
+                eventType.isPublished(),
+                degraded,
                 availability,
                 conference,
                 projectionDestination

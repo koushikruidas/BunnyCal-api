@@ -141,6 +141,7 @@ public class PublicBookingService {
     @Transactional(readOnly = true)
     public PublicEventInfoResponse eventInfo(String username, String eventTypeSlug) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
         return new PublicEventInfoResponse(
                 target.eventName(),
                 target.duration().toMinutes(),
@@ -149,13 +150,23 @@ public class PublicBookingService {
                 target.hostUsername(),
                 target.eventDescription(),
                 target.eventLocation(),
-                target.hostAvatarUrl()
+                target.hostAvatarUrl(),
+                eventType.getKind(),
+                eventType.isPublished()
         );
     }
 
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+
+        // Unpublished event types: page is reachable but slots are empty.
+        EventType currentEventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        if (!currentEventType.isPublished()) {
+            SlotResponse empty = slotService.getSlots(new SlotRequest(target.userId(), target.eventTypeId(), date));
+            return new SlotResponse(empty.userId(), empty.eventTypeId(), empty.date(), empty.timezone(),
+                    empty.version(), empty.generatedAt(), false, List.of(), AvailabilityStatus.NO_SLOTS_AVAILABLE);
+        }
         // Use the oldest active connection as the staleness indicator (same as sync routing).
         java.util.Optional<CalendarConnection> connection =
                 calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(target.userId(), CalendarConnectionStatus.ACTIVE)
@@ -220,6 +231,10 @@ public class PublicBookingService {
         }
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
+        // Gate: unpublished event types do not accept new holds.
+        // The public page remains reachable but no new slots/holds/bookings are allowed.
+        requirePublished(target.eventTypeId());
+
         if (target.kind() == EventKind.GROUP) {
             return holdGroupRegistration(target, request);
         }
@@ -230,6 +245,13 @@ public class PublicBookingService {
             return holdCollectiveBooking(target, request);
         }
         return holdOneOnOneBooking(target, request);
+    }
+
+    private void requirePublished(UUID eventTypeId) {
+        EventType et = bookingEventTypeResolver.requireByEventTypeId(eventTypeId);
+        if (!et.isPublished()) {
+            throw new CustomException(ErrorCode.EVENT_TYPE_NOT_PUBLISHED);
+        }
     }
 
     private PublicHoldResponse holdOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,

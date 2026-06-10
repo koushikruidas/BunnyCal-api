@@ -1,6 +1,8 @@
 package io.bunnycal.booking.outbox;
 
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.availability.service.EventTypeLifecycleNotificationService;
+import io.bunnycal.availability.service.EventTypeLifecycleOutboxPayload;
 import io.bunnycal.booking.service.BookingEventTypeResolver;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
@@ -53,6 +55,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final TeamInvitationNotificationService teamInvitationNotificationService;
     @Nullable
     private final ParticipantSetupRequestNotificationService setupRequestNotificationService;
+    @Nullable
+    private final EventTypeLifecycleNotificationService eventTypeLifecycleNotificationService;
     private final TransactionTemplate requiresNewTx;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
@@ -69,6 +73,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable SessionSyncWorker sessionSyncWorker,
                                         @Nullable TeamInvitationNotificationService teamInvitationNotificationService,
                                         @Nullable ParticipantSetupRequestNotificationService setupRequestNotificationService,
+                                        @Nullable EventTypeLifecycleNotificationService eventTypeLifecycleNotificationService,
                                         PlatformTransactionManager transactionManager,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
@@ -84,6 +89,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.sessionSyncWorker = sessionSyncWorker;
         this.teamInvitationNotificationService = teamInvitationNotificationService;
         this.setupRequestNotificationService = setupRequestNotificationService;
+        this.eventTypeLifecycleNotificationService = eventTypeLifecycleNotificationService;
         this.requiresNewTx = new TransactionTemplate(transactionManager);
         this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.invariantMonitor = invariantMonitor;
@@ -99,6 +105,17 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 teamInvitationNotificationService.handleOutboxEvent(event);
             } else {
                 log.info("team_invitation_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
+            }
+            return;
+        }
+
+        // EventType aggregate: route to lifecycle notification service and return.
+        if (EventTypeLifecycleOutboxPayload.AGGREGATE_TYPE.equals(
+                event != null ? event.getAggregateType() : null)) {
+            if (eventTypeLifecycleNotificationService != null) {
+                eventTypeLifecycleNotificationService.handleOutboxEvent(event);
+            } else {
+                log.info("event_type_lifecycle_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
             }
             return;
         }

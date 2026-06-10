@@ -116,6 +116,23 @@ class PublicBookingServiceTest {
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+        // Default: every event type lookup returns a published event type so the
+        // published gate does not interfere with tests that don't test publish state.
+        EventType publishedEventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(userId)
+                .name("Test Event")
+                .slug("30min")
+                .duration(Duration.ofMinutes(30))
+                .bufferBefore(Duration.ZERO).bufferAfter(Duration.ZERO)
+                .slotInterval(Duration.ofMinutes(30))
+                .minNotice(Duration.ZERO).maxAdvance(Duration.ofDays(30))
+                .holdDuration(Duration.ofMinutes(15))
+                .kind(EventKind.ONE_ON_ONE).capacity(1)
+                .published(true)
+                .build();
+        Mockito.lenient().when(bookingEventTypeResolver.requireByEventTypeId(
+                org.mockito.ArgumentMatchers.any())).thenReturn(publishedEventType);
     }
 
     // P3: availability is now projection-first. The DB-side calendar_events projection

@@ -9,6 +9,9 @@ import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeParticipantRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.booking.outbox.OutboxPublisher;
+import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
@@ -16,7 +19,9 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.team.repository.TeamMemberRepository;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -25,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -97,19 +104,33 @@ public class EventTypeParticipantService {
     private final TeamMemberRepository teamMemberRepository;
     private final ParticipantEligibilityService eligibilityService;
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final BookingAssignmentRepository bookingAssignmentRepository;
+    private final OutboxPublisher outboxPublisher;
+    private final TimeSource timeSource;
+    // Injected lazily to break the circular dependency:
+    // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
+    @Lazy
+    @Autowired
+    private PublishReadinessService publishReadinessService;
 
     public EventTypeParticipantService(EventTypeRepository eventTypeRepository,
                                        EventTypeParticipantRepository participantRepository,
                                        UserRepository userRepository,
                                        TeamMemberRepository teamMemberRepository,
                                        ParticipantEligibilityService eligibilityService,
-                                       CalendarConnectionRepository calendarConnectionRepository) {
+                                       CalendarConnectionRepository calendarConnectionRepository,
+                                       BookingAssignmentRepository bookingAssignmentRepository,
+                                       OutboxPublisher outboxPublisher,
+                                       TimeSource timeSource) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.eligibilityService = eligibilityService;
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.bookingAssignmentRepository = bookingAssignmentRepository;
+        this.outboxPublisher = outboxPublisher;
+        this.timeSource = timeSource;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -161,6 +182,11 @@ public class EventTypeParticipantService {
             validateConferencingForRoundRobinParticipants(eventType.getConferencingProvider(), ordered);
         }
 
+        // Capture previous roster before deletion (needed for COLLECTIVE removed-participant warning).
+        List<UUID> previousParticipantIds = participantRepository
+                .findByEventTypeIdOrderByDisplayOrderAscCreatedAtAsc(eventTypeId)
+                .stream().map(EventTypeParticipant::getUserId).toList();
+
         participantRepository.deleteByEventTypeId(eventTypeId);
         List<EventTypeParticipant> rows = new ArrayList<>();
         for (int i = 0; i < ordered.size(); i++) {
@@ -171,6 +197,36 @@ public class EventTypeParticipantService {
                     .build());
         }
         participantRepository.saveAll(rows);
+
+        if (kind == EventKind.COLLECTIVE) {
+            // Detect removed participants who have future confirmed bookings.
+            Set<UUID> removedIds = new HashSet<>(previousParticipantIds);
+            removedIds.removeAll(new HashSet<>(ordered));
+            for (UUID removedUserId : removedIds) {
+                long futureCount = bookingAssignmentRepository
+                        .countFutureConfirmedByParticipantAndEventType(removedUserId, eventTypeId, Instant.now());
+                if (futureCount > 0) {
+                    EventTypeLifecycleOutboxPayload warningPayload = new EventTypeLifecycleOutboxPayload(
+                            eventTypeId, eventType.getName(), eventType.getUserId(),
+                            "Participant removed with " + futureCount + " future confirmed bookings. "
+                                    + "Those bookings are not affected.",
+                            List.of(new EventTypeLifecycleOutboxPayload.ParticipantStatusSnapshot(
+                                    removedUserId, null, "REMOVED", "Removed participant has future bookings.")),
+                            timeSource.now());
+                    outboxPublisher.publish(
+                            EventTypeLifecycleOutboxPayload.AGGREGATE_TYPE,
+                            eventTypeId,
+                            new OutboxPayloadEnvelope(
+                                    UUID.randomUUID().toString(),
+                                    EventTypeLifecycleOutboxPayload.EVENT_PARTICIPANT_REMOVED_WITH_FUTURE_BOOKINGS,
+                                    1,
+                                    warningPayload));
+                }
+            }
+            // Enforce publish-state readiness after roster change.
+            publishReadinessService.applyAndEnforce(eventType);
+        }
+
         return enrich(ordered, eventType.getUserId(), actingUserId);
     }
 
@@ -221,26 +277,27 @@ public class EventTypeParticipantService {
         return enrich(ordered, actingUserId, actingUserId);
     }
 
-    // ── Publish readiness (RR only) ────────────────────────────────────────────
+    // ── Publish readiness ─────────────────────────────────────────────────────
 
     /**
-     * Returns per-participant readiness for a ROUND_ROBIN event type and whether
-     * the event can be published (all participants READY). Non-RR event types are
-     * always considered publishable.
+     * Returns readiness for a COLLECTIVE or ROUND_ROBIN event type.
+     * Delegates to {@link PublishReadinessService} as the single authority.
      */
     @Transactional(readOnly = true)
     public PublishReadinessResponse publishReadiness(UUID actingUserId, UUID eventTypeId) {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
-        if (eventType.getKind() != EventKind.ROUND_ROBIN) {
-            return new PublishReadinessResponse(true, 0, 0, List.of());
-        }
-        List<UUID> ids = effectiveParticipantUserIds(eventType);
-        List<EventTypeParticipantResponse> participants = enrich(ids, eventType.getUserId(), actingUserId);
-        int readyCount = (int) participants.stream()
-                .filter(p -> p.readinessStatus() == ParticipantReadinessStatus.READY)
-                .count();
-        boolean publishable = readyCount == participants.size() && !participants.isEmpty();
-        return new PublishReadinessResponse(publishable, participants.size(), readyCount, participants);
+        return publishReadinessService.publishReadinessResponse(eventType);
+    }
+
+    // ── Readiness delegation (called by PublishReadinessService) ──────────────
+
+    /**
+     * Returns enriched participant responses for readiness evaluation.
+     * Exposed as package-friendly for {@link PublishReadinessService}.
+     */
+    @Transactional(readOnly = true)
+    public List<EventTypeParticipantResponse> enrichForReadiness(List<UUID> userIds, UUID ownerUserId) {
+        return enrich(userIds, ownerUserId, ownerUserId);
     }
 
     // ── Validation helpers ─────────────────────────────────────────────────────
@@ -290,7 +347,7 @@ public class EventTypeParticipantService {
             boolean hasCalendar = eligibilityService.hasActiveCalendar(uid);
             boolean hasWriteback = hasCalendar && eligibilityService.hasWritebackCapability(uid);
             String calendarProvider = hasCalendar ? eligibilityService.activeCalendarProvider(uid) : null;
-            ParticipantReadinessStatus readiness = computeReadiness(eligibility, hasCalendar, hasWriteback);
+            ParticipantReadinessStatus readiness = computeReadiness(eligibility, hasCalendar, hasWriteback, uid);
 
             boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
@@ -302,9 +359,10 @@ public class EventTypeParticipantService {
                     .filter(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn))
                     .isPresent();
 
+            String displayName = u != null ? u.getName() : null;
             out.add(new EventTypeParticipantResponse(
                     uid,
-                    u != null ? u.getName() : null,
+                    displayName,
                     u != null ? u.getEmail() : null,
                     u != null ? u.getProfileImageUrl() : null,
                     i,
@@ -317,20 +375,32 @@ public class EventTypeParticipantService {
                     calendarProvider,
                     hasWriteback,
                     readiness,
+                    EventTypeParticipantResponse.buildReadinessMessage(readiness, displayName),
                     supportsNativeTeams));
         }
         return out;
     }
 
-    private static ParticipantReadinessStatus computeReadiness(
-            ParticipantEligibilityResult eligibility, boolean hasCalendar, boolean hasWriteback) {
+    private ParticipantReadinessStatus computeReadiness(
+            ParticipantEligibilityResult eligibility, boolean hasCalendar, boolean hasWriteback, UUID userId) {
         return switch (eligibility.reason()) {
             case USER_INACTIVE -> ParticipantReadinessStatus.INACTIVE;
             case USER_DELETED, USER_NOT_FOUND -> ParticipantReadinessStatus.REVOKED;
             case NO_AVAILABILITY_RULES -> ParticipantReadinessStatus.NO_AVAILABILITY;
-            case NO_ACTIVE_CALENDAR -> ParticipantReadinessStatus.NO_CALENDAR;
+            case NO_ACTIVE_CALENDAR -> {
+                // Distinguish transient failure (DEGRADED_CALENDAR) from structural absence (NO_CALENDAR).
+                if (eligibilityService.hasDegradedCalendar(userId)) {
+                    yield ParticipantReadinessStatus.DEGRADED_CALENDAR;
+                }
+                yield ParticipantReadinessStatus.NO_CALENDAR;
+            }
             case ACTIVE -> {
-                if (!hasCalendar) yield ParticipantReadinessStatus.NO_CALENDAR;
+                if (!hasCalendar) {
+                    if (eligibilityService.hasDegradedCalendar(userId)) {
+                        yield ParticipantReadinessStatus.DEGRADED_CALENDAR;
+                    }
+                    yield ParticipantReadinessStatus.NO_CALENDAR;
+                }
                 if (!hasWriteback) yield ParticipantReadinessStatus.NO_WRITEBACK;
                 yield ParticipantReadinessStatus.READY;
             }

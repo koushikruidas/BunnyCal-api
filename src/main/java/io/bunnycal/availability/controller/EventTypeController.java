@@ -9,6 +9,7 @@ import io.bunnycal.availability.dto.RoundRobinStatsResponse;
 import io.bunnycal.availability.service.EventTypeParticipantService;
 import io.bunnycal.availability.service.EventTypeService;
 import io.bunnycal.availability.service.RoundRobinStatsService;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -53,6 +54,13 @@ public class EventTypeController {
         return ResponseEntity.ok(ApiResponse.success(eventTypeService.list(userId)));
     }
 
+    @GetMapping("/{eventTypeId}")
+    public ResponseEntity<ApiResponse<EventTypeSummaryResponse>> get(Authentication authentication,
+                                                                     @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(eventTypeService.get(userId, eventTypeId)));
+    }
+
     // ── Participants (Phase 2) ──────────────────────────────────────────────────
 
     @GetMapping("/{eventTypeId}/participants")
@@ -88,6 +96,22 @@ public class EventTypeController {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 participantService.publishReadiness(userId, eventTypeId)));
+    }
+
+    @PutMapping("/{eventTypeId}/publish")
+    public ResponseEntity<ApiResponse<PublishReadinessResponse>> publish(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(eventTypeService.publish(userId, eventTypeId)));
+    }
+
+    @PutMapping("/{eventTypeId}/unpublish")
+    public ResponseEntity<ApiResponse<PublishReadinessResponse>> unpublish(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(eventTypeService.unpublish(userId, eventTypeId)));
     }
 
     @PutMapping("/{eventTypeId}/participants")

@@ -72,7 +72,11 @@ public enum ErrorCode {
     PARTICIPANT_NOT_IN_TEAM("PARTICIPANT_NOT_IN_TEAM",
             "Participant is not a member of any of your teams."),
     HOST_NOT_SCHEDULABLE("HOST_NOT_SCHEDULABLE",
-            "This host is not available for scheduling.");
+            "This host is not available for scheduling."),
+    EVENT_TYPE_NOT_PUBLISHED("EVENT_TYPE_NOT_PUBLISHED",
+            "This event type is not currently accepting bookings."),
+    UNPUBLISHABLE_EVENT_TYPE("UNPUBLISHABLE_EVENT_TYPE",
+            "This event type cannot be published until all participants are ready.");
 
     private final String code;
     private final String message;

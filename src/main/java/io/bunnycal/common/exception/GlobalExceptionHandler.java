@@ -105,6 +105,9 @@ public class GlobalExceptionHandler {
                 return HttpStatus.BAD_REQUEST;
             case HOST_NOT_SCHEDULABLE:
                 return HttpStatus.GONE;
+            case EVENT_TYPE_NOT_PUBLISHED:
+            case UNPUBLISHABLE_EVENT_TYPE:
+                return HttpStatus.CONFLICT;
             default:
                 return HttpStatus.INTERNAL_SERVER_ERROR;
         }

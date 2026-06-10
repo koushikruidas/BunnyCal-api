@@ -12,12 +12,14 @@ public record EventTypeSummaryResponse(
         String link,
         EventKind kind,
         int capacity,
+        boolean published,
+        boolean degraded,
         List<AvailabilityCalendarResponse> availabilityCalendars,
         ConferenceResponse conference,
         ProjectionDestinationResponse projectionDestination
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, List.of(), null, null);
+        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, true, false, List.of(), null, null);
     }
 
     public record AvailabilityCalendarResponse(

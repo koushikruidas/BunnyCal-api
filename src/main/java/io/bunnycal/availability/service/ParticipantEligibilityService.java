@@ -115,6 +115,28 @@ public class ParticipantEligibilityService {
     }
 
     /**
+     * Returns {@code true} if the user has at least one calendar connection in a transient
+     * failure state (FAILED or ERROR) but no ACTIVE connection. This indicates a temporary
+     * provider issue — sync retry is ongoing — not a structural revocation.
+     *
+     * <p>Used to distinguish {@link ParticipantReadinessStatus#DEGRADED_CALENDAR} from
+     * {@link ParticipantReadinessStatus#NO_CALENDAR} or {@link ParticipantReadinessStatus#REVOKED}.
+     */
+    public boolean hasDegradedCalendar(UUID userId) {
+        boolean hasActive = !calendarConnectionRepository
+                .findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE)
+                .isEmpty();
+        if (hasActive) return false;
+        boolean hasFailed = !calendarConnectionRepository
+                .findByUserIdAndStatus(userId, CalendarConnectionStatus.FAILED)
+                .isEmpty();
+        if (hasFailed) return true;
+        return !calendarConnectionRepository
+                .findByUserIdAndStatus(userId, CalendarConnectionStatus.ERROR)
+                .isEmpty();
+    }
+
+    /**
      * Returns the provider name of the user's first ACTIVE calendar connection, or
      * {@code null} if none exist. Used for display-only hints in the UI.
      */

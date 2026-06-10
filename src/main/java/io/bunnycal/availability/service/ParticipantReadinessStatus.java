@@ -13,8 +13,12 @@ package io.bunnycal.availability.service;
  *   <li>{@link #NO_AVAILABILITY} — no availability rules configured.</li>
  *   <li>{@link #NO_CALENDAR} — no active calendar connection.</li>
  *   <li>{@link #NO_WRITEBACK} — active calendar connected but lacks writeback scope.</li>
+ *   <li>{@link #DEGRADED_CALENDAR} — calendar connection exists but is transiently
+ *       unavailable (FAILED or ERROR status). Sync retry is ongoing. The event type
+ *       remains published but the owner is warned. This is NOT a structural blocker.</li>
  *   <li>{@link #INACTIVE} — user account is INACTIVE. Excluded from scheduling.</li>
- *   <li>{@link #REVOKED} — user was deleted or no longer found. Excluded from scheduling.</li>
+ *   <li>{@link #REVOKED} — user was deleted or no longer found, or all calendar
+ *       connections are REVOKED/DISCONNECTED. Excluded from scheduling.</li>
  *   <li>{@link #NOT_SCHEDULABLE} — any other ineligible state not covered above.</li>
  * </ul>
  */
@@ -23,6 +27,7 @@ public enum ParticipantReadinessStatus {
     NO_AVAILABILITY,
     NO_CALENDAR,
     NO_WRITEBACK,
+    DEGRADED_CALENDAR,
     INACTIVE,
     REVOKED,
     NOT_SCHEDULABLE
