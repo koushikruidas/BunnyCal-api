@@ -66,6 +66,9 @@ class PublicBookingServiceTest {
     @Mock io.bunnycal.session.repository.SessionRegistrationRepository sessionRegistrationRepository;
     @Mock RoundRobinSlotTokenService roundRobinSlotTokenService;
     @Mock RoundRobinAssignmentService roundRobinAssignmentService;
+    @Mock CollectiveSlotTokenService collectiveSlotTokenService;
+    @Mock CollectiveAssignmentService collectiveAssignmentService;
+    @Mock io.bunnycal.booking.repository.CollectiveParticipantHoldRepository collectiveParticipantHoldRepository;
     @Mock io.bunnycal.availability.service.ParticipantEligibilityService participantEligibilityService;
     @Mock io.bunnycal.booking.repository.BookingAssignmentRepository bookingAssignmentRepository;
     @Mock io.bunnycal.auth.repository.UserRepository userRepository;
@@ -97,6 +100,9 @@ class PublicBookingServiceTest {
                 sessionRegistrationRepository,
                 roundRobinSlotTokenService,
                 roundRobinAssignmentService,
+                collectiveSlotTokenService,
+                collectiveAssignmentService,
+                collectiveParticipantHoldRepository,
                 participantEligibilityService,
                 bookingAssignmentRepository,
                 userRepository,

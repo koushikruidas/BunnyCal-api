@@ -33,6 +33,7 @@ import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.service.CollectiveSlotTokenService;
 import io.bunnycal.booking.service.RoundRobinAssignmentService;
 import io.bunnycal.booking.service.RoundRobinSlotTokenService;
 import io.bunnycal.booking.repository.BookingRepository;
@@ -79,6 +80,7 @@ public class SlotService {
     private final ParticipantAvailabilityService participantAvailabilityService;
     private final RoundRobinAssignmentService roundRobinAssignmentService;
     private final RoundRobinSlotTokenService roundRobinSlotTokenService;
+    private final CollectiveSlotTokenService collectiveSlotTokenService;
 
     public SlotService(
             UserRepository userRepository,
@@ -99,7 +101,8 @@ public class SlotService {
             ParticipantEligibilityService participantEligibilityService,
             ParticipantAvailabilityService participantAvailabilityService,
             RoundRobinAssignmentService roundRobinAssignmentService,
-            RoundRobinSlotTokenService roundRobinSlotTokenService) {
+            RoundRobinSlotTokenService roundRobinSlotTokenService,
+            CollectiveSlotTokenService collectiveSlotTokenService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -119,6 +122,7 @@ public class SlotService {
         this.participantAvailabilityService = participantAvailabilityService;
         this.roundRobinAssignmentService = roundRobinAssignmentService;
         this.roundRobinSlotTokenService = roundRobinSlotTokenService;
+        this.collectiveSlotTokenService = collectiveSlotTokenService;
     }
 
     public SlotResponse getSlots(SlotRequest request) {
@@ -142,12 +146,16 @@ public class SlotService {
         EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
 
-        // 4. For ROUND_ROBIN: aggregate slots from all eligible participants (UNION semantics).
-        //    The cache is NOT used for RR in Phase 3A — the cache key is scoped to a single
-        //    userId (the owner), which would incorrectly cache multi-participant results.
+        // 4. Multi-participant kinds bypass the single-user cache.
+        //    ROUND_ROBIN: UNION of eligible participants.
+        //    COLLECTIVE: INTERSECTION of all participants (all must be ready).
         if (eventType.getKind() == EventKind.ROUND_ROBIN) {
             long snapshotVersionRr = slotCacheVersionService.getCurrentVersion(userId);
             return getRoundRobinSlots(host, eventType, date, snapshotVersionRr, request.requestId());
+        }
+        if (eventType.getKind() == EventKind.COLLECTIVE) {
+            long snapshotVersionColl = slotCacheVersionService.getCurrentVersion(userId);
+            return getCollectiveSlots(host, eventType, date, snapshotVersionColl);
         }
 
         // 5. Read snapshot version FIRST. DB clock is NOT read here — only on cache miss
@@ -600,6 +608,98 @@ public class SlotService {
 
         return new SlotResponse(host.getId(), eventType.getId(), date, host.getTimezone(),
                 snapshotVersion, now, degraded, slotDtos, status);
+    }
+
+    /**
+     * COLLECTIVE slot aggregation: computes the INTERSECTION of all participants'
+     * available slots for the given date. Every participant must be simultaneously
+     * free for a slot to appear. If any participant is not READY (no calendar, no
+     * rules, inactive) the entire event returns NO_ELIGIBLE_PARTICIPANTS — there is
+     * no degraded mode; Collective requires all participants.
+     *
+     * <p>The cache is NOT used — same reason as ROUND_ROBIN: the cache key is scoped
+     * to a single userId.
+     */
+    private SlotResponse getCollectiveSlots(User host,
+                                             EventType eventType,
+                                             LocalDate date,
+                                             long snapshotVersion) {
+        // 1. Load effective participants.
+        List<UUID> participantIds = eventTypeParticipantService.effectiveParticipantUserIds(eventType);
+
+        // 2. Evaluate eligibility for every participant.
+        //    Hard block: inactive user, deleted user, or no availability rules.
+        //    Missing calendar is NOT a block for slot generation — the participant
+        //    contributes pure rule-based availability (no busy-time subtraction).
+        //    Calendar/writeback requirements are enforced at booking-creation time (Phase 4).
+        List<ParticipantAvailabilityDiagnostic> diagnosticRows = participantIds.stream()
+                .map(participantId -> {
+                    ParticipantEligibilityResult result = participantEligibilityService.checkForRoundRobin(participantId);
+                    return new ParticipantAvailabilityDiagnostic(
+                            participantId, result.eligible(), result.reason(), false, 0L, null);
+                })
+                .toList();
+
+        ParticipantAvailabilityDiagnostics diagnostics = new ParticipantAvailabilityDiagnostics(diagnosticRows);
+
+        // Log ineligible participants for diagnostics.
+        diagnostics.ineligibleParticipants()
+                .forEach(row -> log.info("collective_participant_ineligible eventTypeId={} participantId={} reason={}",
+                        eventType.getId(), row.userId(), row.reason()));
+
+        // 3. Any ineligible participant → hard block, no slots.
+        if (diagnostics.hasNoEligibleParticipants() || !diagnostics.ineligibleParticipants().isEmpty()) {
+            log.info("collective_not_all_participants_ready eventTypeId={} date={} total={} ineligible={}",
+                    eventType.getId(), date, participantIds.size(),
+                    diagnostics.ineligibleParticipants().size());
+            return new SlotResponse(host.getId(), eventType.getId(), date, host.getTimezone(),
+                    snapshotVersion, dbClockRepository.now(), false, List.of(),
+                    AvailabilityStatus.NO_ELIGIBLE_PARTICIPANTS);
+        }
+
+        // 4. Compute per-participant slots and intersect.
+        Instant now = dbClockRepository.now();
+        List<UUID> eligible = diagnostics.eligibleParticipantIds();
+
+        // Start with the first participant's slots and retainAll for each subsequent.
+        // Using LinkedHashSet preserves chronological order from the first participant's
+        // sorted result (SlotGenerationEngine guarantees sorted output).
+        Set<SlotUtc> intersectionSet = null;
+        for (UUID participantId : eligible) {
+            List<SlotUtc> participantSlots =
+                    participantAvailabilityService.computeForParticipant(participantId, eventType, date, now);
+            if (intersectionSet == null) {
+                intersectionSet = new LinkedHashSet<>(participantSlots);
+            } else {
+                intersectionSet.retainAll(new java.util.HashSet<>(participantSlots));
+            }
+            if (intersectionSet.isEmpty()) {
+                break; // short-circuit: empty intersection can only grow emptier
+            }
+        }
+
+        List<SlotUtc> intersectedSlots = intersectionSet == null ? List.of()
+                : intersectionSet.stream()
+                        .sorted(Comparator.comparing(SlotUtc::start).thenComparing(SlotUtc::end))
+                        .limit(200)
+                        .toList();
+
+        // 5. Stamp slot IDs and issue collective booking tokens.
+        List<SlotDto> slotDtos = new ArrayList<>(intersectedSlots.size());
+        for (SlotUtc slot : intersectedSlots) {
+            String slotId = SlotIdGenerator.generate(host.getId(), eventType.getId(), slot.start(), slot.end(), snapshotVersion);
+            String bookingToken = collectiveSlotTokenService.issue(
+                    host.getId(), eventType.getId(), slot.start(), slot.end(), eligible);
+            slotDtos.add(new SlotDto(slotId, slot.start(), slot.end(), true, bookingToken));
+        }
+
+        // 6. Determine status.
+        AvailabilityStatus status = intersectedSlots.isEmpty()
+                ? AvailabilityStatus.NO_SLOTS_AVAILABLE
+                : AvailabilityStatus.AVAILABLE;
+
+        return new SlotResponse(host.getId(), eventType.getId(), date, host.getTimezone(),
+                snapshotVersion, now, false, slotDtos, status);
     }
 
     private List<SlotDto> stampSlotIds(

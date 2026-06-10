@@ -46,6 +46,7 @@ class SyncConvergenceIT extends AbstractBookingIT {
     void highContention_convergesToSingleCreatedMapping_noStuckClaimed() throws Exception {
         UUID bookingId = UUID.randomUUID();
         String provider = "google";
+        UUID participantUserId = UUID.randomUUID();
         var eventsByKey = new ConcurrentHashMap<String, String>();
 
         when(calendarService.createEvent(any(CalendarService.CreateCalendarEventCommand.class)))
@@ -65,7 +66,7 @@ class SyncConvergenceIT extends AbstractBookingIT {
         for (int i = 0; i < workers; i++) {
             futures.add(pool.submit(() -> {
                 gate.await();
-                syncWorker.processBookingSync(bookingId, provider);
+                syncWorker.processBookingSync(bookingId, provider, participantUserId);
                 return null;
             }));
         }
@@ -77,25 +78,26 @@ class SyncConvergenceIT extends AbstractBookingIT {
         }
 
         assertEquals("CREATED", jdbc.queryForObject(
-                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
         String externalEventId = jdbc.queryForObject(
-                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider);
+                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId);
         assertNotNull(externalEventId);
         assertEquals(0, jdbc.queryForObject(
-                "SELECT COUNT(*) FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND status = 'CLAIMED'",
-                Integer.class, bookingId, provider));
+                "SELECT COUNT(*) FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ? AND status = 'CLAIMED'",
+                Integer.class, bookingId, provider, participantUserId));
         assertEquals(1, jdbc.queryForObject(
-                "SELECT COUNT(*) FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND external_event_id IS NOT NULL",
-                Integer.class, bookingId, provider));
+                "SELECT COUNT(*) FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ? AND external_event_id IS NOT NULL",
+                Integer.class, bookingId, provider, participantUserId));
     }
 
     @Test
     void crashAfterProviderSuccess_convergesOnRetry_withoutLogicalDuplicate() {
         UUID bookingId = UUID.randomUUID();
         String provider = "google";
-        String idempotencyKey = provider + ":" + bookingId;
+        UUID participantUserId = UUID.randomUUID();
+        String idempotencyKey = provider + ":" + bookingId + ":" + participantUserId;
         var eventsByKey = new ConcurrentHashMap<String, String>();
 
         when(calendarService.createEvent(any(CalendarService.CreateCalendarEventCommand.class)))
@@ -109,25 +111,26 @@ class SyncConvergenceIT extends AbstractBookingIT {
                 });
 
         long token = tokenGenerator.nextToken();
-        assertEquals(ClaimOutcome.CLAIMED, repository.claimBookingForSync(bookingId, provider, token, "crashed-worker"));
+        assertEquals(ClaimOutcome.CLAIMED, repository.claimBookingForSync(bookingId, provider, participantUserId, token, "crashed-worker"));
         String firstExternal = calendarService.createEvent(
                 new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey)).externalEventId();
         assertNotNull(firstExternal);
 
-        syncWorker.processBookingSync(bookingId, provider);
+        syncWorker.processBookingSync(bookingId, provider, participantUserId);
 
         assertEquals("CREATED", jdbc.queryForObject(
-                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
         assertEquals(firstExternal, jdbc.queryForObject(
-                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
     }
 
     @Test
     void timeoutThenRetry_converges_withoutLogicalDuplicate() {
         UUID bookingId = UUID.randomUUID();
         String provider = "google";
+        UUID participantUserId = UUID.randomUUID();
         var eventsByKey = new ConcurrentHashMap<String, String>();
         AtomicInteger calls = new AtomicInteger(0);
 
@@ -144,19 +147,19 @@ class SyncConvergenceIT extends AbstractBookingIT {
                     return CalendarService.CreateEventResult.success(eventId);
                 });
 
-        syncWorker.processBookingSync(bookingId, provider);
+        syncWorker.processBookingSync(bookingId, provider, participantUserId);
         assertEquals("FAILED", jdbc.queryForObject(
-                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
 
-        syncWorker.processBookingSync(bookingId, provider);
+        syncWorker.processBookingSync(bookingId, provider, participantUserId);
 
         assertEquals("CREATED", jdbc.queryForObject(
-                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT status FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
         assertNotNull(jdbc.queryForObject(
-                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ?",
-                String.class, bookingId, provider));
+                "SELECT external_event_id FROM calendar_event_mappings WHERE booking_id = ? AND provider = ? AND participant_user_id = ?",
+                String.class, bookingId, provider, participantUserId));
         verify(calendarService, atLeast(2)).createEvent(any());
     }
 }

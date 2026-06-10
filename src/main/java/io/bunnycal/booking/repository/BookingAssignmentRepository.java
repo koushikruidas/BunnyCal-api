@@ -14,6 +14,8 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
 
     Optional<BookingAssignment> findByBookingId(UUID bookingId);
 
+    List<BookingAssignment> findAllByBookingId(UUID bookingId);
+
     @Query(value = """
             SELECT
                 ba.participant_user_id AS participantUserId,

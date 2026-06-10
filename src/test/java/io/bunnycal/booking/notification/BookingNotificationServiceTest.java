@@ -20,6 +20,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
@@ -58,6 +59,7 @@ class BookingNotificationServiceTest {
     @Mock private BookingRepository bookingRepository;
     @Mock private UserRepository userRepository;
     @Mock private EventTypeRepository eventTypeRepository;
+    @Mock private BookingAssignmentRepository bookingAssignmentRepository;
     @Mock private JavaMailSender mailSender;
     @Mock private BookingManageLinkService bookingManageLinkService;
     @Mock private GuestCapabilityTokenService guestCapabilityTokenService;
@@ -78,6 +80,7 @@ class BookingNotificationServiceTest {
                 bookingRepository,
                 userRepository,
                 eventTypeRepository,
+                bookingAssignmentRepository,
                 mailSender,
                 new IcsInviteGenerator("example.com"),
                 bookingManageLinkService,
@@ -702,6 +705,223 @@ class BookingNotificationServiceTest {
                 assertFalse(cancelMime.contains("X-MICROSOFT-SKYPETEAMSMEETINGURL"));
                 clearInvocations(mailSender);
             }
+        }
+    }
+
+    // ── Collective notification tests ────────────────────────────────────────
+
+    @Test
+    void collective_confirm_sendsOneEmailPerRecipientWithAllHostsInIcs() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID ownerId  = UUID.randomUUID();
+        UUID aliceId  = UUID.randomUUID();
+        UUID bobId    = UUID.randomUUID();
+        UUID charlieId = UUID.randomUUID();
+
+        Booking booking = booking(bookingId, ownerId, "guest@example.com", "Guest Name", 1L);
+        User owner   = User.builder().id(ownerId).name("Owner").email("owner@example.com").username("owner").timezone("UTC").build();
+        User alice   = User.builder().id(aliceId).name("Alice").email("alice@example.com").username("alice").timezone("UTC").build();
+        User bob     = User.builder().id(bobId).name("Bob").email("bob@example.com").username("bob").timezone("UTC").build();
+        User charlie = User.builder().id(charlieId).name("Charlie").email("charlie@example.com").username("charlie").timezone("UTC").build();
+
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        io.bunnycal.booking.domain.BookingAssignment assignAlice = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(aliceId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+        io.bunnycal.booking.domain.BookingAssignment assignBob = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(bobId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+        io.bunnycal.booking.domain.BookingAssignment assignCharlie = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(charlieId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(ownerId)).thenReturn(Optional.of(owner));
+        when(eventTypeRepository.findById(any())).thenReturn(Optional.of(
+                EventType.builder().kind(io.bunnycal.availability.domain.EventKind.COLLECTIVE)
+                        .name("Team Sync").slug("team-sync").userId(ownerId).build()));
+        when(bookingAssignmentRepository.findAllByBookingId(bookingId))
+                .thenReturn(List.of(assignAlice, assignBob, assignCharlie));
+        when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
+        when(userRepository.findById(bobId)).thenReturn(Optional.of(bob));
+        when(userRepository.findById(charlieId)).thenReturn(Optional.of(charlie));
+        // No calendar connections → no suppression
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
+        when(recipientResolver.resolveHostRecipient(bob)).thenReturn(Optional.of("bob@example.com"));
+        when(recipientResolver.resolveHostRecipient(charlie)).thenReturn(Optional.of("charlie@example.com"));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(List.of("alice@example.com", "bob@example.com", "charlie@example.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(4)).send(messageCaptor.capture());
+        // Every email carries the same ICS: all 3 hosts + guest as REQ-PARTICIPANT, no CHAIR
+        for (MimeMessage msg : messageCaptor.getAllValues()) {
+            String ics = unfold(icsBody(msg));
+            assertTrue(ics.contains("METHOD:REQUEST"), "expected REQUEST method");
+            assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:alice@example.com"), "alice present");
+            assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:bob@example.com"), "bob present");
+            assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:charlie@example.com"), "charlie present");
+            assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:guest@example.com"), "guest present");
+            assertFalse(ics.contains("ROLE=CHAIR"), "collective ICS must not contain ROLE=CHAIR");
+        }
+        // Exactly one token issued (not one per recipient)
+        verify(guestCapabilityTokenService, times(1)).issueToken(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void collective_confirm_suppressedParticipant_excludedFromEmailButStillInIcs() throws Exception {
+        UUID bookingId  = UUID.randomUUID();
+        UUID ownerId    = UUID.randomUUID();
+        UUID aliceId    = UUID.randomUUID();
+        UUID bobId      = UUID.randomUUID();
+
+        Booking booking = booking(bookingId, ownerId, "guest@example.com", "Guest", 1L);
+        User owner = User.builder().id(ownerId).name("Owner").email("owner@example.com").username("owner").timezone("UTC").build();
+        User alice = User.builder().id(aliceId).name("Alice").email("alice@gmail.com").username("alice").timezone("UTC").build();
+        User bob   = User.builder().id(bobId).name("Bob").email("bob@example.com").username("bob").timezone("UTC").build();
+
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        io.bunnycal.booking.domain.BookingAssignment assignAlice = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(aliceId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+        io.bunnycal.booking.domain.BookingAssignment assignBob = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(bobId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+
+        CalendarConnection aliceGoogle = new CalendarConnection();
+        aliceGoogle.setUserId(aliceId);
+        aliceGoogle.setProvider(CalendarProviderType.GOOGLE);
+        aliceGoogle.setStatus(CalendarConnectionStatus.ACTIVE);
+        aliceGoogle.setProviderUserId("alice-google-id");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(ownerId)).thenReturn(Optional.of(owner));
+        when(eventTypeRepository.findById(any())).thenReturn(Optional.of(
+                EventType.builder().kind(io.bunnycal.availability.domain.EventKind.COLLECTIVE)
+                        .name("Team Sync").slug("team-sync").userId(ownerId).build()));
+        when(bookingAssignmentRepository.findAllByBookingId(bookingId))
+                .thenReturn(List.of(assignAlice, assignBob));
+        when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
+        when(userRepository.findById(bobId)).thenReturn(Optional.of(bob));
+        // Alice has active Google connection → suppressed from email
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(aliceId, CalendarProviderType.GOOGLE,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.of(aliceGoogle));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(aliceId, CalendarProviderType.MICROSOFT,
+                CalendarConnectionStatus.ACTIVE)).thenReturn(Optional.empty());
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(eq(bobId), any(), any()))
+                .thenReturn(Optional.empty());
+        when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@gmail.com"));
+        when(recipientResolver.resolveHostRecipient(bob)).thenReturn(Optional.of("bob@example.com"));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        // Alice suppressed; only bob + guest in recipient list
+        when(recipientResolver.deduplicate(any())).thenReturn(List.of("bob@example.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        // Alice not in recipient set
+        for (MimeMessage msg : messageCaptor.getAllValues()) {
+            assertFalse(header(msg, "To").contains("alice@gmail.com"), "alice must be suppressed from email");
+        }
+        // Alice still in ICS as REQ-PARTICIPANT (receives calendar event via sync, not via email)
+        for (MimeMessage msg : messageCaptor.getAllValues()) {
+            String ics = unfold(icsBody(msg));
+            assertTrue(ics.contains("mailto:alice@gmail.com"), "alice must be in ICS");
+            assertTrue(ics.contains("mailto:bob@example.com"), "bob must be in ICS");
+            assertFalse(ics.contains("ROLE=CHAIR"), "collective ICS must not contain ROLE=CHAIR");
+        }
+    }
+
+    @Test
+    void collective_confirm_guestEmailEqualsParticipantEmail_dedupedToOneEmail() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID ownerId   = UUID.randomUUID();
+        UUID aliceId   = UUID.randomUUID();
+
+        // Guest email == alice's email
+        Booking booking = booking(bookingId, ownerId, "alice@example.com", "Alice Guest", 1L);
+        User owner = User.builder().id(ownerId).name("Owner").email("owner@example.com").username("owner").timezone("UTC").build();
+        User alice = User.builder().id(aliceId).name("Alice").email("alice@example.com").username("alice").timezone("UTC").build();
+
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        io.bunnycal.booking.domain.BookingAssignment assignAlice = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(aliceId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(ownerId)).thenReturn(Optional.of(owner));
+        when(eventTypeRepository.findById(any())).thenReturn(Optional.of(
+                EventType.builder().kind(io.bunnycal.availability.domain.EventKind.COLLECTIVE)
+                        .name("Team Sync").slug("team-sync").userId(ownerId).build()));
+        when(bookingAssignmentRepository.findAllByBookingId(bookingId)).thenReturn(List.of(assignAlice));
+        when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("alice@example.com"));
+        // deduplicate collapses to one entry
+        when(recipientResolver.deduplicate(any())).thenReturn(List.of("alice@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        // Only one email sent
+        verify(mailSender, times(1)).send(messageCaptor.capture());
+        MimeMessage sent = messageCaptor.getValue();
+        assertTrue(header(sent, "To").contains("alice@example.com"));
+    }
+
+    @Test
+    void collective_cancel_sendsMethodCancel() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID ownerId   = UUID.randomUUID();
+        UUID aliceId   = UUID.randomUUID();
+        UUID bobId     = UUID.randomUUID();
+
+        Booking booking = booking(bookingId, ownerId, "guest@example.com", "Guest", 2L);
+        User owner = User.builder().id(ownerId).name("Owner").email("owner@example.com").username("owner").timezone("UTC").build();
+        User alice = User.builder().id(aliceId).name("Alice").email("alice@example.com").username("alice").timezone("UTC").build();
+        User bob   = User.builder().id(bobId).name("Bob").email("bob@example.com").username("bob").timezone("UTC").build();
+
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CANCELLED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(ownerId)).thenReturn(Optional.of(owner));
+        when(eventTypeRepository.findById(any())).thenReturn(Optional.of(
+                EventType.builder().kind(io.bunnycal.availability.domain.EventKind.COLLECTIVE)
+                        .name("Team Sync").slug("team-sync").userId(ownerId).build()));
+        when(bookingAssignmentRepository.findAllByBookingId(bookingId)).thenReturn(List.of(
+                io.bunnycal.booking.domain.BookingAssignment.builder().bookingId(bookingId).participantUserId(aliceId)
+                        .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build(),
+                io.bunnycal.booking.domain.BookingAssignment.builder().bookingId(bookingId).participantUserId(bobId)
+                        .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build()));
+        when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
+        when(userRepository.findById(bobId)).thenReturn(Optional.of(bob));
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
+        when(recipientResolver.resolveHostRecipient(bob)).thenReturn(Optional.of("bob@example.com"));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(List.of("alice@example.com", "bob@example.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(3)).send(messageCaptor.capture());
+        for (MimeMessage msg : messageCaptor.getAllValues()) {
+            String ics = unfold(icsBody(msg));
+            assertTrue(ics.contains("METHOD:CANCEL"), "cancel must use METHOD:CANCEL");
+            assertTrue(ics.contains("STATUS:CANCELLED"), "cancel ICS must set STATUS:CANCELLED");
+        }
+        // No manage link on cancel
+        for (MimeMessage msg : messageCaptor.getAllValues()) {
+            assertFalse(textBody(msg).contains("Manage your booking"), "no manage link on cancel");
         }
     }
 

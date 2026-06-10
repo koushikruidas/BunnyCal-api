@@ -17,6 +17,7 @@ import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
 import io.bunnycal.booking.repository.BookingRepository;
@@ -32,6 +33,7 @@ import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.session.service.ConfirmRegistrationResult;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
+import io.bunnycal.booking.repository.CollectiveParticipantHoldRepository;
 import io.bunnycal.sync.FencingTokenGenerator;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -66,6 +68,9 @@ public class PublicBookingService {
     private final SessionRegistrationRepository sessionRegistrationRepository;
     private final RoundRobinSlotTokenService roundRobinSlotTokenService;
     private final RoundRobinAssignmentService roundRobinAssignmentService;
+    private final CollectiveSlotTokenService collectiveSlotTokenService;
+    private final CollectiveAssignmentService collectiveAssignmentService;
+    private final CollectiveParticipantHoldRepository collectiveParticipantHoldRepository;
     private final ParticipantEligibilityService participantEligibilityService;
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final UserRepository userRepository;
@@ -90,6 +95,9 @@ public class PublicBookingService {
                                 SessionRegistrationRepository sessionRegistrationRepository,
                                 RoundRobinSlotTokenService roundRobinSlotTokenService,
                                 RoundRobinAssignmentService roundRobinAssignmentService,
+                                CollectiveSlotTokenService collectiveSlotTokenService,
+                                CollectiveAssignmentService collectiveAssignmentService,
+                                CollectiveParticipantHoldRepository collectiveParticipantHoldRepository,
                                 ParticipantEligibilityService participantEligibilityService,
                                 BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
@@ -118,6 +126,9 @@ public class PublicBookingService {
         this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.roundRobinSlotTokenService = roundRobinSlotTokenService;
         this.roundRobinAssignmentService = roundRobinAssignmentService;
+        this.collectiveSlotTokenService = collectiveSlotTokenService;
+        this.collectiveAssignmentService = collectiveAssignmentService;
+        this.collectiveParticipantHoldRepository = collectiveParticipantHoldRepository;
         this.participantEligibilityService = participantEligibilityService;
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.userRepository = userRepository;
@@ -167,7 +178,10 @@ public class PublicBookingService {
         Instant lastSyncedAt = connection.map(CalendarConnection::getLastSyncedAt).orElse(null);
         boolean stale = isProjectionStale(status, lastSyncedAt);
         AvailabilityStatus responseStatus;
-        if (stale) {
+        if (base.status() == AvailabilityStatus.NO_ELIGIBLE_PARTICIPANTS) {
+            // Preserve multi-participant readiness failure regardless of projection staleness.
+            responseStatus = AvailabilityStatus.NO_ELIGIBLE_PARTICIPANTS;
+        } else if (stale) {
             responseStatus = AvailabilityStatus.STALE_CALENDAR_DATA;
         } else if (base.slots().isEmpty()) {
             responseStatus = AvailabilityStatus.NO_SLOTS_AVAILABLE;
@@ -211,6 +225,9 @@ public class PublicBookingService {
         }
         if (target.kind() == EventKind.ROUND_ROBIN) {
             return holdRoundRobinBooking(target, request);
+        }
+        if (target.kind() == EventKind.COLLECTIVE) {
+            return holdCollectiveBooking(target, request);
         }
         return holdOneOnOneBooking(target, request);
     }
@@ -285,6 +302,55 @@ public class PublicBookingService {
         );
     }
 
+    private PublicHoldResponse holdCollectiveBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                     PublicBookRequest request) {
+        if (request.slotToken() == null || request.slotToken().isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotToken is required for collective booking.");
+        }
+        Instant start = request.startTime();
+        Instant end = start.plus(target.duration());
+
+        CollectiveSlotTokenService.DecodedCollectiveToken token = collectiveSlotTokenService.verify(request.slotToken());
+        if (!target.userId().equals(token.ownerUserId())
+                || !target.eventTypeId().equals(token.eventTypeId())
+                || !start.equals(token.start())
+                || !end.equals(token.end())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Collective slot token does not match the requested slot.");
+        }
+
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        // Fetch the current roster and validate it matches the token's roster hash.
+        // This is the primary guard against stale tokens after a participant change.
+        List<UUID> currentParticipantIds =
+                collectiveAssignmentService.currentParticipantIds(eventType);
+        collectiveSlotTokenService.validateRosterMatch(token, currentParticipantIds);
+
+        CollectiveAssignmentService.CreatedCollectiveBooking result =
+                collectiveAssignmentService.createHeldBooking(
+                        eventType,
+                        target.userId(),
+                        start,
+                        end,
+                        currentParticipantIds,
+                        target.holdDuration(),
+                        normalizeGuestEmail(request.guestEmail()),
+                        normalizeGuestName(request.guestName()));
+
+        var state = bookingRepository.findStateByIdAndEventTypeId(result.booking().getId(), target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
+
+        log.info("collective_hold_created bookingId={} ownerUserId={} eventTypeId={} participantCount={} start={} end={}",
+                result.booking().getId(), target.userId(), target.eventTypeId(),
+                result.participantIds().size(), start, end);
+
+        return PublicHoldResponse.oneOnOne(
+                result.booking().getId(),
+                state.getExpiresAt(),
+                result.booking().getStartTime(),
+                result.booking().getEndTime());
+    }
+
     private PublicHoldResponse holdGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
                                                      PublicBookRequest request) {
         Instant start = request.startTime();
@@ -327,6 +393,9 @@ public class PublicBookingService {
         }
         if (target.kind() == EventKind.ROUND_ROBIN) {
             return confirmRoundRobinBooking(target, bookingId);
+        }
+        if (target.kind() == EventKind.COLLECTIVE) {
+            return confirmCollectiveBooking(target, bookingId);
         }
         return confirmOneOnOneBooking(target, bookingId);
     }
@@ -406,6 +475,55 @@ public class PublicBookingService {
         return PublicConfirmResponse.oneOnOne(bookingId, "SYNCING", manageToken);
     }
 
+    private PublicConfirmResponse confirmCollectiveBooking(PublicBookingTargetResolver.ResolvedTarget target,
+                                                           UUID bookingId) {
+        var booking = bookingRepository.findAnyByIdAndEventTypeId(bookingId, target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        Instant start = booking.getStartTime();
+        Instant end = booking.getEndTime();
+
+        // Re-validate every assigned participant: eligibility + calendar + writeback + no conflicts.
+        List<BookingAssignment> assignments = bookingAssignmentRepository.findAllByBookingId(bookingId);
+        for (BookingAssignment assignment : assignments) {
+            UUID participantId = assignment.getParticipantUserId();
+
+            var eligibility = participantEligibilityService.checkForRoundRobin(participantId);
+            if (!eligibility.eligible()) {
+                log.info("collective_confirm_rejected_participant_ineligible bookingId={} participantId={} reason={}",
+                        bookingId, participantId, eligibility.reason());
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "A participant is no longer available. Please select a new time slot.");
+            }
+
+            long conflicts = bookingRepository.countConflictsExcludingBooking(participantId, bookingId, start, end);
+            if (conflicts > 0) {
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available.");
+            }
+
+            String tz = resolveUserTimezone(participantId);
+            if (hasProjectionBusyConflict(participantId, tz, start, end)) {
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available.");
+            }
+        }
+
+        bookingService.confirmHeldBooking(bookingId);
+        // Participant holds are released: slot is now committed, no longer needs conflict protection.
+        collectiveParticipantHoldRepository.releaseByBookingId(bookingId);
+
+        String manageToken = guestCapabilityTokenService.issueToken(
+                bookingId,
+                booking.getHostId(),
+                BookingActionType.MANAGE_BOOKING,
+                guestManageTokenTtl,
+                TokenCreatorType.SYSTEM);
+
+        log.info("collective_booking_confirmed bookingId={} eventTypeId={} participantCount={}",
+                bookingId, target.eventTypeId(), assignments.size());
+        return PublicConfirmResponse.oneOnOne(bookingId, "SYNCING", manageToken);
+    }
+
     private PublicConfirmResponse confirmGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
                                                            UUID registrationId) {
         // GROUP confirm bypasses calendar conflict check — session occupancy is the
@@ -474,6 +592,9 @@ public class PublicBookingService {
             return cancelGroupRegistration(target, bookingId, guestCapabilityToken);
         }
         var booking = bookingLifecycleService.cancelAsGuest(bookingId, target.eventTypeId(), guestCapabilityToken);
+        if (target.kind() == EventKind.COLLECTIVE) {
+            collectiveParticipantHoldRepository.releaseByBookingId(bookingId);
+        }
         return new PublicBookingStatusResponse(
                 bookingId,
                 "CANCELLED",
@@ -507,6 +628,10 @@ public class PublicBookingService {
 
         if (target.kind() == EventKind.GROUP) {
             throw new CustomException(ErrorCode.GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED);
+        }
+        if (target.kind() == EventKind.COLLECTIVE) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Rescheduling is not supported for collective bookings.");
         }
         Booking booking = bookingLifecycleService.authorizeGuestReschedule(bookingId, target.eventTypeId(), guestCapabilityToken);
 
@@ -586,6 +711,12 @@ public class PublicBookingService {
 
     private String resolveBookingHostTimezone(Booking booking) {
         return userRepository.findById(booking.getHostId())
+                .map(User::getTimezone)
+                .orElse("UTC");
+    }
+
+    private String resolveUserTimezone(UUID userId) {
+        return userRepository.findById(userId)
                 .map(User::getTimezone)
                 .orElse("UTC");
     }

@@ -79,6 +79,7 @@ class SlotServiceTest {
     @Mock private ParticipantAvailabilityService participantAvailabilityService;
     @Mock private io.bunnycal.booking.service.RoundRobinAssignmentService roundRobinAssignmentService;
     @Mock private io.bunnycal.booking.service.RoundRobinSlotTokenService roundRobinSlotTokenService;
+    @Mock private io.bunnycal.booking.service.CollectiveSlotTokenService collectiveSlotTokenService;
 
     private SlotService slotService;
     private TimeConversionService timeConversionService;
@@ -114,7 +115,8 @@ class SlotServiceTest {
                 participantEligibilityService,
                 participantAvailabilityService,
                 roundRobinAssignmentService,
-                roundRobinSlotTokenService);
+                roundRobinSlotTokenService,
+                collectiveSlotTokenService);
 
         host = User.builder()
                 .id(userId)

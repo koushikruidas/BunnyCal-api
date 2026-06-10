@@ -94,6 +94,59 @@ public class IcsInviteGenerator {
 
     public record GroupAttendee(String name, String email) {}
 
+    public record CollectiveHost(String name, String email) {}
+
+    public String buildCollectiveRequest(UUID bookingId,
+                                         String summary,
+                                         String description,
+                                         Instant start,
+                                         Instant end,
+                                         String organizerName,
+                                         String organizerEmail,
+                                         List<CollectiveHost> hosts,
+                                         String guestName,
+                                         String guestEmail,
+                                         int sequence,
+                                         ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail, organizerEmail);
+        return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail,
+                attendees, sequence, true, conferenceDetails);
+    }
+
+    public String buildCollectiveCancel(UUID bookingId,
+                                        String summary,
+                                        String description,
+                                        Instant start,
+                                        Instant end,
+                                        String organizerName,
+                                        String organizerEmail,
+                                        List<CollectiveHost> hosts,
+                                        String guestName,
+                                        String guestEmail,
+                                        int sequence,
+                                        ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail, organizerEmail);
+        return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail,
+                attendees, sequence, true, conferenceDetails);
+    }
+
+    private static List<Participant> buildCollectiveAttendees(List<CollectiveHost> hosts,
+                                                               String guestName,
+                                                               String guestEmail,
+                                                               String organizerEmail) {
+        Map<String, Participant> deduped = new LinkedHashMap<>();
+        if (hosts != null) {
+            for (CollectiveHost h : hosts) {
+                // Option B: all collective participants use REQ-PARTICIPANT, matching
+                // Calendly/Cal.com/Google Calendar interoperability baseline. CHAIR is
+                // reserved for the standalone 1:1/RR host path only.
+                addAttendee(deduped, h.name(), h.email(), organizerEmail, ParticipantRole.GUEST);
+            }
+        }
+        addAttendee(deduped, guestName, guestEmail, organizerEmail, ParticipantRole.GUEST);
+        return new ArrayList<>(deduped.values());
+    }
+
     private static List<Participant> buildGroupAttendees(List<GroupAttendee> attendees, String organizerEmail) {
         Map<String, Participant> deduped = new LinkedHashMap<>();
         if (attendees != null) {

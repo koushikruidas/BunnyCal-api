@@ -2,10 +2,13 @@ package io.bunnycal.booking.notification;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
@@ -53,6 +56,7 @@ public class BookingNotificationService {
     private final BookingRepository bookingRepository;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
+    private final BookingAssignmentRepository bookingAssignmentRepository;
     private final JavaMailSender mailSender;
     private final IcsInviteGenerator icsInviteGenerator;
     private final BookingManageLinkService bookingManageLinkService;
@@ -73,6 +77,7 @@ public class BookingNotificationService {
     public BookingNotificationService(BookingRepository bookingRepository,
                                       UserRepository userRepository,
                                       EventTypeRepository eventTypeRepository,
+                                      BookingAssignmentRepository bookingAssignmentRepository,
                                       JavaMailSender mailSender,
                                       IcsInviteGenerator icsInviteGenerator,
                                       BookingManageLinkService bookingManageLinkService,
@@ -94,6 +99,7 @@ public class BookingNotificationService {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
+        this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
         this.bookingManageLinkService = bookingManageLinkService;
@@ -140,6 +146,11 @@ public class BookingNotificationService {
         }
         User host = maybeHost.get();
         EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
+
+        if (eventType != null && eventType.getKind() == EventKind.COLLECTIVE) {
+            handleCollectiveOutboxEvent(booking, host, eventType, event);
+            return;
+        }
 
         String summary = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
@@ -312,6 +323,122 @@ public class BookingNotificationService {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={} message={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true, ex.getMessage());
+                throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
+            }
+        }
+    }
+
+    private void handleCollectiveOutboxEvent(Booking booking, User owner, EventType eventType, OutboxEvent event) {
+        String summary = eventType.getName() != null && !eventType.getName().isBlank()
+                ? eventType.getName()
+                : "Scheduled Meeting";
+        String description = "Booking " + booking.getId();
+        String eventMethod = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
+        int sequence = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, booking.getCalendarSequence()));
+        String eventTypeSlug = eventType.getSlug();
+        String ownerUsername = owner.getUsername();
+
+        boolean includeManageLink = "BOOKING_CONFIRMED".equals(event.getEventType())
+                || "BOOKING_CONFIRMED_READY".equals(event.getEventType())
+                || "BOOKING_UPDATED".equals(event.getEventType());
+        boolean canBuildManageLink = includeManageLink
+                && ownerUsername != null && !ownerUsername.isBlank()
+                && eventTypeSlug != null && !eventTypeSlug.isBlank();
+
+        // Load all participants from booking_assignments (immutable ledger set at hold time).
+        List<BookingAssignment> assignments = bookingAssignmentRepository.findAllByBookingId(booking.getId());
+        List<IcsInviteGenerator.CollectiveHost> icsHosts = new ArrayList<>();
+        List<String> participantRecipients = new ArrayList<>();
+        for (BookingAssignment assignment : assignments) {
+            userRepository.findById(assignment.getParticipantUserId()).ifPresent(participant -> {
+                Optional<String> participantRecipient = recipientResolver.resolveHostRecipient(participant);
+                if (participantRecipient.isEmpty()) {
+                    log.info("booking_notification_participant_recipient_skipped bookingId={} participantId={} eventType={}",
+                            booking.getId(), participant.getId(), event.getEventType());
+                } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType, participant.getId())) {
+                    log.info("booking_notification_participant_recipient_suppressed bookingId={} participantId={} reason=ms_consumer_msa eventType={}",
+                            booking.getId(), participant.getId(), event.getEventType());
+                } else if (shouldSuppressHostIcsForOwnGoogleProjection(eventType, participant.getId())) {
+                    log.info("booking_notification_participant_recipient_suppressed bookingId={} participantId={} reason=google_projection eventType={}",
+                            booking.getId(), participant.getId(), event.getEventType());
+                } else {
+                    participantRecipients.add(participantRecipient.get());
+                }
+                // All participants appear in the ICS regardless of email suppression —
+                // they receive the calendar event via sync, not via this email.
+                icsHosts.add(new IcsInviteGenerator.CollectiveHost(participant.getName(), participant.getEmail()));
+            });
+        }
+
+        Optional<String> attendee = recipientResolver.resolveAttendeeRecipient(booking);
+        if (attendee.isEmpty()) {
+            log.warn("booking_notification_skip_missing_attendee bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+        }
+
+        List<String> candidateRecipients = new ArrayList<>(participantRecipients);
+        attendee.ifPresent(candidateRecipients::add);
+        List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
+        if (recipients.isEmpty()) {
+            log.info("booking_notification_all_recipients_skipped bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+            return;
+        }
+        log.info("booking_notification_recipients_resolved bookingId={} eventId={} eventType={} participantCount={} attendeePresent={} dedupedRecipients={}",
+                booking.getId(), event.getId(), event.getEventType(),
+                icsHosts.size(), attendee.isPresent(), recipients.size());
+
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
+        String attendeeName = booking.getGuestName();
+        String attendeeEmail = attendee.orElse(null);
+        String standaloneIcs = "CANCEL".equals(eventMethod)
+                ? icsInviteGenerator.buildCollectiveCancel(
+                        booking.getId(), summary, description,
+                        booking.getStartTime(), booking.getEndTime(),
+                        calendarOrganizerName, calendarOrganizerEmail,
+                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails)
+                : icsInviteGenerator.buildCollectiveRequest(
+                        booking.getId(), summary, description,
+                        booking.getStartTime(), booking.getEndTime(),
+                        calendarOrganizerName, calendarOrganizerEmail,
+                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails);
+        log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} hasAttachment={} method={} attendeesInIcs={} hasConferenceUrl={}",
+                booking.getId(), event.getId(), event.getEventType(), true, eventMethod,
+                countIcsAttendees(standaloneIcs),
+                conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank());
+
+        // Issue one manage token for the entire notification batch — all recipients
+        // share the same booking and the same permissions, so one token is correct.
+        String manageLink = null;
+        if (canBuildManageLink) {
+            String manageToken = guestCapabilityTokenService.issueToken(
+                    booking.getId(), booking.getHostId(),
+                    BookingActionType.MANAGE_BOOKING, guestManageTokenTtl, TokenCreatorType.SYSTEM);
+            manageLink = bookingManageLinkService.build(
+                    booking.getId(), manageToken, ownerUsername, eventTypeSlug);
+        }
+
+        for (String recipient : recipients) {
+            if (event.getId() == null) {
+                log.warn("booking_notification_send_skipped_missing_event_id bookingId={} recipient={} eventType={}",
+                        booking.getId(), recipient, event.getEventType());
+                continue;
+            }
+            boolean claimed = notificationSendDedupService.claim(event.getId(), recipient, event.getEventType());
+            if (!claimed) {
+                log.info("booking_notification_send_skipped_duplicate eventId={} bookingId={} recipient={} eventType={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType());
+                continue;
+            }
+            try {
+                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink,
+                        conferenceDetails, booking.getId());
+                log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType(), true);
+            } catch (Exception ex) {
+                notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
+                log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} eventType={} message={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType(), ex.getMessage());
                 throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
             }
         }
