@@ -5,6 +5,8 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
 import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,8 +20,12 @@ import org.springframework.stereotype.Service;
  * Resolves the set of provider-native calendar IDs that should be polled for
  * availability sync, for a given {@link CalendarConnection}.
  *
- * <p>Source of truth: the user's active event types' {@code availability_calendars_json}.
- * Legacy corruption — bindings where the persisted {@code externalCalendarId} equals the
+ * <p>Primary source of truth: the user's active event types' {@code availability_calendars_json}.
+ * When no event type explicitly names this connection (ALL_CONNECTED mode), the service falls
+ * back to every non-hidden calendar in the connection's inventory — matching what
+ * {@code CalendarBusyTimeService} considers when it runs in ALL_CONNECTED mode.
+ *
+ * <p>Legacy corruption — bindings where the persisted {@code externalCalendarId} equals the
  * binding's {@code connectionId} (the pre-inventory frontend bug) — is detected, logged
  * once per selection pass, and excluded so a single corrupted row cannot poison the
  * whole sync cycle.
@@ -30,19 +36,22 @@ public class ProviderCalendarSelectionService {
 
     private final EventTypeRepository eventTypeRepository;
     private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    private final CalendarConnectionCalendarRepository calendarInventoryRepository;
 
     public ProviderCalendarSelectionService(EventTypeRepository eventTypeRepository,
-                                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec) {
+                                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
+                                            CalendarConnectionCalendarRepository calendarInventoryRepository) {
         this.eventTypeRepository = eventTypeRepository;
         this.orchestrationJsonCodec = orchestrationJsonCodec;
+        this.calendarInventoryRepository = calendarInventoryRepository;
     }
 
     /**
-     * @return the deduplicated, insertion-ordered list of provider-native calendar IDs
-     *         selected for availability on this connection. May be empty when the user
-     *         has not yet selected any availability calendars (caller should fall back
-     *         to a safe default — e.g. the connection's primary calendar — to avoid a
-     *         silently no-op sync).
+     * @return the deduplicated, insertion-ordered set of provider-native calendar IDs
+     *         to sync for this connection. When no event type explicitly names this
+     *         connection, falls back to all non-hidden inventory calendars so that
+     *         sync coverage matches the ALL_CONNECTED availability engine behaviour.
+     *         Never returns empty unless the connection's inventory is also empty.
      */
     public Set<String> selectedAvailabilityCalendarIds(CalendarConnection connection) {
         return selectedAvailabilityCalendarIds(connection, null);
@@ -112,6 +121,31 @@ public class ProviderCalendarSelectionService {
                     }
                 }
             }
+        }
+
+        if (!selected.isEmpty()) {
+            return selected;
+        }
+
+        // No event type explicitly names this connection — fall back to all non-hidden
+        // inventory calendars. This matches ALL_CONNECTED availability engine behaviour:
+        // when no explicit selection exists, every connected calendar participates in
+        // busy-time generation, so sync must cover the same set.
+        List<CalendarConnectionCalendar> inventory =
+                calendarInventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId);
+        for (CalendarConnectionCalendar cal : inventory) {
+            if (cal.isHidden()) continue;
+            String calId = cal.getExternalCalendarId();
+            if (calId == null || calId.isBlank()) continue;
+            if (isLegacyCorruption(connectionId, calId) || isUuidShaped(calId)) continue;
+            selected.add(calId);
+        }
+        if (!selected.isEmpty()) {
+            log.info("provider_calendar_fallback_to_inventory provider={} connectionId={} calendarCount={} syncMode={} reason=no_event_type_selection",
+                    provider, connectionId, selected.size(), syncModeTag);
+        } else {
+            log.info("provider_calendar_fallback_empty provider={} connectionId={} syncMode={} reason=inventory_empty",
+                    provider, connectionId, syncModeTag);
         }
         return selected;
     }

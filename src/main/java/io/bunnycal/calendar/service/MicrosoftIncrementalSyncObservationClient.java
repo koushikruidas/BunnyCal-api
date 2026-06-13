@@ -81,9 +81,11 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
                                             boolean forceBootstrap) {
         Set<String> selected = selectionService.selectedAvailabilityCalendarIds(connection, sourceAttribution);
         if (selected.isEmpty()) {
-            log.info("microsoft_calendar_sync_no_selection connectionId={} action=skip reason=no_event_type_calendar_ids",
+            // Inventory is empty (e.g. brand-new connection before OAuth callback hydration).
+            // Stamp the sentinel so the scheduler doesn't loop into full-resync mode and
+            // retry when the next sync tick fires after hydration completes.
+            log.warn("microsoft_calendar_sync_no_selection connectionId={} action=skip reason=inventory_empty",
                     connection.getId());
-            // Stamp the sentinel so the scheduler doesn't loop into full-resync mode.
             return new SyncBatch(List.of(), MULTI_CALENDAR_SENTINEL_CURSOR, false, false, "no_selected_calendars");
         }
 
