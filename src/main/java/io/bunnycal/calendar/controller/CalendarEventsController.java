@@ -46,8 +46,11 @@ public class CalendarEventsController {
                         .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
                                 userId, end, start);
 
+        // Load all non-revoked connections so the join covers ACTIVE, SYNCING, FAILED, and
+        // ERROR states — events already ingested from a SYNCING connection are valid and
+        // should appear in the display with their source label.
         Map<UUID, CalendarConnection> connectionsById =
-                calendarConnectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE)
+                calendarConnectionRepository.findByUserIdAndStatusNot(userId, CalendarConnectionStatus.REVOKED)
                         .stream()
                         .collect(Collectors.toMap(CalendarConnection::getId, c -> c));
 
