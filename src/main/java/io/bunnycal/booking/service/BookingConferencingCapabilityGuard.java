@@ -43,10 +43,9 @@ public class BookingConferencingCapabilityGuard {
             return;
         }
 
-        // ROUND_ROBIN: conferencing link is created from the assigned participant's
-        // calendar at booking time — no owner-level projection exists. Skip the
-        // owner-projection provider checks entirely; the MSA check is not needed
-        // here either because participant capability was validated at setup time.
+        // ROUND_ROBIN: conferencing link is created from the assigned participant's calendar
+        // at booking time — no owner-level projection exists at event-type setup time.
+        // Skip the owner-projection provider checks; participant capability was validated at setup.
         if (eventType.getKind() == EventKind.ROUND_ROBIN) {
             return;
         }

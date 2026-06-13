@@ -10,6 +10,8 @@ import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnership;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
@@ -67,6 +69,7 @@ public class BookingNotificationService {
     private final ConferencingCoordinator conferencingCoordinator;
     private final ConferencingEventMappingRepository conferencingEventMappingRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final BookingOwnershipRepository bookingOwnershipRepository;
     private final boolean notificationsEnabled;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -88,6 +91,7 @@ public class BookingNotificationService {
                                       ConferencingCoordinator conferencingCoordinator,
                                       ConferencingEventMappingRepository conferencingEventMappingRepository,
                                       CalendarConnectionRepository calendarConnectionRepository,
+                                      BookingOwnershipRepository bookingOwnershipRepository,
                                       @Value("${booking.notifications.enabled:false}") boolean notificationsEnabled,
                                       @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                       @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
@@ -110,6 +114,7 @@ public class BookingNotificationService {
         this.conferencingCoordinator = conferencingCoordinator;
         this.conferencingEventMappingRepository = conferencingEventMappingRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
         this.notificationsEnabled = notificationsEnabled;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -146,9 +151,10 @@ public class BookingNotificationService {
         }
         User host = maybeHost.get();
         EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
+        BookingOwnership ownership = bookingOwnershipRepository.findByBookingId(booking.getId()).orElse(null);
 
         if (eventType != null && eventType.getKind() == EventKind.COLLECTIVE) {
-            handleCollectiveOutboxEvent(booking, host, eventType, event);
+            handleCollectiveOutboxEvent(booking, host, eventType, event, ownership);
             return;
         }
 
@@ -168,27 +174,19 @@ public class BookingNotificationService {
                     (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
-        } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType, booking.getHostId())) {
-            // Consumer MSA host whose Outlook calendar IS the projection target:
-            // Outlook would auto-import this iTIP REQUEST and create a second visible
-            // event next to the Graph-projected one. Drop the host from this email's
-            // recipient set — the calendar entry already exists in their calendar via
-            // the Graph projection. Guest still gets the email.
-            // For RR: booking.hostId is the assigned participant, so the check must
-            // resolve that participant's connection, not the event type owner's.
-            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=ms_consumer_msa_projection_self_owned hostEmail={}",
-                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
-            hostRecipient = Optional.empty();
-        } else if (shouldSuppressHostIcsForOwnGoogleProjection(eventType, booking.getHostId())) {
-            // Google host whose Gmail/Calendar account IS the projection target:
-            // Gmail auto-imports the iTIP REQUEST and creates a second event next
-            // to the one already written via the Calendar API. Drop the host from
-            // the recipient set — guest still gets the email.
-            // For RR: booking.hostId is the assigned participant, so checking
-            // conn.getUserId().equals(hostId) correctly scopes to the participant.
-            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=google_projection_self_owned hostEmail={}",
-                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
-            hostRecipient = Optional.empty();
+        } else {
+            // Suppress only when this recipient IS the projection owner — the Calendar API
+            // already wrote the event directly to their calendar, so sending an ICS email
+            // on top would create a duplicate entry.  We determine ownership from the
+            // booking_ownership record (set immutably at booking time) rather than from
+            // calendar connectivity alone: a user may have a Google account without being
+            // the projection owner, and must then still receive the ICS.
+            String suppressReason = resolveSuppressionReason(booking.getHostId(), ownership);
+            if (suppressReason != null) {
+                log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason={} hostEmail={}",
+                        booking.getId(), booking.getHostId(), event.getEventType(), suppressReason, hostRecipient.get());
+                hostRecipient = Optional.empty();
+            }
         }
 
         List<String> candidateRecipients = new ArrayList<>(2);
@@ -328,7 +326,8 @@ public class BookingNotificationService {
         }
     }
 
-    private void handleCollectiveOutboxEvent(Booking booking, User owner, EventType eventType, OutboxEvent event) {
+    private void handleCollectiveOutboxEvent(Booking booking, User owner, EventType eventType, OutboxEvent event,
+                                              @org.springframework.lang.Nullable BookingOwnership ownership) {
         String summary = eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
                 : "Scheduled Meeting";
@@ -355,17 +354,20 @@ public class BookingNotificationService {
                 if (participantRecipient.isEmpty()) {
                     log.info("booking_notification_participant_recipient_skipped bookingId={} participantId={} eventType={}",
                             booking.getId(), participant.getId(), event.getEventType());
-                } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType, participant.getId())) {
-                    log.info("booking_notification_participant_recipient_suppressed bookingId={} participantId={} reason=ms_consumer_msa eventType={}",
-                            booking.getId(), participant.getId(), event.getEventType());
-                } else if (shouldSuppressHostIcsForOwnGoogleProjection(eventType, participant.getId())) {
-                    log.info("booking_notification_participant_recipient_suppressed bookingId={} participantId={} reason=google_projection eventType={}",
-                            booking.getId(), participant.getId(), event.getEventType());
                 } else {
-                    participantRecipients.add(participantRecipient.get());
+                    // The projection owner (event owner) has the booking written directly to their
+                    // calendar by the sync pipeline — suppress their ICS to avoid a duplicate entry.
+                    // Non-owner participants have no direct projection and must always receive ICS.
+                    String suppressReason = participant.getId().equals(booking.getHostId())
+                            ? resolveSuppressionReason(booking.getHostId(), ownership)
+                            : null;
+                    if (suppressReason != null) {
+                        log.info("booking_notification_collective_owner_suppressed bookingId={} participantId={} reason={}",
+                                booking.getId(), participant.getId(), suppressReason);
+                    } else {
+                        participantRecipients.add(participantRecipient.get());
+                    }
                 }
-                // All participants appear in the ICS regardless of email suppression —
-                // they receive the calendar event via sync, not via this email.
                 icsHosts.add(new IcsInviteGenerator.CollectiveHost(participant.getName(), participant.getEmail()));
             });
         }
@@ -720,52 +722,47 @@ public class BookingNotificationService {
     }
 
     /**
-     * True iff the booking host's projection calendar is on a consumer Microsoft account
-     * owned by the host themselves. In that case Outlook auto-imports the iTIP
-     * REQUEST ICS we'd attach to the host's email, producing a duplicate event
-     * next to the one already written via Graph. Suppress the host recipient so
-     * only the guest receives the invite.
+     * Returns the suppression reason string if the host/participant's ICS email must be
+     * suppressed, or {@code null} if they must receive it.
      *
-     * <p>For ROUND_ROBIN bookings {@code hostId} is the assigned participant, not the
-     * event owner — so we resolve the participant's own ACTIVE Microsoft connection
-     * rather than the event type's {@code projectionConnectionId}.
+     * <p>Suppression is valid only when the recipient IS the projection owner — the Calendar
+     * API already wrote the event directly to their calendar, so an additional ICS email
+     * would create a visible duplicate entry.
      *
-     * <p>Scoped to consumer MSAs only: work/school (Entra) accounts also auto-process
-     * meeting mail but Graph dispatches the invite itself, so we never attach an
-     * ICS for the host in that path. The check stays narrow to the configuration
-     * that produces the visible-duplicate symptom.
+     * <p>Ownership is determined from the immutable {@code booking_ownership} record (set at
+     * booking time via {@code BookingOwnershipService.ensureOwnership}), not from calendar
+     * connectivity alone.  A user may have an active Google or Microsoft connection without
+     * being the projection owner (e.g., a non-assigned RR participant, a COLLECTIVE member),
+     * and must still receive the ICS email in that case.
+     *
+     * <p>For Google projection owners: Gmail auto-imports any iTIP REQUEST, producing a
+     * duplicate next to the Calendar-API-written event — suppress.
+     * For Microsoft projection owners: consumer MSA (personal Outlook.com) auto-processes
+     * the iTIP — suppress.  Entra work/school accounts are handled by Graph and do not
+     * reach this path.
      */
-    private boolean shouldSuppressHostIcsForOwnMsaProjection(EventType eventType, UUID hostId) {
-        if (eventType == null) return false;
-        // Resolve the host's (participant's for RR) own ACTIVE Microsoft connection.
-        return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.MICROSOFT,
-                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
-                .map(MicrosoftAccountClassifier::isConsumerMsa)
-                .orElse(false);
-    }
-
-    /**
-     * True iff the booking host has an active Google calendar connection that they
-     * own themselves. Gmail auto-imports any iTIP REQUEST ICS we'd attach to the
-     * host's email, producing a duplicate event next to the one already written via
-     * the Calendar API. Suppress the host recipient so only the guest receives the invite.
-     *
-     * <p>For ROUND_ROBIN bookings {@code hostId} is the assigned participant, not the
-     * event owner. RR event types have no owner-level projection (projectionProvider and
-     * projectionConnectionId are null), so the old approach of looking up the event
-     * type's projection connection would always return false for RR — leaving the
-     * participant subscribed to a duplicate ICS email on top of their API-written event.
-     *
-     * <p>The fix mirrors the MSA path: resolve the host's (participant's for RR) own
-     * ACTIVE Google connection directly by userId. If such a connection exists, Gmail
-     * will auto-import the invite, so suppress the host recipient.
-     */
-    private boolean shouldSuppressHostIcsForOwnGoogleProjection(EventType eventType, UUID hostId) {
-        if (eventType == null) return false;
-        return calendarConnectionRepository
-                .findByUserIdAndProviderAndStatus(hostId, CalendarProviderType.GOOGLE,
-                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE)
-                .isPresent();
+    @org.springframework.lang.Nullable
+    private String resolveSuppressionReason(UUID hostId, @org.springframework.lang.Nullable BookingOwnership ownership) {
+        if (ownership == null || ownership.getProjectionConnectionId() == null) {
+            return null;
+        }
+        CalendarConnection projectionConnection = calendarConnectionRepository
+                .findById(ownership.getProjectionConnectionId())
+                .orElse(null);
+        if (projectionConnection == null) {
+            return null;
+        }
+        // Only suppress when the projection connection belongs to this recipient.
+        if (!hostId.equals(projectionConnection.getUserId())) {
+            return null;
+        }
+        if (projectionConnection.getProvider() == CalendarProviderType.GOOGLE) {
+            return "google_projection_owner";
+        }
+        if (projectionConnection.getProvider() == CalendarProviderType.MICROSOFT
+                && MicrosoftAccountClassifier.isConsumerMsa(projectionConnection)) {
+            return "ms_consumer_msa_projection_owner";
+        }
+        return null;
     }
 }

@@ -1,6 +1,9 @@
 package io.bunnycal.booking.outbox;
 
+import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.availability.service.EventTypeLifecycleNotificationService;
 import io.bunnycal.availability.service.EventTypeLifecycleOutboxPayload;
 import io.bunnycal.booking.service.BookingEventTypeResolver;
@@ -147,52 +150,60 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
             return;
         }
 
-        if (bookingNotificationService != null && !shouldDeferNotificationUntilProjection(event)) {
+        if (!isBookingSyncCandidate(event)) {
+            log.info("outbox.dispatch id={} type={} aggregateType={} aggregateId={}",
+                    event.getId(), event.getEventType(),
+                    event.getAggregateType(), event.getAggregateId());
+            return;
+        }
+
+        // Load booking + event type once — reused for both the notification gate and
+        // the sync-job path so we avoid a second round-trip for each.
+        Booking booking = bookingRepository.findAnyById(event.getAggregateId()).orElse(null);
+        EventType eventType = booking != null ? bookingEventTypeResolver.requireForBooking(booking) : null;
+        EventKind kind = eventType != null ? eventType.getKind() : null;
+
+        boolean deferNotification = shouldDeferNotificationUntilProjection(event, eventType);
+        if (bookingNotificationService != null && !deferNotification) {
             bookingNotificationService.handleOutboxEvent(event);
         }
 
-        if (isBookingSyncCandidate(event)) {
-            String desiredAction = mapDesiredAction(event.getEventType());
-            if (desiredAction != null) {
-                UUID partitionKey = event.getPartitionKey();
-                if (partitionKey == null) {
-                    partitionKey = bookingRepository.findAnyById(event.getAggregateId())
-                            .map(booking -> booking.getHostId())
-                            .orElse(null);
-                }
-                SchedulingResolution resolution = resolveSchedulingConnection(event.getAggregateId(), partitionKey);
-                if (resolution == null && partitionKey != null) {
-                    log.warn("outbox.sync_job_skipped_missing_projection_ownership bookingId={} hostId={} action={}",
-                            event.getAggregateId(), partitionKey, desiredAction);
-                    meterRegistry.counter("sync_jobs_skipped_missing_ownership_total").increment();
-                    return;
-                }
-                io.bunnycal.booking.ownership.BookingOwnership ownership = bookingRepository.findAnyById(event.getAggregateId())
-                        .map(booking -> bookingOwnershipService.ensureOwnership(
-                                booking,
-                                bookingEventTypeResolver.requireForBooking(booking)))
-                        .orElse(null);
-                String resolvedProvider = resolution != null ? resolution.provider() : null;
-                UUID schedulingConnectionId = resolution != null ? resolution.connectionId() : null;
-                if (partitionKey != null && resolvedProvider != null) {
-                    bookingRepository.stampSchedulingProvider(event.getAggregateId(), partitionKey, resolvedProvider);
-                }
-                calendarSyncJobRepository.upsertPendingJob(
-                        UUID.randomUUID(),
-                        "BOOKING",
-                        event.getAggregateId(),
-                        resolvedProvider,
-                        desiredAction,
-                        null,
-                        partitionKey,
-                        schedulingConnectionId,
-                        ownership == null ? 1L : ownership.getOwnershipVersion()
-                );
-                log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
-                        event.getId(), event.getAggregateId(), resolvedProvider, desiredAction);
-                emitSyncEnqueueInvariant(event, desiredAction);
+        String desiredAction = mapDesiredAction(event.getEventType());
+        if (desiredAction != null) {
+            UUID partitionKey = event.getPartitionKey();
+            if (partitionKey == null) {
+                partitionKey = booking != null ? booking.getHostId() : null;
+            }
+            SchedulingResolution resolution = resolveSchedulingConnection(event.getAggregateId(), partitionKey);
+            if (resolution == null && partitionKey != null) {
+                log.warn("outbox.sync_job_skipped_missing_projection_ownership bookingId={} hostId={} action={}",
+                        event.getAggregateId(), partitionKey, desiredAction);
+                meterRegistry.counter("sync_jobs_skipped_missing_ownership_total").increment();
                 return;
             }
+            io.bunnycal.booking.ownership.BookingOwnership ownership = booking != null && eventType != null
+                    ? bookingOwnershipService.ensureOwnership(booking, eventType)
+                    : null;
+            String resolvedProvider = resolution != null ? resolution.provider() : null;
+            UUID schedulingConnectionId = resolution != null ? resolution.connectionId() : null;
+            if (partitionKey != null && resolvedProvider != null) {
+                bookingRepository.stampSchedulingProvider(event.getAggregateId(), partitionKey, resolvedProvider);
+            }
+            calendarSyncJobRepository.upsertPendingJob(
+                    UUID.randomUUID(),
+                    "BOOKING",
+                    event.getAggregateId(),
+                    resolvedProvider,
+                    desiredAction,
+                    null,
+                    partitionKey,
+                    schedulingConnectionId,
+                    ownership == null ? 1L : ownership.getOwnershipVersion()
+            );
+            log.info("outbox.sync_job_created id={} bookingId={} provider={} action={}",
+                    event.getId(), event.getAggregateId(), resolvedProvider, desiredAction);
+            emitSyncEnqueueInvariant(event, desiredAction);
+            return;
         }
 
         log.info("outbox.dispatch id={} type={} aggregateType={} aggregateId={}",
@@ -206,17 +217,14 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 && event.getAggregateId() != null;
     }
 
-    private boolean shouldDeferNotificationUntilProjection(OutboxEvent event) {
-        if (event == null
-                || !"Booking".equals(event.getAggregateType())
-                || event.getAggregateId() == null
-                || !"BOOKING_CONFIRMED".equals(event.getEventType())) {
+    private boolean shouldDeferNotificationUntilProjection(OutboxEvent event, @Nullable EventType eventType) {
+        if (event == null || !"BOOKING_CONFIRMED".equals(event.getEventType())) {
             return false;
         }
-        return bookingRepository.findAnyById(event.getAggregateId())
-                .map(bookingEventTypeResolver::requireForBooking)
-                .map(eventType -> eventType.getConferencingProvider() == ConferencingProviderType.GOOGLE_MEET)
-                .orElse(false);
+        if (eventType == null) {
+            return false;
+        }
+        return eventType.getConferencingProvider() == ConferencingProviderType.GOOGLE_MEET;
     }
 
     private record SchedulingResolution(UUID connectionId, String provider) {}
