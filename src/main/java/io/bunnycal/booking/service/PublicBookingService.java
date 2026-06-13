@@ -27,6 +27,8 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.availability.repository.EventTypeParticipantRepository;
+import io.bunnycal.booking.dto.PublicParticipantInfo;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
@@ -74,6 +76,7 @@ public class PublicBookingService {
     private final ParticipantEligibilityService participantEligibilityService;
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final UserRepository userRepository;
+    private final EventTypeParticipantRepository eventTypeParticipantRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
@@ -101,6 +104,7 @@ public class PublicBookingService {
                                 ParticipantEligibilityService participantEligibilityService,
                                 BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
+                                EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
@@ -132,6 +136,7 @@ public class PublicBookingService {
         this.participantEligibilityService = participantEligibilityService;
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.userRepository = userRepository;
+        this.eventTypeParticipantRepository = eventTypeParticipantRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
@@ -142,6 +147,20 @@ public class PublicBookingService {
     public PublicEventInfoResponse eventInfo(String username, String eventTypeSlug) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
         EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        List<PublicParticipantInfo> participants = List.of();
+        if (eventType.getKind() == EventKind.COLLECTIVE) {
+            participants = eventTypeParticipantRepository
+                    .findByEventTypeIdOrderByDisplayOrderAscCreatedAtAsc(eventType.getId())
+                    .stream()
+                    .map(p -> {
+                        var user = userRepository.findById(p.getUserId()).orElse(null);
+                        String name = user != null ? (user.getName() != null ? user.getName() : user.getEmail()) : null;
+                        String avatarUrl = user != null ? user.getProfileImageUrl() : null;
+                        return new PublicParticipantInfo(name, avatarUrl);
+                    })
+                    .filter(p -> p.name() != null)
+                    .toList();
+        }
         return new PublicEventInfoResponse(
                 target.eventName(),
                 target.duration().toMinutes(),
@@ -152,7 +171,8 @@ public class PublicBookingService {
                 target.eventLocation(),
                 target.hostAvatarUrl(),
                 eventType.getKind(),
-                eventType.isPublished()
+                eventType.isPublished(),
+                participants
         );
     }
 

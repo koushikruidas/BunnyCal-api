@@ -1,6 +1,7 @@
 package io.bunnycal.booking.dto;
 
 import io.bunnycal.availability.domain.EventKind;
+import java.util.List;
 
 public record PublicEventInfoResponse(
         String name,
@@ -12,6 +13,7 @@ public record PublicEventInfoResponse(
         String location,
         String hostAvatarUrl,
         EventKind kind,
-        boolean published
+        boolean published,
+        List<PublicParticipantInfo> participants
 ) {
 }
