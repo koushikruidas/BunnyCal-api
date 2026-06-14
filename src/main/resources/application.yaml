@@ -2,9 +2,6 @@ spring:
   application:
     name: BunnyCal
 
-  autoconfigure:
-    exclude:
-      - org.springframework.boot.micrometer.metrics.autoconfigure.export.otlp.OtlpMetricsExportAutoConfiguration
 
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/mydatabase}
