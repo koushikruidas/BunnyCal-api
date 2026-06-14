@@ -108,9 +108,6 @@ management:
         read-timeout: 5s
 
   metrics:
-    export:
-      otlp:
-        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
     tags:
       application: ${spring.application.name}
 

@@ -1,3 +1,9 @@
+management:
+  otlp:
+    metrics:
+      export:
+        enabled: false
+
 calendar:
   webhook:
     enabled: false
