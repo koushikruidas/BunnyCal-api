@@ -101,8 +101,7 @@ management:
   otlp:
     metrics:
       export:
-        # Docker service name — no localhost in production. The collector then
-        # forwards to Prometheus over the internal network.
+        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
         url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://otel-collector:4318/v1/metrics}
         step: 10s
         connect-timeout: 2s
@@ -111,20 +110,14 @@ management:
   metrics:
     export:
       otlp:
-        enabled: true
+        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
     tags:
       application: ${spring.application.name}
 
-  # Prometheus scrapes /actuator/prometheus over the internal Docker network
-  # (see monitoring/prometheus/prometheus.yml → target bunnycal-api:8080). That
-  # endpoint is therefore exposed on the app port, but it is NEVER routed by
-  # Caddy — only /actuator/health and the public API paths are. So metrics
-  # remain internal-only. Override the list via env if you need to narrow it
-  # further.
   endpoints:
     web:
       exposure:
-        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,prometheus}
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info}
   endpoint:
     health:
       probes:

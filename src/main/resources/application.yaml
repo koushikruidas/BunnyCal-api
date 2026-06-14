@@ -107,6 +107,7 @@ management:
   otlp:
     metrics:
       export:
+        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
         url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://localhost:4318/v1/metrics}
         step: 10s
         connect-timeout: 2s
@@ -115,14 +116,14 @@ management:
   metrics:
     export:
       otlp:
-        enabled: true
+        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
     tags:
       application: ${spring.application.name}
 
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info}
   endpoint:
     health:
       probes:
