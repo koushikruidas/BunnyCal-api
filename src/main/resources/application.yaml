@@ -107,7 +107,7 @@ management:
   otlp:
     metrics:
       export:
-        enabled: ${MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED:false}
+        enabled: false
         url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://localhost:4318/v1/metrics}
         step: 10s
         connect-timeout: 2s
