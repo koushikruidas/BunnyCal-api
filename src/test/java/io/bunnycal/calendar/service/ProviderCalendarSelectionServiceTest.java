@@ -9,6 +9,7 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import java.lang.reflect.Field;
 import java.util.List;
@@ -24,13 +25,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class ProviderCalendarSelectionServiceTest {
 
     @Mock private EventTypeRepository eventTypeRepository;
+    @Mock private CalendarConnectionCalendarRepository calendarConnectionCalendarRepository;
 
     private ProviderCalendarSelectionService service;
 
     @BeforeEach
     void setUp() {
         service = new ProviderCalendarSelectionService(
-                eventTypeRepository, new EventTypeOrchestrationJsonCodec(new ObjectMapper()));
+                eventTypeRepository, new EventTypeOrchestrationJsonCodec(new ObjectMapper()),
+                calendarConnectionCalendarRepository);
     }
 
     @Test
