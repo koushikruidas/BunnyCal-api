@@ -38,10 +38,9 @@ class GroupEventReservationWindowIT extends AbstractSessionIT {
     @Autowired private SlotService slotService;
     @Autowired private SessionService sessionService;
 
-    /** 2026-06-17 is a Wednesday, well within maxAdvance. */
-    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 6, 17);
-    private static final LocalDate THURSDAY = LocalDate.of(2026, 6, 18);
-    private static final LocalDate FRIDAY = LocalDate.of(2026, 6, 19);
+    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 8, 5);  // Wednesday
+    private static final LocalDate THURSDAY  = LocalDate.of(2026, 8, 6);  // Thursday
+    private static final LocalDate FRIDAY    = LocalDate.of(2026, 8, 7);  // Friday
 
     private Instant slotAt(int hour, int minute) {
         return WEDNESDAY.atTime(hour, minute).toInstant(ZoneOffset.UTC);
@@ -128,8 +127,10 @@ class GroupEventReservationWindowIT extends AbstractSessionIT {
     private void reserveDay(UUID eventTypeId, String dayOfWeek, String startTime, String endTime) {
         jdbc.update("""
                 INSERT INTO group_event_reservation_windows
-                    (id, event_type_id, day_of_week, start_time, end_time, created_at, updated_at)
-                VALUES (?, ?, ?, ?::time, ?::time, NOW(), NOW())
+                    (id, event_type_id, day_of_week, start_time, end_time,
+                     schedule_type, frequency, start_date, recurrence_end_mode,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?::time, ?::time, 'RECURRING', 'WEEKLY', '2000-01-01', 'NONE', NOW(), NOW())
                 """, UUID.randomUUID(), eventTypeId, dayOfWeek, startTime, endTime);
     }
 

@@ -22,6 +22,7 @@ import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.identity.SlotIdGenerator;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.engine.RecurrenceWindowFilter;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
 import io.bunnycal.availability.repository.DbClockRepository;
@@ -317,13 +318,16 @@ public class SlotService {
                                               LocalDate date,
                                               List<BookingWindow> blockers) {
         DayOfWeek dayOfWeek = date.getDayOfWeek();
-        List<GroupEventReservationWindow> windows =
-                reservationWindowRepository.findBlockingWindowsForOtherEventTypes(
-                        host.getId(), eventType.getId(), dayOfWeek.name());
-        if (windows.isEmpty()) {
+        List<GroupEventReservationWindow> candidates =
+                reservationWindowRepository.findBlockingCandidatesForDate(
+                        host.getId(), eventType.getId(), date, dayOfWeek.name());
+        if (candidates.isEmpty()) {
             return;
         }
-        for (GroupEventReservationWindow window : windows) {
+        for (GroupEventReservationWindow window : candidates) {
+            if (!RecurrenceWindowFilter.appliesOn(window, date)) {
+                continue;
+            }
             if (window.getStartTime() == null
                     || window.getEndTime() == null
                     || !window.getStartTime().isBefore(window.getEndTime())) {
@@ -383,13 +387,17 @@ public class SlotService {
                                                                       EventType eventType,
                                                                       LocalDate date) {
         DayOfWeek dayOfWeek = date.getDayOfWeek();
-        List<GroupEventReservationWindow> windows =
-                reservationWindowRepository.findOwnWindowsForDay(eventType.getId(), dayOfWeek.name());
-        if (windows.isEmpty()) {
+        List<GroupEventReservationWindow> dbCandidates =
+                reservationWindowRepository.findCandidateWindowsForDate(
+                        eventType.getId(), date, dayOfWeek.name());
+        if (dbCandidates.isEmpty()) {
             return List.of();
         }
-        List<BookingWindow> candidates = new ArrayList<>(windows.size());
-        for (GroupEventReservationWindow window : windows) {
+        List<BookingWindow> candidates = new ArrayList<>(dbCandidates.size());
+        for (GroupEventReservationWindow window : dbCandidates) {
+            if (!RecurrenceWindowFilter.appliesOn(window, date)) {
+                continue;
+            }
             if (window.getStartTime() == null
                     || window.getEndTime() == null
                     || !window.getStartTime().isBefore(window.getEndTime())) {

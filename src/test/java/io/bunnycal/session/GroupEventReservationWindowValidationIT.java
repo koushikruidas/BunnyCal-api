@@ -3,12 +3,16 @@ package io.bunnycal.session;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.domain.RecurrenceEndMode;
+import io.bunnycal.availability.domain.RecurrenceFrequency;
+import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.ReservationWindowRequest;
 import io.bunnycal.availability.service.GroupEventReservationWindowService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import java.time.DayOfWeek;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.UUID;
@@ -23,10 +27,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *  - GROUP only
  *  - within host availability
  *  - no overlap with other group events' windows (and none within the request)
+ *  - ONE_TIME and RECURRING field requirements
  */
 class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
     @Autowired private GroupEventReservationWindowService reservationWindowService;
+
+    private static final LocalDate FUTURE_DATE = LocalDate.of(2026, 8, 5); // Wednesday
 
     private User hostWithWeekdayAvailability() {
         User host = createHost();
@@ -56,8 +63,19 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
                 .holdDuration(Duration.ofMinutes(15)).kind(EventKind.ONE_ON_ONE).capacity(1).build());
     }
 
-    private ReservationWindowRequest window(DayOfWeek day, String start, String end) {
-        return new ReservationWindowRequest(day, LocalTime.parse(start), LocalTime.parse(end));
+    /** RECURRING window with NONE end mode (backward-compatible style). */
+    private ReservationWindowRequest recurringWindow(DayOfWeek day, String start, String end) {
+        return new ReservationWindowRequest(
+                ScheduleType.RECURRING, LocalTime.parse(start), LocalTime.parse(end),
+                null, day, RecurrenceFrequency.WEEKLY,
+                LocalDate.of(2026, 8, 3), RecurrenceEndMode.NONE, null, null);
+    }
+
+    /** ONE_TIME window on a given date. */
+    private ReservationWindowRequest oneTimeWindow(LocalDate date, String start, String end) {
+        return new ReservationWindowRequest(
+                ScheduleType.ONE_TIME, LocalTime.parse(start), LocalTime.parse(end),
+                date, null, null, null, null, null, null);
     }
 
     // ── GROUP-only ───────────────────────────────────────────────────────────
@@ -69,7 +87,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), oneOnOne.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "09:00", "11:00"))))
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "09:00", "11:00"))))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
@@ -84,7 +102,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         var saved = reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
 
         assertThat(saved).hasSize(1);
     }
@@ -97,7 +115,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
         // 18:00-19:00 is outside the host's 09:00-17:00 availability.
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "18:00", "19:00"))))
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "18:00", "19:00"))))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
@@ -110,7 +128,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
-                List.of(window(DayOfWeek.SATURDAY, "10:00", "12:00"))))
+                List.of(recurringWindow(DayOfWeek.SATURDAY, "10:00", "12:00"))))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
@@ -126,12 +144,12 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         reservationWindowService.replaceWindows(
                 host.getId(), groupA.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
 
         // Group B tries to reserve an overlapping band on the same day -> rejected.
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), groupB.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "11:00", "13:00"))))
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "11:00", "13:00"))))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
@@ -145,12 +163,12 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         reservationWindowService.replaceWindows(
                 host.getId(), groupA.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "09:00", "11:00")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "09:00", "11:00")));
 
         // Group B reserves a different, non-overlapping band -> accepted.
         var saved = reservationWindowService.replaceWindows(
                 host.getId(), groupB.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "11:00", "13:00")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "11:00", "13:00")));
         assertThat(saved).hasSize(1);
     }
 
@@ -161,13 +179,13 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "10:00", "12:00")));
 
         // Re-submitting an overlapping window for the SAME event type is a replace,
         // not a conflict (its own prior rows are excluded from the overlap check).
         var saved = reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
-                List.of(window(DayOfWeek.WEDNESDAY, "10:30", "12:30")));
+                List.of(recurringWindow(DayOfWeek.WEDNESDAY, "10:30", "12:30")));
         assertThat(saved).hasSize(1);
         assertThat(saved.get(0).startTime()).isEqualTo(LocalTime.of(10, 30));
     }
@@ -180,10 +198,139 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), group.getId(),
                 List.of(
-                        window(DayOfWeek.WEDNESDAY, "09:00", "11:00"),
-                        window(DayOfWeek.WEDNESDAY, "10:00", "12:00"))))
+                        recurringWindow(DayOfWeek.WEDNESDAY, "09:00", "11:00"),
+                        recurringWindow(DayOfWeek.WEDNESDAY, "10:00", "12:00"))))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    // ── ONE_TIME validation ───────────────────────────────────────────────────
+
+    @Test
+    void oneTime_withValidEventDate_accepted() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+        // FUTURE_DATE = 2026-08-05 (Wednesday), within host availability
+        var saved = reservationWindowService.replaceWindows(
+                host.getId(), group.getId(),
+                List.of(oneTimeWindow(FUTURE_DATE, "10:00", "12:00")));
+
+        assertThat(saved).hasSize(1);
+        assertThat(saved.get(0).eventDate()).isEqualTo(FUTURE_DATE);
+    }
+
+    @Test
+    void oneTime_withNullEventDate_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        // eventDate is null — should fail validation
+        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+                ScheduleType.ONE_TIME, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(badRequest)))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    // ── RECURRING validation ─────────────────────────────────────────────────
+
+    @Test
+    void recurring_withNullStartDate_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        // startDate is null — should fail validation
+        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, DayOfWeek.WEDNESDAY, RecurrenceFrequency.WEEKLY,
+                null, RecurrenceEndMode.NONE, null, null);
+
+        assertThatThrownBy(() -> reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(badRequest)))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    @Test
+    void recurring_untilDateBeforeStartDate_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        LocalDate startDate = LocalDate.of(2026, 8, 3);
+        LocalDate untilDate = LocalDate.of(2026, 7, 1); // before startDate
+
+        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, DayOfWeek.MONDAY, RecurrenceFrequency.WEEKLY,
+                startDate, RecurrenceEndMode.UNTIL_DATE, untilDate, null);
+
+        assertThatThrownBy(() -> reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(badRequest)))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    @Test
+    void recurring_occurrenceCountZero_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, DayOfWeek.MONDAY, RecurrenceFrequency.WEEKLY,
+                LocalDate.of(2026, 8, 3), RecurrenceEndMode.OCCURRENCE_COUNT, null, 0);
+
+        assertThatThrownBy(() -> reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(badRequest)))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    // ── ONE_TIME cross-event overlap ──────────────────────────────────────────
+
+    @Test
+    void oneTime_overlappingAnotherGroupEventOnSameDate_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType groupA = groupType(host.getId());
+        EventType groupB = groupType(host.getId());
+
+        // Group A reserves 2026-08-05 10:00-12:00
+        reservationWindowService.replaceWindows(
+                host.getId(), groupA.getId(),
+                List.of(oneTimeWindow(FUTURE_DATE, "10:00", "12:00")));
+
+        // Group B tries to reserve same date with overlapping time → rejected
+        assertThatThrownBy(() -> reservationWindowService.replaceWindows(
+                host.getId(), groupB.getId(),
+                List.of(oneTimeWindow(FUTURE_DATE, "11:00", "13:00"))))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    @Test
+    void oneTime_nonOverlappingOnSameDate_accepted() {
+        User host = hostWithWeekdayAvailability();
+        EventType groupA = groupType(host.getId());
+        EventType groupB = groupType(host.getId());
+
+        // Group A reserves 2026-08-05 09:00-11:00
+        reservationWindowService.replaceWindows(
+                host.getId(), groupA.getId(),
+                List.of(oneTimeWindow(FUTURE_DATE, "09:00", "11:00")));
+
+        // Group B reserves non-overlapping time on the same date → accepted
+        var saved = reservationWindowService.replaceWindows(
+                host.getId(), groupB.getId(),
+                List.of(oneTimeWindow(FUTURE_DATE, "11:00", "13:00")));
+        assertThat(saved).hasSize(1);
     }
 }
