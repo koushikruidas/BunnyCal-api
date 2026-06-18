@@ -87,8 +87,7 @@ class RoundRobinAvailabilityIT {
     @Autowired SlotService slotService;
     @Autowired EventTypeParticipantService participantService;
 
-    // Test date: a Monday (so "MONDAY" availability rules match).
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15); // Monday
+    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
 
     @BeforeEach
     void setUp() {
@@ -321,7 +320,7 @@ class RoundRobinAvailabilityIT {
 
         setParticipants(owner.getId(), et.getId(), List.of(istParticipant.getId()));
 
-        // Available 09:00-10:00 IST = 03:30-04:30 UTC on TEST_DATE (Monday 2026-06-15).
+        // Available 09:00-10:00 IST = 03:30-04:30 UTC on TEST_DATE (Monday 2026-08-03).
         insertRule(istParticipant.getId(), "MONDAY", LocalTime.of(9, 0), LocalTime.of(10, 0));
         // Add calendar connection so status is AVAILABLE (not degraded).
         insertCalendarConnection(istParticipant.getId());
@@ -332,8 +331,8 @@ class RoundRobinAvailabilityIT {
         assertThat(response.slots()).hasSize(2);
         assertThat(response.status()).isEqualTo(AvailabilityStatus.AVAILABLE);
 
-        java.time.Instant expectedFirst = java.time.Instant.parse("2026-06-15T03:30:00Z");
-        java.time.Instant expectedSecond = java.time.Instant.parse("2026-06-15T04:00:00Z");
+        java.time.Instant expectedFirst = java.time.Instant.parse("2026-08-03T03:30:00Z");
+        java.time.Instant expectedSecond = java.time.Instant.parse("2026-08-03T04:00:00Z");
         assertThat(response.slots().get(0).start()).isEqualTo(expectedFirst);
         assertThat(response.slots().get(1).start()).isEqualTo(expectedSecond);
     }
@@ -376,7 +375,7 @@ class RoundRobinAvailabilityIT {
 
         // Active calendar with a busy event blocking 09:00-09:30.
         UUID connId = insertCalendarConnection(owner.getId());
-        insertCalendarEvent(owner.getId(), connId, "2026-06-15T09:00:00Z", "2026-06-15T09:30:00Z");
+        insertCalendarEvent(owner.getId(), connId, "2026-08-03T09:00:00Z", "2026-08-03T09:30:00Z");
 
         SlotResponse response = slotService.getSlots(new SlotRequest(owner.getId(), et.getId(), TEST_DATE));
 
@@ -384,7 +383,7 @@ class RoundRobinAvailabilityIT {
         assertThat(response.slots()).hasSize(3);
         assertThat(response.status()).isEqualTo(AvailabilityStatus.AVAILABLE);
         // 09:00 slot should not be present.
-        java.time.Instant nineAm = java.time.Instant.parse("2026-06-15T09:00:00Z");
+        java.time.Instant nineAm = java.time.Instant.parse("2026-08-03T09:00:00Z");
         assertThat(response.slots().stream().map(s -> s.start()).toList())
                 .doesNotContain(nineAm);
     }

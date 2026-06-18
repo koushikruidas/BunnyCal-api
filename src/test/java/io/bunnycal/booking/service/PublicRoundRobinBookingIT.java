@@ -17,10 +17,12 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.enums.UserStatus;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,7 +32,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 
 class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15); // Monday
+    // Next Monday ≥7 days from today — always within maxAdvance=30 days.
+    private static final LocalDate TEST_DATE = nextMonday(7);
+
+    private static LocalDate nextMonday(int minDaysFromNow) {
+        LocalDate base = LocalDate.now().plusDays(minDaysFromNow);
+        int daysUntilMonday = (DayOfWeek.MONDAY.getValue() - base.getDayOfWeek().getValue() + 7) % 7;
+        return base.plusDays(daysUntilMonday);
+    }
+
+    private static Instant slotAt(int hour, int minute) {
+        return TEST_DATE.atTime(hour, minute).toInstant(ZoneOffset.UTC);
+    }
 
     @Autowired private PublicBookingService publicBookingService;
     @Autowired private EventTypeRepository eventTypeRepository;
@@ -60,7 +73,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots()
                 .stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst()
                 .orElseThrow();
 
@@ -119,11 +132,11 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         List<SlotDto> initialSlots = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE).slots();
         SlotDto first = initialSlots.stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst()
                 .orElseThrow();
         SlotDto second = initialSlots.stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:30:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 30)))
                 .findFirst()
                 .orElseThrow();
 
@@ -155,14 +168,14 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         SlotDto originalSlot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots()
                 .stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst()
                 .orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
                 new PublicBookRequest(originalSlot.start(), "guest-r@test.com", "Guest R", originalSlot.bookingToken()));
         var confirm = publicBookingService.confirm(owner.getUsername(), eventType.getSlug(), hold.bookingId());
-        Instant rescheduledStart = Instant.parse("2026-06-15T10:00:00Z");
+        Instant rescheduledStart = slotAt(10, 0);
 
         publicBookingService.reschedule(
                 owner.getUsername(),
@@ -234,7 +247,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -261,7 +274,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -290,7 +303,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -298,7 +311,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         var confirm = publicBookingService.confirm(owner.getUsername(), eventType.getSlug(), hold.bookingId());
 
         // Try to reschedule to 14:00 — outside alice's availability window (9-11)
-        Instant outsideWindow = Instant.parse("2026-06-15T14:00:00Z");
+        Instant outsideWindow = slotAt(14, 0);
         assertThatThrownBy(() -> publicBookingService.reschedule(
                 owner.getUsername(), eventType.getSlug(), hold.bookingId(),
                 new PublicRescheduleRequest(outsideWindow), confirm.manageToken()))
@@ -319,7 +332,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -328,7 +341,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         jdbc.update("UPDATE users SET status = 'INACTIVE' WHERE id = ?", alice.getId());
 
-        Instant newTime = Instant.parse("2026-06-15T10:00:00Z");
+        Instant newTime = slotAt(10, 0);
         assertThatThrownBy(() -> publicBookingService.reschedule(
                 owner.getUsername(), eventType.getSlug(), hold.bookingId(),
                 new PublicRescheduleRequest(newTime), confirm.manageToken()))
@@ -354,7 +367,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -364,7 +377,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         UUID originalHostId = jdbc.queryForObject("SELECT host_id FROM bookings WHERE id = ?", UUID.class, hold.bookingId());
 
         // Reschedule to a different time within availability
-        Instant newTime = Instant.parse("2026-06-15T10:00:00Z");
+        Instant newTime = slotAt(10, 0);
         publicBookingService.reschedule(owner.getUsername(), eventType.getSlug(), hold.bookingId(),
                 new PublicRescheduleRequest(newTime), confirm.manageToken());
 
@@ -390,7 +403,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -427,7 +440,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         UUID bookingId = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -458,7 +471,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         UUID bookingId = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -489,7 +502,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         assertThat(slots).isNotEmpty(); // alice contributes slots
 
         SlotDto slot = slots.stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
@@ -537,7 +550,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         // Book the same slot twice (refreshing availability between attempts) and verify
@@ -551,7 +564,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         // so second booking goes to the other one.
         SlotDto slot2 = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:30:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 30)))
                 .findFirst().orElseThrow();
         UUID bookingId2 = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
                 new PublicBookRequest(slot2.start(), "g2@test.com", "G2", slot2.bookingToken())).bookingId();
@@ -584,7 +597,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         // Book alice via event type A at 09:00
         SlotDto slotA = publicBookingService.availability(owner.getUsername(), rrTypeA.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
         var holdA = publicBookingService.hold(owner.getUsername(), rrTypeA.getSlug(),
                 new PublicBookRequest(slotA.start(), "guest-xe@test.com", "Guest XE", slotA.bookingToken()));
@@ -592,7 +605,7 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
 
         // Event type B at the same time must now return no slots (alice is busy)
         var slotsB = publicBookingService.availability(owner.getUsername(), rrTypeB.getSlug(), TEST_DATE).slots();
-        assertThat(slotsB.stream().anyMatch(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))).isFalse();
+        assertThat(slotsB.stream().anyMatch(s -> s.start().equals(slotAt(9, 0)))).isFalse();
     }
 
     private User createUser(String email, String username) {

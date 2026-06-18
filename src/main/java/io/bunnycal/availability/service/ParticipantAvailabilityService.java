@@ -7,6 +7,7 @@ import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.engine.RecurrenceWindowFilter;
 import io.bunnycal.availability.engine.SlotGenerationEngine;
 import io.bunnycal.availability.engine.SlotGenerationEngine.BookingWindow;
 import io.bunnycal.availability.engine.SlotGenerationEngine.SlotInput;
@@ -141,9 +142,12 @@ public class ParticipantAvailabilityService {
         //    event type's slots via the session-blocker list.
         DayOfWeek dayOfWeek = date.getDayOfWeek();
         List<GroupEventReservationWindow> reservationWindows =
-                reservationWindowRepository.findBlockingWindowsForOtherEventTypes(
-                        participantUserId, eventType.getId(), dayOfWeek.name());
+                reservationWindowRepository.findBlockingCandidatesForDate(
+                        participantUserId, eventType.getId(), date, dayOfWeek.name());
         for (GroupEventReservationWindow window : reservationWindows) {
+            if (!RecurrenceWindowFilter.appliesOn(window, date)) {
+                continue;
+            }
             if (window.getStartTime() == null
                     || window.getEndTime() == null
                     || !window.getStartTime().isBefore(window.getEndTime())) {

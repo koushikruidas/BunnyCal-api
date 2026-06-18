@@ -35,8 +35,7 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
-    /** Monday 2026-06-15 09:00 UTC. Chosen to be well within maxAdvance. */
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15);
+    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
 
     private Instant slotAt(int hour) {
         return TEST_DATE.atTime(hour, 0).toInstant(ZoneOffset.UTC);
@@ -88,8 +87,10 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
     private void reserveMonday(UUID eventTypeId, String startTime, String endTime) {
         jdbc.update("""
                 INSERT INTO group_event_reservation_windows
-                    (id, event_type_id, day_of_week, start_time, end_time, created_at, updated_at)
-                VALUES (?, ?, 'MONDAY', ?::time, ?::time, NOW(), NOW())
+                    (id, event_type_id, day_of_week, start_time, end_time,
+                     schedule_type, frequency, start_date, recurrence_end_mode,
+                     created_at, updated_at)
+                VALUES (?, ?, 'MONDAY', ?::time, ?::time, 'RECURRING', 'WEEKLY', '2000-01-01', 'NONE', NOW(), NOW())
                 """, UUID.randomUUID(), eventTypeId, startTime, endTime);
     }
 

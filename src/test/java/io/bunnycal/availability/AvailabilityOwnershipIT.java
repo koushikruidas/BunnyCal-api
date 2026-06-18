@@ -98,8 +98,7 @@ class AvailabilityOwnershipIT {
     @Autowired private SlotService slotService;
     @Autowired private org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 
-    /** Monday 2026-06-15 — well within any reasonable maxAdvance. */
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15);
+    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
 
     @BeforeEach
     void truncate() {
@@ -170,7 +169,14 @@ class AvailabilityOwnershipIT {
     }
 
     private ReservationWindowRequest reservationWindow(DayOfWeek day, String start, String end) {
-        return new ReservationWindowRequest(day, LocalTime.parse(start), LocalTime.parse(end));
+        return new ReservationWindowRequest(
+                io.bunnycal.availability.domain.ScheduleType.RECURRING,
+                LocalTime.parse(start), LocalTime.parse(end),
+                null, day,
+                io.bunnycal.availability.domain.RecurrenceFrequency.WEEKLY,
+                java.time.LocalDate.of(2000, 1, 1),
+                io.bunnycal.availability.domain.RecurrenceEndMode.NONE,
+                null, null);
     }
 
     private List<Instant> slotStarts(SlotResponse response) {

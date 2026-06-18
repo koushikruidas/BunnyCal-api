@@ -9,6 +9,7 @@ import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -31,7 +32,14 @@ class PublicGroupBookingIT extends AbstractSessionIT {
 
     @Autowired private PublicBookingService publicBookingService;
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15); // Monday
+    // Next Monday ≥7 days from today — always within maxAdvance=30 days.
+    private static final LocalDate TEST_DATE = nextMonday(7);
+
+    private static LocalDate nextMonday(int minDaysFromNow) {
+        LocalDate base = LocalDate.now().plusDays(minDaysFromNow);
+        int daysUntilMonday = (DayOfWeek.MONDAY.getValue() - base.getDayOfWeek().getValue() + 7) % 7;
+        return base.plusDays(daysUntilMonday);
+    }
 
     @BeforeEach
     void cleanExtra() {
@@ -59,8 +67,11 @@ class PublicGroupBookingIT extends AbstractSessionIT {
         EventType et = createGroupEventType(hostId, capacity);
         jdbc.update("""
                 INSERT INTO group_event_reservation_windows
-                    (id, event_type_id, day_of_week, start_time, end_time, created_at, updated_at)
-                VALUES (?, ?, 'MONDAY', '09:00'::time, '17:00'::time, NOW(), NOW())
+                    (id, event_type_id, day_of_week, start_time, end_time,
+                     schedule_type, frequency, start_date, recurrence_end_mode,
+                     created_at, updated_at)
+                VALUES (?, ?, 'MONDAY', '09:00'::time, '17:00'::time,
+                        'RECURRING', 'WEEKLY', '2000-01-01', 'NONE', NOW(), NOW())
                 """, UUID.randomUUID(), et.getId());
         return et;
     }

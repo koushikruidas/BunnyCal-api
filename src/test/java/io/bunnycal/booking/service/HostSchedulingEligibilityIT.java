@@ -34,7 +34,7 @@ class HostSchedulingEligibilityIT extends AbstractSessionIT {
     @Autowired private PublicBookingService publicBookingService;
     @Autowired private EventTypeRepository eventTypeRepository;
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15); // Monday
+    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
 
     @BeforeEach
     void cleanExtra() {

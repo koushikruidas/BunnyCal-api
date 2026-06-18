@@ -14,10 +14,12 @@ import io.bunnycal.booking.service.CollectiveSlotTokenService;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.UserStatus;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,12 +30,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 /**
  * Integration tests for COLLECTIVE event type slot generation.
  *
- * <p>Test date: 2026-06-15 (Monday, UTC). All participants use UTC timezone.
+ * <p>Test date: next Monday at least 7 days from now (within the 30-day maxAdvance window).
+ * Using a dynamic date prevents test staleness as calendar advances.
+ * All participants use UTC timezone.
  */
 @Testcontainers(disabledWithoutDocker = true)
 class CollectiveAvailabilityIT extends AbstractBookingIT {
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 6, 15); // Monday
+    // Next Monday that is at least 7 days from today — always within maxAdvance=30 days.
+    private static final LocalDate TEST_DATE = nextMonday(7);
 
     @Autowired private PublicBookingService publicBookingService;
     @Autowired private EventTypeRepository eventTypeRepository;
@@ -181,10 +186,10 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         List<Instant> starts = response.slots().stream().map(SlotDto::start).toList();
         // 09:00, 09:30, 10:00, 10:30
         assertThat(starts).containsExactly(
-                Instant.parse("2026-06-15T09:00:00Z"),
-                Instant.parse("2026-06-15T09:30:00Z"),
-                Instant.parse("2026-06-15T10:00:00Z"),
-                Instant.parse("2026-06-15T10:30:00Z"));
+                slotAt(9, 0),
+                slotAt(9, 30),
+                slotAt(10, 0),
+                slotAt(10, 30));
     }
 
     @Test
@@ -208,12 +213,12 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         List<Instant> starts = response.slots().stream().map(SlotDto::start).toList();
         // 10:00, 10:30 (intersection of 09-11 and 10-12)
         assertThat(starts).containsExactlyInAnyOrder(
-                Instant.parse("2026-06-15T10:00:00Z"),
-                Instant.parse("2026-06-15T10:30:00Z"));
+                slotAt(10, 0),
+                slotAt(10, 30));
         // 09:00 slot must NOT appear (only alice is free then)
-        assertThat(starts).doesNotContain(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(starts).doesNotContain(slotAt(9, 0));
         // 11:00 slot must NOT appear (only bob is free then)
-        assertThat(starts).doesNotContain(Instant.parse("2026-06-15T11:00:00Z"));
+        assertThat(starts).doesNotContain(slotAt(11, 0));
     }
 
     @Test
@@ -261,7 +266,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         assertThat(response.status()).isEqualTo(AvailabilityStatus.AVAILABLE);
         assertThat(response.slots()).isNotEmpty();
         assertThat(response.slots().stream().map(SlotDto::start)).contains(
-                Instant.parse("2026-06-15T09:00:00Z"));
+                slotAt(9, 0));
     }
 
     @Test
@@ -280,16 +285,16 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
 
         // Alice has a confirmed booking at 09:00 — blocks that slot for the whole collective
         insertBooking(alice.getId(), eventType.getId(),
-                Instant.parse("2026-06-15T09:00:00Z"),
-                Instant.parse("2026-06-15T09:30:00Z"),
+                slotAt(9, 0),
+                slotAt(9, 30),
                 "CONFIRMED", 1L);
 
         SlotResponse response = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE);
 
         List<Instant> starts = response.slots().stream().map(SlotDto::start).toList();
         // 09:00 must be removed (alice is busy), 09:30 still available
-        assertThat(starts).doesNotContain(Instant.parse("2026-06-15T09:00:00Z"));
-        assertThat(starts).contains(Instant.parse("2026-06-15T09:30:00Z"));
+        assertThat(starts).doesNotContain(slotAt(9, 0));
+        assertThat(starts).contains(slotAt(9, 30));
     }
 
     // ── Participant change tests ────────────────────────────────────────────────
@@ -309,7 +314,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
 
         List<Instant> before = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream().map(SlotDto::start).toList();
-        assertThat(before).contains(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(before).contains(slotAt(9, 0));
 
         // Add bob who is only free 10:00-12:00
         insertRule(bob.getId(), "MONDAY", LocalTime.of(10, 0), LocalTime.of(12, 0));
@@ -319,9 +324,9 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         List<Instant> after = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream().map(SlotDto::start).toList();
         // 09:00 is no longer in the intersection
-        assertThat(after).doesNotContain(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(after).doesNotContain(slotAt(9, 0));
         // 10:00 is now the earliest intersection slot
-        assertThat(after).contains(Instant.parse("2026-06-15T10:00:00Z"));
+        assertThat(after).contains(slotAt(10, 0));
     }
 
     @Test
@@ -341,7 +346,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
 
         List<Instant> before = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream().map(SlotDto::start).toList();
-        assertThat(before).doesNotContain(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(before).doesNotContain(slotAt(9, 0));
 
         // Remove bob
         setParticipants(eventType.getId(), List.of(alice.getId()));
@@ -349,7 +354,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         List<Instant> after = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream().map(SlotDto::start).toList();
         // Now only alice: 09:00 appears
-        assertThat(after).contains(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(after).contains(slotAt(9, 0));
     }
 
     // ── Token tests ────────────────────────────────────────────────────────────
@@ -370,14 +375,14 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
 
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         // Token must verify cleanly
         CollectiveSlotTokenService.DecodedCollectiveToken decoded = collectiveSlotTokenService.verify(slot.bookingToken());
         assertThat(decoded.ownerUserId()).isEqualTo(owner.getId());
         assertThat(decoded.eventTypeId()).isEqualTo(eventType.getId());
-        assertThat(decoded.start()).isEqualTo(Instant.parse("2026-06-15T09:00:00Z"));
+        assertThat(decoded.start()).isEqualTo(slotAt(9, 0));
 
         // Roster match must pass for current roster (order-independent)
         collectiveSlotTokenService.validateRosterMatch(decoded, List.of(alice.getId(), bob.getId()));
@@ -404,7 +409,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         // Issue token for 2-participant roster
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         CollectiveSlotTokenService.DecodedCollectiveToken decoded = collectiveSlotTokenService.verify(slot.bookingToken());
@@ -433,7 +438,7 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         // Issue token for 2-participant roster
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots().stream()
-                .filter(s -> s.start().equals(Instant.parse("2026-06-15T09:00:00Z")))
+                .filter(s -> s.start().equals(slotAt(9, 0)))
                 .findFirst().orElseThrow();
 
         CollectiveSlotTokenService.DecodedCollectiveToken decoded = collectiveSlotTokenService.verify(slot.bookingToken());
@@ -478,8 +483,8 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
 
         List<Instant> starts = response.slots().stream().map(SlotDto::start).toList();
         // UNION: both 09:00 (alice) and 11:00 (bob) must appear
-        assertThat(starts).contains(Instant.parse("2026-06-15T09:00:00Z"));
-        assertThat(starts).contains(Instant.parse("2026-06-15T11:00:00Z"));
+        assertThat(starts).contains(slotAt(9, 0));
+        assertThat(starts).contains(slotAt(11, 0));
     }
 
     @Test
@@ -503,10 +508,10 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         // If this were UNION: 09:00, 09:30, 10:00, 10:30, 11:00, 11:30 would all appear.
         // With INTERSECTION: only 10:00, 10:30
         assertThat(starts).containsExactlyInAnyOrder(
-                Instant.parse("2026-06-15T10:00:00Z"),
-                Instant.parse("2026-06-15T10:30:00Z"));
-        assertThat(starts).doesNotContain(Instant.parse("2026-06-15T09:00:00Z"));
-        assertThat(starts).doesNotContain(Instant.parse("2026-06-15T11:00:00Z"));
+                slotAt(10, 0),
+                slotAt(10, 30));
+        assertThat(starts).doesNotContain(slotAt(9, 0));
+        assertThat(starts).doesNotContain(slotAt(11, 0));
     }
 
     @Test
@@ -571,6 +576,16 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
         jdbc.update(
                 "INSERT INTO availability_rules (id, user_id, day_of_week, start_time, end_time) VALUES (?,?,?,?,?)",
                 UUID.randomUUID(), userId, dayOfWeek, startTime, endTime);
+    }
+
+    private static LocalDate nextMonday(int minDaysFromNow) {
+        LocalDate base = LocalDate.now().plusDays(minDaysFromNow);
+        int daysUntilMonday = (DayOfWeek.MONDAY.getValue() - base.getDayOfWeek().getValue() + 7) % 7;
+        return base.plusDays(daysUntilMonday);
+    }
+
+    private Instant slotAt(int hour, int minute) {
+        return TEST_DATE.atTime(hour, minute).toInstant(ZoneOffset.UTC);
     }
 
     /**

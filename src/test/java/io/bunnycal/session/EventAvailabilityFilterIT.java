@@ -38,8 +38,7 @@ class EventAvailabilityFilterIT extends AbstractSessionIT {
     @Autowired private SlotService slotService;
     @Autowired private EventAvailabilityWindowService availabilityWindowService;
 
-    /** 2026-06-17 is a Wednesday, well within maxAdvance. */
-    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 6, 17);
+    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 8, 5);  // Wednesday
 
     private Instant slotAt(int hour, int minute) {
         return WEDNESDAY.atTime(hour, minute).toInstant(ZoneOffset.UTC);
