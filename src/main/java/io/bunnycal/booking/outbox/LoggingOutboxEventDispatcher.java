@@ -102,7 +102,9 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     @Override
     public void dispatch(OutboxEvent event) {
         // TeamInvitation aggregate: send invitation email and return.
-        if (TeamInvitationNotificationService.AGGREGATE_TYPE.equals(
+        if (TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION.equals(
+                event != null ? event.getAggregateType() : null)
+                || TeamInvitationNotificationService.AGGREGATE_TYPE_MEMBER.equals(
                 event != null ? event.getAggregateType() : null)) {
             if (teamInvitationNotificationService != null) {
                 teamInvitationNotificationService.handleOutboxEvent(event);

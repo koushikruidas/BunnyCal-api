@@ -61,7 +61,7 @@ public abstract class AbstractTeamIT {
     @BeforeEach
     void setUp() {
         jdbc.execute("TRUNCATE TABLE users, teams, team_members, team_invitations CASCADE");
-        jdbc.execute("DELETE FROM outbox_events WHERE aggregate_type = 'TeamInvitation'");
+        jdbc.execute("DELETE FROM outbox_events WHERE aggregate_type IN ('TeamInvitation', 'TeamMember')");
     }
 
     protected User createUser(String email) {

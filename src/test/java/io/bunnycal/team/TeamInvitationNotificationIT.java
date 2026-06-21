@@ -19,6 +19,11 @@ import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.team.repository.TeamInvitationRepository;
 import io.bunnycal.team.service.TeamService;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -221,5 +226,116 @@ class TeamInvitationNotificationIT extends AbstractTeamIT {
         assertThat(events.get(0).getPayload()).contains(invite.token());
         assertThat(events.get(0).getPayload()).contains("/invitations/");
         assertThat(events.get(0).getPayload()).contains("/accept");
+    }
+
+    @Test
+    void revokeInvitation_publishesOutboxEvent() {
+        User owner = createUser("owner@test.com");
+        TeamResponse team = teamService.createTeam(owner.getId(), new CreateTeamRequest("Lambda", "lambda"));
+        TeamInvitationResponse invite = teamService.inviteMember(
+                owner.getId(), team.id(), new InviteMemberRequest("lambda@test.com", TeamRole.MEMBER));
+
+        teamService.revokeInvitation(owner.getId(), team.id(), invite.id());
+
+        List<OutboxEvent> events = outboxEventRepository.findAll().stream()
+                .filter(e -> TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION.equals(e.getAggregateType()))
+                .filter(e -> TeamInvitationNotificationService.EVENT_TYPE_INVITATION_REVOKED.equals(e.getEventType()))
+                .toList();
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).getPayload()).contains("lambda@test.com");
+        assertThat(events.get(0).getPayload()).contains("Lambda");
+    }
+
+    @Test
+    void removeMember_publishesOutboxEvent() {
+        User owner = createUser("owner@test.com");
+        User invitee = createUser("member@test.com");
+        TeamResponse team = teamService.createTeam(owner.getId(), new CreateTeamRequest("Mu", "mu"));
+        TeamInvitationResponse invite = teamService.inviteMember(
+                owner.getId(), team.id(), new InviteMemberRequest("member@test.com", TeamRole.MEMBER));
+        teamService.acceptInvitation(invitee.getId(), invite.token());
+
+        teamService.removeMember(owner.getId(), team.id(), invitee.getId());
+
+        List<OutboxEvent> events = outboxEventRepository.findAll().stream()
+                .filter(e -> TeamInvitationNotificationService.AGGREGATE_TYPE_MEMBER.equals(e.getAggregateType()))
+                .filter(e -> TeamInvitationNotificationService.EVENT_TYPE_MEMBER_REMOVED.equals(e.getEventType()))
+                .toList();
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).getPayload()).contains("member@test.com");
+        assertThat(events.get(0).getPayload()).contains("Mu");
+    }
+
+    @Test
+    void acceptAndRevokeConcurrently_exactlyOneTerminalOutcomeAndOneOutboxEvent() throws Exception {
+        User owner = createUser("owner@test.com");
+        User invitee = createUser("racer@test.com");
+        TeamResponse team = teamService.createTeam(owner.getId(), new CreateTeamRequest("Nu", "nu"));
+        TeamInvitationResponse invite = teamService.inviteMember(
+                owner.getId(), team.id(), new InviteMemberRequest("racer@test.com", TeamRole.MEMBER));
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> accept = pool.submit(() -> {
+                ready.countDown();
+                go.await(5, TimeUnit.SECONDS);
+                try {
+                    teamService.acceptInvitation(invitee.getId(), invite.token());
+                    return "ACCEPTED";
+                } catch (CustomException ex) {
+                    return ex.getErrorCode().name();
+                }
+            });
+            Future<String> revoke = pool.submit(() -> {
+                ready.countDown();
+                go.await(5, TimeUnit.SECONDS);
+                try {
+                    teamService.revokeInvitation(owner.getId(), team.id(), invite.id());
+                    return "COMPLETED";
+                } catch (CustomException ex) {
+                    return ex.getErrorCode().name();
+                }
+            });
+
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+
+            String acceptResult = accept.get(10, TimeUnit.SECONDS);
+            String revokeResult = revoke.get(10, TimeUnit.SECONDS);
+
+            var invitation = teamInvitationRepository.findByToken(invite.token()).orElseThrow();
+            boolean memberExists = teamService.listMembers(owner.getId(), team.id()).stream()
+                    .anyMatch(member -> invitee.getId().equals(member.userId()));
+            assertThat(invitation.getStatus()).isIn(InvitationStatus.ACCEPTED, InvitationStatus.REVOKED);
+
+            long createdEvents = outboxEventRepository.findAll().stream()
+                    .filter(e -> TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION.equals(e.getAggregateType()))
+                    .filter(e -> TeamInvitationNotificationService.EVENT_TYPE_INVITATION_CREATED.equals(e.getEventType()))
+                    .count();
+            long revokedEvents = outboxEventRepository.findAll().stream()
+                    .filter(e -> TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION.equals(e.getAggregateType()))
+                    .filter(e -> TeamInvitationNotificationService.EVENT_TYPE_INVITATION_REVOKED.equals(e.getEventType()))
+                    .count();
+
+            assertThat(createdEvents).isEqualTo(1);
+            assertThat(revokedEvents).isLessThanOrEqualTo(1);
+
+            if (invitation.getStatus() == InvitationStatus.ACCEPTED) {
+                assertThat(acceptResult).isEqualTo("ACCEPTED");
+                assertThat(revokeResult).isEqualTo("COMPLETED");
+                assertThat(revokedEvents).isEqualTo(0);
+                assertThat(memberExists).isTrue();
+            } else {
+                assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.REVOKED);
+                assertThat(revokeResult).isEqualTo("COMPLETED");
+                assertThat(acceptResult).isEqualTo(ErrorCode.TEAM_INVITATION_INVALID.name());
+                assertThat(revokedEvents).isEqualTo(1);
+                assertThat(memberExists).isFalse();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

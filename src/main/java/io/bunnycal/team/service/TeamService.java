@@ -22,8 +22,8 @@ import io.bunnycal.team.dto.TeamMemberResponse;
 import io.bunnycal.team.dto.TeamReadinessSummaryResponse;
 import io.bunnycal.team.dto.TeamReadinessSummaryResponse.MemberReadinessEntry;
 import io.bunnycal.team.dto.TeamResponse;
+import io.bunnycal.team.notification.TeamNotificationOutboxPayload;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
-import io.bunnycal.team.notification.TeamInvitationOutboxPayload;
 import io.bunnycal.team.repository.TeamInvitationRepository;
 import io.bunnycal.team.repository.TeamMemberRepository;
 import io.bunnycal.team.repository.TeamRepository;
@@ -140,11 +140,16 @@ public class TeamService {
     @Transactional
     public void removeMember(UUID actingUserId, UUID teamId, UUID memberUserId) {
         requireOwnerOrAdmin(actingUserId, teamId);
+        Team team = teamRepository.findById(teamId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+        User actor = userRepository.findById(actingUserId).orElse(null);
         TeamMember member = teamMemberRepository.findByTeamIdAndUserId(teamId, memberUserId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team member not found."));
         if (member.getRole() == TeamRole.OWNER) {
             throw new CustomException(ErrorCode.TEAM_LAST_OWNER, "The team owner cannot be removed.");
         }
+        User removedUser = userRepository.findById(memberUserId).orElse(null);
+        publishMemberRemovedEvent(member, team, actor, removedUser);
         teamMemberRepository.delete(member);
     }
 
@@ -206,7 +211,7 @@ public class TeamService {
 
     @Transactional
     public TeamMemberResponse acceptInvitation(UUID acceptingUserId, String token) {
-        TeamInvitation invitation = teamInvitationRepository.findByToken(token)
+        TeamInvitation invitation = teamInvitationRepository.findByTokenForUpdate(token)
                 .orElseThrow(() -> new CustomException(ErrorCode.TEAM_INVITATION_INVALID));
 
         if (invitation.getStatus() != InvitationStatus.PENDING) {
@@ -292,7 +297,7 @@ public class TeamService {
     @Transactional
     public void revokeInvitation(UUID actingUserId, UUID teamId, UUID invitationId) {
         requireOwnerOrAdmin(actingUserId, teamId);
-        TeamInvitation invitation = teamInvitationRepository.findById(invitationId)
+        TeamInvitation invitation = teamInvitationRepository.findByIdForUpdate(invitationId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Invitation not found."));
         if (!invitation.getTeamId().equals(teamId)) {
             throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Invitation not found.");
@@ -300,6 +305,10 @@ public class TeamService {
         if (invitation.getStatus() == InvitationStatus.PENDING) {
             invitation.setStatus(InvitationStatus.REVOKED);
             teamInvitationRepository.save(invitation);
+            Team team = teamRepository.findById(teamId)
+                    .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            publishInvitationRevokedEvent(invitation, team, actor);
         }
     }
 
@@ -310,21 +319,64 @@ public class TeamService {
                 ? frontendBaseUrl.substring(0, frontendBaseUrl.length() - 1)
                 : frontendBaseUrl;
         String acceptUrl = base + "/invitations/" + invitation.getToken() + "/accept";
-        TeamInvitationOutboxPayload payload = new TeamInvitationOutboxPayload(
+        TeamNotificationOutboxPayload payload = new TeamNotificationOutboxPayload(
                 invitation.getId(),
                 team.getId(),
                 team.getName(),
                 invitation.getInvitedEmail(),
+                null,
                 inviter != null ? inviter.getName() : null,
                 invitation.getToken(),
                 acceptUrl
         );
         outboxPublisher.publish(
-                TeamInvitationNotificationService.AGGREGATE_TYPE,
+                TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION,
                 invitation.getId(),
                 new OutboxPayloadEnvelope(
                         UUID.randomUUID().toString(),
-                        TeamInvitationNotificationService.EVENT_TYPE,
+                        TeamInvitationNotificationService.EVENT_TYPE_INVITATION_CREATED,
+                        1,
+                        payload));
+    }
+
+    private void publishInvitationRevokedEvent(TeamInvitation invitation, Team team, User actor) {
+        TeamNotificationOutboxPayload payload = new TeamNotificationOutboxPayload(
+                invitation.getId(),
+                team.getId(),
+                team.getName(),
+                invitation.getInvitedEmail(),
+                null,
+                actor != null ? actor.getName() : null,
+                invitation.getToken(),
+                null
+        );
+        outboxPublisher.publish(
+                TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION,
+                invitation.getId(),
+                new OutboxPayloadEnvelope(
+                        UUID.randomUUID().toString(),
+                        TeamInvitationNotificationService.EVENT_TYPE_INVITATION_REVOKED,
+                        1,
+                        payload));
+    }
+
+    private void publishMemberRemovedEvent(TeamMember member, Team team, User actor, User removedUser) {
+        TeamNotificationOutboxPayload payload = new TeamNotificationOutboxPayload(
+                null,
+                team.getId(),
+                team.getName(),
+                removedUser != null ? removedUser.getEmail() : null,
+                removedUser != null ? removedUser.getName() : null,
+                actor != null ? actor.getName() : null,
+                null,
+                null
+        );
+        outboxPublisher.publish(
+                TeamInvitationNotificationService.AGGREGATE_TYPE_MEMBER,
+                member.getId(),
+                new OutboxPayloadEnvelope(
+                        UUID.randomUUID().toString(),
+                        TeamInvitationNotificationService.EVENT_TYPE_MEMBER_REMOVED,
                         1,
                         payload));
     }
