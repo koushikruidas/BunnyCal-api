@@ -132,7 +132,7 @@ public class EventAvailabilityWindowService {
     }
 
     private EventType requireOwnedDemandDrivenEventType(UUID requesterId, UUID eventTypeId) {
-        EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, requesterId)
+        EventType eventType = eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, requesterId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         if (eventType.getKind() == EventKind.GROUP) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,

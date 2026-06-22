@@ -71,7 +71,7 @@ public class SessionQueryService {
                                                         SyncJobStatus syncStatus,
                                                         String cursor,
                                                         Integer limit) {
-        EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, requesterId)
+        EventType eventType = eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, requesterId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         return listSessions(eventType.getUserId(), eventTypeId, status, fromTime, toTime, syncStatus, cursor, limit, false);
     }

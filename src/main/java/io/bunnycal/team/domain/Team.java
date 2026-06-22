@@ -8,7 +8,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
+import java.time.Instant;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -26,10 +26,9 @@ import lombok.Setter;
         name = "teams",
         indexes = {
             @Index(name = "idx_teams_owner", columnList = "owner_user_id")
-        },
-        uniqueConstraints = {
-            @UniqueConstraint(name = "teams_owner_user_id_slug_key", columnNames = {"owner_user_id", "slug"})
         })
+// Slug uniqueness is enforced by the partial index `teams_active_slug` (active rows only),
+// which JPA cannot express; the migration is the authority. See V90_0.
 public class Team extends BaseEntity {
 
     @Id
@@ -44,4 +43,7 @@ public class Team extends BaseEntity {
 
     @Column(nullable = false, length = 80)
     private String slug;
+
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
 }

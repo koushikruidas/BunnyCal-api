@@ -143,8 +143,8 @@ public class SlotService {
         User host = userRepository.findById(userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
 
-        // 3. Load event type (cross-user check is implicit).
-        EventType eventType = eventTypeRepository.findByIdAndUserId(eventTypeId, userId)
+        // 3. Load event type (cross-user check is implicit; soft-deleted types are not schedulable).
+        EventType eventType = eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
 
         // 4. Multi-participant kinds bypass the single-user cache.

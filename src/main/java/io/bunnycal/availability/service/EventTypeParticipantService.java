@@ -303,7 +303,7 @@ public class EventTypeParticipantService {
     // ── Validation helpers ─────────────────────────────────────────────────────
 
     private EventType requireOwnedEventType(UUID actingUserId, UUID eventTypeId) {
-        EventType eventType = eventTypeRepository.findById(eventTypeId)
+        EventType eventType = eventTypeRepository.findByIdAndDeletedAtIsNull(eventTypeId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         if (!eventType.getUserId().equals(actingUserId)) {
             throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this event type.");

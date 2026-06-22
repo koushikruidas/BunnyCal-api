@@ -66,7 +66,7 @@ public class ProviderCalendarSelectionService {
         String provider = connection.getProvider() == null ? "unknown" : connection.getProvider().name().toLowerCase();
         String syncModeTag = syncMode == null ? "unknown" : syncMode.name();
         Set<String> selected = new LinkedHashSet<>();
-        List<EventType> eventTypes = eventTypeRepository.findByUserIdOrderByNameAsc(connection.getUserId());
+        List<EventType> eventTypes = eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(connection.getUserId());
         for (EventType eventType : eventTypes) {
             String raw = eventType.getAvailabilityCalendarsJson();
             if (raw == null || raw.isBlank()) continue;

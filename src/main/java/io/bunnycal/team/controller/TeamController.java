@@ -6,6 +6,7 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.dto.CreateTeamRequest;
 import io.bunnycal.team.dto.InviteMemberRequest;
 import io.bunnycal.team.dto.SetupStatusResponse;
+import io.bunnycal.team.dto.TeamDeletionImpactResponse;
 import io.bunnycal.team.dto.TeamInvitationResponse;
 import io.bunnycal.team.dto.TeamMemberResponse;
 import io.bunnycal.team.dto.TeamReadinessSummaryResponse;
@@ -54,6 +55,21 @@ public class TeamController {
                                                          @PathVariable UUID teamId) {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(teamService.getTeam(userId, teamId)));
+    }
+
+    @GetMapping("/{teamId}/deletion-impact")
+    public ResponseEntity<ApiResponse<TeamDeletionImpactResponse>> deletionImpact(Authentication authentication,
+                                                                                  @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.getTeamDeletionImpact(userId, teamId)));
+    }
+
+    @DeleteMapping("/{teamId}")
+    public ResponseEntity<ApiResponse<Void>> deleteTeam(Authentication authentication,
+                                                        @PathVariable UUID teamId) {
+        UUID userId = extractUserId(authentication);
+        teamService.deleteTeam(userId, teamId);
+        return ResponseEntity.ok(ApiResponse.success(null));
     }
 
     // ── Members ──────────────────────────────────────────────────────────────

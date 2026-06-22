@@ -144,9 +144,20 @@ public class EventTypeService {
         User user = sessionUserResolver.require(userId, "GET:/api/event-types");
         String username = user.getUsername() != null ? user.getUsername() : fallbackUsername(user.getId());
 
-        return eventTypeRepository.findByUserIdOrderByNameAsc(userId).stream()
+        return eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId).stream()
                 .map(et -> toSummary(et, username))
                 .toList();
+    }
+
+    /**
+     * Soft-deletes an owned event type: sets deleted_at so it disappears from all active
+     * workflows and stops accepting new bookings. Existing bookings and history are untouched.
+     */
+    @Transactional
+    public void delete(UUID actingUserId, UUID eventTypeId) {
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        eventType.setDeletedAt(timeSource.now());
+        eventTypeRepository.save(eventType);
     }
 
     @Transactional(readOnly = true)
@@ -158,7 +169,7 @@ public class EventTypeService {
     }
 
     private EventType requireOwnedEventType(UUID actingUserId, UUID eventTypeId) {
-        EventType eventType = eventTypeRepository.findById(eventTypeId)
+        EventType eventType = eventTypeRepository.findByIdAndDeletedAtIsNull(eventTypeId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         if (!eventType.getUserId().equals(actingUserId)) {
             throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this event type.");
@@ -206,7 +217,7 @@ public class EventTypeService {
     private String uniqueSlug(UUID userId, String baseSlug) {
         String candidate = baseSlug;
         int suffix = 1;
-        while (eventTypeRepository.existsByUserIdAndSlug(userId, candidate)) {
+        while (eventTypeRepository.existsByUserIdAndSlugAndDeletedAtIsNull(userId, candidate)) {
             suffix++;
             candidate = baseSlug + "-" + suffix;
         }

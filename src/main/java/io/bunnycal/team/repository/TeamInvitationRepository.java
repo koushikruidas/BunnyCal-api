@@ -27,4 +27,6 @@ public interface TeamInvitationRepository extends JpaRepository<TeamInvitation, 
 
     Optional<TeamInvitation> findByTeamIdAndInvitedEmailIgnoreCaseAndStatus(
             UUID teamId, String invitedEmail, InvitationStatus status);
+
+    long countByTeamIdAndStatus(UUID teamId, InvitationStatus status);
 }

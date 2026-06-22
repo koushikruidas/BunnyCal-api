@@ -61,7 +61,7 @@ class ProviderCalendarSelectionServiceTest {
         b.setProjectionConnectionId(connectionId);
         b.setProjectionCalendarId("AQMk-projection");
 
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of(a, b));
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of(a, b));
 
         Set<String> selected = service.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC);
 
@@ -84,7 +84,7 @@ class ProviderCalendarSelectionServiceTest {
         bad.setProjectionConnectionId(connectionId);
         bad.setProjectionCalendarId(UUID.randomUUID().toString());
 
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of(bad));
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of(bad));
 
         Set<String> selected = service.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC);
 
@@ -106,7 +106,7 @@ class ProviderCalendarSelectionServiceTest {
         et.setProjectionConnectionId(connectionId);
         et.setProjectionCalendarId("primary");
 
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of(et));
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of(et));
 
         Set<String> selected = service.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC);
 

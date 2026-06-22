@@ -137,7 +137,7 @@ public class CalendarRuntimeStatusService {
         Set<CalendarKey> availability = new HashSet<>();
         Set<CalendarKey> projection = new HashSet<>();
 
-        List<EventType> eventTypes = eventTypeRepository.findByUserIdOrderByNameAsc(userId);
+        List<EventType> eventTypes = eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId);
         for (EventType eventType : eventTypes) {
             if (eventType.getProjectionConnectionId() != null
                     && eventType.getProjectionCalendarId() != null

@@ -16,32 +16,45 @@ public interface EventTypeRepository extends JpaRepository<EventType, UUID> {
     List<EventType> findByUserIdOrderByNameAsc(UUID userId);
     boolean existsByUserIdAndSlug(UUID userId, String slug);
 
+    // Active-only lookups: deleted_at IS NULL. Used by all user-facing/public read paths.
+    // Booking, calendar-sync, and audit pipelines deliberately keep the unfiltered methods
+    // above so existing bookings can still resolve a soft-deleted event type.
+    Optional<EventType> findByIdAndDeletedAtIsNull(UUID id);
+    Optional<EventType> findByIdAndUserIdAndDeletedAtIsNull(UUID id, UUID userId);
+    Optional<EventType> findByUserIdAndSlugAndDeletedAtIsNull(UUID userId, String slug);
+    List<EventType> findByUserIdAndDeletedAtIsNullOrderByNameAsc(UUID userId);
+    boolean existsByUserIdAndSlugAndDeletedAtIsNull(UUID userId, String slug);
+
     /**
-     * Returns all published COLLECTIVE event types that have {@code userId} as a participant.
-     * Used by the readiness enforcer to find affected events when a participant's state changes.
+     * Returns all published, non-deleted COLLECTIVE event types that have {@code userId} as a
+     * participant. Used by the readiness enforcer to find affected events when a participant's
+     * state changes.
      */
     @Query("""
             SELECT et
             FROM EventType et
             JOIN EventTypeParticipant p ON p.eventTypeId = et.id
             WHERE et.published = true
+              AND et.deletedAt IS NULL
               AND et.kind = :kind
               AND p.userId = :userId
             """)
-    List<EventType> findPublishedCollectiveByParticipantUserId(
+    List<EventType> findPublishedActiveCollectiveByParticipantUserId(
             @Param("userId") UUID userId,
             @Param("kind") EventKind kind);
 
     /**
-     * Returns all published COLLECTIVE event types. Used by the periodic readiness scheduler.
+     * Returns all published, non-deleted COLLECTIVE event types. Used by the periodic readiness
+     * scheduler.
      */
-    List<EventType> findByPublishedTrueAndKind(EventKind kind);
+    @Query("SELECT et FROM EventType et WHERE et.published = true AND et.deletedAt IS NULL AND et.kind = :kind")
+    List<EventType> findPublishedActiveByKind(@Param("kind") EventKind kind);
 
     default List<EventType> findPublishedCollectiveByParticipantUserId(UUID userId) {
-        return findPublishedCollectiveByParticipantUserId(userId, EventKind.COLLECTIVE);
+        return findPublishedActiveCollectiveByParticipantUserId(userId, EventKind.COLLECTIVE);
     }
 
     default List<EventType> findAllPublishedCollective() {
-        return findByPublishedTrueAndKind(EventKind.COLLECTIVE);
+        return findPublishedActiveByKind(EventKind.COLLECTIVE);
     }
 }

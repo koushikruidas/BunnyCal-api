@@ -61,7 +61,7 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
         if (user.getStatus() != UserStatus.ACTIVE) {
             throw new CustomException(ErrorCode.HOST_NOT_SCHEDULABLE, "This host is not available for scheduling.");
         }
-        EventType eventType = eventTypeRepository.findByUserIdAndSlug(user.getId(), eventTypeSlug)
+        EventType eventType = eventTypeRepository.findByUserIdAndSlugAndDeletedAtIsNull(user.getId(), eventTypeSlug)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         return new ResolvedTarget(
                 user.getId(),

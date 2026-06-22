@@ -83,7 +83,7 @@ public class ParticipantSetupReminderScheduler {
     }
 
     private void publishReminder(ParticipantSetupRequest req) {
-        Team team = teamRepository.findById(req.getTeamId()).orElse(null);
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(req.getTeamId()).orElse(null);
         User target = userRepository.findById(req.getTargetUserId()).orElse(null);
         User owner  = userRepository.findById(req.getOwnerUserId()).orElse(null);
 

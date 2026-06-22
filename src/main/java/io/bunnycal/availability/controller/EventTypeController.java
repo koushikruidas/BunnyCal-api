@@ -61,6 +61,14 @@ public class EventTypeController {
         return ResponseEntity.ok(ApiResponse.success(eventTypeService.get(userId, eventTypeId)));
     }
 
+    @DeleteMapping("/{eventTypeId}")
+    public ResponseEntity<ApiResponse<Void>> delete(Authentication authentication,
+                                                    @PathVariable UUID eventTypeId) {
+        UUID userId = extractUserId(authentication);
+        eventTypeService.delete(userId, eventTypeId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
     // ── Participants (Phase 2) ──────────────────────────────────────────────────
 
     @GetMapping("/{eventTypeId}/participants")

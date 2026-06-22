@@ -118,4 +118,7 @@ public class EventType {
 
     @Column(name = "last_degraded_notification_at")
     private Instant lastDegradedNotificationAt;
+
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
 }

@@ -10,6 +10,7 @@ import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.team.domain.InvitationStatus;
 import io.bunnycal.team.domain.Team;
 import io.bunnycal.team.domain.TeamInvitation;
@@ -21,6 +22,7 @@ import io.bunnycal.team.dto.TeamInvitationResponse;
 import io.bunnycal.team.dto.TeamMemberResponse;
 import io.bunnycal.team.dto.TeamReadinessSummaryResponse;
 import io.bunnycal.team.dto.TeamReadinessSummaryResponse.MemberReadinessEntry;
+import io.bunnycal.team.dto.TeamDeletionImpactResponse;
 import io.bunnycal.team.dto.TeamResponse;
 import io.bunnycal.team.notification.TeamNotificationOutboxPayload;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
@@ -54,6 +56,7 @@ public class TeamService {
     private final SessionUserResolver sessionUserResolver;
     private final OutboxPublisher outboxPublisher;
     private final ParticipantEligibilityService eligibilityService;
+    private final TimeSource timeSource;
     private final String frontendBaseUrl;
 
     public TeamService(TeamRepository teamRepository,
@@ -63,6 +66,7 @@ public class TeamService {
                        SessionUserResolver sessionUserResolver,
                        OutboxPublisher outboxPublisher,
                        ParticipantEligibilityService eligibilityService,
+                       TimeSource timeSource,
                        @Value("${app.public-base-url:http://localhost:5173}") String frontendBaseUrl) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
@@ -71,6 +75,7 @@ public class TeamService {
         this.sessionUserResolver = sessionUserResolver;
         this.outboxPublisher = outboxPublisher;
         this.eligibilityService = eligibilityService;
+        this.timeSource = timeSource;
         this.frontendBaseUrl = frontendBaseUrl;
     }
 
@@ -86,7 +91,7 @@ public class TeamService {
         String slug = normalizeSlug(request.slug() != null && !request.slug().isBlank()
                 ? request.slug()
                 : request.name());
-        if (teamRepository.existsByOwnerUserIdAndSlug(ownerUserId, slug)) {
+        if (teamRepository.existsByOwnerUserIdAndSlugAndDeletedAtIsNull(ownerUserId, slug)) {
             throw new CustomException(ErrorCode.TEAM_SLUG_TAKEN);
         }
 
@@ -102,7 +107,7 @@ public class TeamService {
                 .teamId(team.getId())
                 .userId(ownerUserId)
                 .role(TeamRole.OWNER)
-                .joinedAt(Instant.now())
+                .joinedAt(timeSource.now())
                 .build());
 
         return toTeamResponse(team);
@@ -114,7 +119,10 @@ public class TeamService {
         List<UUID> teamIds = teamMemberRepository.findByUserId(userId).stream()
                 .map(TeamMember::getTeamId)
                 .toList();
-        return teamRepository.findAllById(teamIds).stream()
+        if (teamIds.isEmpty()) {
+            return List.of();
+        }
+        return teamRepository.findAllByIdInAndDeletedAtIsNull(teamIds).stream()
                 .map(this::toTeamResponse)
                 .toList();
     }
@@ -140,7 +148,7 @@ public class TeamService {
     @Transactional
     public void removeMember(UUID actingUserId, UUID teamId, UUID memberUserId) {
         requireOwnerOrAdmin(actingUserId, teamId);
-        Team team = teamRepository.findById(teamId)
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
         User actor = userRepository.findById(actingUserId).orElse(null);
         TeamMember member = teamMemberRepository.findByTeamIdAndUserId(teamId, memberUserId)
@@ -181,10 +189,11 @@ public class TeamService {
                     throw new CustomException(ErrorCode.TEAM_INVITATION_ALREADY_PENDING);
                 });
 
-        Team team = teamRepository.findById(teamId)
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
         User inviter = userRepository.findById(actingUserId).orElse(null);
 
+        Instant now = timeSource.now();
         TeamInvitation invitation = teamInvitationRepository.save(TeamInvitation.builder()
                 .teamId(teamId)
                 .invitedEmail(email)
@@ -192,8 +201,8 @@ public class TeamService {
                 .invitedBy(actingUserId)
                 .token(generateToken())
                 .status(InvitationStatus.PENDING)
-                .expiresAt(Instant.now().plus(INVITATION_TTL))
-                .createdAt(Instant.now())
+                .expiresAt(now.plus(INVITATION_TTL))
+                .createdAt(now)
                 .build());
 
         publishInvitationCreatedEvent(invitation, team, inviter);
@@ -217,11 +226,16 @@ public class TeamService {
         if (invitation.getStatus() != InvitationStatus.PENDING) {
             throw new CustomException(ErrorCode.TEAM_INVITATION_INVALID);
         }
-        if (invitation.getExpiresAt().isBefore(Instant.now())) {
+        if (invitation.getExpiresAt().isBefore(timeSource.now())) {
             invitation.setStatus(InvitationStatus.EXPIRED);
             teamInvitationRepository.save(invitation);
             throw new CustomException(ErrorCode.TEAM_INVITATION_INVALID, "Invitation has expired.");
         }
+
+        // The team may have been soft-deleted after the invite was sent. Block acceptance
+        // rather than letting the invitee join a ghost team.
+        teamRepository.findByIdAndDeletedAtIsNull(invitation.getTeamId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "This team no longer exists."));
 
         User user = sessionUserResolver.require(acceptingUserId, "POST:/api/invitations/accept");
 
@@ -236,7 +250,7 @@ public class TeamService {
                         .teamId(invitation.getTeamId())
                         .userId(acceptingUserId)
                         .role(invitation.getRole())
-                        .joinedAt(Instant.now())
+                        .joinedAt(timeSource.now())
                         .build()));
 
         invitation.setStatus(InvitationStatus.ACCEPTED);
@@ -305,11 +319,37 @@ public class TeamService {
         if (invitation.getStatus() == InvitationStatus.PENDING) {
             invitation.setStatus(InvitationStatus.REVOKED);
             teamInvitationRepository.save(invitation);
-            Team team = teamRepository.findById(teamId)
+            Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
                     .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
             User actor = userRepository.findById(actingUserId).orElse(null);
             publishInvitationRevokedEvent(invitation, team, actor);
         }
+    }
+
+    // ── Team deletion ─────────────────────────────────────────────────────────
+
+    /**
+     * Soft-deletes a team. Owner-only. Members lose access and pending invitations become
+     * unacceptable, but bookings and history are untouched. Event types are NOT cascaded —
+     * they belong to users, not teams.
+     */
+    @Transactional
+    public void deleteTeam(UUID actingUserId, UUID teamId) {
+        Team team = requireOwner(actingUserId, teamId);
+        team.setDeletedAt(timeSource.now());
+        teamRepository.save(team);
+    }
+
+    /**
+     * Returns the informational impact summary shown before deletion. Owner-only.
+     */
+    @Transactional(readOnly = true)
+    public TeamDeletionImpactResponse getTeamDeletionImpact(UUID actingUserId, UUID teamId) {
+        requireOwner(actingUserId, teamId);
+        long memberCount = teamMemberRepository.countByTeamId(teamId);
+        long pendingInviteCount =
+                teamInvitationRepository.countByTeamIdAndStatus(teamId, InvitationStatus.PENDING);
+        return new TeamDeletionImpactResponse(memberCount, pendingInviteCount);
     }
 
     // ── Outbox events ────────────────────────────────────────────────────────
@@ -384,7 +424,7 @@ public class TeamService {
     // ── Authorization helpers ────────────────────────────────────────────────
 
     private Team requireMembership(UUID userId, UUID teamId) {
-        Team team = teamRepository.findById(teamId)
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
         if (!teamMemberRepository.existsByTeamIdAndUserId(teamId, userId)) {
             throw new CustomException(ErrorCode.FORBIDDEN, "You are not a member of this team.");
@@ -393,7 +433,7 @@ public class TeamService {
     }
 
     private void requireOwnerOrAdmin(UUID userId, UUID teamId) {
-        teamRepository.findById(teamId)
+        teamRepository.findByIdAndDeletedAtIsNull(teamId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
         TeamMember member = teamMemberRepository.findByTeamIdAndUserId(teamId, userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.FORBIDDEN, "You are not a member of this team."));
@@ -401,6 +441,18 @@ public class TeamService {
             throw new CustomException(ErrorCode.TEAM_OWNER_REQUIRED,
                     "Only the team owner or an admin can perform this action.");
         }
+    }
+
+    private Team requireOwner(UUID userId, UUID teamId) {
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+        TeamMember member = teamMemberRepository.findByTeamIdAndUserId(teamId, userId)
+                .orElseThrow(() -> new CustomException(ErrorCode.FORBIDDEN, "You are not a member of this team."));
+        if (member.getRole() != TeamRole.OWNER) {
+            throw new CustomException(ErrorCode.TEAM_OWNER_REQUIRED,
+                    "Only the team owner can perform this action.");
+        }
+        return team;
     }
 
     // ── Mapping ──────────────────────────────────────────────────────────────
