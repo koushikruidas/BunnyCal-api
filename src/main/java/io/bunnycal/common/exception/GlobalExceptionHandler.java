@@ -2,6 +2,8 @@ package io.bunnycal.common.exception;
 
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.session.dto.HoldActiveResponse;
 import java.util.Optional;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -13,6 +15,27 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    private final TimeSource timeSource;
+
+    public GlobalExceptionHandler(TimeSource timeSource) {
+        this.timeSource = timeSource;
+    }
+
+    @ExceptionHandler(RegistrationHoldActiveException.class)
+    public ResponseEntity<ApiResponse<HoldActiveResponse>> handleRegistrationHoldActive(
+            RegistrationHoldActiveException ex) {
+        HoldActiveResponse data = HoldActiveResponse.of(ex.getExpiresAt(), timeSource.now());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.<HoldActiveResponse>builder()
+                        .success(false)
+                        .data(data)
+                        .error(ApiResponse.ErrorResponse.builder()
+                                .code(ex.getErrorCode().getCode())
+                                .message(ex.getMessage())
+                                .build())
+                        .build());
+    }
 
     @ExceptionHandler(CustomException.class)
     public ResponseEntity<ApiResponse<Void>> handleCustomException(CustomException ex) {
@@ -51,6 +74,7 @@ public class GlobalExceptionHandler {
             case SLOT_ALREADY_BOOKED:
             case SLOT_UNAVAILABLE:
             case CALENDAR_SYNC_IN_PROGRESS:
+            case REGISTRATION_HOLD_ACTIVE:
                 return HttpStatus.CONFLICT;
             case GOOGLE_EVENT_CREATION_FAILED:
                 return HttpStatus.BAD_GATEWAY;
@@ -63,9 +87,27 @@ public class GlobalExceptionHandler {
             case TOKEN_INVALID:
                 return HttpStatus.UNAUTHORIZED;
             case FORBIDDEN:
+            case TEAM_OWNER_REQUIRED:
+            case TEAM_INVITATION_EMAIL_MISMATCH:
                 return HttpStatus.FORBIDDEN;
+            case RESOURCE_NOT_FOUND:
+            case TEAM_INVITATION_INVALID:
+                return HttpStatus.NOT_FOUND;
+            case TEAM_SLUG_TAKEN:
+            case TEAM_MEMBER_ALREADY_EXISTS:
+            case TEAM_INVITATION_ALREADY_PENDING:
+            case TEAM_LAST_OWNER:
+                return HttpStatus.CONFLICT;
             case VALIDATION_ERROR:
+            case PARTICIPANTS_REQUIRED:
+            case PARTICIPANTS_NOT_ALLOWED_FOR_KIND:
+            case PARTICIPANT_NOT_IN_TEAM:
                 return HttpStatus.BAD_REQUEST;
+            case HOST_NOT_SCHEDULABLE:
+                return HttpStatus.GONE;
+            case EVENT_TYPE_NOT_PUBLISHED:
+            case UNPUBLISHABLE_EVENT_TYPE:
+                return HttpStatus.CONFLICT;
             default:
                 return HttpStatus.INTERNAL_SERVER_ERROR;
         }

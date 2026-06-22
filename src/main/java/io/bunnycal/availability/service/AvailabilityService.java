@@ -2,19 +2,23 @@ package io.bunnycal.availability.service;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.dto.AvailabilityOverrideCreateRequest;
 import io.bunnycal.availability.dto.AvailabilityOverrideResponse;
 import io.bunnycal.availability.dto.AvailabilityRuleResponse;
 import io.bunnycal.availability.dto.BulkAvailabilityRulesUpsertRequest;
+import io.bunnycal.availability.dto.GroupReservationBlockerResponse;
 import io.bunnycal.availability.mapper.AvailabilityOverrideMapper;
 import io.bunnycal.availability.mapper.AvailabilityRuleMapper;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
+import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.availability.validation.AvailabilityValidationService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.team.service.ParticipantSetupRequestService;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -26,24 +30,44 @@ public class AvailabilityService {
 
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
+    private final GroupEventReservationWindowRepository reservationWindowRepository;
     private final AvailabilityRuleMapper availabilityRuleMapper;
     private final AvailabilityOverrideMapper availabilityOverrideMapper;
     private final AvailabilityValidationService validationService;
     private final UserRepository userRepository;
+    private final SessionUserResolver sessionUserResolver;
+    private final ParticipantSetupRequestService setupRequestService;
+    private final ParticipantEligibilityService eligibilityService;
 
     public AvailabilityService(
             AvailabilityRuleRepository availabilityRuleRepository,
             AvailabilityOverrideRepository availabilityOverrideRepository,
+            GroupEventReservationWindowRepository reservationWindowRepository,
             AvailabilityRuleMapper availabilityRuleMapper,
             AvailabilityOverrideMapper availabilityOverrideMapper,
             AvailabilityValidationService validationService,
-            UserRepository userRepository) {
+            UserRepository userRepository,
+            SessionUserResolver sessionUserResolver,
+            ParticipantSetupRequestService setupRequestService,
+            ParticipantEligibilityService eligibilityService) {
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.availabilityOverrideRepository = availabilityOverrideRepository;
+        this.reservationWindowRepository = reservationWindowRepository;
         this.availabilityRuleMapper = availabilityRuleMapper;
         this.availabilityOverrideMapper = availabilityOverrideMapper;
         this.validationService = validationService;
         this.userRepository = userRepository;
+        this.sessionUserResolver = sessionUserResolver;
+        this.setupRequestService = setupRequestService;
+        this.eligibilityService = eligibilityService;
+    }
+
+    @Transactional(readOnly = true)
+    public List<AvailabilityRuleResponse> getRules(UUID userId) {
+        ensureUserTimezone(userId);
+        return availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId).stream()
+                .map(availabilityRuleMapper::toResponse)
+                .toList();
     }
 
     @Transactional
@@ -61,9 +85,13 @@ public class AvailabilityService {
             return List.of();
         }
 
-        return availabilityRuleRepository.saveAll(toSave).stream()
+        List<AvailabilityRuleResponse> saved = availabilityRuleRepository.saveAll(toSave).stream()
                 .map(availabilityRuleMapper::toResponse)
                 .toList();
+        if (eligibilityService.isReady(userId)) {
+            setupRequestService.markAllCompletedForTarget(userId);
+        }
+        return saved;
     }
 
     @Transactional
@@ -96,6 +124,12 @@ public class AvailabilityService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<GroupReservationBlockerResponse> getReservationBlockers(UUID userId) {
+        sessionUserResolver.require(userId, "GET:/api/availability/reservation-blockers");
+        return reservationWindowRepository.findAllWindowsWithEventNameByHost(userId);
+    }
+
     @Transactional
     public void deleteOverride(UUID userId, UUID overrideId) {
         ensureUserTimezone(userId);
@@ -107,8 +141,7 @@ public class AvailabilityService {
     }
 
     private void ensureUserTimezone(UUID userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+        User user = sessionUserResolver.require(userId, "availability-endpoint");
         validationService.validateTimezone(user.getTimezone());
     }
 }

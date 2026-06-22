@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -282,6 +283,116 @@ class EventTypeOrchestrationNormalizerTest {
         );
         CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
         assertTrue(ex.getMessage().contains("projectionDestination.calendarId"));
+    }
+
+    // ── ROUND_ROBIN tests ────────────────────────────────────────────────────
+
+    @Test
+    void roundRobin_withNullProjectionDestination_succeeds() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Team Standup", null, null, 30, 0, 0, 30, 0, 30, 10, "team-standup",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
+                null,
+                EventKind.ROUND_ROBIN, null
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertTrue(normalized.projectionDestination() == null,
+                "ROUND_ROBIN events must not require a projectionDestination");
+        assertTrue(normalized.availabilityBindings().isEmpty());
+        assertEquals(ConferencingProviderType.NONE, normalized.conferencing().provider());
+    }
+
+    @Test
+    void roundRobin_withGoogleMeetConferencing_andNullProjection_succeeds() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "RR Google Meet", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-gmeet",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
+                null,
+                EventKind.ROUND_ROBIN, null
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertTrue(normalized.projectionDestination() == null);
+        assertEquals(ConferencingProviderType.GOOGLE_MEET, normalized.conferencing().provider());
+    }
+
+    @Test
+    void roundRobin_withZoomConferencing_andNullProjection_succeeds() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "RR Zoom", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-zoom",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "zoom", null),
+                null,
+                EventKind.ROUND_ROBIN, null
+        );
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertTrue(normalized.projectionDestination() == null);
+        assertEquals(ConferencingProviderType.ZOOM, normalized.conferencing().provider());
+    }
+
+    @Test
+    void roundRobin_withMicrosoftTeamsConferencing_andNullProjection_succeeds() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "RR Teams", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-teams",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "microsoft_teams", null),
+                null,
+                EventKind.ROUND_ROBIN, null
+        );
+
+        // validateConferencingAgainstProjection short-circuits when projection is null —
+        // Teams link is created from the assigned participant's calendar at booking time.
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+
+        assertTrue(normalized.projectionDestination() == null);
+        assertEquals(ConferencingProviderType.MICROSOFT_TEAMS, normalized.conferencing().provider());
+    }
+
+    @Test
+    void oneOnOne_withNullProjectionDestination_stillThrows() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "1:1 No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
+                null,
+                EventKind.ONE_ON_ONE, null
+        );
+
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request),
+                "ONE_ON_ONE events must still require projectionDestination");
+    }
+
+    @Test
+    void group_withNullProjectionDestination_stillThrows() {
+        UUID userId = UUID.randomUUID();
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Group No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "group",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
+                null,
+                EventKind.GROUP, null
+        );
+
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request),
+                "GROUP events must still require projectionDestination");
     }
 
     private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {

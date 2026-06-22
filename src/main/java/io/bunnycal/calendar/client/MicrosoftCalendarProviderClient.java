@@ -6,6 +6,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
@@ -38,19 +39,22 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarConnectionCalendarRepository calendarRepository;
     private final MicrosoftCalendarProvider microsoftCalendarProvider;
+    private final BookingOwnershipRepository bookingOwnershipRepository;
 
     public MicrosoftCalendarProviderClient(BookingRepository bookingRepository,
                                            EventTypeRepository eventTypeRepository,
                                            UserRepository userRepository,
                                            CalendarConnectionRepository connectionRepository,
                                            CalendarConnectionCalendarRepository calendarRepository,
-                                           MicrosoftCalendarProvider microsoftCalendarProvider) {
+                                           MicrosoftCalendarProvider microsoftCalendarProvider,
+                                           BookingOwnershipRepository bookingOwnershipRepository) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.connectionRepository = connectionRepository;
         this.calendarRepository = calendarRepository;
         this.microsoftCalendarProvider = microsoftCalendarProvider;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
     }
 
     @Override
@@ -59,7 +63,7 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                                           @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()).orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
         CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
@@ -68,10 +72,6 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
         var response = microsoftCalendarProvider.createEvent(new CreateEventRequest(
                 connection.getId(),
                 title,
@@ -79,10 +79,10 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
+                null,
+                null,
                 idempotencyKey,
-                resolveTargetCalendarId(eventType),
+                resolveTargetCalendarId(booking.getId()),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
         ));
         log.info("provider_authority_isolation provider=microsoft action=create responseRequested=false organizerAuthority=application");
@@ -95,7 +95,7 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                               @Nullable UUID schedulingConnectionId) {
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()).orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
         User host = userRepository.findById(booking.getHostId())
                 .orElseThrow(() -> new CalendarClientException(404, "host user not found"));
         CalendarConnection connection = resolveConnection(booking.getHostId(), provider, schedulingConnectionId);
@@ -104,10 +104,6 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? eventType.getName()
                 : "Scheduled Meeting";
         String description = "bookingId=" + booking.getId();
-        String attendeeEmail = normalizeAttendeeEmail(booking.getGuestEmail());
-        if (attendeeEmail == null) {
-            throw new CalendarClientException(400, "guest attendee email is required");
-        }
         String updated = microsoftCalendarProvider.updateEvent(new UpdateEventRequest(
                 connection.getId(),
                 externalEventId,
@@ -116,9 +112,9 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 booking.getStartTime(),
                 booking.getEndTime(),
                 host.getEmail(),
-                attendeeEmail,
-                booking.getGuestName(),
-                resolveTargetCalendarId(eventType),
+                null,
+                null,
+                resolveTargetCalendarId(booking.getId()),
                 conferencingInstruction == null ? ConferencingInstruction.none() : conferencingInstruction
         )).externalEventId();
         log.info("provider_authority_isolation provider=microsoft action=update responseRequested=false organizerAuthority=application");
@@ -181,11 +177,14 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         }
     }
 
-    private static String resolveTargetCalendarId(EventType eventType) {
-        if (eventType == null || eventType.getProjectionCalendarId() == null || eventType.getProjectionCalendarId().isBlank()) {
+    private String resolveTargetCalendarId(UUID bookingId) {
+        String calendarId = bookingOwnershipRepository.findByBookingId(bookingId)
+                .map(ownership -> ownership.getProjectionCalendarId())
+                .orElse(null);
+        if (calendarId == null || calendarId.isBlank()) {
             throw new CalendarClientException(400, "projection calendar ownership is missing");
         }
-        return eventType.getProjectionCalendarId().trim();
+        return calendarId.trim();
     }
 
     private static String normalizeAttendeeEmail(String email) {

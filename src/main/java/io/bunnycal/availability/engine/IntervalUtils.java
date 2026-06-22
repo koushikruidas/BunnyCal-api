@@ -83,6 +83,45 @@ public final class IntervalUtils {
         return List.copyOf(result);
     }
 
+    /**
+     * Intersection of two interval sets: every sub-interval covered by BOTH {@code a}
+     * and {@code b}. Used to clip a host's availability down to an event type's own
+     * filter windows. Half-open [start, end) semantics; touching boundaries do not
+     * intersect.
+     */
+    public static List<TimeInterval> intersect(List<TimeInterval> a, List<TimeInterval> b) {
+        List<TimeInterval> left = normalize(a);
+        List<TimeInterval> right = normalize(b);
+
+        if (left.isEmpty() || right.isEmpty()) {
+            return List.of();
+        }
+
+        List<TimeInterval> result = new ArrayList<>();
+        int i = 0;
+        int j = 0;
+
+        while (i < left.size() && j < right.size()) {
+            TimeInterval x = left.get(i);
+            TimeInterval y = right.get(j);
+
+            ZonedDateTime start = max(x.start(), y.start());
+            ZonedDateTime end = min(x.end(), y.end());
+            if (start.isBefore(end)) {
+                result.add(new TimeInterval(start, end));
+            }
+
+            // Advance the interval that ends first.
+            if (x.end().isBefore(y.end())) {
+                i++;
+            } else {
+                j++;
+            }
+        }
+
+        return List.copyOf(result);
+    }
+
     private static boolean touchesOrOverlaps(TimeInterval a, TimeInterval b) {
         // Half-open interval semantics: [start, end)
         // Only true overlap should merge; touching boundaries should not.
@@ -91,5 +130,9 @@ public final class IntervalUtils {
 
     private static ZonedDateTime min(ZonedDateTime a, ZonedDateTime b) {
         return a.isBefore(b) ? a : b;
+    }
+
+    private static ZonedDateTime max(ZonedDateTime a, ZonedDateTime b) {
+        return a.isAfter(b) ? a : b;
     }
 }

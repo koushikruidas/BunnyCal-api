@@ -40,9 +40,35 @@ public final class SlotGenerationEngine {
         List<TimeInterval> effectiveIntervals = applyOverride(dayStart, dayEnd, input.override(), baseIntervals);
         List<TimeInterval> normalizedAvailability = IntervalUtils.normalize(effectiveIntervals);
 
+        // Event Availability FILTER: clip the host's availability down to the event
+        // type's own recurring windows by intersection on the BASE window. It removes
+        // time, adds no busy blocks, and owns/reserves nothing. A window outside host
+        // availability contributes nothing (intersection can only shrink the host
+        // window).
+        //
+        // Empty-filter semantics depend on restrictToFilter:
+        //   * restrictToFilter == false (demand-driven ONE_ON_ONE/ROUND_ROBIN/
+        //     COLLECTIVE): an empty filter means NO restriction -- the event sees the
+        //     host's full availability.
+        //   * restrictToFilter == true (GROUP, reservation-driven): the event is
+        //     bookable ONLY inside its reservation windows. An empty filter for the
+        //     day therefore means NO availability -- host availability is an upper
+        //     bound, never the slot source for GROUP.
+        List<TimeInterval> eventFilter = toBusyIntervals(
+                dayStart, dayEnd, input.eventAvailabilityFilter(), input.zoneId());
+        if (input.restrictToFilter()) {
+            normalizedAvailability = eventFilter.isEmpty()
+                    ? List.of()
+                    : IntervalUtils.intersect(normalizedAvailability, eventFilter);
+        } else if (!eventFilter.isEmpty()) {
+            normalizedAvailability = IntervalUtils.intersect(normalizedAvailability, eventFilter);
+        }
+
         List<TimeInterval> candidateSlots = generateGridSlots(normalizedAvailability, input.eventType(), dayStart);
 
-        List<TimeInterval> dbBusy = toBusyIntervals(dayStart, dayEnd, input.bookings(), input.zoneId());
+        List<TimeInterval> bookingsBusy = toBusyIntervals(dayStart, dayEnd, input.bookings(), input.zoneId());
+        List<TimeInterval> sessionBlockersBusy = toBusyIntervals(dayStart, dayEnd, input.sessionBlockers(), input.zoneId());
+        List<TimeInterval> dbBusy = mergeLists(bookingsBusy, sessionBlockersBusy);
         List<TimeInterval> withoutDbConflicts = removeOverlaps(candidateSlots, dbBusy);
 
         List<TimeInterval> calendarBusy = clipToDay(dayStart, dayEnd, input.calendarBusy() == null ? List.of() : input.calendarBusy());
@@ -71,7 +97,8 @@ public final class SlotGenerationEngine {
             List<BookingWindow> bookings,
             List<TimeInterval> calendarBusy,
             Instant now) {
-        return compute(new SlotInput(date, zoneId, rules, override, eventType, bookings, calendarBusy, now));
+        return compute(new SlotInput(
+                date, zoneId, rules, override, eventType, bookings, List.of(), List.of(), calendarBusy, now));
     }
 
     /**
@@ -360,6 +387,26 @@ public final class SlotGenerationEngine {
             AvailabilityOverride override,
             EventType eventType,
             List<BookingWindow> bookings,
+            List<BookingWindow> sessionBlockers,
+            List<BookingWindow> eventAvailabilityFilter,
             List<TimeInterval> calendarBusy,
-            Instant now) {}
+            Instant now,
+            boolean restrictToFilter) {
+
+        /** Back-compatible constructor: demand-driven default (filter does not restrict). */
+        public SlotInput(
+                LocalDate date,
+                ZoneId zoneId,
+                List<AvailabilityRule> rules,
+                AvailabilityOverride override,
+                EventType eventType,
+                List<BookingWindow> bookings,
+                List<BookingWindow> sessionBlockers,
+                List<BookingWindow> eventAvailabilityFilter,
+                List<TimeInterval> calendarBusy,
+                Instant now) {
+            this(date, zoneId, rules, override, eventType, bookings, sessionBlockers,
+                    eventAvailabilityFilter, calendarBusy, now, false);
+        }
+    }
 }

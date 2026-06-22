@@ -12,7 +12,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
+import io.bunnycal.availability.domain.EventKind;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -100,4 +102,23 @@ public class EventType {
 
     @Column(name = "hold_duration", nullable = false)
     private Duration holdDuration;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "kind", nullable = false, length = 32)
+    private EventKind kind = EventKind.ONE_ON_ONE;
+
+    @Builder.Default
+    @Column(name = "capacity", nullable = false)
+    private int capacity = 1;
+
+    @Builder.Default
+    @Column(name = "published", nullable = false)
+    private boolean published = true;
+
+    @Column(name = "last_degraded_notification_at")
+    private Instant lastDegradedNotificationAt;
+
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
 }

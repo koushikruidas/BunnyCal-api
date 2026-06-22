@@ -16,6 +16,11 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             Instant windowEnd,
             Instant windowStart);
 
+    List<CalendarEvent> findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+            UUID userId,
+            Instant windowEnd,
+            Instant windowStart);
+
     List<CalendarEvent> findByConnectionIdInAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
             java.util.Collection<UUID> connectionIds,
             Instant windowEnd,
@@ -61,6 +66,7 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             select e from CalendarEvent e
             where e.cancelled = false
               and e.deleted = false
+              and e.blocksAvailability = true
               and e.startsAt < :windowEnd
               and e.endsAt > :windowStart
               and (

@@ -1,5 +1,6 @@
 package io.bunnycal.availability.service;
 
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -38,7 +39,12 @@ public class EventTypeOrchestrationNormalizer {
     public NormalizedOrchestration normalize(UUID userId, CreateEventTypeRequest request) {
         List<AvailabilityBinding> availabilityBindings = normalizeAvailabilityBindings(userId, request.availabilityCalendars());
         ConferencingConfig conferencing = normalizeConference(request.conference());
-        ProjectionDestination projectionDestination = normalizeProjectionDestination(userId, request.projectionDestination());
+
+        EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        ProjectionDestination projectionDestination = kind == EventKind.ROUND_ROBIN
+                ? null
+                : normalizeProjectionDestination(userId, request.projectionDestination());
+
         validateConferencingAgainstProjection(conferencing, projectionDestination);
         return new NormalizedOrchestration(projectionDestination, availabilityBindings, conferencing);
     }

@@ -45,7 +45,7 @@ public class ConferencingOrchestrator {
                     : bookingRepository.findAnyById(job.getInternalRefId()))
                     .orElse(null);
             if (booking == null) return;
-            EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId()).orElse(null);
+            EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
             if (eventType == null) return;
             ConferencingProviderType providerType = eventType.getConferencingProvider();
             if (providerType == null || providerType == ConferencingProviderType.NONE || providerType == ConferencingProviderType.CUSTOM_URL) {
@@ -72,7 +72,7 @@ public class ConferencingOrchestrator {
                 mapping.setStatus("CANCELLED");
                 mapping.setLastError(null);
                 conferencingEventMappingRepository.save(mapping);
-                calendarEventMappingRepository.updateConferenceUrl(booking.getId(), job.getProvider(), null);
+                calendarEventMappingRepository.updateConferenceUrl(booking.getId(), job.getProvider(), booking.getHostId(), null);
                 return;
             }
 
@@ -87,7 +87,7 @@ public class ConferencingOrchestrator {
             }
             if (details.joinUrl() != null) {
                 mapping.setJoinUrl(details.joinUrl());
-                calendarEventMappingRepository.updateConferenceUrl(booking.getId(), job.getProvider(), details.joinUrl());
+                calendarEventMappingRepository.updateConferenceUrl(booking.getId(), job.getProvider(), booking.getHostId(), details.joinUrl());
             }
             if (details.hostUrl() != null) {
                 mapping.setHostUrl(details.hostUrl());

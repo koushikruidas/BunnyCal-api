@@ -1,6 +1,7 @@
 package io.bunnycal.availability.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.bunnycal.availability.domain.EventKind;
 import java.util.List;
 import java.util.UUID;
 
@@ -9,12 +10,16 @@ public record EventTypeSummaryResponse(
         String name,
         String slug,
         String link,
+        EventKind kind,
+        int capacity,
+        boolean published,
+        boolean degraded,
         List<AvailabilityCalendarResponse> availabilityCalendars,
         ConferenceResponse conference,
         ProjectionDestinationResponse projectionDestination
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, List.of(), null, null);
+        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, true, false, List.of(), null, null);
     }
 
     public record AvailabilityCalendarResponse(

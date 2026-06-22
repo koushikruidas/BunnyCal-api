@@ -13,6 +13,7 @@ import org.springframework.web.client.RestClient;
 @EnableJpaAuditing
 @ComponentScan(basePackages = {
         "io.bunnycal.booking",
+        "io.bunnycal.session",
         "io.bunnycal.sync",
         "io.bunnycal.calendar.service",
         "io.bunnycal.calendar.client",
@@ -23,7 +24,9 @@ import org.springframework.web.client.RestClient;
         "io.bunnycal.availability",
         "io.bunnycal.conferencing",
         "io.bunnycal.integration",
-        "io.bunnycal.common"
+        "io.bunnycal.team",
+        "io.bunnycal.common",
+        "io.bunnycal.auth.service"
 })
 public class TestApplication {
     @Bean

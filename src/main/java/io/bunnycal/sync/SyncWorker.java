@@ -97,18 +97,18 @@ public class SyncWorker {
                 .register(meterRegistry);
     }
 
-    public void processBookingSync(UUID bookingId, String provider) {
+    public void processBookingSync(UUID bookingId, String provider, UUID participantUserId) {
         long token = tokenGenerator.nextToken();
 
-        ClaimOutcome claimOutcome = mappingRepository.claimBookingForSync(bookingId, provider, token, workerId);
+        ClaimOutcome claimOutcome = mappingRepository.claimBookingForSync(bookingId, provider, participantUserId, token, workerId);
         countClaim(claimOutcome, provider);
-        log.debug("calendar sync claim bookingId={} provider={} token={} workerId={} outcome={}",
-                bookingId, provider, token, workerId, claimOutcome);
+        log.debug("calendar sync claim bookingId={} provider={} participantUserId={} token={} workerId={} outcome={}",
+                bookingId, provider, participantUserId, token, workerId, claimOutcome);
         if (claimOutcome != ClaimOutcome.CLAIMED) {
             return;
         }
 
-        Optional<MappingState> maybeState = mappingRepository.findMappingState(bookingId, provider);
+        Optional<MappingState> maybeState = mappingRepository.findMappingState(bookingId, provider, participantUserId);
         if (maybeState.isEmpty()) {
             return;
         }
@@ -131,22 +131,22 @@ public class SyncWorker {
         Instant providerCallStartedAt = Instant.now();
         try {
             createResult = calendarService.createEvent(
-                    new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey(bookingId, provider)));
+                    new CalendarService.CreateCalendarEventCommand(bookingId, provider, idempotencyKey(bookingId, provider, participantUserId)));
             long latencyMs = Duration.between(providerCallStartedAt, Instant.now()).toMillis();
             if (createResult.status() == CalendarService.CreateEventStatus.PERMANENT_FAILURE) {
-                log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
-                        bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
-                        createResult.status(), createResult.errorCode(), latencyMs);
+                log.info("calendar_sync_result booking_id={} provider={} participant_user_id={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                        bookingId, provider, participantUserId, token, idempotencyKey(bookingId, provider, participantUserId),
+                        state.attemptCount() + 1, createResult.status(), createResult.errorCode(), latencyMs);
                 recordCalendarSyncMetrics(provider, createResult, latencyMs);
                 mappingRepository.markFailedPermanent(
-                        bookingId, provider, workerId, createResult.errorCode(), token);
+                        bookingId, provider, participantUserId, workerId, createResult.errorCode(), token);
                 failedPermanentCounter.increment();
                 return;
             }
             if (createResult.status() == CalendarService.CreateEventStatus.RETRYABLE_FAILURE) {
-                log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
-                        bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
-                        createResult.status(), createResult.errorCode(), latencyMs);
+                log.info("calendar_sync_result booking_id={} provider={} participant_user_id={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                        bookingId, provider, participantUserId, token, idempotencyKey(bookingId, provider, participantUserId),
+                        state.attemptCount() + 1, createResult.status(), createResult.errorCode(), latencyMs);
                 recordCalendarSyncMetrics(provider, createResult, latencyMs);
                 int nextAttempt = state.attemptCount() + 1;
                 String normalizedErrorCode = safeErrorCode(createResult.errorCode());
@@ -166,17 +166,17 @@ public class SyncWorker {
                 }
                 Instant nextRetryAt = Instant.now().plus(backoff);
                 mappingRepository.markFailed(
-                        bookingId, provider, workerId, createResult.errorCode(), token, nextRetryAt);
+                        bookingId, provider, participantUserId, workerId, createResult.errorCode(), token, nextRetryAt);
                 return;
             }
             externalEventId = createResult.externalEventId();
-            log.info("calendar_sync_result booking_id={} provider={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
-                    bookingId, provider, token, idempotencyKey(bookingId, provider), state.attemptCount() + 1,
-                    createResult.status(), "NONE", latencyMs);
+            log.info("calendar_sync_result booking_id={} provider={} participant_user_id={} fencing_token={} idempotency_key={} attempt={} result={} error_code={} latency_ms={}",
+                    bookingId, provider, participantUserId, token, idempotencyKey(bookingId, provider, participantUserId),
+                    state.attemptCount() + 1, createResult.status(), "NONE", latencyMs);
             recordCalendarSyncMetrics(provider, createResult, latencyMs);
         } catch (Exception ex) {
-            log.warn("calendar sync provider failure bookingId={} provider={} token={} workerId={}",
-                    bookingId, provider, token, workerId, ex);
+            log.warn("calendar sync provider failure bookingId={} provider={} participantUserId={} token={} workerId={}",
+                    bookingId, provider, participantUserId, token, workerId, ex);
             providerFailureCounter.increment();
             String normalizedError = normalizeError(ex);
             int nextAttempt = state.attemptCount() + 1;
@@ -184,22 +184,22 @@ public class SyncWorker {
             TransitionOutcome failOutcome;
             if (nextAttempt >= MAX_SYNC_RETRIES) {
                 failOutcome = mappingRepository.markFailedPermanent(
-                        bookingId, provider, workerId, normalizedError, token);
+                        bookingId, provider, participantUserId, workerId, normalizedError, token);
                 failedPermanentCounter.increment();
             } else {
                 Duration backoff = computeBackoff(nextAttempt);
                 retryDelayMsSummary.record(backoff.toMillis());
                 Instant nextRetryAt = Instant.now().plus(backoff);
                 failOutcome = mappingRepository.markFailed(
-                        bookingId, provider, workerId, normalizedError, token, nextRetryAt);
+                        bookingId, provider, participantUserId, workerId, normalizedError, token, nextRetryAt);
             }
-            log.debug("calendar sync mark failed bookingId={} provider={} token={} workerId={} outcome={}",
-                    bookingId, provider, token, workerId, failOutcome);
+            log.debug("calendar sync mark failed bookingId={} provider={} participantUserId={} token={} workerId={} outcome={}",
+                    bookingId, provider, participantUserId, token, workerId, failOutcome);
             return;
         }
 
         FinalizeOutcome finalizeOutcome = mappingRepository.updateMappingWithEventId(
-                bookingId, provider, externalEventId, createResult.providerEventUrl(), createResult.conferenceUrl(), token, workerId);
+                bookingId, provider, participantUserId, externalEventId, createResult.providerEventUrl(), createResult.conferenceUrl(), token, workerId);
         countFinalize(finalizeOutcome, provider);
         log.debug("calendar sync finalize bookingId={} provider={} token={} workerId={} outcome={}",
                 bookingId, provider, token, workerId, finalizeOutcome);
@@ -235,7 +235,7 @@ public class SyncWorker {
         );
 
         for (MappingKey key : mappingRepository.findFailedCandidates(RECONCILE_BATCH_SIZE, Instant.now())) {
-            processBookingSync(key.bookingId(), key.provider());
+            processBookingSync(key.bookingId(), key.provider(), key.participantUserId());
         }
     }
 
@@ -275,8 +275,8 @@ public class SyncWorker {
         return Duration.ofMillis(jittered);
     }
 
-    private static String idempotencyKey(UUID bookingId, String provider) {
-        return provider + ":" + bookingId;
+    private static String idempotencyKey(UUID bookingId, String provider, UUID participantUserId) {
+        return provider + ":" + bookingId + ":" + participantUserId;
     }
 
     private void recordCalendarSyncMetrics(String provider,

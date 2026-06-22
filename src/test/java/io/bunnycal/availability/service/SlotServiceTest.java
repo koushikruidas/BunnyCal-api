@@ -66,11 +66,20 @@ class SlotServiceTest {
     @Mock private AvailabilityRuleRepository availabilityRuleRepository;
     @Mock private AvailabilityOverrideRepository availabilityOverrideRepository;
     @Mock private BookingRepository bookingRepository;
+    @Mock private io.bunnycal.session.repository.EventSessionRepository eventSessionRepository;
+    @Mock private io.bunnycal.availability.repository.GroupEventReservationWindowRepository reservationWindowRepository;
+    @Mock private io.bunnycal.availability.repository.EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
     @Mock private DbClockRepository dbClockRepository;
     @Mock private SlotCacheService slotCacheService;
     @Mock private SlotCacheVersionService slotCacheVersionService;
     @Mock private CalendarBusyTimeService calendarBusyTimeService;
     @Mock private EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    @Mock private EventTypeParticipantService eventTypeParticipantService;
+    @Mock private ParticipantEligibilityService participantEligibilityService;
+    @Mock private ParticipantAvailabilityService participantAvailabilityService;
+    @Mock private io.bunnycal.booking.service.RoundRobinAssignmentService roundRobinAssignmentService;
+    @Mock private io.bunnycal.booking.service.RoundRobinSlotTokenService roundRobinSlotTokenService;
+    @Mock private io.bunnycal.booking.service.CollectiveSlotTokenService collectiveSlotTokenService;
 
     private SlotService slotService;
     private TimeConversionService timeConversionService;
@@ -93,12 +102,21 @@ class SlotServiceTest {
                 availabilityRuleRepository,
                 availabilityOverrideRepository,
                 bookingRepository,
+                eventSessionRepository,
+                reservationWindowRepository,
+                eventAvailabilityWindowRepository,
                 dbClockRepository,
                 slotCacheService,
                 slotCacheVersionService,
                 calendarBusyTimeService,
                 orchestrationJsonCodec,
-                timeConversionService);
+                timeConversionService,
+                eventTypeParticipantService,
+                participantEligibilityService,
+                participantAvailabilityService,
+                roundRobinAssignmentService,
+                roundRobinSlotTokenService,
+                collectiveSlotTokenService);
 
         host = User.builder()
                 .id(userId)
@@ -137,7 +155,7 @@ class SlotServiceTest {
                 () -> slotService.getSlots(new SlotRequest(userId, eventTypeId, date)));
         assertEquals(ErrorCode.RESOURCE_NOT_FOUND, ex.getErrorCode());
 
-        verify(eventTypeRepository, never()).findByIdAndUserId(any(), any());
+        verify(eventTypeRepository, never()).findByIdAndUserIdAndDeletedAtIsNull(any(), any());
         verify(slotCacheVersionService, never()).getCurrentVersion(any());
         verify(slotCacheService, never()).getOrCompute(any(), any(), any(), any(Long.class), any());
         verify(dbClockRepository, never()).now();
@@ -146,7 +164,7 @@ class SlotServiceTest {
     @Test
     void missingEventType_throwsResourceNotFound() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.empty());
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.empty());
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> slotService.getSlots(new SlotRequest(userId, eventTypeId, date)));
@@ -159,7 +177,7 @@ class SlotServiceTest {
     @Test
     void cacheHit_returnsCachedSlots_andDbClockIsNotCalled() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(7L);
 
         Instant cachedGeneratedAt = Instant.parse("2026-05-04T08:00:00Z");
@@ -196,7 +214,7 @@ class SlotServiceTest {
     @Test
     void cacheMiss_runsSupplier_readsDbClockOnce_reChecksVersion_marksCacheable_andStampsSlotIdsWithV1() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         // Same version V1 read both before and after the data fetch → cacheable=true.
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(7L);
 
@@ -251,7 +269,7 @@ class SlotServiceTest {
     @Test
     void versionDriftDuringFetch_resultsInNonCacheableOutcome_butSlotsStillReturned_withV1SlotIds() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         // V1 = 7 on the first read (snapshot). V2 = 8 on the post-fetch re-check.
         when(slotCacheVersionService.getCurrentVersion(userId))
                 .thenReturn(7L)  // step 4: snapshot
@@ -298,7 +316,7 @@ class SlotServiceTest {
     @Test
     void versionIsReadBefore_anyDataFetch_orCacheCall() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
@@ -343,7 +361,7 @@ class SlotServiceTest {
     @Test
     void serviceDoesNoFiltering_passesEngineOutputThroughUnchanged() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
 
@@ -389,7 +407,7 @@ class SlotServiceTest {
     @Test
     void bookingsArePassedToEngineInUtc_mappedFromBookingStartAndEnd() {
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
@@ -441,7 +459,7 @@ class SlotServiceTest {
     void invalidTimezoneOnHost_throwsInvalidTimezone() {
         host.setTimezone("Not/A_Real_Zone");
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
 
@@ -483,7 +501,7 @@ class SlotServiceTest {
                 .build();
 
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
@@ -517,7 +535,7 @@ class SlotServiceTest {
         // tested at CalendarBusyTimeService level, but here we verify that
         // when the service returns busy intervals they correctly remove slots.
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, userId)).thenReturn(Optional.of(eventType));
+        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
         when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))

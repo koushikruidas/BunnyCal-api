@@ -1,5 +1,6 @@
 package io.bunnycal.availability.dto;
 
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.common.api.ForwardCompatibleRequest;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
@@ -22,7 +23,9 @@ public record CreateEventTypeRequest(
         String slug,
         List<AvailabilityCalendarRequest> availabilityCalendars,
         ConferenceRequest conference,
-        ProjectionDestinationRequest projectionDestination
+        ProjectionDestinationRequest projectionDestination,
+        EventKind kind,
+        Integer capacity
 ) implements ForwardCompatibleRequest {
     public CreateEventTypeRequest(
             String name,
@@ -39,7 +42,28 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, null, null, null);
+                slug, null, null, null, null, null);
+    }
+
+    public CreateEventTypeRequest(
+            String name,
+            String description,
+            String location,
+            Integer durationMinutes,
+            Integer bufferBeforeMinutes,
+            Integer bufferAfterMinutes,
+            Integer slotIntervalMinutes,
+            Integer minNoticeMinutes,
+            Integer maxAdvanceDays,
+            Integer holdDurationMinutes,
+            String slug,
+            List<AvailabilityCalendarRequest> availabilityCalendars,
+            ConferenceRequest conference,
+            ProjectionDestinationRequest projectionDestination
+    ) {
+        this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
+                slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
+                slug, availabilityCalendars, conference, projectionDestination, null, null);
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

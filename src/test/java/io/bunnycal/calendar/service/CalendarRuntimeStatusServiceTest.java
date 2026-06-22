@@ -110,7 +110,7 @@ class CalendarRuntimeStatusServiceTest {
         eventType.setProjectionProvider(CalendarProviderType.MICROSOFT);
 
         EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of(eventType));
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of(eventType));
 
         EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
@@ -186,7 +186,7 @@ class CalendarRuntimeStatusServiceTest {
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
         EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
         EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
@@ -235,7 +235,7 @@ class CalendarRuntimeStatusServiceTest {
         user.setEmail("koushikruidas@gmail.com");
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.of(user));
         EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
         EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
@@ -283,7 +283,7 @@ class CalendarRuntimeStatusServiceTest {
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
         EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
         EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
@@ -331,7 +331,7 @@ class CalendarRuntimeStatusServiceTest {
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
         EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdOrderByNameAsc(userId)).thenReturn(List.of());
+        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
         EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 

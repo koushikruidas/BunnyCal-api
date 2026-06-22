@@ -6,6 +6,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarEvent;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
+import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.sync.invariants.CompositeSyncStateClassifier;
 import io.bunnycal.sync.invariants.LineageContext;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
@@ -28,6 +29,7 @@ public class CalendarEventIngestionService {
     private static final Logger log = LoggerFactory.getLogger(CalendarEventIngestionService.class);
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
+    private final CalendarSyncJobRepository syncJobRepository;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarConnectionWriteService connectionWriteService;
     private final ProviderEventProjectionService providerEventProjectionService;
@@ -35,12 +37,14 @@ public class CalendarEventIngestionService {
 
     public CalendarEventIngestionService(CalendarConnectionRepository connectionRepository,
                                          CalendarEventRepository eventRepository,
+                                         CalendarSyncJobRepository syncJobRepository,
                                          SlotCacheVersionService slotCacheVersionService,
                                          CalendarConnectionWriteService connectionWriteService,
                                          ProviderEventProjectionService providerEventProjectionService,
                                          SyncInvariantMonitor invariantMonitor) {
         this.connectionRepository = connectionRepository;
         this.eventRepository = eventRepository;
+        this.syncJobRepository = syncJobRepository;
         this.slotCacheVersionService = slotCacheVersionService;
         this.connectionWriteService = connectionWriteService;
         this.providerEventProjectionService = providerEventProjectionService;
@@ -109,6 +113,7 @@ public class CalendarEventIngestionService {
                     // keep the existing value so we never null-out a real attribution.
                     event.setExternalCalendarId(incoming.externalCalendarId());
                 }
+                event.setBlocksAvailability(!isSessionProjection(connection.getProvider().name(), incoming.externalEventId()));
                 eventRepository.save(event);
                 log.info("calendar_event_ingestion_upsert connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} source={}",
                         connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(),
@@ -179,6 +184,13 @@ public class CalendarEventIngestionService {
         }
 
         connectionWriteService.updateLastSyncedAt(connection.getId(), Instant.now(), "event_ingestion_upsert");
+    }
+
+    private boolean isSessionProjection(String provider, String externalEventId) {
+        if (provider == null || provider.isBlank() || externalEventId == null || externalEventId.isBlank()) {
+            return false;
+        }
+        return syncJobRepository.findLatestSessionSyncByProviderAndExternalEventId(provider, externalEventId).isPresent();
     }
 
     public record IncomingCalendarEvent(String externalEventId,

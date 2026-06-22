@@ -2,6 +2,7 @@ spring:
   application:
     name: BunnyCal
 
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/mydatabase}
     username: ${SPRING_DATASOURCE_USERNAME:myuser}
@@ -107,22 +108,20 @@ management:
   otlp:
     metrics:
       export:
+        enabled: false
         url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://localhost:4318/v1/metrics}
         step: 10s
         connect-timeout: 2s
         read-timeout: 5s
 
   metrics:
-    export:
-      otlp:
-        enabled: true
     tags:
       application: ${spring.application.name}
 
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info}
   endpoint:
     health:
       probes:
@@ -130,7 +129,7 @@ management:
       show-details: never
 
 jwt:
-  secret: ${JWT_SECRET:dev-only-change-me-with-32-plus-characters}
+  secret: ${JWT_SECRET:dev-only-change-me-with-32-plus-characters-this-is-my-super-long-secret}
   expiration: ${JWT_EXPIRATION:3600000}
 
 auth:
@@ -165,13 +164,13 @@ calendar:
         enabled: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_ENABLED:true}
         address: ${MICROSOFT_WEBHOOK:http://localhost:8080/integrations/calendar/webhooks/microsoft}
         ttl-seconds: ${CALENDAR_WEBHOOK_PROVIDER_MICROSOFT_TTL_SECONDS:7200}
-    shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET:dev-webhook-secret-change-me}
+    shared-secret: ${CALENDAR_WEBHOOK_SHARED_SECRET:lLYWom3PdS2yEbUiWtpokV5iFih4-c0KIlH1zLowYYGVrmOUkvzREm9M8_g3Y9kF}
   google:
     diagnostics:
       enabled: ${CALENDAR_GOOGLE_DIAGNOSTICS_ENABLED:true}
   security:
-    encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlLW1lISEhISE=}
-    oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET:dev-oauth-state-secret-change-me}
+    encryption-key-base64: ${CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64:x3Y8K1vQm2Zp9LfJrT6wNcHsUaEdBg4y5i0cV7nRkPw=}
+    oauth-state-secret: ${CALENDAR_OAUTH_STATE_SECRET:askjdfhiasuhjuisdfjhfiwuehsjdfbkawdkfhaisuebfkjadsfhailsduh11!#%kjdfha@+=}
 
 sync:
   projection:

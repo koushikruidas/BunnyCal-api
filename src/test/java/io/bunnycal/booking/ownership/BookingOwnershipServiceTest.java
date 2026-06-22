@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.common.exception.CustomException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -22,12 +23,14 @@ class BookingOwnershipServiceTest {
 
     @Mock
     private BookingOwnershipRepository repository;
+    @Mock
+    private BookingSchedulingProjectionResolver projectionResolver;
 
     private BookingOwnershipService service;
 
     @BeforeEach
     void setUp() {
-        service = new BookingOwnershipService(repository, new SimpleMeterRegistry());
+        service = new BookingOwnershipService(repository, new SimpleMeterRegistry(), projectionResolver);
     }
 
     @Test

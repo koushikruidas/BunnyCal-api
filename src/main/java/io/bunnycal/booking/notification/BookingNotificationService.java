@@ -2,11 +2,16 @@ package io.bunnycal.booking.notification;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnership;
+import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
@@ -53,6 +58,7 @@ public class BookingNotificationService {
     private final BookingRepository bookingRepository;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
+    private final BookingAssignmentRepository bookingAssignmentRepository;
     private final JavaMailSender mailSender;
     private final IcsInviteGenerator icsInviteGenerator;
     private final BookingManageLinkService bookingManageLinkService;
@@ -63,6 +69,7 @@ public class BookingNotificationService {
     private final ConferencingCoordinator conferencingCoordinator;
     private final ConferencingEventMappingRepository conferencingEventMappingRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final BookingOwnershipRepository bookingOwnershipRepository;
     private final boolean notificationsEnabled;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -73,6 +80,7 @@ public class BookingNotificationService {
     public BookingNotificationService(BookingRepository bookingRepository,
                                       UserRepository userRepository,
                                       EventTypeRepository eventTypeRepository,
+                                      BookingAssignmentRepository bookingAssignmentRepository,
                                       JavaMailSender mailSender,
                                       IcsInviteGenerator icsInviteGenerator,
                                       BookingManageLinkService bookingManageLinkService,
@@ -83,6 +91,7 @@ public class BookingNotificationService {
                                       ConferencingCoordinator conferencingCoordinator,
                                       ConferencingEventMappingRepository conferencingEventMappingRepository,
                                       CalendarConnectionRepository calendarConnectionRepository,
+                                      BookingOwnershipRepository bookingOwnershipRepository,
                                       @Value("${booking.notifications.enabled:false}") boolean notificationsEnabled,
                                       @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                       @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
@@ -94,6 +103,7 @@ public class BookingNotificationService {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
+        this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
         this.bookingManageLinkService = bookingManageLinkService;
@@ -104,6 +114,7 @@ public class BookingNotificationService {
         this.conferencingCoordinator = conferencingCoordinator;
         this.conferencingEventMappingRepository = conferencingEventMappingRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
         this.notificationsEnabled = notificationsEnabled;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -139,8 +150,13 @@ public class BookingNotificationService {
             return;
         }
         User host = maybeHost.get();
-        EventType eventType = eventTypeRepository.findByIdAndUserId(booking.getEventTypeId(), booking.getHostId())
-                .orElse(null);
+        EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
+        BookingOwnership ownership = bookingOwnershipRepository.findByBookingId(booking.getId()).orElse(null);
+
+        if (eventType != null && eventType.getKind() == EventKind.COLLECTIVE) {
+            handleCollectiveOutboxEvent(booking, host, eventType, event, ownership);
+            return;
+        }
 
         String summary = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
@@ -158,23 +174,19 @@ public class BookingNotificationService {
                     (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
-        } else if (shouldSuppressHostIcsForOwnMsaProjection(eventType)) {
-            // Consumer MSA host whose Outlook calendar IS the projection target:
-            // Outlook would auto-import this iTIP REQUEST and create a second visible
-            // event next to the Graph-projected one. Drop the host from this email's
-            // recipient set — the calendar entry already exists in their calendar via
-            // the Graph projection. Guest still gets the email.
-            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=ms_consumer_msa_projection_self_owned hostEmail={}",
-                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
-            hostRecipient = Optional.empty();
-        } else if (shouldSuppressHostIcsForOwnGoogleProjection(eventType, booking.getHostId())) {
-            // Google host whose Gmail/Calendar account IS the projection target:
-            // Gmail auto-imports the iTIP REQUEST and creates a second event next
-            // to the one already written via the Calendar API. Drop the host from
-            // the recipient set — guest still gets the email.
-            log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason=google_projection_self_owned hostEmail={}",
-                    booking.getId(), booking.getHostId(), event.getEventType(), hostRecipient.get());
-            hostRecipient = Optional.empty();
+        } else {
+            // Suppress only when this recipient IS the projection owner — the Calendar API
+            // already wrote the event directly to their calendar, so sending an ICS email
+            // on top would create a duplicate entry.  We determine ownership from the
+            // booking_ownership record (set immutably at booking time) rather than from
+            // calendar connectivity alone: a user may have a Google account without being
+            // the projection owner, and must then still receive the ICS.
+            String suppressReason = resolveSuppressionReason(booking.getHostId(), ownership);
+            if (suppressReason != null) {
+                log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason={} hostEmail={}",
+                        booking.getId(), booking.getHostId(), event.getEventType(), suppressReason, hostRecipient.get());
+                hostRecipient = Optional.empty();
+            }
         }
 
         List<String> candidateRecipients = new ArrayList<>(2);
@@ -309,6 +321,126 @@ public class BookingNotificationService {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={} message={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true, ex.getMessage());
+                throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
+            }
+        }
+    }
+
+    private void handleCollectiveOutboxEvent(Booking booking, User owner, EventType eventType, OutboxEvent event,
+                                              @org.springframework.lang.Nullable BookingOwnership ownership) {
+        String summary = eventType.getName() != null && !eventType.getName().isBlank()
+                ? eventType.getName()
+                : "Scheduled Meeting";
+        String description = "Booking " + booking.getId();
+        String eventMethod = "BOOKING_CANCELLED".equals(event.getEventType()) ? "CANCEL" : "REQUEST";
+        int sequence = (int) Math.max(0L, Math.min(Integer.MAX_VALUE, booking.getCalendarSequence()));
+        String eventTypeSlug = eventType.getSlug();
+        String ownerUsername = owner.getUsername();
+
+        boolean includeManageLink = "BOOKING_CONFIRMED".equals(event.getEventType())
+                || "BOOKING_CONFIRMED_READY".equals(event.getEventType())
+                || "BOOKING_UPDATED".equals(event.getEventType());
+        boolean canBuildManageLink = includeManageLink
+                && ownerUsername != null && !ownerUsername.isBlank()
+                && eventTypeSlug != null && !eventTypeSlug.isBlank();
+
+        // Load all participants from booking_assignments (immutable ledger set at hold time).
+        List<BookingAssignment> assignments = bookingAssignmentRepository.findAllByBookingId(booking.getId());
+        List<IcsInviteGenerator.CollectiveHost> icsHosts = new ArrayList<>();
+        List<String> participantRecipients = new ArrayList<>();
+        for (BookingAssignment assignment : assignments) {
+            userRepository.findById(assignment.getParticipantUserId()).ifPresent(participant -> {
+                Optional<String> participantRecipient = recipientResolver.resolveHostRecipient(participant);
+                if (participantRecipient.isEmpty()) {
+                    log.info("booking_notification_participant_recipient_skipped bookingId={} participantId={} eventType={}",
+                            booking.getId(), participant.getId(), event.getEventType());
+                } else {
+                    // The projection owner (event owner) has the booking written directly to their
+                    // calendar by the sync pipeline — suppress their ICS to avoid a duplicate entry.
+                    // Non-owner participants have no direct projection and must always receive ICS.
+                    String suppressReason = participant.getId().equals(booking.getHostId())
+                            ? resolveSuppressionReason(booking.getHostId(), ownership)
+                            : null;
+                    if (suppressReason != null) {
+                        log.info("booking_notification_collective_owner_suppressed bookingId={} participantId={} reason={}",
+                                booking.getId(), participant.getId(), suppressReason);
+                    } else {
+                        participantRecipients.add(participantRecipient.get());
+                    }
+                }
+                icsHosts.add(new IcsInviteGenerator.CollectiveHost(participant.getName(), participant.getEmail()));
+            });
+        }
+
+        Optional<String> attendee = recipientResolver.resolveAttendeeRecipient(booking);
+        if (attendee.isEmpty()) {
+            log.warn("booking_notification_skip_missing_attendee bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+        }
+
+        List<String> candidateRecipients = new ArrayList<>(participantRecipients);
+        attendee.ifPresent(candidateRecipients::add);
+        List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
+        if (recipients.isEmpty()) {
+            log.info("booking_notification_all_recipients_skipped bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+            return;
+        }
+        log.info("booking_notification_recipients_resolved bookingId={} eventId={} eventType={} participantCount={} attendeePresent={} dedupedRecipients={}",
+                booking.getId(), event.getId(), event.getEventType(),
+                icsHosts.size(), attendee.isPresent(), recipients.size());
+
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
+        String attendeeName = booking.getGuestName();
+        String attendeeEmail = attendee.orElse(null);
+        String standaloneIcs = "CANCEL".equals(eventMethod)
+                ? icsInviteGenerator.buildCollectiveCancel(
+                        booking.getId(), summary, description,
+                        booking.getStartTime(), booking.getEndTime(),
+                        calendarOrganizerName, calendarOrganizerEmail,
+                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails)
+                : icsInviteGenerator.buildCollectiveRequest(
+                        booking.getId(), summary, description,
+                        booking.getStartTime(), booking.getEndTime(),
+                        calendarOrganizerName, calendarOrganizerEmail,
+                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails);
+        log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} hasAttachment={} method={} attendeesInIcs={} hasConferenceUrl={}",
+                booking.getId(), event.getId(), event.getEventType(), true, eventMethod,
+                countIcsAttendees(standaloneIcs),
+                conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank());
+
+        // Issue one manage token for the entire notification batch — all recipients
+        // share the same booking and the same permissions, so one token is correct.
+        String manageLink = null;
+        if (canBuildManageLink) {
+            String manageToken = guestCapabilityTokenService.issueToken(
+                    booking.getId(), booking.getHostId(),
+                    BookingActionType.MANAGE_BOOKING, guestManageTokenTtl, TokenCreatorType.SYSTEM);
+            manageLink = bookingManageLinkService.build(
+                    booking.getId(), manageToken, ownerUsername, eventTypeSlug);
+        }
+
+        for (String recipient : recipients) {
+            if (event.getId() == null) {
+                log.warn("booking_notification_send_skipped_missing_event_id bookingId={} recipient={} eventType={}",
+                        booking.getId(), recipient, event.getEventType());
+                continue;
+            }
+            boolean claimed = notificationSendDedupService.claim(event.getId(), recipient, event.getEventType());
+            if (!claimed) {
+                log.info("booking_notification_send_skipped_duplicate eventId={} bookingId={} recipient={} eventType={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType());
+                continue;
+            }
+            try {
+                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink,
+                        conferenceDetails, booking.getId());
+                log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType(), true);
+            } catch (Exception ex) {
+                notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
+                log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} eventType={} message={}",
+                        event.getId(), booking.getId(), recipient, event.getEventType(), ex.getMessage());
                 throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
             }
         }
@@ -590,49 +722,47 @@ public class BookingNotificationService {
     }
 
     /**
-     * True iff the host's projection calendar is on a consumer Microsoft account
-     * owned by the host themselves. In that case Outlook auto-imports the iTIP
-     * REQUEST ICS we'd attach to the host's email, producing a duplicate event
-     * next to the one already written via Graph. Suppress the host recipient so
-     * only the guest receives the invite.
+     * Returns the suppression reason string if the host/participant's ICS email must be
+     * suppressed, or {@code null} if they must receive it.
      *
-     * <p>Scoped to consumer MSAs only: work/school (Entra) accounts also auto-process
-     * meeting mail but Graph dispatches the invite itself, so we never attach an
-     * ICS for the host in that path. The check stays narrow to the configuration
-     * that produces the visible-duplicate symptom.
+     * <p>Suppression is valid only when the recipient IS the projection owner — the Calendar
+     * API already wrote the event directly to their calendar, so an additional ICS email
+     * would create a visible duplicate entry.
+     *
+     * <p>Ownership is determined from the immutable {@code booking_ownership} record (set at
+     * booking time via {@code BookingOwnershipService.ensureOwnership}), not from calendar
+     * connectivity alone.  A user may have an active Google or Microsoft connection without
+     * being the projection owner (e.g., a non-assigned RR participant, a COLLECTIVE member),
+     * and must still receive the ICS email in that case.
+     *
+     * <p>For Google projection owners: Gmail auto-imports any iTIP REQUEST, producing a
+     * duplicate next to the Calendar-API-written event — suppress.
+     * For Microsoft projection owners: consumer MSA (personal Outlook.com) auto-processes
+     * the iTIP — suppress.  Entra work/school accounts are handled by Graph and do not
+     * reach this path.
      */
-    private boolean shouldSuppressHostIcsForOwnMsaProjection(EventType eventType) {
-        if (eventType == null) return false;
-        if (eventType.getProjectionProvider() != CalendarProviderType.MICROSOFT) return false;
-        if (eventType.getProjectionConnectionId() == null) return false;
+    @org.springframework.lang.Nullable
+    private String resolveSuppressionReason(UUID hostId, @org.springframework.lang.Nullable BookingOwnership ownership) {
+        if (ownership == null || ownership.getProjectionConnectionId() == null) {
+            return null;
+        }
         CalendarConnection projectionConnection = calendarConnectionRepository
-                .findById(eventType.getProjectionConnectionId())
+                .findById(ownership.getProjectionConnectionId())
                 .orElse(null);
-        if (projectionConnection == null) return false;
-        return MicrosoftAccountClassifier.isConsumerMsa(projectionConnection);
-    }
-
-    /**
-     * True iff the host's projection calendar is on a Google account owned by
-     * the host themselves. Gmail auto-imports any iTIP REQUEST ICS we'd attach
-     * to the host's email, producing a duplicate event next to the one already
-     * written via the Calendar API. Suppress the host recipient so only the
-     * guest receives the invite.
-     *
-     * <p>Scoped narrowly to self-owned Google projections via the connection's
-     * {@code userId}. Shared, delegated, team, or service-account projections
-     * have a connection whose {@code userId} differs from the booking host's
-     * id, so suppression correctly does NOT fire and the host still gets the
-     * ICS email.
-     */
-    private boolean shouldSuppressHostIcsForOwnGoogleProjection(EventType eventType, UUID hostId) {
-        if (eventType == null) return false;
-        if (eventType.getProjectionProvider() != CalendarProviderType.GOOGLE) return false;
-        if (eventType.getProjectionConnectionId() == null) return false;
-        return calendarConnectionRepository
-                .findById(eventType.getProjectionConnectionId())
-                .filter(conn -> conn.getProvider() == CalendarProviderType.GOOGLE)
-                .map(conn -> hostId.equals(conn.getUserId()))
-                .orElse(false);
+        if (projectionConnection == null) {
+            return null;
+        }
+        // Only suppress when the projection connection belongs to this recipient.
+        if (!hostId.equals(projectionConnection.getUserId())) {
+            return null;
+        }
+        if (projectionConnection.getProvider() == CalendarProviderType.GOOGLE) {
+            return "google_projection_owner";
+        }
+        if (projectionConnection.getProvider() == CalendarProviderType.MICROSOFT
+                && MicrosoftAccountClassifier.isConsumerMsa(projectionConnection)) {
+            return "ms_consumer_msa_projection_owner";
+        }
+        return null;
     }
 }

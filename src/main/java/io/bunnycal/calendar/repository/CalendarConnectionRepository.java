@@ -34,6 +34,8 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
 
     java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
 
+    java.util.List<CalendarConnection> findByUserIdAndStatusNot(UUID userId, CalendarConnectionStatus status);
+
     /**
      * F7: rows that are due to be swept. ACTIVE/SYNCING always; FAILED/ERROR only when
      * next_retry_at has elapsed (or is unset, which happens for legacy rows pre-migration).

@@ -1,48 +1,48 @@
 services:
-  bunnycal-api:
-    image: ${BUNNYCAL_IMAGE:-bunnycal/bunnycal-api:latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://otel-collector:4318/v1/metrics
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - bunnycal
+#  bunnycal-api:
+#    image: ${BUNNYCAL_IMAGE:-bunnycal/bunnycal-api:latest}
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+#      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+#      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+#      SPRING_DATA_REDIS_HOST: redis
+#      SPRING_DATA_REDIS_PORT: 6379
+#      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://otel-collector:4318/v1/metrics
+#    restart: unless-stopped
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    networks:
+#      - bunnycal
 
-  caddy:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - bunnycal-api
-    networks:
-      - bunnycal
+#  caddy:
+#    image: caddy:2.8-alpine
+#    restart: unless-stopped
+#    ports:
+#      - "80:80"
+#      - "443:443"
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      APP_DOMAIN: ${APP_DOMAIN}
+#    volumes:
+#      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#      - caddy_data:/data
+#      - caddy_config:/config
+#    depends_on:
+#      - bunnycal-api
+#    networks:
+#      - bunnycal
 
   postgres:
     image: postgres:16-alpine
@@ -58,76 +58,71 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    ports:
+      - "5432:5432"
     networks:
       - bunnycal
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    networks:
-      - bunnycal
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.111.0
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    restart: unless-stopped
-    networks:
-      - bunnycal
-
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=7d
-      - --web.enable-lifecycle
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    # Internal-only by default: Prometheus is reachable on the Compose network
-    # (e.g. by Grafana at http://prometheus:9090) and is NOT published to the
-    # public internet. Bind to loopback so it is reachable only via an SSH
-    # tunnel to the VM (ssh -L 9090:127.0.0.1:9090 ...).
     ports:
-      - "127.0.0.1:9090:9090"
-    depends_on:
-      - bunnycal-api
-    restart: unless-stopped
+      - "6379:6379"
     networks:
       - bunnycal
 
-  grafana:
-    image: grafana/grafana:11.2.0
-    environment:
-      # Credentials come from env vars — fail fast if unset (no admin/admin
-      # fallback). The "?err" form makes `docker compose up` abort with a clear
-      # message when GRAFANA_ADMIN_PASSWORD is missing.
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    # Internal-only by default: not published to the public internet. Bind to
-    # loopback so Grafana is reachable only via an SSH tunnel to the VM
-    # (ssh -L 3000:127.0.0.1:3000 ...).
-    ports:
-      - "127.0.0.1:3000:3000"
-    depends_on:
-      - prometheus
-    restart: unless-stopped
-    networks:
-      - bunnycal
+# otel-collector:
+#   image: otel/opentelemetry-collector-contrib:0.153.0
+#   command: ["--config=/etc/otel-collector-config.yaml"]
+#   volumes:
+#     - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+#   restart: unless-stopped
+#   ports:
+#     - "4317:4317"
+#     - "4318:4318"
+#   networks:
+#     - bunnycal
+
+# prometheus:
+#   image: prom/prometheus:v2.54.1
+#   command:
+#     - --config.file=/etc/prometheus/prometheus.yml
+#     - --storage.tsdb.path=/prometheus
+#     - --storage.tsdb.retention.time=7d
+#     - --web.enable-lifecycle
+#   volumes:
+#     - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+#     - prometheus_data:/prometheus
+#   ports:
+#     - "127.0.0.1:9090:9090"
+#   restart: unless-stopped
+#   networks:
+#     - bunnycal
+
+# grafana:
+#   image: grafana/grafana:11.2.0
+#   environment:
+#     GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?GRAFANA_ADMIN_USER is required}
+#     GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+#     GF_USERS_ALLOW_SIGN_UP: "false"
+#   volumes:
+#     - grafana_data:/var/lib/grafana
+#     - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+#     - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+#   ports:
+#     - "127.0.0.1:3000:3000"
+#   depends_on:
+#     - prometheus
+#   restart: unless-stopped
+#   networks:
+#     - bunnycal
 
 networks:
   bunnycal:
 
 volumes:
   postgres_data:
-  prometheus_data:
-  grafana_data:
-  caddy_data:
-  caddy_config:
+#  prometheus_data:
+#  grafana_data:
+#  caddy_data:
+#  caddy_config:

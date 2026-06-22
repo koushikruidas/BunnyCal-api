@@ -1,6 +1,8 @@
 package io.bunnycal.calendar.service;
 
 import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.availability.service.ParticipantEligibilityService;
+import io.bunnycal.team.service.ParticipantSetupRequestService;
 import io.bunnycal.calendar.auth.OAuthStateException;
 import io.bunnycal.calendar.auth.OAuthStatePayload;
 import io.bunnycal.calendar.auth.OAuthStateService;
@@ -40,6 +42,8 @@ public class MicrosoftCalendarOAuthService {
     private final CalendarConnectionWriteService connectionWriteService;
     private final CalendarWebhookProperties webhookProperties;
     private final CalendarInventoryHydrator inventoryHydrator;
+    private final ParticipantSetupRequestService setupRequestService;
+    private final ParticipantEligibilityService eligibilityService;
 
     public MicrosoftCalendarOAuthService(CalendarConnectionRepository repository,
                                          MicrosoftApiClient microsoftApiClient,
@@ -51,7 +55,9 @@ public class MicrosoftCalendarOAuthService {
                                          SlotCacheVersionService slotCacheVersionService,
                                          CalendarConnectionWriteService connectionWriteService,
                                          CalendarWebhookProperties webhookProperties,
-                                         CalendarInventoryHydrator inventoryHydrator) {
+                                         CalendarInventoryHydrator inventoryHydrator,
+                                         ParticipantSetupRequestService setupRequestService,
+                                         ParticipantEligibilityService eligibilityService) {
         this.repository = repository;
         this.microsoftApiClient = microsoftApiClient;
         this.properties = properties;
@@ -63,6 +69,8 @@ public class MicrosoftCalendarOAuthService {
         this.connectionWriteService = connectionWriteService;
         this.webhookProperties = webhookProperties;
         this.inventoryHydrator = inventoryHydrator;
+        this.setupRequestService = setupRequestService;
+        this.eligibilityService = eligibilityService;
     }
 
     public String buildMicrosoftConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
@@ -146,6 +154,9 @@ public class MicrosoftCalendarOAuthService {
         // Best-effort: hydrate the canonical provider calendar inventory using the freshly-issued
         // access token. Failures are swallowed inside the hydrator so they cannot fail the connect.
         inventoryHydrator.hydrateWithAccessToken(saved, token.accessToken());
+        if (saved.getStatus() == CalendarConnectionStatus.ACTIVE && eligibilityService.isReady(userId)) {
+            setupRequestService.markAllCompletedForTarget(userId);
+        }
         return new CalendarOAuthService.OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 

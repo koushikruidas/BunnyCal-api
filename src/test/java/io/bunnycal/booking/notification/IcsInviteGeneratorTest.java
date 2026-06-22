@@ -8,6 +8,7 @@ import io.bunnycal.conferencing.service.ConferenceDetails;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -297,6 +298,126 @@ class IcsInviteGeneratorTest {
         ));
         assertTrue(unfolded.contains("DTSTART:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(start)));
         assertTrue(unfolded.contains("DTEND:" + java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(java.time.ZoneOffset.UTC).format(end)));
+    }
+
+    @Test
+    void collectiveRequest_allAttendeesAreReqParticipant() {
+        // Option B: collective hosts and guest both use REQ-PARTICIPANT. No CHAIR.
+        UUID bookingId = UUID.randomUUID();
+        String ics = unfold(generator.buildCollectiveRequest(
+                bookingId,
+                "Team Sync",
+                "Booking " + bookingId,
+                Instant.parse("2026-06-15T09:00:00Z"),
+                Instant.parse("2026-06-15T09:30:00Z"),
+                "BunnyCal Calendar",
+                "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("Alice", "alice@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("Bob", "bob@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("Charlie", "charlie@example.com")
+                ),
+                "Guest Name",
+                "guest@example.com",
+                0,
+                conf(null)
+        ));
+
+        assertTrue(ics.contains("METHOD:REQUEST"));
+        assertTrue(ics.contains("ORGANIZER;CN=BunnyCal Calendar:mailto:calendar@example.com"));
+        // All three hosts present as REQ-PARTICIPANT
+        assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:alice@example.com"), "alice present");
+        assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:bob@example.com"), "bob present");
+        assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:charlie@example.com"), "charlie present");
+        // Guest present as REQ-PARTICIPANT
+        assertTrue(ics.contains("ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:guest@example.com"), "guest present");
+        // No CHAIR anywhere in a collective ICS (covered by companion test below, also asserted here)
+        assertFalse(ics.contains("ROLE=CHAIR"), "collective ICS must not contain ROLE=CHAIR");
+        // Exactly 4 ATTENDEE lines (3 hosts + 1 guest)
+        int attendeeCount = 0;
+        int idx = 0;
+        while ((idx = ics.indexOf("ATTENDEE;", idx)) >= 0) { attendeeCount++; idx++; }
+        assertEquals(4, attendeeCount, "expected 4 ATTENDEE lines");
+    }
+
+    @Test
+    void collectiveRequest_noCHAIREmittedForAnyAttendee() {
+        // Guard: verify ROLE=CHAIR never appears in a collective ICS regardless of host count.
+        String request = unfold(generator.buildCollectiveRequest(
+                UUID.randomUUID(), "S", "D",
+                Instant.parse("2026-06-15T09:00:00Z"), Instant.parse("2026-06-15T09:30:00Z"),
+                "BunnyCal Calendar", "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("H1", "h1@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("H2", "h2@example.com")
+                ),
+                "Guest", "guest@example.com", 0, conf(null)));
+        String cancel = unfold(generator.buildCollectiveCancel(
+                UUID.randomUUID(), "S", "D",
+                Instant.parse("2026-06-15T09:00:00Z"), Instant.parse("2026-06-15T09:30:00Z"),
+                "BunnyCal Calendar", "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("H1", "h1@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("H2", "h2@example.com")
+                ),
+                "Guest", "guest@example.com", 1, conf(null)));
+
+        assertFalse(request.contains("ROLE=CHAIR"), "REQUEST must not contain ROLE=CHAIR");
+        assertFalse(cancel.contains("ROLE=CHAIR"),  "CANCEL must not contain ROLE=CHAIR");
+    }
+
+    @Test
+    void collectiveCancel_setsMethodCancelAndStatusCancelled() {
+        UUID bookingId = UUID.randomUUID();
+        String ics = unfold(generator.buildCollectiveCancel(
+                bookingId,
+                "Team Sync",
+                "Booking " + bookingId,
+                Instant.parse("2026-06-15T09:00:00Z"),
+                Instant.parse("2026-06-15T09:30:00Z"),
+                "BunnyCal Calendar",
+                "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("Alice", "alice@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("Bob", "bob@example.com")
+                ),
+                "Guest Name",
+                "guest@example.com",
+                1,
+                conf(null)
+        ));
+
+        assertTrue(ics.contains("METHOD:CANCEL"));
+        assertTrue(ics.contains("STATUS:CANCELLED"));
+        assertTrue(ics.contains("SEQUENCE:1"));
+    }
+
+    @Test
+    void collectiveRequest_deduplicatesHostEmailEqualToOrganizerEmail() {
+        // If a host's email equals the organizer email, that host is skipped
+        // (same rule as buildStandaloneRequest via addAttendee).
+        String ics = unfold(generator.buildCollectiveRequest(
+                UUID.randomUUID(),
+                "Sync", "Desc",
+                Instant.parse("2026-06-15T09:00:00Z"),
+                Instant.parse("2026-06-15T09:30:00Z"),
+                "BunnyCal Calendar",
+                "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("Alice", "alice@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("Organizer", "calendar@example.com")
+                ),
+                "Guest", "guest@example.com",
+                0, conf(null)
+        ));
+
+        assertTrue(ics.contains("mailto:alice@example.com"), "alice present");
+        // ORGANIZER line legitimately contains calendar@example.com — only ATTENDEE lines must not.
+        boolean organizerAppearsAsAttendee = java.util.Arrays.stream(ics.split("\r\n"))
+                .filter(l -> l.startsWith("ATTENDEE"))
+                .anyMatch(l -> l.contains("calendar@example.com"));
+        assertFalse(organizerAppearsAsAttendee, "organizer email must not appear on any ATTENDEE line");
+        assertTrue(ics.contains("mailto:guest@example.com"), "guest present");
     }
 
     private static String unfold(String ics) {

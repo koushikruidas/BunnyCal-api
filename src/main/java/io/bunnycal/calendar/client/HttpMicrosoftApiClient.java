@@ -37,8 +37,11 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     @Override
     public MicrosoftEventDetails createEvent(String accessToken, CreateEventRequest request) {
         try {
-            Map<String, Object> body = buildEventBody(request.title(), request.description(), request.startsAt(), request.endsAt(),
-                    request.organizerEmail(), request.attendeeEmail(), request.attendeeName(), request.conferencingInstruction());
+            Map<String, Object> body = request.isMultiAttendee()
+                    ? buildEventBodyMulti(request.title(), request.description(), request.startsAt(), request.endsAt(),
+                            request.organizerEmail(), request.attendees(), request.conferencingInstruction())
+                    : buildEventBody(request.title(), request.description(), request.startsAt(), request.endsAt(),
+                            request.organizerEmail(), request.attendeeEmail(), request.attendeeName(), request.conferencingInstruction());
             ResponseEntity<Map> response = graphClient.post()
                     .uri("/v1.0/me/calendars/{calendarId}/events", effectiveCalendarId(request.targetCalendarId()))
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
@@ -57,8 +60,11 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     @Override
     public MicrosoftEventDetails updateEvent(String accessToken, UpdateEventRequest request) {
         try {
-            Map<String, Object> body = buildEventBody(request.title(), request.description(), request.startsAt(), request.endsAt(),
-                    request.organizerEmail(), request.attendeeEmail(), request.attendeeName(), request.conferencingInstruction());
+            Map<String, Object> body = request.isMultiAttendee()
+                    ? buildEventBodyMulti(request.title(), request.description(), request.startsAt(), request.endsAt(),
+                            request.organizerEmail(), request.attendees(), request.conferencingInstruction())
+                    : buildEventBody(request.title(), request.description(), request.startsAt(), request.endsAt(),
+                            request.organizerEmail(), request.attendeeEmail(), request.attendeeName(), request.conferencingInstruction());
             ResponseEntity<Map> response = graphClient.patch()
                     .uri("/v1.0/me/calendars/{calendarId}/events/{id}",
                             effectiveCalendarId(request.targetCalendarId()),
@@ -441,6 +447,26 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
 
     private record PageReadResult(List<CalendarEventObservation> events, String nextLink, String deltaLink) {}
 
+    private static Map<String, Object> buildEventBodyMulti(String title,
+                                                          String description,
+                                                          Instant startsAt,
+                                                          Instant endsAt,
+                                                          String organizerEmail,
+                                                          List<io.bunnycal.calendar.provider.CreateEventRequest.MultiAttendee> attendees,
+                                                          ConferencingInstruction instruction) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("subject", title);
+        body.put("body", Map.of("contentType", "text", "content", appendConferenceUrl(description, instruction)));
+        body.put("start", Map.of("dateTime", startsAt.toString(), "timeZone", "UTC"));
+        body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
+        body.put("responseRequested", false);
+        body.put("isReminderOn", false);
+        if (instruction != null && instruction.embedsExternalUrl()) {
+            body.put("location", Map.of("displayName", instruction.joinUrl()));
+        }
+        return body;
+    }
+
     private static Map<String, Object> buildEventBody(String title,
                                                       String description,
                                                       Instant startsAt,
@@ -454,11 +480,6 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         body.put("body", Map.of("contentType", "text", "content", appendConferenceUrl(description, instruction)));
         body.put("start", Map.of("dateTime", startsAt.toString(), "timeZone", "UTC"));
         body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
-        body.put("attendees", List.of(Map.of(
-                "emailAddress", Map.of(
-                        "address", attendeeEmail,
-                        "name", attendeeName == null || attendeeName.isBlank() ? attendeeEmail : attendeeName),
-                "type", "required")));
         // App is the canonical organizer and emits its own ICS invites/updates/cancels.
         // Microsoft Graph remains a silent time-block mirror — it must not dispatch parallel invitation emails.
         body.put("responseRequested", false);

@@ -105,7 +105,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                     hasTimezoneMetadata(start) || hasTimezoneMetadata(end),
                     request.startsAt(),
                     request.endsAt());
-            ResponseEntity<Map> response = restClient.put()
+            ResponseEntity<Map> response = restClient.patch()
                      .uri(UPDATE_EVENT_URI_TEMPLATE, effectiveCalendarId(request.targetCalendarId()), request.externalEventId())
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -701,7 +701,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (instruction.embedsExternalUrl()) {
             body.put("location", instruction.joinUrl());
         }
-        body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
     }
 
@@ -723,7 +722,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
         if (instruction.embedsExternalUrl()) {
             body.put("location", instruction.joinUrl());
         }
-        body.put("attendees", attendees(request.attendeeEmail(), request.attendeeName()));
         return body;
     }
 
@@ -744,19 +742,6 @@ public class HttpGoogleApiClient implements GoogleApiClient {
             return base;
         }
         return base + "\n" + joinLine;
-    }
-
-    static List<Map<String, Object>> attendees(String attendeeEmail, String attendeeName) {
-        List<Map<String, Object>> attendees = new ArrayList<>();
-        if (attendeeEmail != null && !attendeeEmail.isBlank()) {
-            Map<String, Object> guest = new HashMap<>();
-            guest.put("email", attendeeEmail);
-            if (attendeeName != null && !attendeeName.isBlank()) {
-                guest.put("displayName", attendeeName);
-            }
-            attendees.add(guest);
-        }
-        return attendees;
     }
 
     private static String extractId(Map body) {

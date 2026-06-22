@@ -1,6 +1,8 @@
 package io.bunnycal.booking.service;
 
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.booking.contract.BookingStateTransitions;
 import io.bunnycal.booking.domain.Booking;
@@ -77,6 +79,10 @@ public class BookingService {
     private final BookingPendingCounter pendingCounter;
     @Nullable
     private final BookingConferencingCapabilityGuard conferencingCapabilityGuard;
+    @Nullable
+    private final SlotCacheVersionService slotCacheVersionService;
+    @Nullable
+    private final EventTypeRepository eventTypeRepository;
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     private final Counter conflictCounter;
@@ -98,7 +104,9 @@ public class BookingService {
             MeterRegistry meterRegistry,
             @Nullable SyncInvariantMonitor invariantMonitor,
             @Nullable BookingPendingCounter pendingCounter,
-            @Nullable BookingConferencingCapabilityGuard conferencingCapabilityGuard) {
+            @Nullable BookingConferencingCapabilityGuard conferencingCapabilityGuard,
+            @Nullable SlotCacheVersionService slotCacheVersionService,
+            @Nullable EventTypeRepository eventTypeRepository) {
         this.userRepository = userRepository;
         this.bookingRepository = bookingRepository;
         this.outboxPublisher = outboxPublisher;
@@ -107,6 +115,8 @@ public class BookingService {
         this.invariantMonitor = invariantMonitor;
         this.pendingCounter = pendingCounter;
         this.conferencingCapabilityGuard = conferencingCapabilityGuard;
+        this.slotCacheVersionService = slotCacheVersionService;
+        this.eventTypeRepository = eventTypeRepository;
 
         this.conflictCounter = Counter.builder("booking.conflicts.total")
                 .description("Number of booking attempts rejected due to slot overlap")
@@ -154,7 +164,7 @@ public class BookingService {
             OutboxPublisher outboxPublisher,
             TimeSource timeSource,
             MeterRegistry meterRegistry) {
-        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null, null);
+        this(userRepository, bookingRepository, outboxPublisher, timeSource, meterRegistry, null, null, null, null, null);
     }
 
     /**
@@ -240,6 +250,9 @@ public class BookingService {
         if (pendingCounter != null) {
             pendingCounter.increment();
         }
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(saved.getHostId());
+        }
         return saved;
     }
 
@@ -321,17 +334,32 @@ public class BookingService {
         }
 
         var state = findState(bookingId);
-        if (!authenticatedHostId.equals(state.getHostId())) {
+        // For RR bookings the booking's hostId is the assigned participant, not the event type
+        // owner. Allow cancellation if the caller is the assigned participant OR the event type
+        // owner (they created the event type and are responsible for it).
+        boolean isAssignedParticipant = authenticatedHostId.equals(state.getHostId());
+        boolean isEventTypeOwner = false;
+        if (!isAssignedParticipant && eventTypeRepository != null) {
+            Booking bookingForOwnerCheck = bookingRepository.findAnyById(bookingId).orElse(null);
+            isEventTypeOwner = bookingForOwnerCheck != null
+                    && eventTypeRepository.findById(bookingForOwnerCheck.getEventTypeId())
+                            .map(et -> authenticatedHostId.equals(et.getUserId()))
+                            .orElse(false);
+        }
+        if (!isAssignedParticipant && !isEventTypeOwner) {
             throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this booking.");
         }
+        // cancelBooking requires the actual hostId (composite PK partition key).
+        // For RR this is the assigned participant, not the event type owner.
+        UUID effectiveHostId = state.getHostId();
 
         BookingState current = parseBookingState(state.getStatus());
         if (current.isCancelled()) {
-            return findBooking(bookingId, authenticatedHostId);
+            return findBooking(bookingId, effectiveHostId);
         }
 
         try {
-            cancelBooking(bookingId, authenticatedHostId, state.getVersion(), CancellationSource.HOST, reasonCode);
+            cancelBooking(bookingId, effectiveHostId, state.getVersion(), CancellationSource.HOST, reasonCode);
         } catch (CustomException ex) {
             if (ex.getErrorCode() != ErrorCode.INVALID_STATE_TRANSITION) {
                 throw ex;
@@ -341,7 +369,7 @@ public class BookingService {
                 throw ex;
             }
         }
-        return findBooking(bookingId, authenticatedHostId);
+        return findBooking(bookingId, effectiveHostId);
     }
 
     // ── State Transitions ────────────────────────────────────────────────────
@@ -375,6 +403,9 @@ public class BookingService {
         if (pendingCounter != null) {
             pendingCounter.decrement();
         }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
         assertInvariant("booking_transition_confirmed", id, BookingState.CONFIRMED);
         bookingRepository.findAnyById(id).ifPresent(booking ->
                 outboxPublisher.publish("Booking", id, booking.getHostId(), new OutboxPayloadEnvelope(
@@ -390,11 +421,17 @@ public class BookingService {
         if (pendingCounter != null) {
             pendingCounter.decrement();
         }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
     }
 
     @Transactional
     public void cancelConfirmedBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.CANCELLED);
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
     }
 
     @Transactional
@@ -408,6 +445,9 @@ public class BookingService {
         recordCompletionLatency(id);
         if (pendingCounter != null) {
             pendingCounter.decrement();
+        }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
         }
     }
 
@@ -425,6 +465,9 @@ public class BookingService {
             throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION);
         }
         bookingRescheduledTotal.increment();
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(hostId);
+        }
         assertInvariant("booking_transition_rescheduled", id, BookingState.CONFIRMED);
 
         outboxPublisher.publish("Booking", id, hostId, new OutboxPayloadEnvelope(
@@ -475,6 +518,9 @@ public class BookingService {
                 metadata));
         meterRegistry.counter("booking_cancellation_total",
                 "source", source == null ? CancellationSource.EXTERNAL.name() : source.name()).increment();
+        if (slotCacheVersionService != null) {
+            slotCacheVersionService.bumpVersionAfterCommit(hostId);
+        }
     }
 
     private static BookingState parseBookingState(String status) {

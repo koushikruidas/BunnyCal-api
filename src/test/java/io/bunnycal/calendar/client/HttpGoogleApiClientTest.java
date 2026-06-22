@@ -9,7 +9,6 @@ import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -17,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class HttpGoogleApiClientTest {
 
     @Test
-    void createBody_containsOnlyGuestAttendee_andOmitsConferenceRequestByDefault() {
+    void createBody_omitsAttendees_andOmitsConferenceRequestByDefault() {
         CreateEventRequest request = new CreateEventRequest(
                 UUID.randomUUID(),
                 "Intro",
@@ -34,20 +33,16 @@ class HttpGoogleApiClientTest {
         Map<String, Object> start = (Map<String, Object>) body.get("start");
         @SuppressWarnings("unchecked")
         Map<String, Object> end = (Map<String, Object>) body.get("end");
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> attendees = (List<Map<String, Object>>) body.get("attendees");
         assertEquals("2026-05-10T10:00:00Z", start.get("dateTime"));
         assertEquals("2026-05-10T10:30:00Z", end.get("dateTime"));
-        assertEquals(1, attendees.size());
-        assertEquals("guest@example.com", attendees.get(0).get("email"));
-        assertEquals("Guest User", attendees.get(0).get("displayName"));
+        assertFalse(body.containsKey("attendees"));
         assertFalse(body.containsKey("conferenceData"));
         assertEquals("/calendar/v3/calendars/primary/events?sendUpdates=none&conferenceDataVersion=1",
                 HttpGoogleApiClient.CREATE_EVENT_URI);
     }
 
     @Test
-    void updateBody_containsAttendee_andOmitsConferenceRequestByDefault() {
+    void updateBody_omitsAttendees_andOmitsConferenceRequestByDefault() {
         UpdateEventRequest request = new UpdateEventRequest(
                 UUID.randomUUID(),
                 "ext-1",
@@ -64,12 +59,9 @@ class HttpGoogleApiClientTest {
         Map<String, Object> start = (Map<String, Object>) body.get("start");
         @SuppressWarnings("unchecked")
         Map<String, Object> end = (Map<String, Object>) body.get("end");
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> attendees = (List<Map<String, Object>>) body.get("attendees");
         assertEquals("2026-05-10T10:00:00Z", start.get("dateTime"));
         assertEquals("2026-05-10T10:30:00Z", end.get("dateTime"));
-        assertEquals(1, attendees.size());
-        assertEquals("guest@example.com", attendees.get(0).get("email"));
+        assertFalse(body.containsKey("attendees"));
         assertFalse(body.containsKey("conferenceData"));
         assertEquals("/calendar/v3/calendars/primary/events/{id}?sendUpdates=none&conferenceDataVersion=1",
                 HttpGoogleApiClient.UPDATE_EVENT_URI);

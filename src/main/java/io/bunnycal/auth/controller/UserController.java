@@ -10,6 +10,7 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.TimeZoneService;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
@@ -37,7 +39,10 @@ public class UserController {
 
         UUID userId = extractUserId(authentication.getPrincipal());
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found"));
+                .orElseThrow(() -> {
+                    log.warn("session_user_not_found userId={} endpoint=GET:/api/me reason=user_not_found", userId);
+                    return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
+                });
         if (timezoneHeader != null && !timezoneHeader.isBlank()) {
             timeZoneService.applyTimezoneUpdate(user, timezoneHeader);
             user = userRepository.save(user);
@@ -54,7 +59,10 @@ public class UserController {
         }
         UUID userId = extractUserId(authentication == null ? null : authentication.getPrincipal());
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found"));
+                .orElseThrow(() -> {
+                    log.warn("session_user_not_found userId={} endpoint=PUT:/api/me/timezone reason=user_not_found", userId);
+                    return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
+                });
         timeZoneService.applyTimezoneUpdate(user, request.timezone());
         User saved = userRepository.save(user);
         return ResponseEntity.ok(ApiResponse.success(UserDto.from(saved)));
