@@ -5,6 +5,8 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.session.dto.HoldActiveResponse;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +17,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     private final TimeSource timeSource;
 
@@ -59,9 +62,17 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGenericException(Exception ex) {
-        ex.printStackTrace();
+        log.error("unhandled_exception type={} message={}", ex.getClass().getName(), safeMessage(ex));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.error(ErrorCode.INTERNAL_SERVER_ERROR));
+    }
+
+    private String safeMessage(Exception ex) {
+        String message = ex.getMessage();
+        if (message == null || message.isBlank()) {
+            return "<none>";
+        }
+        return message.length() > 256 ? message.substring(0, 256) + "..." : message;
     }
 
     private HttpStatus mapStatus(ErrorCode errorCode) {

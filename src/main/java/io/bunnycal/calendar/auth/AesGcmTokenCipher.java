@@ -28,8 +28,6 @@ public class AesGcmTokenCipher implements TokenCipher {
 
     public AesGcmTokenCipher(CalendarSecurityProperties properties) {
         String rawKeyString = properties.getEncryptionKeyBase64();
-        log.info("[KEY-DIAG] raw key string  : {}", rawKeyString);
-        log.info("[KEY-DIAG] raw string length: {}", rawKeyString == null ? "null" : rawKeyString.length());
 
         if (rawKeyString == null || rawKeyString.isBlank()) {
             throw new IllegalStateException(
@@ -41,9 +39,8 @@ public class AesGcmTokenCipher implements TokenCipher {
             decoded = Base64.getDecoder().decode(rawKeyString.strip());
         } catch (IllegalArgumentException ex) {
             throw new IllegalStateException(
-                "calendar.security.encryption-key-base64 is not valid Base64. raw value: [" + rawKeyString + "]", ex);
+                "calendar.security.encryption-key-base64 is not valid Base64", ex);
         }
-        log.info("[KEY-DIAG] decoded byte length: {}", decoded.length);
 
         if (!VALID_AES_KEY_BYTES.contains(decoded.length)) {
             throw new IllegalStateException(
