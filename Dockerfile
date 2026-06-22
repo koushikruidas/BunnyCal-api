@@ -16,6 +16,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --system --uid 10001 --create-home appuser
+RUN mkdir -p /app/logs
 
 COPY --from=build /workspace/build/libs/*.jar /app/app.jar
 RUN chown -R appuser:appuser /app
