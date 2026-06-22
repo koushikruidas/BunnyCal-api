@@ -1,6 +1,6 @@
 <configuration>
 
-    <property name="LOG_DIR" value="${LOG_DIR:-/app/logs}"/>
+    <property name="LOG_DIR" value="${LOG_DIR:-logs}"/>
 
     <!-- ========================= -->
     <!-- CONSOLE (APP LOGS ONLY) -->
