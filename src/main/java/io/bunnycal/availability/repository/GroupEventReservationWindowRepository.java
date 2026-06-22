@@ -28,7 +28,9 @@ public interface GroupEventReservationWindowRepository
      */
     @Query(value = """
             SELECT w.* FROM group_event_reservation_windows w
+            JOIN event_types et ON et.id = w.event_type_id
             WHERE w.event_type_id = :eventTypeId
+              AND et.deleted_at IS NULL
               AND (
                 (w.schedule_type = 'ONE_TIME'   AND w.event_date  = :date)
                 OR
@@ -57,6 +59,7 @@ public interface GroupEventReservationWindowRepository
             JOIN event_types et ON et.id = w.event_type_id
             WHERE et.user_id       = :hostId
               AND w.event_type_id <> :eventTypeId
+              AND et.deleted_at IS NULL
               AND (
                 (w.schedule_type = 'ONE_TIME'   AND w.event_date  = :date)
                 OR
@@ -79,6 +82,7 @@ public interface GroupEventReservationWindowRepository
             JOIN event_types et ON et.id = w.event_type_id
             WHERE et.user_id       = :hostId
               AND w.event_type_id <> :eventTypeId
+              AND et.deleted_at IS NULL
             """, nativeQuery = true)
     List<GroupEventReservationWindow> findWindowsOwnedByOtherEventTypes(
             @Param("hostId") UUID hostId,
@@ -110,6 +114,7 @@ public interface GroupEventReservationWindowRepository
             FROM GroupEventReservationWindow w
             JOIN EventType et ON et.id = w.eventTypeId
             WHERE et.userId = :hostId
+              AND et.deletedAt IS NULL
             ORDER BY w.dayOfWeek, w.startTime
             """)
     List<GroupReservationBlockerResponse> findAllWindowsWithEventNameByHost(@Param("hostId") UUID hostId);
