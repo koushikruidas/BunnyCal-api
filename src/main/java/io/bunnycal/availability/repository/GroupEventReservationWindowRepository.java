@@ -1,6 +1,7 @@
 package io.bunnycal.availability.repository;
 
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.dto.GroupReservationBlockerResponse;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -87,18 +88,29 @@ public interface GroupEventReservationWindowRepository
      * All reservation windows owned by any GROUP event type of the given host, with
      * the owning event type's name. Used to surface blocking information in the
      * availability UI so hosts can see why their other event types lose slots.
+     *
+     * <p>This uses JPQL (not a native query) so enum columns persisted via
+     * {@code @Enumerated(EnumType.STRING)} — notably {@code dayOfWeek},
+     * {@code scheduleType}, and {@code recurrenceEndMode} — are converted back to
+     * their Java enum types instead of being surfaced as raw strings.</p>
      */
-    @Query(value = """
-            SELECT w.id           AS windowId,
-                   w.event_type_id AS eventTypeId,
-                   et.name        AS eventTypeName,
-                   w.day_of_week  AS dayOfWeek,
-                   w.start_time   AS startTime,
-                   w.end_time     AS endTime
-            FROM group_event_reservation_windows w
-            JOIN event_types et ON et.id = w.event_type_id
-            WHERE et.user_id = :hostId
-            ORDER BY w.day_of_week, w.start_time
-            """, nativeQuery = true)
-    List<GroupReservationBlockerView> findAllWindowsWithEventNameByHost(@Param("hostId") UUID hostId);
+    @Query("""
+            SELECT new io.bunnycal.availability.dto.GroupReservationBlockerResponse(
+                       w.id,
+                       w.eventTypeId,
+                       et.name,
+                       w.dayOfWeek,
+                       w.startTime,
+                       w.endTime,
+                       w.scheduleType,
+                       w.eventDate,
+                       w.recurrenceEndMode,
+                       w.untilDate,
+                       w.occurrenceCount)
+            FROM GroupEventReservationWindow w
+            JOIN EventType et ON et.id = w.eventTypeId
+            WHERE et.userId = :hostId
+            ORDER BY w.dayOfWeek, w.startTime
+            """)
+    List<GroupReservationBlockerResponse> findAllWindowsWithEventNameByHost(@Param("hostId") UUID hostId);
 }

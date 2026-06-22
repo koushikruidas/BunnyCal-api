@@ -127,15 +127,7 @@ public class AvailabilityService {
     @Transactional(readOnly = true)
     public List<GroupReservationBlockerResponse> getReservationBlockers(UUID userId) {
         sessionUserResolver.require(userId, "GET:/api/availability/reservation-blockers");
-        return reservationWindowRepository.findAllWindowsWithEventNameByHost(userId).stream()
-                .map(v -> new GroupReservationBlockerResponse(
-                        v.getWindowId(),
-                        v.getEventTypeId(),
-                        v.getEventTypeName(),
-                        v.getDayOfWeek(),
-                        v.getStartTime(),
-                        v.getEndTime()))
-                .toList();
+        return reservationWindowRepository.findAllWindowsWithEventNameByHost(userId);
     }
 
     @Transactional
