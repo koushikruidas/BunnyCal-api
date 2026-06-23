@@ -76,7 +76,15 @@ public enum ErrorCode {
     EVENT_TYPE_NOT_PUBLISHED("EVENT_TYPE_NOT_PUBLISHED",
             "This event type is not currently accepting bookings."),
     UNPUBLISHABLE_EVENT_TYPE("UNPUBLISHABLE_EVENT_TYPE",
-            "This event type cannot be published until all participants are ready.");
+            "This event type cannot be published until all participants are ready."),
+    EMBED_TOKEN_INVALID("EMBED_TOKEN_INVALID",
+            "Embed token is invalid or has expired. Please reload the booking form."),
+    EXPERIENCE_VERSION_MISMATCH("EXPERIENCE_VERSION_MISMATCH",
+            "This booking form was updated. Please refresh before continuing."),
+    EXPERIENCE_SLUG_TAKEN("EXPERIENCE_SLUG_TAKEN",
+            "A booking experience with this slug already exists."),
+    FORM_ATTACHED_TO_ACTIVE_EXPERIENCE("FORM_ATTACHED_TO_ACTIVE_EXPERIENCE",
+            "This form is attached to one or more active experiences and cannot be deleted.");
 
     private final String code;
     private final String message;

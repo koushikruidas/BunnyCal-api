@@ -47,6 +47,9 @@ import java.time.ZoneId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import io.bunnycal.embed.public_.EmbedBookingSupport;
+import io.bunnycal.form.dto.AnswerSnapshot;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -54,6 +57,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 @Service
 public class PublicBookingService {
     private static final Logger log = LoggerFactory.getLogger(PublicBookingService.class);
+
+    // Optional: only present when embed module is on the classpath (always in practice)
+    @Autowired(required = false)
+    private EmbedBookingSupport embedBookingSupport;
+
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
     private final BookingService bookingService;
@@ -249,22 +257,36 @@ public class PublicBookingService {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
+
+        // Step 1 & 2: validate embed token + answers BEFORE any booking state mutation
+        List<AnswerSnapshot> answerSnapshots = List.of();
+        if (request.embedToken() != null && !request.embedToken().isBlank() && embedBookingSupport != null) {
+            answerSnapshots = embedBookingSupport.validateEmbedRequest(request.embedToken(), request.answers());
+        }
+
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
         // Gate: unpublished event types do not accept new holds.
         // The public page remains reachable but no new slots/holds/bookings are allowed.
         requirePublished(target.eventTypeId());
 
+        PublicHoldResponse response;
         if (target.kind() == EventKind.GROUP) {
-            return holdGroupRegistration(target, request);
+            response = holdGroupRegistration(target, request);
+        } else if (target.kind() == EventKind.ROUND_ROBIN) {
+            response = holdRoundRobinBooking(target, request);
+        } else if (target.kind() == EventKind.COLLECTIVE) {
+            response = holdCollectiveBooking(target, request);
+        } else {
+            response = holdOneOnOneBooking(target, request);
         }
-        if (target.kind() == EventKind.ROUND_ROBIN) {
-            return holdRoundRobinBooking(target, request);
+
+        // Step 4: persist answers in the same transaction (booking just created in step 3)
+        if (!answerSnapshots.isEmpty() && response.bookingId() != null && embedBookingSupport != null) {
+            embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
-        if (target.kind() == EventKind.COLLECTIVE) {
-            return holdCollectiveBooking(target, request);
-        }
-        return holdOneOnOneBooking(target, request);
+
+        return response;
     }
 
     private void requirePublished(UUID eventTypeId) {

@@ -224,6 +224,9 @@ app:
   docs:
     # API docs stay private in production unless explicitly enabled.
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
+  embed:
+    token-secret: ${APP_EMBED_TOKEN_SECRET}
+    token-ttl-seconds: ${APP_EMBED_TOKEN_TTL_SECONDS:7200}
 
 booking:
   confirm:

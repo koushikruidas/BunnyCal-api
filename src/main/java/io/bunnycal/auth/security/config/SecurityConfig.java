@@ -38,8 +38,20 @@ public class SecurityConfig {
 
     @Bean
     public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
-        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
+        org.springframework.web.cors.UrlBasedCorsConfigurationSource source =
+                new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
 
+        // Public embed endpoints accept any origin (served into third-party iframes).
+        // No credentials — embed tokens are in the request body, not cookies.
+        org.springframework.web.cors.CorsConfiguration embedConfig = new org.springframework.web.cors.CorsConfiguration();
+        embedConfig.setAllowedOriginPatterns(List.of("*"));
+        embedConfig.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
+        embedConfig.setAllowedHeaders(List.of("*"));
+        embedConfig.setAllowCredentials(false);
+        source.registerCorsConfiguration("/public/embed/**", embedConfig);
+
+        // All other paths: allow only configured origins with credentials (dashboard, booking page).
+        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
         List<String> origins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
@@ -48,11 +60,8 @@ public class SecurityConfig {
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
-
-        org.springframework.web.cors.UrlBasedCorsConfigurationSource source =
-                new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
-
         source.registerCorsConfiguration("/**", configuration);
+
         return source;
     }
 
