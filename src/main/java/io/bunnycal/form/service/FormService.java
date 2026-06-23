@@ -79,8 +79,9 @@ public class FormService {
                 .questionType(request.questionType())
                 .required(request.required())
                 .sortOrder(nextOrder)
-                .options(buildOptions(request.options()))
                 .build();
+        question = questionRepository.save(question);
+        question.getOptions().addAll(buildOptions(request.options(), question));
         question = questionRepository.save(question);
         bumpVersion(form);
         return toQuestionResponse(question);
@@ -95,7 +96,7 @@ public class FormService {
         question.setQuestionType(request.questionType());
         question.setRequired(request.required());
         question.getOptions().clear();
-        question.getOptions().addAll(buildOptions(request.options()));
+        question.getOptions().addAll(buildOptions(request.options(), question));
         question = questionRepository.save(question);
         bumpVersion(form);
         return toQuestionResponse(question);
@@ -181,12 +182,13 @@ public class FormService {
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND));
     }
 
-    private List<FormQuestionOption> buildOptions(List<FormQuestionOptionRequest> requests) {
+    private List<FormQuestionOption> buildOptions(List<FormQuestionOptionRequest> requests, FormQuestion parent) {
         if (requests == null) return new ArrayList<>();
         List<FormQuestionOption> options = new ArrayList<>();
         for (int i = 0; i < requests.size(); i++) {
             FormQuestionOptionRequest r = requests.get(i);
             options.add(FormQuestionOption.builder()
+                    .question(parent)
                     .label(r.label())
                     .value(r.value())
                     .sortOrder(i)

@@ -2,10 +2,13 @@ package io.bunnycal.form.domain;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
@@ -29,8 +32,9 @@ public class FormQuestionOption {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(name = "question_id", nullable = false)
-    private UUID questionId;
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "question_id", nullable = false)
+    private FormQuestion question;
 
     @Column(nullable = false, columnDefinition = "TEXT")
     private String label;

@@ -62,7 +62,7 @@ public class FormQuestion {
     private Instant createdAt;
 
     @Builder.Default
-    @OneToMany(mappedBy = "questionId", cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
+    @OneToMany(mappedBy = "question", cascade = CascadeType.ALL, fetch = FetchType.EAGER, orphanRemoval = true)
     @OrderBy("sort_order ASC")
     private List<FormQuestionOption> options = new ArrayList<>();
 }
