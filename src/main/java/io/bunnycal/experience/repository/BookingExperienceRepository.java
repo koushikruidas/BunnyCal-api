@@ -14,5 +14,9 @@ public interface BookingExperienceRepository extends JpaRepository<BookingExperi
 
     Optional<BookingExperience> findByOwnerIdAndIdAndDeletedAtIsNull(UUID ownerId, UUID id);
 
+    boolean existsByEventTypeIdAndDeletedAtIsNull(UUID eventTypeId);
+
     boolean existsByFormIdAndStatusNotAndDeletedAtIsNull(UUID formId, io.bunnycal.experience.domain.ExperienceStatus status);
+
+    boolean existsByFormIdAndDeletedAtIsNull(UUID formId);
 }

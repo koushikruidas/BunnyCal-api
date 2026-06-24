@@ -83,8 +83,14 @@ public enum ErrorCode {
             "This booking form was updated. Please refresh before continuing."),
     EXPERIENCE_SLUG_TAKEN("EXPERIENCE_SLUG_TAKEN",
             "A booking experience with this slug already exists."),
+    EVENT_TYPE_ATTACHED_TO_EXPERIENCE("EVENT_TYPE_ATTACHED_TO_EXPERIENCE",
+            "This event type is attached to one or more booking experiences and cannot be deleted."),
     FORM_ATTACHED_TO_ACTIVE_EXPERIENCE("FORM_ATTACHED_TO_ACTIVE_EXPERIENCE",
-            "This form is attached to one or more active experiences and cannot be deleted.");
+            "This form is attached to one or more experiences and cannot be deleted. Archive the experiences first."),
+    ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE("ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE",
+            "This experience is active and cannot be deleted. Archive it first."),
+    EXPERIENCE_NOT_ACTIVATABLE("EXPERIENCE_NOT_ACTIVATABLE",
+            "This experience can't be activated because its event type or form is missing. Reattach a valid event type and form, then try again.");
 
     private final String code;
     private final String message;

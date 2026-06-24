@@ -90,6 +90,19 @@ public class BookingExperienceService {
 
     public BookingExperienceResponse activateExperience(UUID ownerId, UUID experienceId) {
         BookingExperience experience = requireOwned(ownerId, experienceId);
+
+        // Re-validate the underlying resources before going (or back) live. An experience
+        // may have been DRAFT or ARCHIVED for a while; its event type or form could have
+        // been deleted in the meantime. Activating without this check would publish an
+        // embed that 404s or silently drops its questionnaire.
+        eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(experience.getEventTypeId(), ownerId)
+                .orElseThrow(() -> new CustomException(ErrorCode.EXPERIENCE_NOT_ACTIVATABLE));
+
+        if (experience.getFormId() != null) {
+            formRepository.findByOwnerIdAndIdAndDeletedAtIsNull(ownerId, experience.getFormId())
+                    .orElseThrow(() -> new CustomException(ErrorCode.EXPERIENCE_NOT_ACTIVATABLE));
+        }
+
         experience.setStatus(ExperienceStatus.ACTIVE);
         return toResponse(experienceRepository.save(experience));
     }
@@ -102,6 +115,9 @@ public class BookingExperienceService {
 
     public void deleteExperience(UUID ownerId, UUID experienceId) {
         BookingExperience experience = requireOwned(ownerId, experienceId);
+        if (experience.getStatus() == ExperienceStatus.ACTIVE) {
+            throw new CustomException(ErrorCode.ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE);
+        }
         experience.setDeletedAt(Instant.now());
         experienceRepository.save(experience);
     }

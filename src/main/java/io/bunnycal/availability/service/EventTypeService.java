@@ -15,6 +15,7 @@ import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.common.time.TimeSource;
 import java.time.Duration;
 import java.util.List;
@@ -33,6 +34,7 @@ public class EventTypeService {
     private final PublishReadinessService publishReadinessService;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
+    private final BookingExperienceRepository experienceRepository;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
@@ -41,7 +43,8 @@ public class EventTypeService {
                             EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                             PublishReadinessService publishReadinessService,
                             OutboxPublisher outboxPublisher,
-                            TimeSource timeSource) {
+                            TimeSource timeSource,
+                            BookingExperienceRepository experienceRepository) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -50,6 +53,7 @@ public class EventTypeService {
         this.publishReadinessService = publishReadinessService;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
+        this.experienceRepository = experienceRepository;
     }
 
     @Transactional
@@ -156,6 +160,12 @@ public class EventTypeService {
     @Transactional
     public void delete(UUID actingUserId, UUID eventTypeId) {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        // Block deletion while any non-deleted booking experience still references this event type.
+        // DRAFT and ARCHIVED experiences are included because either can be activated later,
+        // and ACTIVE experiences would break immediately on the public embed path.
+        if (experienceRepository.existsByEventTypeIdAndDeletedAtIsNull(eventTypeId)) {
+            throw new CustomException(ErrorCode.EVENT_TYPE_ATTACHED_TO_EXPERIENCE);
+        }
         eventType.setDeletedAt(timeSource.now());
         eventTypeRepository.save(eventType);
     }

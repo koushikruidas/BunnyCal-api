@@ -15,7 +15,6 @@ import io.bunnycal.form.dto.FormResponse;
 import io.bunnycal.form.dto.QuestionRequest;
 import io.bunnycal.form.dto.QuestionResponse;
 import io.bunnycal.form.dto.ReorderQuestionsRequest;
-import io.bunnycal.experience.domain.ExperienceStatus;
 import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.form.repository.FormQuestionRepository;
 import io.bunnycal.form.repository.FormRepository;
@@ -154,9 +153,12 @@ public class FormService {
 
     public void deleteForm(UUID ownerId, UUID formId) {
         Form form = requireOwned(ownerId, formId);
-        // Block deletion if the form is used by any DRAFT or ACTIVE experience.
-        // ARCHIVED experiences are inert — no new bookings can occur through them.
-        if (experienceRepository.existsByFormIdAndStatusNotAndDeletedAtIsNull(formId, ExperienceStatus.ARCHIVED)) {
+        // Block permanent deletion if the form is referenced by ANY live experience,
+        // including ARCHIVED ones. An archived experience can be reactivated, at which
+        // point a hard-deleted form would silently serve no questionnaire (see
+        // EmbedQueryService, which drops a form whose deletedAt is set). Snapshotted
+        // historical answers survive regardless, but the live reference must not dangle.
+        if (experienceRepository.existsByFormIdAndDeletedAtIsNull(formId)) {
             throw new CustomException(ErrorCode.FORM_ATTACHED_TO_ACTIVE_EXPERIENCE);
         }
         form.setDeletedAt(Instant.now());
