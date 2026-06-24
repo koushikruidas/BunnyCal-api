@@ -87,6 +87,34 @@ public class FormService {
         return toQuestionResponse(question);
     }
 
+    public List<QuestionResponse> addQuestions(UUID ownerId, UUID formId, List<QuestionRequest> requests) {
+        Form form = requireOwned(ownerId, formId);
+        if (requests == null || requests.isEmpty()) {
+            return List.of();
+        }
+
+        List<FormQuestion> existing = questionRepository.findByFormIdOrderBySortOrder(formId);
+        int nextOrder = existing.stream().mapToInt(FormQuestion::getSortOrder).max().orElse(-1) + 1;
+
+        List<FormQuestion> questions = new ArrayList<>();
+        for (int i = 0; i < requests.size(); i++) {
+            QuestionRequest request = requests.get(i);
+            FormQuestion question = FormQuestion.builder()
+                    .formId(formId)
+                    .questionText(request.questionText())
+                    .questionType(request.questionType())
+                    .required(request.required())
+                    .sortOrder(nextOrder + i)
+                    .build();
+            question.getOptions().addAll(buildOptions(request.options(), question));
+            questions.add(question);
+        }
+
+        List<FormQuestion> savedQuestions = questionRepository.saveAll(questions);
+        bumpVersion(form);
+        return savedQuestions.stream().map(this::toQuestionResponse).toList();
+    }
+
     public QuestionResponse updateQuestion(UUID ownerId, UUID formId, UUID questionId, QuestionRequest request) {
         Form form = requireOwned(ownerId, formId);
         FormQuestion question = questionRepository.findByIdAndFormId(questionId, formId)

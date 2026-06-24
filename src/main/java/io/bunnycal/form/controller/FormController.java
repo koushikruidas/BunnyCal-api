@@ -3,6 +3,7 @@ package io.bunnycal.form.controller;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.form.dto.BulkQuestionRequest;
 import io.bunnycal.form.dto.FormRequest;
 import io.bunnycal.form.dto.FormResponse;
 import io.bunnycal.form.dto.QuestionRequest;
@@ -61,6 +62,14 @@ public class FormController {
                                                                      @PathVariable UUID formId,
                                                                      @RequestBody QuestionRequest request) {
         return ResponseEntity.ok(ApiResponse.success(formService.addQuestion(userId(auth), formId, request)));
+    }
+
+    @PostMapping("/{formId}/questions/bulk")
+    public ResponseEntity<ApiResponse<List<QuestionResponse>>> addQuestions(Authentication auth,
+                                                                            @PathVariable UUID formId,
+                                                                            @RequestBody BulkQuestionRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(
+                formService.addQuestions(userId(auth), formId, request.questions())));
     }
 
     @PutMapping("/{formId}/questions/{questionId}")
