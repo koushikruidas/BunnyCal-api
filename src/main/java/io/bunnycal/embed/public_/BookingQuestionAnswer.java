@@ -15,6 +15,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Getter
 @Setter
@@ -50,6 +52,7 @@ public class BookingQuestionAnswer {
     @Column(name = "answer_value", columnDefinition = "TEXT")
     private String answerValue;
 
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "answer_json", columnDefinition = "JSONB")
     private String answerJson;
 
