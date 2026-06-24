@@ -24,6 +24,7 @@ import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
@@ -46,6 +47,7 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
 
+    @Autowired
     public GoogleCalendarProviderClient(BookingRepository bookingRepository,
                                         EventTypeRepository eventTypeRepository,
                                         UserRepository userRepository,

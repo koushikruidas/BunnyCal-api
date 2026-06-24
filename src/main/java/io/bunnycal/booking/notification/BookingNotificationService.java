@@ -39,6 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -82,6 +83,7 @@ public class BookingNotificationService {
     private final String debugEmlDir;
     private final Duration guestManageTokenTtl;
 
+    @Autowired
     public BookingNotificationService(BookingRepository bookingRepository,
                                       UserRepository userRepository,
                                       EventTypeRepository eventTypeRepository,

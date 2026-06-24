@@ -48,6 +48,7 @@ import java.time.ZoneId;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import io.bunnycal.embed.public_.EmbedBookingSupport;
 import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
@@ -97,6 +98,7 @@ public class PublicBookingService {
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
 
+    @Autowired
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
                                 BookingService bookingService,
