@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -41,6 +42,7 @@ public class SessionNotificationService {
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
 
+    @Autowired
     public SessionNotificationService(JavaMailSender mailSender,
                                        IcsInviteGenerator icsInviteGenerator,
                                        BookingManageLinkService manageLinkService,
