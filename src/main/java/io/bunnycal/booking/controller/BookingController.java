@@ -1,6 +1,7 @@
 package io.bunnycal.booking.controller;
 
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.dto.BookingDetailResponse;
 import io.bunnycal.booking.dto.BookingResponse;
 import io.bunnycal.booking.dto.CreateBookingRequest;
 import io.bunnycal.booking.dto.MeetingSummaryResponse;
@@ -70,6 +71,15 @@ public class BookingController {
         UUID authenticatedUserId = extractUserId(authentication);
         List<MeetingSummaryResponse> meetings = meetingQueryService.listHostMeetings(authenticatedUserId, upcomingOnly, limit);
         return ResponseEntity.ok(ApiResponse.success(meetings));
+    }
+
+    @GetMapping("/{bookingId}")
+    public ResponseEntity<ApiResponse<BookingDetailResponse>> getBookingDetail(
+            Authentication authentication,
+            @PathVariable UUID bookingId) {
+        UUID authenticatedUserId = extractUserId(authentication);
+        BookingDetailResponse detail = meetingQueryService.getHostMeetingDetail(authenticatedUserId, bookingId);
+        return ResponseEntity.ok(ApiResponse.success(detail));
     }
 
     @PostMapping

@@ -4,23 +4,25 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-public record PublicManageBookingResponse(
+public record BookingDetailResponse(
         UUID bookingId,
-        String eventTitle,
-        long durationMinutes,
+        UUID eventTypeId,
+        String eventTypeName,
         Instant startTime,
         Instant endTime,
-        String hostName,
-        String hostUsername,
-        String hostAvatarUrl,
-        String attendeeName,
-        String attendeeEmail,
+        String bookingStatus,
+        String guestEmail,
+        String guestName,
         String notes,
         List<QuestionnaireResponse> questionnaireResponses,
+        String provider,
+        String calendarSyncStatus,
+        String externalEventId,
+        String providerEventUrl,
         ConferenceDetailsResponse conferenceDetails,
-        String status,
         String externalLifecycleState,
         String externalLifecycleReason,
-        String timezone
+        boolean reconcileSuppressed,
+        boolean actionRequired
 ) {
 }

@@ -1,6 +1,7 @@
 package io.bunnycal.session.domain;
 
 import io.bunnycal.common.audit.BaseEntity;
+import io.bunnycal.common.enums.AuthProvider;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -47,6 +48,16 @@ public class SessionRegistration extends BaseEntity {
 
     @Column(name = "guest_name", length = 120)
     private String guestName;
+
+    @Column(name = "guest_notes", columnDefinition = "TEXT")
+    private String guestNotes;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "invitee_auth_provider", length = 32)
+    private AuthProvider inviteeAuthProvider;
+
+    @Column(name = "invitee_provider_user_id", length = 255)
+    private String inviteeProviderUserId;
 
     @Builder.Default
     @Enumerated(EnumType.STRING)

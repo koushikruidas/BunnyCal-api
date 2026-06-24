@@ -23,17 +23,19 @@ record SessionOutboxPayload(
         // REGISTRATION_CONFIRMED
         String newAttendeeEmail,
         String newAttendeeName,
+        String newAttendeeNotes,
         String capabilityToken,
         List<AttendeeDto> allConfirmedAttendees,
 
         // REGISTRATION_CANCELLED
         String cancelledAttendeeEmail,
         String cancelledAttendeeName,
+        String cancelledAttendeeNotes,
 
         // SESSION_CANCELLED / SESSION_RESCHEDULED
         List<AttendeeDto> allAttendees
 ) {
-    record AttendeeDto(String email, String name) {}
+    record AttendeeDto(String email, String name, String notes) {}
 
     @SuppressWarnings("unchecked")
     static SessionOutboxPayload from(String eventType, Map<String, Object> data) {
@@ -49,6 +51,7 @@ record SessionOutboxPayload(
 
         String newAttendeeEmail = str(data, "guestEmail");
         String newAttendeeName = str(data, "guestName");
+        String newAttendeeNotes = str(data, "guestNotes");
         String capabilityToken = str(data, "capabilityToken");
 
         List<AttendeeDto> allConfirmed = attendeeList(data, "allConfirmedAttendees");
@@ -59,17 +62,20 @@ record SessionOutboxPayload(
 
         String cancelledEmail = null;
         String cancelledName = null;
+        String cancelledNotes = null;
         if ("REGISTRATION_CANCELLED".equals(eventType)) {
             cancelledEmail = newAttendeeEmail;
             cancelledName = newAttendeeName;
+            cancelledNotes = newAttendeeNotes;
             newAttendeeEmail = null;
             newAttendeeName = null;
+            newAttendeeNotes = null;
         }
 
         return new SessionOutboxPayload(sessionId, registrationId, hostId,
                 hostUsername, eventName, eventSlug, startTime, endTime, calendarSequence,
-                newAttendeeEmail, newAttendeeName, capabilityToken, allConfirmed,
-                cancelledEmail, cancelledName, allAttendees);
+                newAttendeeEmail, newAttendeeName, newAttendeeNotes, capabilityToken, allConfirmed,
+                cancelledEmail, cancelledName, cancelledNotes, allAttendees);
     }
 
     private static UUID uuid(Map<String, Object> data, String key) {
@@ -115,8 +121,9 @@ record SessionOutboxPayload(
             if (!(item instanceof Map<?, ?> m)) continue;
             String email = obj(m, "email");
             String name = obj(m, "name");
+            String notes = obj(m, "notes");
             if (email != null && !email.isBlank()) {
-                result.add(new AttendeeDto(email, name));
+                result.add(new AttendeeDto(email, name, notes));
             }
         }
         return result;

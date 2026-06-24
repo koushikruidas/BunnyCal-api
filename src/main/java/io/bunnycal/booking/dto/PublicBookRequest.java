@@ -12,16 +12,17 @@ public record PublicBookRequest(
         Instant startTime,
         String guestEmail,
         String guestName,
+        String notes,
         String slotToken,
         List<AnswerInput> answers,
         String embedToken
 ) implements ForwardCompatibleRequest {
 
     public PublicBookRequest(Instant startTime, String guestEmail, String guestName) {
-        this(startTime, guestEmail, guestName, null, null, null);
+        this(startTime, guestEmail, guestName, null, null, null, null);
     }
 
     public PublicBookRequest(Instant startTime, String guestEmail, String guestName, String slotToken) {
-        this(startTime, guestEmail, guestName, slotToken, null, null);
+        this(startTime, guestEmail, guestName, null, slotToken, null, null);
     }
 }

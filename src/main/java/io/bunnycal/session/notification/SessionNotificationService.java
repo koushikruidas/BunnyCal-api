@@ -6,6 +6,7 @@ import io.bunnycal.booking.notification.IcsInviteGenerator;
 import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import jakarta.mail.internet.MimeBodyPart;
@@ -35,6 +36,7 @@ public class SessionNotificationService {
     private final NotificationSendDedupService dedupService;
     private final CalendarSyncJobRepository syncJobRepository;
     private final ObjectMapper objectMapper;
+    private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
@@ -45,6 +47,7 @@ public class SessionNotificationService {
                                        NotificationSendDedupService dedupService,
                                        CalendarSyncJobRepository syncJobRepository,
                                        ObjectMapper objectMapper,
+                                       BookingSubmissionFormatter bookingSubmissionFormatter,
                                        @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                        @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
                                        String calendarOrganizerEmail,
@@ -56,9 +59,23 @@ public class SessionNotificationService {
         this.dedupService = dedupService;
         this.syncJobRepository = syncJobRepository;
         this.objectMapper = objectMapper;
+        this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
         this.calendarOrganizerName = calendarOrganizerName;
+    }
+
+    public SessionNotificationService(JavaMailSender mailSender,
+                                      IcsInviteGenerator icsInviteGenerator,
+                                      BookingManageLinkService manageLinkService,
+                                      NotificationSendDedupService dedupService,
+                                      CalendarSyncJobRepository syncJobRepository,
+                                      ObjectMapper objectMapper,
+                                      String fromAddress,
+                                      String calendarOrganizerEmail,
+                                      String calendarOrganizerName) {
+        this(mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository, objectMapper,
+                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail, calendarOrganizerName);
     }
 
     public void handleSessionOutboxEvent(OutboxEvent event) {
@@ -102,7 +119,7 @@ public class SessionNotificationService {
                 : List.of(new GroupAttendee(payload.newAttendeeName(), payload.newAttendeeEmail()));
 
         String ics = icsInviteGenerator.buildGroupRequest(
-                sessionId, payload.eventName(), "sessionId=" + sessionId,
+                sessionId, payload.eventName(), buildSessionDescription(payload.allConfirmedAttendees()),
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
                 allAttendees, sequence, conferenceDetails);
@@ -112,7 +129,7 @@ public class SessionNotificationService {
 
         sendWithDedup(event, payload.newAttendeeEmail(), ics, "REQUEST",
                 "Meeting confirmed: " + payload.eventName(),
-                confirmedBody(payload.eventName(), manageLink, conferenceDetails));
+                confirmedBody(payload.eventName(), manageLink, conferenceDetails, payload.newAttendeeNotes()));
     }
 
     private void handleRegistrationCancelled(OutboxEvent event, SessionOutboxPayload payload) {
@@ -127,14 +144,14 @@ public class SessionNotificationService {
                 new GroupAttendee(payload.cancelledAttendeeName(), payload.cancelledAttendeeEmail()));
 
         String ics = icsInviteGenerator.buildGroupCancel(
-                sessionId, payload.eventName(), "sessionId=" + sessionId,
+                sessionId, payload.eventName(), buildSessionDescription(attendeesFrom(payload.cancelledAttendeeEmail(), payload.cancelledAttendeeName(), payload.cancelledAttendeeNotes())),
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
                 attendees, sequence, conferenceDetails);
 
         sendWithDedup(event, payload.cancelledAttendeeEmail(), ics, "CANCEL",
                 "Meeting cancelled: " + payload.eventName(),
-                "Your registration has been cancelled.\n\nEvent: " + payload.eventName());
+                cancellationBody(payload.eventName(), payload.cancelledAttendeeNotes()));
     }
 
     private void handleSessionCancelled(OutboxEvent event, SessionOutboxPayload payload) {
@@ -149,7 +166,7 @@ public class SessionNotificationService {
                 .toList();
 
         String ics = icsInviteGenerator.buildGroupCancel(
-                sessionId, payload.eventName(), "sessionId=" + sessionId,
+                sessionId, payload.eventName(), buildSessionDescription(payload.allAttendees()),
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
                 attendees, sequence, conferenceDetails);
@@ -174,7 +191,7 @@ public class SessionNotificationService {
                 .toList();
 
         String ics = icsInviteGenerator.buildGroupRequest(
-                sessionId, payload.eventName(), "sessionId=" + sessionId,
+                sessionId, payload.eventName(), buildSessionDescription(payload.allAttendees()),
                 payload.startTime(), payload.endTime(),
                 calendarOrganizerName, calendarOrganizerEmail,
                 attendees, sequence, conferenceDetails);
@@ -328,8 +345,14 @@ public class SessionNotificationService {
                 .orElseGet(() -> ConferenceDetails.none("session_sync_missing", Instant.now()));
     }
 
-    private static String confirmedBody(String eventName, String manageLink, ConferenceDetails conferenceDetails) {
+    private static String confirmedBody(String eventName,
+                                        String manageLink,
+                                        ConferenceDetails conferenceDetails,
+                                        String notes) {
         String base = "Your registration is confirmed.\n\nEvent: " + eventName;
+        if (notes != null && !notes.isBlank()) {
+            base += "\n\nNotes: " + notes.trim();
+        }
         if (conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank()) {
             base += "\n\nJoin the meeting:\n" + conferenceDetails.joinUrl();
             if (conferenceDetails.provider() != null && !conferenceDetails.provider().isBlank()
@@ -343,6 +366,14 @@ public class SessionNotificationService {
         return base;
     }
 
+    private static String cancellationBody(String eventName, String notes) {
+        String body = "Your registration has been cancelled.\n\nEvent: " + eventName;
+        if (notes != null && !notes.isBlank()) {
+            body += "\n\nNotes: " + notes.trim();
+        }
+        return body;
+    }
+
     private static String rescheduledBody(String eventName, ConferenceDetails conferenceDetails) {
         StringBuilder body = new StringBuilder("The session has been rescheduled.\n\nEvent: ").append(eventName);
         if (conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank()) {
@@ -353,5 +384,26 @@ public class SessionNotificationService {
             }
         }
         return body.toString();
+    }
+
+    private String buildSessionDescription(List<SessionOutboxPayload.AttendeeDto> attendees) {
+        if (attendees == null || attendees.isEmpty()) {
+            return "";
+        }
+        return bookingSubmissionFormatter.buildSessionDescription(
+                attendees.stream()
+                        .map(attendee -> io.bunnycal.session.domain.SessionRegistration.builder()
+                                .guestEmail(attendee.email())
+                                .guestName(attendee.name())
+                                .guestNotes(attendee.notes())
+                                .build())
+                        .toList());
+    }
+
+    private static List<SessionOutboxPayload.AttendeeDto> attendeesFrom(String email, String name, String notes) {
+        if (email == null || email.isBlank()) {
+            return List.of();
+        }
+        return List.of(new SessionOutboxPayload.AttendeeDto(email, name, notes));
     }
 }

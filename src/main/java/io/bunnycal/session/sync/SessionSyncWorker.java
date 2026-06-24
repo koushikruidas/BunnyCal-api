@@ -1,9 +1,11 @@
 package io.bunnycal.session.sync;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -53,6 +55,7 @@ public class SessionSyncWorker {
     private final UserRepository userRepository;
     private final CalendarConnectionRepository connectionRepository;
     private final Map<CalendarProviderType, CalendarProvider> providersByType;
+    private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final SyncRetryPolicy retryPolicy;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate txTemplate;
@@ -65,6 +68,7 @@ public class SessionSyncWorker {
                               CalendarConnectionRepository connectionRepository,
                               GoogleCalendarProvider googleCalendarProvider,
                               MicrosoftCalendarProvider microsoftCalendarProvider,
+                              BookingSubmissionFormatter bookingSubmissionFormatter,
                               SyncRetryPolicy retryPolicy,
                               PlatformTransactionManager transactionManager,
                               MeterRegistry meterRegistry) {
@@ -78,10 +82,27 @@ public class SessionSyncWorker {
                 CalendarProviderType.GOOGLE, googleCalendarProvider,
                 CalendarProviderType.MICROSOFT, microsoftCalendarProvider
         );
+        this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.retryPolicy = retryPolicy;
         this.meterRegistry = meterRegistry;
         this.txTemplate = new TransactionTemplate(transactionManager);
         this.txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
+
+    public SessionSyncWorker(CalendarSyncJobRepository syncJobRepository,
+                             EventSessionRepository sessionRepository,
+                             SessionRegistrationRepository registrationRepository,
+                             EventTypeRepository eventTypeRepository,
+                             UserRepository userRepository,
+                             CalendarConnectionRepository connectionRepository,
+                             GoogleCalendarProvider googleCalendarProvider,
+                             MicrosoftCalendarProvider microsoftCalendarProvider,
+                             SyncRetryPolicy retryPolicy,
+                             PlatformTransactionManager transactionManager,
+                             MeterRegistry meterRegistry) {
+        this(syncJobRepository, sessionRepository, registrationRepository, eventTypeRepository, userRepository,
+                connectionRepository, googleCalendarProvider, microsoftCalendarProvider,
+                new BookingSubmissionFormatter(new ObjectMapper()), retryPolicy, transactionManager, meterRegistry);
     }
 
     public int processPending(int batchSize) {
@@ -178,7 +199,7 @@ public class SessionSyncWorker {
 
             String title = eventType.getName() != null && !eventType.getName().isBlank()
                     ? eventType.getName() : "Group Session";
-            String description = "sessionId=" + sessionId;
+            String description = bookingSubmissionFormatter.buildSessionDescription(confirmedRegistrations);
             String targetCalendarId = eventType.getProjectionCalendarId();
             String idempotencyKey = "session-" + connection.getId() + "-" + session.getStartTime().getEpochSecond();
             ConferencingInstruction conferencingInstruction = resolveConferencingInstruction(eventType);

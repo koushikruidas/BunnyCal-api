@@ -18,6 +18,7 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
         UUID getHostId();
         String getGuestEmail();
         String getGuestName();
+        String getGuestNotes();
         String getStatus();
         Instant getExpiresAt();
         Instant getCreatedAt();
@@ -54,6 +55,7 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
                 r.host_id AS hostId,
                 r.guest_email AS guestEmail,
                 r.guest_name AS guestName,
+                r.guest_notes AS guestNotes,
                 r.status AS status,
                 r.expires_at AS expiresAt,
                 r.created_at AS createdAt,

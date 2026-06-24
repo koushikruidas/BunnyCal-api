@@ -13,6 +13,7 @@ import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.exception.CustomException;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -103,6 +104,30 @@ public class RoundRobinAssignmentService {
                                                                 java.time.Duration holdDuration,
                                                                 String guestEmail,
                                                                 String guestName) {
+        return assignAndCreateHeldBooking(
+                eventType,
+                start,
+                end,
+                signedCandidateIds,
+                holdDuration,
+                guestEmail,
+                guestName,
+                null,
+                null,
+                null);
+    }
+
+    @Transactional
+    public AssignedRoundRobinBooking assignAndCreateHeldBooking(EventType eventType,
+                                                                Instant start,
+                                                                Instant end,
+                                                                List<UUID> signedCandidateIds,
+                                                                java.time.Duration holdDuration,
+                                                                String guestEmail,
+                                                                String guestName,
+                                                                String guestNotes,
+                                                                AuthProvider inviteeAuthProvider,
+                                                                String inviteeProviderUserId) {
         Instant now = Instant.now();
         List<UUID> currentCandidates = candidateParticipantsForSlot(eventType, start, end, signedCandidateIds, now);
         if (currentCandidates.isEmpty()) {
@@ -123,14 +148,26 @@ public class RoundRobinAssignmentService {
         CustomException lastConflict = null;
         for (UUID participantId : currentCandidates) {
             try {
-                Booking booking = bookingService.createHeldBooking(
-                        participantId,
-                        eventType.getId(),
-                        start,
-                        end,
-                        holdDuration,
-                        guestEmail,
-                        guestName);
+                Booking booking = guestNotes == null && inviteeAuthProvider == null && inviteeProviderUserId == null
+                        ? bookingService.createHeldBooking(
+                                participantId,
+                                eventType.getId(),
+                                start,
+                                end,
+                                holdDuration,
+                                guestEmail,
+                                guestName)
+                        : bookingService.createHeldBooking(
+                                participantId,
+                                eventType.getId(),
+                                start,
+                                end,
+                                holdDuration,
+                                guestEmail,
+                                guestName,
+                                guestNotes,
+                                inviteeAuthProvider,
+                                inviteeProviderUserId);
                 bookingAssignmentRepository.save(BookingAssignment.builder()
                         .bookingId(booking.getId())
                         .participantUserId(participantId)

@@ -9,6 +9,7 @@ public record SessionRegistrationResponse(
         UUID hostId,
         String guestEmail,
         String guestName,
+        String notes,
         String status,
         Instant expiresAt,
         Instant createdAt,

@@ -116,7 +116,7 @@ class SessionNotificationServiceTest {
         verify(icsInviteGenerator).buildGroupRequest(
                 eq(sessionId),
                 eq("Group Workshop"),
-                eq("sessionId=" + sessionId),
+                eq("Attendees:\n- Guest <guest@example.test>"),
                 eq(Instant.parse("2026-06-15T09:00:00Z")),
                 eq(Instant.parse("2026-06-15T10:00:00Z")),
                 eq("BunnyCal"),
@@ -212,7 +212,7 @@ class SessionNotificationServiceTest {
         verify(icsInviteGenerator).buildGroupCancel(
                 eq(sessionId),
                 eq("Group Workshop"),
-                eq("sessionId=" + sessionId),
+                eq("Attendees:\n- Guest <guest@example.test>"),
                 eq(Instant.parse("2026-06-15T09:00:00Z")),
                 eq(Instant.parse("2026-06-15T10:00:00Z")),
                 eq("BunnyCal"),

@@ -16,6 +16,7 @@ import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.sync.invariants.CompositeSyncStateClassifier;
@@ -181,7 +182,10 @@ public class BookingService {
             Instant requestedStart,
             Instant requestedEnd,
             String guestEmail,
-            String guestName) {
+            String guestName,
+            String guestNotes,
+            AuthProvider inviteeAuthProvider,
+            String inviteeProviderUserId) {
 
         // ─────────────────────────────────────────────────────────
         // 1. Input validation
@@ -230,6 +234,9 @@ public class BookingService {
                     .endTime(requestedEnd)
                     .guestEmail(guestEmail)
                     .guestName(guestName)
+                    .guestNotes(guestNotes)
+                    .inviteeAuthProvider(inviteeAuthProvider)
+                    .inviteeProviderUserId(inviteeProviderUserId)
                     .build());
 
             outboxPublisher.publish("Booking", saved.getId(), hostId, new OutboxPayloadEnvelope(
@@ -261,6 +268,17 @@ public class BookingService {
             UUID hostId,
             UUID eventTypeId,
             Instant requestedStart,
+            Instant requestedEnd,
+            String guestEmail,
+            String guestName) {
+        return createBooking(hostId, eventTypeId, requestedStart, requestedEnd, guestEmail, guestName, null, null, null);
+    }
+
+    @Transactional
+    public Booking createBooking(
+            UUID hostId,
+            UUID eventTypeId,
+            Instant requestedStart,
             Instant requestedEnd) {
         return createBooking(hostId, eventTypeId, requestedStart, requestedEnd, null, null);
     }
@@ -273,10 +291,33 @@ public class BookingService {
                                      Duration holdDuration,
                                      String guestEmail,
                                      String guestName) {
+        return createHeldBooking(hostId, eventTypeId, requestedStart, requestedEnd, holdDuration, guestEmail, guestName, null, null, null);
+    }
+
+    @Transactional
+    public Booking createHeldBooking(UUID hostId,
+                                     UUID eventTypeId,
+                                     Instant requestedStart,
+                                     Instant requestedEnd,
+                                     Duration holdDuration,
+                                     String guestEmail,
+                                     String guestName,
+                                     String guestNotes,
+                                     AuthProvider inviteeAuthProvider,
+                                     String inviteeProviderUserId) {
         if (holdDuration == null || holdDuration.isZero() || holdDuration.isNegative()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "holdDuration must be positive.");
         }
-        Booking booking = createBooking(hostId, eventTypeId, requestedStart, requestedEnd, guestEmail, guestName);
+        Booking booking = createBooking(
+                hostId,
+                eventTypeId,
+                requestedStart,
+                requestedEnd,
+                guestEmail,
+                guestName,
+                guestNotes,
+                inviteeAuthProvider,
+                inviteeProviderUserId);
         Instant expiresAt = timeSource.now().plus(holdDuration);
         int updated = bookingRepository.setPendingExpiry(booking.getId(), expiresAt);
         if (updated == 0) {
@@ -291,7 +332,7 @@ public class BookingService {
                                      Instant requestedStart,
                                      Instant requestedEnd,
                                      Duration holdDuration) {
-        return createHeldBooking(hostId, eventTypeId, requestedStart, requestedEnd, holdDuration, null, null);
+        return createHeldBooking(hostId, eventTypeId, requestedStart, requestedEnd, holdDuration, null, null, null, null, null);
     }
 
     @Transactional

@@ -7,4 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface BookingQuestionAnswerRepository extends JpaRepository<BookingQuestionAnswer, UUID> {
 
     List<BookingQuestionAnswer> findByBookingIdAndHostId(UUID bookingId, UUID hostId);
+
+    List<BookingQuestionAnswer> findByBookingIdInAndHostId(List<UUID> bookingIds, UUID hostId);
 }
