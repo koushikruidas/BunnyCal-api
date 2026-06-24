@@ -63,6 +63,10 @@ public class IdempotencyService {
         }
 
         if (existing.getStatus().isTerminal()) {
+            if (canRetryTerminalFailure(existing) && reclaimTerminalFailure(existing)) {
+                outcomeCounter("retried_after_failure").increment();
+                return phase2RunAndFinalize(key, userId, route, work);
+            }
             outcomeCounter("replayed").increment();
             replayTimer().record(Duration.between(start, timeSource.now()));
             return replay(existing);
@@ -176,6 +180,22 @@ public class IdempotencyService {
 
     private IdempotencyOutcome replay(IdempotencyKey key) {
         return new IdempotencyOutcome.Replayed(key.getResponseStatus(), key.getResponseBody());
+    }
+
+    private boolean canRetryTerminalFailure(IdempotencyKey key) {
+        return key.getStatus() == IdempotencyStatus.FAILED
+                && key.getResponseStatus() != null
+                && key.getResponseStatus() >= 500;
+    }
+
+    private boolean reclaimTerminalFailure(IdempotencyKey key) {
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        tx.setPropagationBehavior(TransactionTemplate.PROPAGATION_REQUIRES_NEW);
+        return Boolean.TRUE.equals(tx.execute(status -> repository.reopenRetriableFailureByScope(
+                key.getUserId(),
+                key.getRoute(),
+                key.getKey(),
+                timeSource.now()) == 1));
     }
 
     private static void sleep(long millis) {

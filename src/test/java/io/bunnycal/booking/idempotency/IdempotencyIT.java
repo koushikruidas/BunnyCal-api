@@ -218,10 +218,10 @@ class IdempotencyIT extends AbstractBookingIT {
     // The reaper (IdempotencyKeyCleanupJob.reap) must mark IN_PROGRESS rows
     // whose updatedAt is older than IDEMPOTENCY_PROCESSING_TIMEOUT (60 s) as
     // FAILED with a 503 status.
-    // A subsequent same-key call must replay that cached failure (Replayed 503)
-    // rather than re-running work.
+    // A subsequent same-key call may reclaim that transient 5xx failure and
+    // run the work again instead of replaying a permanently poisoned response.
     @Test
-    void reaper_stuckInProgress_markedFailedAndReplayed() {
+    void reaper_stuckInProgress_markedFailedAndRetried() {
         UUID userId = createHost().getId();
         UUID id     = UUID.randomUUID();
         String key  = "stuck-key-" + UUID.randomUUID();
@@ -239,14 +239,38 @@ class IdempotencyIT extends AbstractBookingIT {
                 "SELECT status FROM idempotency_keys WHERE id = ?", String.class, id);
         assertEquals("FAILED", status, "reaper must mark stuck IN_PROGRESS row as FAILED");
 
-        // Retry with same key: must replay the cached 503, not re-execute work.
+        // Retry with same key: transient 5xx rows are reclaimable.
         IdempotencyOutcome outcome = idempotencyService.execute(
                 key, userId, ROUTE, HASH,
-                () -> { throw new IllegalStateException("work must not re-run after FAILED row"); });
-        assertInstanceOf(IdempotencyOutcome.Replayed.class, outcome,
-                "same key after reaping must return Replayed");
-        assertEquals(503, ((IdempotencyOutcome.Replayed) outcome).status(),
-                "reaped FAILED row must replay with HTTP 503");
+                () -> new ResponseEnvelope<>(201, "recovered-after-reap"));
+        assertInstanceOf(IdempotencyOutcome.Fresh.class, outcome,
+                "same key after reaping a transient 5xx should run fresh work");
+        assertEquals(201, ((IdempotencyOutcome.Fresh<?>) outcome).status(),
+                "reclaimed row must finalize with the new success status");
+    }
+
+    @Test
+    void failed5xxRow_sameKeyRetry_reclaimsAndRerunsWork() {
+        UUID hostId = createHost().getId();
+        UUID id = UUID.randomUUID();
+        String key = "retryable-failure-key-" + UUID.randomUUID();
+        Instant failedAt = Instant.now().minusSeconds(5);
+
+        insertFailedIdempotencyKey(id, key, hostId, ROUTE, HASH, 503, failedAt);
+
+        IdempotencyOutcome outcome = idempotencyService.execute(
+                key, hostId, ROUTE, HASH,
+                () -> new ResponseEnvelope<>(201, "recovered"));
+
+        assertInstanceOf(IdempotencyOutcome.Fresh.class, outcome,
+                "same key after a cached 5xx should re-run work");
+        assertEquals(201, ((IdempotencyOutcome.Fresh<?>) outcome).status());
+        assertEquals("COMPLETED", jdbc.queryForObject(
+                "SELECT status FROM idempotency_keys WHERE id = ?",
+                String.class, id));
+        assertEquals(201, jdbc.queryForObject(
+                "SELECT response_status FROM idempotency_keys WHERE id = ?",
+                Integer.class, id));
     }
 
     // ── Scenario 15 ────────────────────────────────────────────────────────────

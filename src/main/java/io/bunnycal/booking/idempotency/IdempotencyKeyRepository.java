@@ -41,6 +41,24 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKey, 
     @Modifying
     @Query("""
             UPDATE IdempotencyKey k
+               SET k.status = io.bunnycal.booking.idempotency.IdempotencyStatus.IN_PROGRESS,
+                   k.responseStatus = null,
+                   k.responseBody = null,
+                   k.startedAt = :now,
+                   k.completedAt = null,
+                   k.updatedAt = :now
+             WHERE k.userId = :userId AND k.route = :route AND k.key = :key
+               AND k.status = io.bunnycal.booking.idempotency.IdempotencyStatus.FAILED
+               AND k.responseStatus >= 500
+            """)
+    int reopenRetriableFailureByScope(@Param("userId") UUID userId,
+                                      @Param("route") String route,
+                                      @Param("key") String key,
+                                      @Param("now") Instant now);
+
+    @Modifying
+    @Query("""
+            UPDATE IdempotencyKey k
                SET k.status = io.bunnycal.booking.idempotency.IdempotencyStatus.FAILED,
                    k.responseStatus = 503,
                    k.responseBody = :abandonedBody,
