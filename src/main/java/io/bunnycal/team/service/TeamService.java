@@ -1,6 +1,7 @@
 package io.bunnycal.team.service;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.service.ParticipantEligibilityReason;
@@ -57,6 +58,7 @@ public class TeamService {
     private final OutboxPublisher outboxPublisher;
     private final ParticipantEligibilityService eligibilityService;
     private final TimeSource timeSource;
+    private final ProfileAvatarService profileAvatarService;
     private final String frontendBaseUrl;
 
     public TeamService(TeamRepository teamRepository,
@@ -67,6 +69,7 @@ public class TeamService {
                        OutboxPublisher outboxPublisher,
                        ParticipantEligibilityService eligibilityService,
                        TimeSource timeSource,
+                       ProfileAvatarService profileAvatarService,
                        @Value("${app.public-base-url:http://localhost:5173}") String frontendBaseUrl) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
@@ -76,6 +79,7 @@ public class TeamService {
         this.outboxPublisher = outboxPublisher;
         this.eligibilityService = eligibilityService;
         this.timeSource = timeSource;
+        this.profileAvatarService = profileAvatarService;
         this.frontendBaseUrl = frontendBaseUrl;
     }
 
@@ -298,7 +302,7 @@ public class TeamService {
                     m.getUserId().toString(),
                     u != null ? u.getName() : null,
                     u != null ? u.getEmail() : null,
-                    u != null ? u.getProfileImageUrl() : null,
+                    u != null ? profileAvatarService.resolveProfileImageUrl(u) : null,
                     status.name(),
                     hasRules,
                     hasCalendar,
@@ -469,7 +473,7 @@ public class TeamService {
                 member.getUserId(),
                 user != null ? user.getName() : null,
                 user != null ? user.getEmail() : null,
-                user != null ? user.getProfileImageUrl() : null,
+                user != null ? profileAvatarService.resolveProfileImageUrl(user) : null,
                 member.getRole(),
                 member.getJoinedAt());
     }

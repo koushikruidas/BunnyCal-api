@@ -18,15 +18,19 @@ public class UserDto {
     private String username;
     private String name;
     private String profileImage;
+    private boolean hasCustomAvatar;
+    private Long avatarVersion;
     private String timezone;
 
-    public static UserDto from(User user) {
+    public static UserDto from(User user, String profileImage) {
         return UserDto.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .username(user.getUsername())
                 .name(user.getName())
-                .profileImage(user.getProfileImageUrl())
+                .profileImage(profileImage)
+                .hasCustomAvatar(user.getAvatarVersion() != null)
+                .avatarVersion(user.getAvatarVersion())
                 .timezone(user.getTimezone())
                 .build();
     }

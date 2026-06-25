@@ -1,6 +1,7 @@
 package io.bunnycal.booking.service;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
@@ -20,13 +21,16 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
     private final HostDraftRepository hostDraftRepository;
+    private final ProfileAvatarService profileAvatarService;
 
     public DefaultPublicBookingTargetResolver(UserRepository userRepository,
                                               EventTypeRepository eventTypeRepository,
-                                              HostDraftRepository hostDraftRepository) {
+                                              HostDraftRepository hostDraftRepository,
+                                              ProfileAvatarService profileAvatarService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.hostDraftRepository = hostDraftRepository;
+        this.profileAvatarService = profileAvatarService;
     }
 
     @Override
@@ -70,7 +74,7 @@ public class DefaultPublicBookingTargetResolver implements PublicBookingTargetRe
                 user.getUsername(),
                 user.getTimezone(),
                 user.getEmail(),
-                user.getProfileImageUrl(),
+                profileAvatarService.resolveProfileImageUrl(user),
                 eventType.getName(),
                 eventType.getDescription(),
                 eventType.getLocation(),

@@ -3,6 +3,7 @@ package io.bunnycal.booking.service;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
@@ -89,6 +90,7 @@ public class PublicBookingService {
     private final ParticipantEligibilityService participantEligibilityService;
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final UserRepository userRepository;
+    private final ProfileAvatarService profileAvatarService;
     private final AuthIdentityRepository authIdentityRepository;
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
@@ -121,6 +123,7 @@ public class PublicBookingService {
                                 ParticipantEligibilityService participantEligibilityService,
                                 BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
+                                ProfileAvatarService profileAvatarService,
                                 AuthIdentityRepository authIdentityRepository,
                                 BookingQuestionAnswerRepository bookingQuestionAnswerRepository,
                                 BookingSubmissionFormatter bookingSubmissionFormatter,
@@ -156,6 +159,7 @@ public class PublicBookingService {
         this.participantEligibilityService = participantEligibilityService;
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.userRepository = userRepository;
+        this.profileAvatarService = profileAvatarService;
         this.authIdentityRepository = authIdentityRepository;
         this.bookingQuestionAnswerRepository = bookingQuestionAnswerRepository;
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
@@ -188,6 +192,7 @@ public class PublicBookingService {
                                 ParticipantEligibilityService participantEligibilityService,
                                 BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
+                                ProfileAvatarService profileAvatarService,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
                                 MeterRegistry meterRegistry,
@@ -198,7 +203,7 @@ public class PublicBookingService {
                 timeConversionService, bookingLifecycleService, guestCapabilityTokenService, sessionService,
                 sessionRegistrationRepository, roundRobinSlotTokenService, roundRobinAssignmentService,
                 collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
-                participantEligibilityService, bookingAssignmentRepository, userRepository, null, null,
+                participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
                 meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
     }
@@ -215,7 +220,7 @@ public class PublicBookingService {
                     .map(p -> {
                         var user = userRepository.findById(p.getUserId()).orElse(null);
                         String name = user != null ? (user.getName() != null ? user.getName() : user.getEmail()) : null;
-                        String avatarUrl = user != null ? user.getProfileImageUrl() : null;
+                        String avatarUrl = user != null ? profileAvatarService.resolveProfileImageUrl(user) : null;
                         return new PublicParticipantInfo(name, avatarUrl);
                     })
                     .filter(p -> p.name() != null)
@@ -736,7 +741,7 @@ public class PublicBookingService {
                 row.getEndTime(),
                 assignedHost.getName(),
                 assignedHost.getUsername(),
-                assignedHost.getProfileImageUrl(),
+                profileAvatarService.resolveProfileImageUrl(assignedHost),
                 row.getGuestName(),
                 row.getGuestEmail(),
                 booking.getGuestNotes(),

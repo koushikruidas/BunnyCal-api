@@ -72,6 +72,7 @@ class PublicBookingServiceTest {
     @Mock io.bunnycal.availability.service.ParticipantEligibilityService participantEligibilityService;
     @Mock io.bunnycal.booking.repository.BookingAssignmentRepository bookingAssignmentRepository;
     @Mock io.bunnycal.auth.repository.UserRepository userRepository;
+    @Mock io.bunnycal.auth.avatar.ProfileAvatarService profileAvatarService;
     @Mock io.bunnycal.availability.repository.EventTypeParticipantRepository eventTypeParticipantRepository;
     @Mock BookingEventTypeResolver bookingEventTypeResolver;
 
@@ -107,6 +108,7 @@ class PublicBookingServiceTest {
                 participantEligibilityService,
                 bookingAssignmentRepository,
                 userRepository,
+                profileAvatarService,
                 eventTypeParticipantRepository,
                 bookingEventTypeResolver,
                 new SimpleMeterRegistry(),

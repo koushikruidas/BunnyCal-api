@@ -1,6 +1,7 @@
 package io.bunnycal.auth.controller;
 
 import io.bunnycal.auth.account.AccountAccessGuard;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.domain.identity.AuthIdentity;
 import io.bunnycal.auth.domain.token.RefreshToken;
 import io.bunnycal.auth.domain.user.User;
@@ -42,6 +43,7 @@ public class AuthController {
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
     private final AccountAccessGuard accountAccessGuard;
+    private final ProfileAvatarService profileAvatarService;
 
     @Value("${google.oauth.client-id:}")
     private String googleClientId;
@@ -60,7 +62,7 @@ public class AuthController {
         AuthResponse response = AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(rotatedRefreshToken)
-                .user(UserDto.from(user))
+                .user(UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user)))
                 .build();
 
         return ApiResponse.success(response);
@@ -115,7 +117,7 @@ public class AuthController {
         // and activeProvider is null when the user has no auth identities.
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("authenticated", true);
-        payload.put("user", UserDto.from(user));
+        payload.put("user", UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user)));
         payload.put("activeIdentityProvider", activeProvider);
         payload.put("linkedIdentities", linkedIdentities);
         return ApiResponse.success(payload);

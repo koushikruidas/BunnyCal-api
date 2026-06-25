@@ -1,6 +1,7 @@
 package io.bunnycal.availability.service;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
@@ -107,6 +108,7 @@ public class EventTypeParticipantService {
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
+    private final ProfileAvatarService profileAvatarService;
     // Injected lazily to break the circular dependency:
     // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
     @Lazy
@@ -121,7 +123,8 @@ public class EventTypeParticipantService {
                                        CalendarConnectionRepository calendarConnectionRepository,
                                        BookingAssignmentRepository bookingAssignmentRepository,
                                        OutboxPublisher outboxPublisher,
-                                       TimeSource timeSource) {
+                                       TimeSource timeSource,
+                                       ProfileAvatarService profileAvatarService) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
@@ -131,6 +134,7 @@ public class EventTypeParticipantService {
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
+        this.profileAvatarService = profileAvatarService;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -364,7 +368,7 @@ public class EventTypeParticipantService {
                     uid,
                     displayName,
                     u != null ? u.getEmail() : null,
-                    u != null ? u.getProfileImageUrl() : null,
+                    u != null ? profileAvatarService.resolveProfileImageUrl(u) : null,
                     i,
                     uid.equals(ownerUserId),
                     teamPool.contains(uid),

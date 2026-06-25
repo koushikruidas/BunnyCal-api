@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import io.bunnycal.auth.domain.token.RefreshToken;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.account.AccountAccessGuard;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.dto.AuthResponse;
 import io.bunnycal.auth.dto.RefreshRequest;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
@@ -44,6 +45,9 @@ class AuthControllerTest {
     @Mock
     private AccountAccessGuard accountAccessGuard;
 
+    @Mock
+    private ProfileAvatarService profileAvatarService;
+
     private AuthController authController;
 
     @BeforeEach
@@ -54,7 +58,8 @@ class AuthControllerTest {
                 jwtTokenProvider,
                 userRepository,
                 authIdentityRepository,
-                accountAccessGuard
+                accountAccessGuard,
+                profileAvatarService
         );
     }
 

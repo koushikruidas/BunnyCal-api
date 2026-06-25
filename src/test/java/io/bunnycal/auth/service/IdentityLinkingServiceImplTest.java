@@ -13,6 +13,7 @@ import io.bunnycal.auth.domain.identity.AuthIdentity;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.account.DeletedAccountTombstoneRepository;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.common.enums.AuthProvider;
@@ -40,6 +41,9 @@ class IdentityLinkingServiceImplTest {
     @Mock
     private DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
 
+    @Mock
+    private ProfileAvatarService profileAvatarService;
+
     private IdentityLinkingServiceImpl identityLinkingService;
 
     @BeforeEach
@@ -48,12 +52,15 @@ class IdentityLinkingServiceImplTest {
                 userRepository,
                 authIdentityRepository,
                 deletedAccountTombstoneRepository,
-                new UserTimezoneServiceImpl(new TimezoneService())
+                new UserTimezoneServiceImpl(new TimezoneService()),
+                profileAvatarService
         );
         lenient().when(deletedAccountTombstoneRepository.findByProviderAndProviderUserId(any(), any()))
                 .thenReturn(Optional.empty());
         lenient().when(deletedAccountTombstoneRepository.findByNormalizedEmail(any()))
                 .thenReturn(Optional.empty());
+        lenient().when(profileAvatarService.resolveProfileImageUrl(any(User.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0, User.class).getProfileImageUrl());
     }
 
     @Test

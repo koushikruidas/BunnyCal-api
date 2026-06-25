@@ -27,7 +27,8 @@ import org.springframework.web.client.RestClient;
         "io.bunnycal.team",
         "io.bunnycal.common",
         "io.bunnycal.auth.service",
-        "io.bunnycal.auth.account"
+        "io.bunnycal.auth.account",
+        "io.bunnycal.auth.avatar"
 })
 public class TestApplication {
     @Bean
