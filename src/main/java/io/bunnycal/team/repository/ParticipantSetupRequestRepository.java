@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -32,4 +33,8 @@ public interface ParticipantSetupRequestRepository extends JpaRepository<Partici
     List<ParticipantSetupRequest> findPendingSubsequentReminder(@Param("cutoff") Instant cutoff);
 
     List<ParticipantSetupRequest> findByTargetUserId(UUID targetUserId);
+
+    @Modifying
+    @Query("delete from ParticipantSetupRequest r where r.ownerUserId = :userId or r.targetUserId = :userId")
+    void deleteByOwnerOrTargetUserId(@Param("userId") UUID userId);
 }

@@ -1,5 +1,7 @@
 package io.bunnycal.auth.controller;
 
+import io.bunnycal.auth.account.AccountAccessGuard;
+import io.bunnycal.auth.account.AccountDeletionService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -11,8 +13,10 @@ import io.bunnycal.auth.service.TimeZoneService;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -28,6 +32,8 @@ public class UserController {
 
     private final UserRepository userRepository;
     private final TimeZoneService timeZoneService;
+    private final AccountAccessGuard accountAccessGuard;
+    private final AccountDeletionService accountDeletionService;
 
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(
@@ -43,10 +49,7 @@ public class UserController {
                     log.warn("session_user_not_found userId={} endpoint=GET:/api/me reason=user_not_found", userId);
                     return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
                 });
-        if (timezoneHeader != null && !timezoneHeader.isBlank()) {
-            timeZoneService.applyTimezoneUpdate(user, timezoneHeader);
-            user = userRepository.save(user);
-        }
+        accountAccessGuard.requireAccessible(user, userId, "GET:/api/me");
 
         return ResponseEntity.ok(ApiResponse.success(UserDto.from(user)));
     }
@@ -63,9 +66,17 @@ public class UserController {
                     log.warn("session_user_not_found userId={} endpoint=PUT:/api/me/timezone reason=user_not_found", userId);
                     return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
                 });
+        accountAccessGuard.requireAccessible(user, userId, "PUT:/api/me/timezone");
         timeZoneService.applyTimezoneUpdate(user, request.timezone());
         User saved = userRepository.save(user);
         return ResponseEntity.ok(ApiResponse.success(UserDto.from(saved)));
+    }
+
+    @DeleteMapping("/account")
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> deleteAccount(Authentication authentication) {
+        UUID userId = extractUserId(authentication == null ? null : authentication.getPrincipal());
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(ApiResponse.success(accountDeletionService.requestDeletion(userId)));
     }
 
     private UUID extractUserId(Object principal) {

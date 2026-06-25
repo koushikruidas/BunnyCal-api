@@ -26,4 +26,8 @@ public interface CalendarConnectionCalendarRepository extends JpaRepository<Cale
     @Query("delete from CalendarConnectionCalendar c where c.connectionId = :connectionId and c.externalCalendarId not in :keep")
     int deleteByConnectionIdAndExternalCalendarIdNotIn(@Param("connectionId") UUID connectionId,
                                                        @Param("keep") Collection<String> keep);
+
+    @Modifying
+    @Query("delete from CalendarConnectionCalendar c where c.connectionId in :connectionIds")
+    void deleteByConnectionIds(@Param("connectionIds") Collection<UUID> connectionIds);
 }

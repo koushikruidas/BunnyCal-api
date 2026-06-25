@@ -224,6 +224,16 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                                                                @Param("rangeStart") Instant rangeStart,
                                                                @Param("rangeEnd") Instant rangeEnd);
 
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE host_id = :hostId
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findFutureActiveByHostId(@Param("hostId") UUID hostId, @Param("now") Instant now);
+
     // CAS increment confirmed_count; also flips OPEN→FULL when count reaches capacity.
     // Returns 1 if updated, 0 if capacity exhausted or session not found/wrong state.
     @Modifying

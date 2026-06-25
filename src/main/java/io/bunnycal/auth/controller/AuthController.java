@@ -1,5 +1,6 @@
 package io.bunnycal.auth.controller;
 
+import io.bunnycal.auth.account.AccountAccessGuard;
 import io.bunnycal.auth.domain.identity.AuthIdentity;
 import io.bunnycal.auth.domain.token.RefreshToken;
 import io.bunnycal.auth.domain.user.User;
@@ -40,6 +41,7 @@ public class AuthController {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
+    private final AccountAccessGuard accountAccessGuard;
 
     @Value("${google.oauth.client-id:}")
     private String googleClientId;
@@ -92,6 +94,7 @@ public class AuthController {
                     log.warn("session_user_not_found userId={} endpoint=GET:/auth/session reason=user_not_found", authenticatedUserId);
                     return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
                 });
+        accountAccessGuard.requireAccessible(user, authenticatedUserId, "GET:/auth/session");
         List<AuthIdentity> identities = authIdentityRepository.findByUserIdOrderByCreatedAtDesc(authenticatedUserId);
         String activeProvider = identities.stream()
                 .max(Comparator.comparing(AuthIdentity::getCreatedAt))

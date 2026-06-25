@@ -8,6 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -35,6 +36,10 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
 
     java.util.List<CalendarConnection> findByUserIdAndStatusNot(UUID userId, CalendarConnectionStatus status);
+
+    @Modifying
+    @Query("delete from CalendarConnection c where c.userId = :userId")
+    void deleteByUserId(@Param("userId") UUID userId);
 
     /**
      * F7: rows that are due to be swept. ACTIVE/SYNCING always; FAILED/ERROR only when

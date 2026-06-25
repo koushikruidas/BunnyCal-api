@@ -5,6 +5,7 @@ import io.bunnycal.team.domain.TeamRole;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -35,4 +36,8 @@ public interface TeamMemberRepository extends JpaRepository<TeamMember, UUID> {
             where tm1.userId = :userId
             """)
     List<UUID> findTeammateUserIds(@Param("userId") UUID userId);
+
+    @Modifying
+    @Query("delete from TeamMember tm where tm.userId = :userId")
+    void deleteByUserId(@Param("userId") UUID userId);
 }

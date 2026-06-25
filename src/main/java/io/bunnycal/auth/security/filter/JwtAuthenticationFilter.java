@@ -1,5 +1,7 @@
 package io.bunnycal.auth.security.filter;
 
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -29,13 +31,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String ACCESS_TOKEN_COOKIE = "accessToken";
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final UserRepository userRepository;
     private final boolean cookieFallbackEnabled;
 
     public JwtAuthenticationFilter(
             JwtTokenProvider jwtTokenProvider,
+            UserRepository userRepository,
             @Value("${auth.access-token.cookie-fallback-enabled:true}") boolean cookieFallbackEnabled
     ) {
         this.jwtTokenProvider = jwtTokenProvider;
+        this.userRepository = userRepository;
         this.cookieFallbackEnabled = cookieFallbackEnabled;
     }
 
@@ -116,6 +121,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         Claims claims = jwtTokenProvider.getClaims(token);
         UUID userId = jwtTokenProvider.getUserIdFromClaims(claims);
+        User user = userRepository.findByIdAndDeletionRequestedAtIsNull(userId).orElse(null);
+        if (user == null) {
+            log.info("jwt_filter_blocked_deleted_or_missing_user uri={} userId={}", request.getRequestURI(), userId);
+            return;
+        }
 
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(

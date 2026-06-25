@@ -570,6 +570,16 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                                  @Param("limit") int limit);
 
     @Query(value = """
+            SELECT id, host_id, status, version, expires_at, terminal_intent_epoch
+            FROM bookings
+            WHERE host_id = :hostId
+              AND start_time > :now
+              AND status IN ('PENDING','CONFIRMED')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<BookingStateRow> findFutureActiveStatesByHostId(@Param("hostId") UUID hostId, @Param("now") Instant now);
+
+    @Query(value = """
             SELECT
                 b.id AS bookingId,
                 b.event_type_id AS eventTypeId,

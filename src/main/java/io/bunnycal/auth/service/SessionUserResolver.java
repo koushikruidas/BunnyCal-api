@@ -1,5 +1,6 @@
 package io.bunnycal.auth.service;
 
+import io.bunnycal.auth.account.AccountAccessGuard;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.common.enums.ErrorCode;
@@ -21,6 +22,7 @@ import org.springframework.stereotype.Component;
 public class SessionUserResolver {
 
     private final UserRepository userRepository;
+    private final AccountAccessGuard accountAccessGuard;
 
     /**
      * Resolves the authenticated user, throwing 401 if the record no longer exists.
@@ -30,10 +32,12 @@ public class SessionUserResolver {
      * @return the User entity, never null
      */
     public User require(UUID userId, String endpoint) {
-        return userRepository.findById(userId).orElseThrow(() -> {
+        User user = userRepository.findById(userId).orElseThrow(() -> {
             log.warn("session_user_not_found userId={} endpoint={} reason=user_not_found", userId, endpoint);
             return new CustomException(ErrorCode.UNAUTHORIZED,
                     "Session references a deleted account. Please sign in again.");
         });
+        accountAccessGuard.requireAccessible(user, userId, endpoint);
+        return user;
     }
 }
