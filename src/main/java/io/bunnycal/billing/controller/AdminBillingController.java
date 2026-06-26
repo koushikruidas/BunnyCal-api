@@ -5,9 +5,12 @@ import io.bunnycal.billing.domain.DiscountDuration;
 import io.bunnycal.billing.domain.DiscountType;
 import io.bunnycal.billing.domain.ManualDiscount;
 import io.bunnycal.billing.domain.PromoCode;
+import io.bunnycal.billing.domain.Refund;
+import io.bunnycal.billing.domain.RefundReasonCode;
 import io.bunnycal.billing.repository.CouponRepository;
 import io.bunnycal.billing.repository.PromoCodeRepository;
 import io.bunnycal.billing.service.PromotionService;
+import io.bunnycal.billing.service.RefundService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -35,13 +38,16 @@ public class AdminBillingController {
     private final CouponRepository couponRepository;
     private final PromoCodeRepository promoCodeRepository;
     private final PromotionService promotionService;
+    private final RefundService refundService;
 
     public AdminBillingController(CouponRepository couponRepository,
                                  PromoCodeRepository promoCodeRepository,
-                                 PromotionService promotionService) {
+                                 PromotionService promotionService,
+                                 RefundService refundService) {
         this.couponRepository = couponRepository;
         this.promoCodeRepository = promoCodeRepository;
         this.promotionService = promotionService;
+        this.refundService = refundService;
     }
 
     @PostMapping("/coupons")
@@ -90,6 +96,14 @@ public class AdminBillingController {
         return ResponseEntity.ok(ApiResponse.success(discount));
     }
 
+    @PostMapping("/refunds")
+    public ResponseEntity<ApiResponse<Refund>> issueRefund(Authentication auth, @RequestBody RefundRequest req) {
+        UUID adminId = requireAuth(auth);
+        Refund refund = refundService.issueRefund(
+                req.invoiceId(), req.amountMinor(), req.reasonCode(), req.note(), adminId);
+        return ResponseEntity.ok(ApiResponse.success(refund));
+    }
+
     private UUID requireAuth(Authentication auth) {
         if (auth == null || auth.getPrincipal() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED);
@@ -114,5 +128,9 @@ public class AdminBillingController {
     public record GrantManualDiscountRequest(
             UUID subscriptionId, DiscountType type, Integer percentOff, Long amountOffMinor, String currency,
             DiscountDuration duration, Integer durationMonths, String reason) {
+    }
+
+    /** amountMinor null = full refund of the remaining balance. */
+    public record RefundRequest(UUID invoiceId, Long amountMinor, RefundReasonCode reasonCode, String note) {
     }
 }

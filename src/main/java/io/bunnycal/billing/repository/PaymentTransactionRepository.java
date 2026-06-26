@@ -10,4 +10,6 @@ public interface PaymentTransactionRepository extends JpaRepository<PaymentTrans
     Optional<PaymentTransaction> findByProviderPaymentIntentId(String providerPaymentIntentId);
 
     boolean existsByProviderPaymentIntentId(String providerPaymentIntentId);
+
+    Optional<PaymentTransaction> findFirstByInvoiceIdOrderByOccurredAtDesc(UUID invoiceId);
 }

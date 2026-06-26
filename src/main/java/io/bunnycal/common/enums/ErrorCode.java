@@ -108,7 +108,11 @@ public enum ErrorCode {
     PROMO_CODE_EXHAUSTED("PROMO_CODE_EXHAUSTED",
             "This promo code has reached its usage limit."),
     PROMO_CODE_PLAN_RESTRICTED("PROMO_CODE_PLAN_RESTRICTED",
-            "This promo code cannot be applied to the selected plan.");
+            "This promo code cannot be applied to the selected plan."),
+    REFUND_AMOUNT_INVALID("REFUND_AMOUNT_INVALID",
+            "Refund amount must be greater than zero and not exceed the remaining refundable amount."),
+    INVOICE_NOT_REFUNDABLE("INVOICE_NOT_REFUNDABLE",
+            "This invoice cannot be refunded.");
 
     private final String code;
     private final String message;

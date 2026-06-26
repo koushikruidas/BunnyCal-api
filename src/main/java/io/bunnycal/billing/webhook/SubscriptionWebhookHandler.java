@@ -49,6 +49,9 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
     private final PaymentAuditService auditService;
     private final io.bunnycal.billing.service.InvoiceService invoiceService;
     private final io.bunnycal.billing.repository.PaymentMethodRepository paymentMethodRepository;
+    private final io.bunnycal.billing.service.RefundService refundService;
+    private final io.bunnycal.billing.repository.SubscriptionInvoiceRepository invoiceRepository;
+    private final io.bunnycal.billing.repository.PaymentTransactionRepository transactionRepository;
 
     @Override
     public void handle(ProviderWebhookEvent event) {
@@ -60,6 +63,7 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             case "customer.subscription.deleted" -> onSubscriptionDeleted(object);
             case "invoice.paid" -> onInvoicePaid(object);
             case "invoice.payment_failed" -> onInvoiceFailed(object);
+            case "charge.refunded" -> onChargeRefunded(object);
             default -> log.info("billing.webhook.ignored type={} id={}", event.type(), event.providerEventId());
         }
     }
@@ -147,6 +151,43 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             // Mirror the card used, if the provider included it (display only).
             mirrorPaymentMethod(subscription, invoice);
         });
+    }
+
+    private void onChargeRefunded(JsonNode charge) {
+        long amountRefunded = charge.path("amount_refunded").asLong(0);
+        if (amountRefunded <= 0) {
+            return;
+        }
+        // Resolve the invoice: prefer the charge's invoice id, else the payment intent's transaction.
+        io.bunnycal.billing.domain.SubscriptionInvoice invoice = resolveInvoiceForCharge(charge);
+        if (invoice == null) {
+            log.warn("billing.webhook.refund_no_invoice charge={}", text(charge, "id"));
+            return;
+        }
+        // Most recent provider refund id, if present, is the idempotency anchor.
+        JsonNode refunds = charge.path("refunds").path("data");
+        String providerRefundId = refunds.isArray() && !refunds.isEmpty()
+                ? text(refunds.path(0), "id") : null;
+        refundService.reconcileFromWebhook(invoice, providerRefundId, amountRefunded);
+    }
+
+    @org.springframework.lang.Nullable
+    private io.bunnycal.billing.domain.SubscriptionInvoice resolveInvoiceForCharge(JsonNode charge) {
+        String invoiceId = text(charge, "invoice");
+        if (invoiceId != null) {
+            var byProvider = invoiceRepository.findByProviderInvoiceId(invoiceId);
+            if (byProvider.isPresent()) {
+                return byProvider.get();
+            }
+        }
+        String paymentIntentId = text(charge, "payment_intent");
+        if (paymentIntentId != null) {
+            return transactionRepository.findByProviderPaymentIntentId(paymentIntentId)
+                    .map(io.bunnycal.billing.domain.PaymentTransaction::getInvoiceId)
+                    .flatMap(invoiceRepository::findById)
+                    .orElse(null);
+        }
+        return null;
     }
 
     private io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput toPaidInvoiceInput(JsonNode invoice) {
