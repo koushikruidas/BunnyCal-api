@@ -223,6 +223,16 @@ public class SubscriptionService {
     /** Cancels the user's subscription (immediately or at period end). */
     @Transactional
     public Subscription cancel(UUID userId, boolean atPeriodEnd) {
+        return cancel(userId, atPeriodEnd, null);
+    }
+
+    /**
+     * Cancels the user's subscription, optionally recording a cancellation reason for
+     * churn reporting. The reason is captured in the audit trail only — it does not
+     * affect the cancellation itself.
+     */
+    @Transactional
+    public Subscription cancel(UUID userId, boolean atPeriodEnd, String reason) {
         PaymentProvider provider = requireProvider();
         Subscription subscription = subscriptionRepository.findLiveByUserId(userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.SUBSCRIPTION_NOT_FOUND));
@@ -240,10 +250,16 @@ public class SubscriptionService {
             subscription.setCanceledAt(timeSource.now());
         }
         Subscription saved = subscriptionRepository.save(subscription);
+
+        java.util.Map<String, Object> after = new java.util.HashMap<>();
+        after.put("status", saved.getStatus().name());
+        after.put("cancelAtPeriodEnd", saved.isCancelAtPeriodEnd());
+        if (reason != null && !reason.isBlank()) {
+            after.put("reason", reason);
+        }
         auditService.record(PaymentAuditService.userActor(userId), ENTITY, saved.getId(),
                 atPeriodEnd ? "CANCEL_AT_PERIOD_END" : "CANCEL_IMMEDIATE",
-                Map.of("status", before.name()),
-                Map.of("status", saved.getStatus().name(), "cancelAtPeriodEnd", saved.isCancelAtPeriodEnd()));
+                Map.of("status", before.name()), after);
         return saved;
     }
 

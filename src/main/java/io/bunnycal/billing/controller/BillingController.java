@@ -108,11 +108,12 @@ public class BillingController {
     @PostMapping("/cancel")
     public ResponseEntity<ApiResponse<Void>> cancel(Authentication auth, @RequestBody CancelRequest request) {
         boolean atPeriodEnd = request == null || request.atPeriodEnd() == null || request.atPeriodEnd();
-        subscriptionService.cancel(userId(auth), atPeriodEnd);
+        String reason = request == null ? null : request.reason();
+        subscriptionService.cancel(userId(auth), atPeriodEnd, reason);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
-    public record CancelRequest(Boolean atPeriodEnd) {
+    public record CancelRequest(Boolean atPeriodEnd, String reason) {
     }
 
     private UUID userId(Authentication auth) {

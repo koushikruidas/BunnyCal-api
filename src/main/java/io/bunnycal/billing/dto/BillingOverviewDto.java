@@ -10,7 +10,8 @@ package io.bunnycal.billing.dto;
 public record BillingOverviewDto(
         boolean billingEnabled,
         SubscriptionStateDto state,
-        PlanDto plan) {
+        PlanDto plan,
+        PaymentMethodDto paymentMethod) {
 
     public record PlanDto(
             String code,
@@ -20,5 +21,13 @@ public record BillingOverviewDto(
             String currency,
             String billingInterval,
             int trialDays) {
+    }
+
+    /** Default card on file (mirror of provider metadata); null when none. */
+    public record PaymentMethodDto(
+            String brand,
+            String last4,
+            Integer expMonth,
+            Integer expYear) {
     }
 }
