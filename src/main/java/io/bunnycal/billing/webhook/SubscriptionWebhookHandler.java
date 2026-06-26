@@ -47,6 +47,8 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
     private final TimeSource timeSource;
     private final BillingProperties billingProperties;
     private final PaymentAuditService auditService;
+    private final io.bunnycal.billing.service.InvoiceService invoiceService;
+    private final io.bunnycal.billing.repository.PaymentMethodRepository paymentMethodRepository;
 
     @Override
     public void handle(ProviderWebhookEvent event) {
@@ -130,7 +132,76 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             subscription.setGraceUntil(null);
             subscriptionRepository.save(subscription);
             audit(subscription, "INVOICE_PAID", before);
+
+            // Record the immutable invoice + its payment transaction (idempotent).
+            // Defensive: skip invoice creation if the payload lacks the essentials so a
+            // malformed event still completes the subscription state change (and is marked
+            // PROCESSED) rather than aborting the whole transaction.
+            var input = toPaidInvoiceInput(invoice);
+            if (input.currency() != null) {
+                invoiceService.recordPaidInvoice(subscription, input);
+            } else {
+                log.warn("billing.webhook.invoice_missing_currency sub={}", subscription.getProviderSubscriptionId());
+            }
+
+            // Mirror the card used, if the provider included it (display only).
+            mirrorPaymentMethod(subscription, invoice);
         });
+    }
+
+    private io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput toPaidInvoiceInput(JsonNode invoice) {
+        long subtotal = invoice.path("subtotal").asLong(0);
+        long total = invoice.has("amount_paid")
+                ? invoice.path("amount_paid").asLong(0)
+                : invoice.path("total").asLong(0);
+        long discount = Math.max(0, invoice.path("total_discount_amounts").isArray()
+                ? sumDiscountAmounts(invoice.path("total_discount_amounts"))
+                : Math.max(0, subtotal - total));
+        String currency = upperCurrency(text(invoice, "currency"));
+        JsonNode firstLinePeriod = invoice.path("lines").path("data").path(0).path("period");
+        return new io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput(
+                text(invoice, "id"),
+                text(invoice, "payment_intent"),
+                subtotal,
+                discount,
+                total,
+                currency,
+                epochToInstant(firstLinePeriod, "start"),
+                epochToInstant(firstLinePeriod, "end"));
+    }
+
+    private static long sumDiscountAmounts(JsonNode arr) {
+        long sum = 0;
+        for (JsonNode n : arr) {
+            sum += n.path("amount").asLong(0);
+        }
+        return sum;
+    }
+
+    private void mirrorPaymentMethod(Subscription subscription, JsonNode invoice) {
+        JsonNode card = invoice.path("charge").path("payment_method_details").path("card");
+        String pmId = text(invoice, "payment_method");
+        if (pmId == null || card.isMissingNode()) {
+            return;
+        }
+        if (paymentMethodRepository.findByProviderPmId(pmId).isPresent()) {
+            return;
+        }
+        paymentMethodRepository.clearDefaultForUser(subscription.getUserId());
+        paymentMethodRepository.save(io.bunnycal.billing.domain.PaymentMethod.builder()
+                .subscriptionId(subscription.getId())
+                .userId(subscription.getUserId())
+                .providerPmId(pmId)
+                .brand(text(card, "brand"))
+                .last4(text(card, "last4"))
+                .expMonth(card.path("exp_month").isNumber() ? card.path("exp_month").asInt() : null)
+                .expYear(card.path("exp_year").isNumber() ? card.path("exp_year").asInt() : null)
+                .isDefault(true)
+                .build());
+    }
+
+    private static String upperCurrency(String currency) {
+        return currency == null ? null : currency.toUpperCase(java.util.Locale.ROOT);
     }
 
     private void onInvoiceFailed(JsonNode invoice) {

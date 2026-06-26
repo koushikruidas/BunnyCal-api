@@ -144,7 +144,8 @@ class SubscriptionCoreIT {
         ProviderWebhookEvent event = new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
                 "invoice.paid",
-                "{\"data\":{\"object\":{\"subscription\":\"sub_123\",\"customer\":\"cus_123\"}}}");
+                "{\"data\":{\"object\":{\"id\":\"in_core1\",\"subscription\":\"sub_123\",\"customer\":\"cus_123\","
+                        + "\"currency\":\"inr\",\"subtotal\":99900,\"amount_paid\":99900,\"total\":99900}}}");
 
         webhookHandler.handle(event);
 
