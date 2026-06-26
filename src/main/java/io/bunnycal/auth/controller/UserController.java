@@ -12,6 +12,7 @@ import io.bunnycal.auth.dto.TimezoneUpdateRequest;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.TimeZoneService;
+import io.bunnycal.billing.service.SubscriptionStateService;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,7 @@ public class UserController {
     private final AccountAccessGuard accountAccessGuard;
     private final AccountDeletionService accountDeletionService;
     private final ProfileAvatarService profileAvatarService;
+    private final SubscriptionStateService subscriptionStateService;
 
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(
@@ -57,7 +59,9 @@ public class UserController {
                 });
         accountAccessGuard.requireAccessible(user, userId, "GET:/api/me");
 
-        return ResponseEntity.ok(ApiResponse.success(UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user))));
+        UserDto dto = UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user));
+        dto.setSubscription(subscriptionStateService.resolve(userId));
+        return ResponseEntity.ok(ApiResponse.success(dto));
     }
 
     @PutMapping("/me/timezone")

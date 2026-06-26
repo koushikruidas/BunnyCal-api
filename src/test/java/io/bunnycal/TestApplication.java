@@ -26,6 +26,7 @@ import org.springframework.web.client.RestClient;
         "io.bunnycal.integration",
         "io.bunnycal.team",
         "io.bunnycal.payments",
+        "io.bunnycal.billing",
         "io.bunnycal.common",
         "io.bunnycal.auth.service",
         "io.bunnycal.auth.account",

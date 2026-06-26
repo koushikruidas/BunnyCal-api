@@ -1,13 +1,16 @@
 package io.bunnycal.auth.dto;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.billing.dto.SubscriptionStateDto;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 @Getter
+@Setter
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
@@ -21,6 +24,8 @@ public class UserDto {
     private boolean hasCustomAvatar;
     private Long avatarVersion;
     private String timezone;
+    /** Subscription/entitlement summary for client-side feature gating; null if omitted. */
+    private SubscriptionStateDto subscription;
 
     public static UserDto from(User user, String profileImage) {
         return UserDto.builder()
