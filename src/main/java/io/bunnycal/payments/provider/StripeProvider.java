@@ -87,6 +87,12 @@ public class StripeProvider implements PaymentProvider {
                         .build());
             }
 
+            if (request.providerCouponId() != null && !request.providerCouponId().isBlank()) {
+                builder.addDiscount(SessionCreateParams.Discount.builder()
+                        .setCoupon(request.providerCouponId())
+                        .build());
+            }
+
             com.stripe.model.checkout.Session session =
                     com.stripe.model.checkout.Session.create(builder.build(), requestOptions);
             return new CheckoutSession(session.getId(), session.getUrl());

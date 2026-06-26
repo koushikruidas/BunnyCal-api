@@ -256,6 +256,10 @@ billing:
   # default so dev/test boot without Stripe credentials; enable in environments that
   # have STRIPE_* secrets configured. Mirrors the booking.notifications.enabled pattern.
   enabled: ${BILLING_ENABLED:false}
+  # Exposes /api/admin/billing (coupons, promo codes, manual discounts). Off by default;
+  # there is no admin-role system yet, so keep this disabled outside trusted operators.
+  admin:
+    enabled: ${BILLING_ADMIN_ENABLED:false}
   # Public-facing trial length for the single Phase-1 plan (days). The plan row in
   # subscription_plans is the source of truth; this is the seed/default.
   trial-days: ${BILLING_TRIAL_DAYS:15}

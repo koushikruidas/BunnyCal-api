@@ -100,7 +100,15 @@ public enum ErrorCode {
     SUBSCRIPTION_NOT_FOUND("SUBSCRIPTION_NOT_FOUND",
             "No subscription was found for this account."),
     TRIAL_ALREADY_CONSUMED("TRIAL_ALREADY_CONSUMED",
-            "A free trial has already been used for this account.");
+            "A free trial has already been used for this account."),
+    PROMO_CODE_INVALID("PROMO_CODE_INVALID",
+            "This promo code is not valid."),
+    PROMO_CODE_EXPIRED("PROMO_CODE_EXPIRED",
+            "This promo code has expired."),
+    PROMO_CODE_EXHAUSTED("PROMO_CODE_EXHAUSTED",
+            "This promo code has reached its usage limit."),
+    PROMO_CODE_PLAN_RESTRICTED("PROMO_CODE_PLAN_RESTRICTED",
+            "This promo code cannot be applied to the selected plan.");
 
     private final String code;
     private final String message;

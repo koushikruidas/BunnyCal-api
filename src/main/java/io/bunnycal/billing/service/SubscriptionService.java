@@ -52,6 +52,7 @@ public class SubscriptionService {
     private final BillingProperties billingProperties;
     private final StripeProperties stripeProperties;
     private final PaymentAuditService auditService;
+    private final PromotionService promotionService;
     @Nullable
     private final PaymentProvider paymentProvider;
 
@@ -62,6 +63,7 @@ public class SubscriptionService {
                                BillingProperties billingProperties,
                                StripeProperties stripeProperties,
                                PaymentAuditService auditService,
+                               PromotionService promotionService,
                                @Autowired(required = false) @Nullable PaymentProvider paymentProvider) {
         this.subscriptionRepository = subscriptionRepository;
         this.userRepository = userRepository;
@@ -70,6 +72,7 @@ public class SubscriptionService {
         this.billingProperties = billingProperties;
         this.stripeProperties = stripeProperties;
         this.auditService = auditService;
+        this.promotionService = promotionService;
         this.paymentProvider = paymentProvider;
     }
 
@@ -132,6 +135,18 @@ public class SubscriptionService {
     /** Creates a hosted Checkout session for the default plan and returns the redirect URL. */
     @Transactional
     public CheckoutSession startCheckout(UUID userId) {
+        return startCheckout(userId, null);
+    }
+
+    /**
+     * Creates a hosted Checkout session, optionally applying a promo code. The promo is
+     * validated and redeemed here so the actual provider charge is discounted (via the
+     * coupon's provider id). A code with no linked provider coupon is honored in our
+     * records but cannot discount the provider charge, so it is rejected to avoid a
+     * mismatch between what the user sees and what they are charged.
+     */
+    @Transactional
+    public CheckoutSession startCheckout(UUID userId, String promoCode) {
         PaymentProvider provider = requireProvider();
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.UNAUTHORIZED));
@@ -153,6 +168,19 @@ public class SubscriptionService {
             subscriptionRepository.save(subscription);
         }
 
+        String providerCouponId = null;
+        if (promoCode != null && !promoCode.isBlank()) {
+            PromotionService.ResolvedPromo resolved = promotionService.validate(promoCode, plan);
+            providerCouponId = resolved.coupon().getProviderCouponId();
+            if (providerCouponId == null || providerCouponId.isBlank()) {
+                throw new CustomException(ErrorCode.PROMO_CODE_INVALID,
+                        "This promo code is not available for checkout.");
+            }
+            if (!promotionService.redeem(resolved)) {
+                throw new CustomException(ErrorCode.PROMO_CODE_EXHAUSTED);
+            }
+        }
+
         // Only offer trial days at checkout if the user has not already consumed a trial.
         Integer trialDays = subscription.isTrialConsumed() ? null : plan.getTrialDays();
 
@@ -162,7 +190,8 @@ public class SubscriptionService {
                 plan.getProviderPriceId(),
                 trialDays,
                 stripeProperties.successUrl(),
-                stripeProperties.cancelUrl()));
+                stripeProperties.cancelUrl(),
+                providerCouponId));
     }
 
     private Subscription reopenForCheckout(UUID userId, SubscriptionPlan plan) {

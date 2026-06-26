@@ -24,7 +24,8 @@ public final class ProviderRequests {
             String providerPriceId,
             Integer trialDays,
             String successUrl,
-            String cancelUrl) {
+            String cancelUrl,
+            String providerCouponId) {
     }
 
     public record CheckoutSession(String sessionId, String redirectUrl) {
