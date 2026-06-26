@@ -39,6 +39,9 @@ dependencies {
 	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
 	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+	// Stripe — SaaS subscription billing (Phase 1). Provides Checkout/Portal sessions,
+	// subscription + refund APIs, and webhook signature verification (Webhook.constructEvent).
+	implementation 'com.stripe:stripe-java:29.2.0'
 	// implementation 'net.ttddyy.observation:datasource-micrometer-opentelemetry'
 	// implementation 'net.ttddyy.observation:datasource-micrometer-spring-boot'
 	compileOnly 'org.projectlombok:lombok'

@@ -90,7 +90,17 @@ public enum ErrorCode {
     ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE("ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE",
             "This experience is active and cannot be deleted. Archive it first."),
     EXPERIENCE_NOT_ACTIVATABLE("EXPERIENCE_NOT_ACTIVATABLE",
-            "This experience can't be activated because its event type or form is missing. Reattach a valid event type and form, then try again.");
+            "This experience can't be activated because its event type or form is missing. Reattach a valid event type and form, then try again."),
+    WEBHOOK_SIGNATURE_INVALID("WEBHOOK_SIGNATURE_INVALID",
+            "Webhook signature verification failed."),
+    BILLING_DISABLED("BILLING_DISABLED",
+            "Billing is not enabled for this environment."),
+    BILLING_PROVIDER_ERROR("BILLING_PROVIDER_ERROR",
+            "The payment provider returned an error. Please try again."),
+    SUBSCRIPTION_NOT_FOUND("SUBSCRIPTION_NOT_FOUND",
+            "No subscription was found for this account."),
+    TRIAL_ALREADY_CONSUMED("TRIAL_ALREADY_CONSUMED",
+            "A free trial has already been used for this account.");
 
     private final String code;
     private final String message;

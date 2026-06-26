@@ -117,6 +117,8 @@ public class SecurityConfig {
                         .requestMatchers("/integrations/calendar/webhooks/**").permitAll()
                         .requestMatchers("/integrations/calendar/**").authenticated()
                         .requestMatchers("/integrations/conferencing/**").authenticated()
+                        // Provider webhooks authenticate via signature, not JWT. Must precede /api/**.
+                        .requestMatchers("/api/billing/webhooks/**").permitAll()
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll()
                 )

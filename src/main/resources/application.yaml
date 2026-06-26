@@ -251,6 +251,28 @@ booking:
     # Leave empty to disable (no prod impact).
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
 
+billing:
+  # Master switch for the SaaS subscription billing module (Stripe). Disabled by
+  # default so dev/test boot without Stripe credentials; enable in environments that
+  # have STRIPE_* secrets configured. Mirrors the booking.notifications.enabled pattern.
+  enabled: ${BILLING_ENABLED:false}
+  # Public-facing trial length for the single Phase-1 plan (days). The plan row in
+  # subscription_plans is the source of truth; this is the seed/default.
+  trial-days: ${BILLING_TRIAL_DAYS:15}
+  # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
+  grace-days: ${BILLING_GRACE_DAYS:3}
+  notifications:
+    enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
+    from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
+  stripe:
+    secret-key: ${STRIPE_SECRET_KEY:}
+    # Signing secret for the webhook endpoint (whsec_...). Verified on every callback.
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    # Where Stripe-hosted Checkout / Customer Portal return the user.
+    success-url: ${STRIPE_SUCCESS_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=success}
+    cancel-url: ${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=cancelled}
+    portal-return-url: ${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing}
+
 draft:
   ttl:
     days: ${DRAFT_TTL_DAYS:21}
