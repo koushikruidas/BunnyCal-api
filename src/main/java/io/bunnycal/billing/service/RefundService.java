@@ -42,6 +42,7 @@ public class RefundService {
     private final SubscriptionInvoiceRepository invoiceRepository;
     private final PaymentTransactionRepository transactionRepository;
     private final PaymentAuditService auditService;
+    private final io.bunnycal.billing.notification.BillingEventPublisher billingEventPublisher;
     @Nullable
     private final PaymentProvider paymentProvider;
 
@@ -49,11 +50,13 @@ public class RefundService {
                          SubscriptionInvoiceRepository invoiceRepository,
                          PaymentTransactionRepository transactionRepository,
                          PaymentAuditService auditService,
+                         io.bunnycal.billing.notification.BillingEventPublisher billingEventPublisher,
                          @Autowired(required = false) @Nullable PaymentProvider paymentProvider) {
         this.refundRepository = refundRepository;
         this.invoiceRepository = invoiceRepository;
         this.transactionRepository = transactionRepository;
         this.auditService = auditService;
+        this.billingEventPublisher = billingEventPublisher;
         this.paymentProvider = paymentProvider;
     }
 
@@ -112,6 +115,9 @@ public class RefundService {
         auditService.record(PaymentAuditService.adminActor(adminId), ENTITY, refund.getId(),
                 "REFUND_ISSUED", null,
                 Map.of("invoiceId", invoiceId.toString(), "amountMinor", amount, "reason", reasonCode.name()));
+        billingEventPublisher.publishForUser(invoice.getUserId(), refund.getId(),
+                io.bunnycal.billing.notification.BillingNotificationService.REFUND_ISSUED,
+                Map.of("amountMinor", amount, "currency", invoice.getCurrency()));
         log.info("billing.refund_issued invoiceId={} amountMinor={} reason={} providerRefundId={}",
                 invoiceId, amount, reasonCode, result.providerRefundId());
         return refund;
@@ -156,6 +162,9 @@ public class RefundService {
         auditService.record(PaymentAuditService.ACTOR_WEBHOOK, ENTITY, invoice.getId(),
                 "REFUND_RECONCILED", null,
                 Map.of("invoiceId", invoice.getId().toString(), "amountMinor", delta));
+        billingEventPublisher.publishForUser(invoice.getUserId(), invoice.getId(),
+                io.bunnycal.billing.notification.BillingNotificationService.REFUND_ISSUED,
+                Map.of("amountMinor", delta, "currency", invoice.getCurrency()));
         log.info("billing.refund_reconciled invoiceId={} deltaMinor={} providerRefundId={}",
                 invoice.getId(), delta, providerRefundId);
     }

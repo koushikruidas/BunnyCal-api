@@ -60,6 +60,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final ParticipantSetupRequestNotificationService setupRequestNotificationService;
     @Nullable
     private final EventTypeLifecycleNotificationService eventTypeLifecycleNotificationService;
+    @Nullable
+    private final io.bunnycal.billing.notification.BillingNotificationService billingNotificationService;
     private final TransactionTemplate requiresNewTx;
     private final SyncInvariantMonitor invariantMonitor;
     private final MeterRegistry meterRegistry;
@@ -77,6 +79,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable TeamInvitationNotificationService teamInvitationNotificationService,
                                         @Nullable ParticipantSetupRequestNotificationService setupRequestNotificationService,
                                         @Nullable EventTypeLifecycleNotificationService eventTypeLifecycleNotificationService,
+                                        @Nullable io.bunnycal.billing.notification.BillingNotificationService billingNotificationService,
                                         PlatformTransactionManager transactionManager,
                                         SyncInvariantMonitor invariantMonitor,
                                         MeterRegistry meterRegistry) {
@@ -93,6 +96,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.teamInvitationNotificationService = teamInvitationNotificationService;
         this.setupRequestNotificationService = setupRequestNotificationService;
         this.eventTypeLifecycleNotificationService = eventTypeLifecycleNotificationService;
+        this.billingNotificationService = billingNotificationService;
         this.requiresNewTx = new TransactionTemplate(transactionManager);
         this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.invariantMonitor = invariantMonitor;
@@ -110,6 +114,17 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 teamInvitationNotificationService.handleOutboxEvent(event);
             } else {
                 log.info("team_invitation_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
+            }
+            return;
+        }
+
+        // Billing aggregates (Subscription / Invoice): route to billing notifications.
+        if (io.bunnycal.billing.notification.BillingNotificationService.supportsAggregateType(
+                event != null ? event.getAggregateType() : null)) {
+            if (billingNotificationService != null) {
+                billingNotificationService.handleOutboxEvent(event);
+            } else {
+                log.info("billing_notification_skip_disabled eventId={}", event != null ? event.getId() : null);
             }
             return;
         }

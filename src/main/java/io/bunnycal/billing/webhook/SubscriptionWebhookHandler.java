@@ -52,6 +52,7 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
     private final io.bunnycal.billing.service.RefundService refundService;
     private final io.bunnycal.billing.repository.SubscriptionInvoiceRepository invoiceRepository;
     private final io.bunnycal.billing.repository.PaymentTransactionRepository transactionRepository;
+    private final io.bunnycal.billing.notification.BillingEventPublisher billingEventPublisher;
 
     @Override
     public void handle(ProviderWebhookEvent event) {
@@ -122,10 +123,15 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
     private void onSubscriptionDeleted(JsonNode sub) {
         subscriptionRepository.findByProviderSubscriptionId(text(sub, "id")).ifPresent(subscription -> {
             SubscriptionStatus before = subscription.getStatus();
+            if (before == SubscriptionStatus.CANCELLED) {
+                return; // already cancelled; avoid a duplicate email on redelivery
+            }
             subscription.setStatus(SubscriptionStatus.CANCELLED);
             subscription.setCanceledAt(timeSource.now());
             subscriptionRepository.save(subscription);
             audit(subscription, "SUBSCRIPTION_DELETED", before);
+            billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
+                    io.bunnycal.billing.notification.BillingNotificationService.SUBSCRIPTION_CANCELLED, null);
         });
     }
 
@@ -143,7 +149,21 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             // PROCESSED) rather than aborting the whole transaction.
             var input = toPaidInvoiceInput(invoice);
             if (input.currency() != null) {
-                invoiceService.recordPaidInvoice(subscription, input);
+                // Only notify on first sight of this provider invoice, so a webhook
+                // redelivery does not re-send emails.
+                boolean firstSeen = input.providerInvoiceId() == null
+                        || !invoiceRepository.existsByProviderInvoiceId(input.providerInvoiceId());
+                var saved = invoiceService.recordPaidInvoice(subscription, input);
+                if (firstSeen) {
+                    billingEventPublisher.publishForInvoice(subscription.getUserId(), saved.getId(),
+                            io.bunnycal.billing.notification.BillingNotificationService.INVOICE_GENERATED,
+                            java.util.Map.of("invoiceNumber", saved.getInvoiceNumber()));
+                    // A renewal is a paid invoice on an already-active subscription.
+                    if (before == SubscriptionStatus.ACTIVE) {
+                        billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
+                                io.bunnycal.billing.notification.BillingNotificationService.SUBSCRIPTION_RENEWED, null);
+                    }
+                }
             } else {
                 log.warn("billing.webhook.invoice_missing_currency sub={}", subscription.getProviderSubscriptionId());
             }
@@ -254,6 +274,11 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             }
             subscriptionRepository.save(subscription);
             audit(subscription, "INVOICE_FAILED", before);
+            // Notify once per transition into PAST_DUE (avoid repeat emails on retries).
+            if (before != SubscriptionStatus.PAST_DUE) {
+                billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
+                        io.bunnycal.billing.notification.BillingNotificationService.PAYMENT_FAILED, null);
+            }
         });
     }
 

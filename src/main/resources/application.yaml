@@ -265,6 +265,11 @@ billing:
   trial-days: ${BILLING_TRIAL_DAYS:15}
   # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
   grace-days: ${BILLING_GRACE_DAYS:3}
+  # Trial-ending reminders run daily; dunning sweep runs hourly. ShedLock-guarded.
+  trial-reminder:
+    cron: ${BILLING_TRIAL_REMINDER_CRON:0 0 9 * * *}
+  dunning:
+    cron: ${BILLING_DUNNING_CRON:0 30 * * * *}
   notifications:
     enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
     from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
