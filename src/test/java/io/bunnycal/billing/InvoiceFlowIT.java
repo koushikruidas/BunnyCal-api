@@ -94,15 +94,21 @@ class InvoiceFlowIT {
     }
 
     private ProviderWebhookEvent invoicePaid(String invoiceId, String subId, long total) {
-        String json = "{\"data\":{\"object\":{"
-                + "\"id\":\"" + invoiceId + "\","
-                + "\"subscription\":\"" + subId + "\","
-                + "\"currency\":\"inr\","
-                + "\"subtotal\":" + total + ",\"amount_paid\":" + total + ",\"total\":" + total + ","
-                + "\"payment_intent\":\"pi_" + invoiceId + "\","
-                + "\"lines\":{\"data\":[{\"period\":{\"start\":1735689600,\"end\":1738368000}}]}"
-                + "}}}";
-        return new ProviderWebhookEvent("evt_" + UUID.randomUUID(), "invoice.paid", json);
+        return new ProviderWebhookEvent(
+                "evt_" + UUID.randomUUID(),
+                "invoice.paid",
+                io.bunnycal.payments.provider.BillingEventType.INVOICE_PAID,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .providerInvoiceId(invoiceId)
+                        .providerSubscriptionId(subId)
+                        .currency("inr")
+                        .subtotalMinor(total)
+                        .totalMinor(total)
+                        .providerPaymentIntentId("pi_" + invoiceId)
+                        .invoicePeriodStart(java.time.Instant.ofEpochSecond(1735689600L))
+                        .invoicePeriodEnd(java.time.Instant.ofEpochSecond(1738368000L))
+                        .build());
     }
 
     @Test

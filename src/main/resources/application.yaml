@@ -252,10 +252,14 @@ booking:
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
 
 billing:
-  # Master switch for the SaaS subscription billing module (Stripe). Disabled by
-  # default so dev/test boot without Stripe credentials; enable in environments that
-  # have STRIPE_* secrets configured. Mirrors the booking.notifications.enabled pattern.
+  # Master switch for the SaaS subscription billing module. Disabled by default so
+  # dev/test boot without provider credentials; enable in environments that have the
+  # active provider's secrets configured. Mirrors the booking.notifications.enabled pattern.
   enabled: ${BILLING_ENABLED:false}
+  # Active payment provider: "stripe" (direct merchant) or "dodo" (Merchant of Record).
+  # Switching providers is a single env-var change — no code change. Selects which
+  # PaymentProvider bean loads (@ConditionalOnProperty).
+  provider: ${BILLING_PROVIDER:stripe}
   # Exposes /api/admin/billing (coupons, promo codes, manual discounts). Off by default;
   # there is no admin-role system yet, so keep this disabled outside trusted operators.
   admin:
@@ -273,14 +277,31 @@ billing:
   notifications:
     enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
     from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
+  # Provider-neutral redirect URLs for hosted Checkout / Customer Portal. Identical
+  # regardless of provider. (STRIPE_* env vars are still honored as defaults for
+  # backward compatibility with existing deployments.)
+  redirect:
+    success-url: ${BILLING_SUCCESS_URL:${STRIPE_SUCCESS_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=success}}
+    cancel-url: ${BILLING_CANCEL_URL:${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=cancelled}}
+    portal-return-url: ${BILLING_PORTAL_RETURN_URL:${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing}}
+  # Customer-facing document presentation. "direct-merchant" (Stripe) issues a real
+  # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues an internal "Payment
+  # Summary" and names the Merchant of Record that issued the official receipt.
+  invoice-presentation:
+    mode: ${BILLING_INVOICE_MODE:direct-merchant}
+    seller-name: ${BILLING_SELLER_NAME:BunnyCal}
+    merchant-of-record-name: ${BILLING_MOR_NAME:Dodo Payments}
   stripe:
     secret-key: ${STRIPE_SECRET_KEY:}
     # Signing secret for the webhook endpoint (whsec_...). Verified on every callback.
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
-    # Where Stripe-hosted Checkout / Customer Portal return the user.
-    success-url: ${STRIPE_SUCCESS_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=success}
-    cancel-url: ${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=cancelled}
-    portal-return-url: ${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing}
+  dodo:
+    # Dodo API key (Bearer token). Used for /checkouts, /customers, /subscriptions, /refunds.
+    api-key: ${DODO_API_KEY:}
+    # Standard-Webhooks signing secret used to verify the webhook-signature header.
+    webhook-secret: ${DODO_WEBHOOK_SECRET:}
+    # When true, the API targets test.dodopayments.com; otherwise live.dodopayments.com.
+    test-mode: ${DODO_TEST_MODE:true}
 
 draft:
   ttl:

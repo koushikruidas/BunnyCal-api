@@ -144,8 +144,16 @@ class SubscriptionCoreIT {
         ProviderWebhookEvent event = new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
                 "invoice.paid",
-                "{\"data\":{\"object\":{\"id\":\"in_core1\",\"subscription\":\"sub_123\",\"customer\":\"cus_123\","
-                        + "\"currency\":\"inr\",\"subtotal\":99900,\"amount_paid\":99900,\"total\":99900}}}");
+                io.bunnycal.payments.provider.BillingEventType.INVOICE_PAID,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .providerInvoiceId("in_core1")
+                        .providerSubscriptionId("sub_123")
+                        .providerCustomerId("cus_123")
+                        .currency("inr")
+                        .subtotalMinor(99900)
+                        .totalMinor(99900)
+                        .build());
 
         webhookHandler.handle(event);
 
@@ -164,7 +172,11 @@ class SubscriptionCoreIT {
         webhookHandler.handle(new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
                 "invoice.payment_failed",
-                "{\"data\":{\"object\":{\"subscription\":\"sub_456\"}}}"));
+                io.bunnycal.payments.provider.BillingEventType.INVOICE_FAILED,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .providerSubscriptionId("sub_456")
+                        .build()));
 
         Subscription after = subscriptionRepository.findById(sub.getId()).orElseThrow();
         assertThat(after.getStatus()).isEqualTo(SubscriptionStatus.PAST_DUE);

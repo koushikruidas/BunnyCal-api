@@ -74,9 +74,12 @@ class WebhookIngestionIT {
     void persistsAndAuditsAVerifiedWebhook() {
         String eventId = "evt_" + UUID.randomUUID();
         ProviderWebhookEvent event = new ProviderWebhookEvent(
-                eventId, "invoice.paid", "{\"id\":\"" + eventId + "\",\"type\":\"invoice.paid\"}");
+                eventId, "invoice.paid",
+                io.bunnycal.payments.provider.BillingEventType.INVOICE_PAID,
+                "{\"id\":\"" + eventId + "\",\"type\":\"invoice.paid\"}",
+                ProviderWebhookEvent.Data.empty());
 
-        boolean fresh = ingestionService.ingest(event);
+        boolean fresh = ingestionService.ingest("STRIPE", event);
 
         assertThat(fresh).isTrue();
         var stored = webhookEventRepository.findByProviderAndProviderEventId("STRIPE", eventId);
@@ -94,10 +97,13 @@ class WebhookIngestionIT {
     void redeliveredEventIsProcessedExactlyOnce() {
         String eventId = "evt_" + UUID.randomUUID();
         ProviderWebhookEvent event = new ProviderWebhookEvent(
-                eventId, "customer.subscription.updated", "{\"id\":\"" + eventId + "\"}");
+                eventId, "customer.subscription.updated",
+                io.bunnycal.payments.provider.BillingEventType.SUBSCRIPTION_UPSERTED,
+                "{\"id\":\"" + eventId + "\"}",
+                ProviderWebhookEvent.Data.empty());
 
-        boolean first = ingestionService.ingest(event);
-        boolean second = ingestionService.ingest(event);
+        boolean first = ingestionService.ingest("STRIPE", event);
+        boolean second = ingestionService.ingest("STRIPE", event);
 
         assertThat(first).isTrue();
         assertThat(second).isFalse();

@@ -11,6 +11,7 @@ import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfWriter;
 import io.bunnycal.billing.domain.SubscriptionInvoice;
+import io.bunnycal.payments.config.InvoicePresentationProperties;
 import java.awt.Color;
 import java.io.ByteArrayOutputStream;
 import java.time.ZoneOffset;
@@ -31,6 +32,12 @@ public class PdfInvoiceGenerator {
     private static final Color PLUM = new Color(95, 61, 142);
     private static final Color MUTED = new Color(110, 110, 110);
 
+    private final InvoicePresentationProperties presentation;
+
+    public PdfInvoiceGenerator(InvoicePresentationProperties presentation) {
+        this.presentation = presentation;
+    }
+
     /** Customer + plan display fields not stored on the invoice row. */
     public record InvoiceContext(String customerName, String customerEmail, String planName) {
     }
@@ -48,17 +55,32 @@ public class PdfInvoiceGenerator {
             Font value = FontFactory.getFont(FontFactory.HELVETICA, 11, Color.BLACK);
             Font totalFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 13, Color.BLACK);
 
-            Paragraph brand = new Paragraph("BunnyCal", brandFont);
+            boolean mor = presentation.isMerchantOfRecord();
+
+            Paragraph brand = new Paragraph(presentation.sellerName(), brandFont);
             document.add(brand);
-            Paragraph sub = new Paragraph("Invoice", label);
-            sub.setSpacingAfter(16);
+            Paragraph sub = new Paragraph(mor ? "Payment Summary" : "Invoice", label);
+            sub.setSpacingAfter(mor ? 6 : 16);
             document.add(sub);
+
+            // In Merchant-of-Record mode this document is an internal payment record, NOT the
+            // legal tax receipt — the MoR issues that and emails it to the customer.
+            if (mor) {
+                Paragraph note = new Paragraph(
+                        "This is a payment summary for your records. Your official tax invoice was "
+                                + "issued by " + presentation.merchantOfRecordName()
+                                + " and sent to your email.",
+                        label);
+                note.setSpacingAfter(16);
+                document.add(note);
+            }
 
             // Meta block: number / dates / customer.
             PdfPTable meta = new PdfPTable(2);
             meta.setWidthPercentage(100);
             meta.setSpacingAfter(20);
-            meta.addCell(labelValueCell("Invoice number", invoice.getInvoiceNumber(), label, value));
+            meta.addCell(labelValueCell(mor ? "Reference" : "Invoice number",
+                    invoice.getInvoiceNumber(), label, value));
             meta.addCell(labelValueCell("Issued", DATE.format(invoice.getIssuedAt()), label, value));
             meta.addCell(labelValueCell("Billed to",
                     ctx.customerName() + "\n" + nullToEmpty(ctx.customerEmail()), label, value));
@@ -96,13 +118,21 @@ public class PdfInvoiceGenerator {
             }
             document.add(totals);
 
+            String refLabel = mor ? "Receipt ref" : "Payment ref";
             Paragraph footer = new Paragraph(
                     "\nStatus: " + invoice.getStatus()
                             + (invoice.getProviderInvoiceId() != null
-                                    ? "    Payment ref: " + invoice.getProviderInvoiceId() : ""),
+                                    ? "    " + refLabel + ": " + invoice.getProviderInvoiceId() : ""),
                     label);
             footer.setSpacingBefore(24);
             document.add(footer);
+
+            if (mor && invoice.getProviderInvoiceId() != null) {
+                Paragraph issued = new Paragraph(
+                        "Official receipt issued by " + presentation.merchantOfRecordName() + ".", label);
+                issued.setSpacingBefore(4);
+                document.add(issued);
+            }
 
             document.close();
             return out.toByteArray();

@@ -92,7 +92,7 @@ class RefundFlowIT {
                 }
 
                 @Override
-                public ProviderWebhookEvent verifyWebhook(byte[] payload, String signature) {
+                public ProviderWebhookEvent verifyWebhook(byte[] payload, java.util.Map<String, String> headers) {
                     throw new UnsupportedOperationException();
                 }
             };
@@ -191,10 +191,16 @@ class RefundFlowIT {
     @Test
     void chargeRefundedWebhookReconcilesIdempotently() {
         Fixture f = paidInvoice("sub_wh", 99900);
-        String chargeJson = "{\"data\":{\"object\":{"
-                + "\"id\":\"ch_1\",\"invoice\":\"in_sub_wh\",\"amount_refunded\":99900,"
-                + "\"refunds\":{\"data\":[{\"id\":\"re_wh_1\"}]}}}}";
-        ProviderWebhookEvent event = new ProviderWebhookEvent("evt_" + UUID.randomUUID(), "charge.refunded", chargeJson);
+        ProviderWebhookEvent event = new ProviderWebhookEvent(
+                "evt_" + UUID.randomUUID(),
+                "charge.refunded",
+                io.bunnycal.payments.provider.BillingEventType.REFUND_PROCESSED,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .refundProviderInvoiceId("in_sub_wh")
+                        .providerRefundId("re_wh_1")
+                        .amountRefundedMinor(99900)
+                        .build());
 
         webhookHandler.handle(event);
         webhookHandler.handle(event); // redelivery

@@ -1,7 +1,5 @@
 package io.bunnycal.billing.webhook;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.billing.domain.Subscription;
 import io.bunnycal.billing.domain.SubscriptionStatus;
 import io.bunnycal.billing.repository.SubscriptionRepository;
@@ -9,6 +7,8 @@ import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.payments.audit.PaymentAuditService;
 import io.bunnycal.payments.config.BillingProperties;
 import io.bunnycal.payments.provider.ProviderWebhookEvent;
+import io.bunnycal.payments.provider.ProviderWebhookEvent.CardInfo;
+import io.bunnycal.payments.provider.ProviderWebhookEvent.SubscriptionStatusSignal;
 import io.bunnycal.payments.webhook.WebhookEventHandler;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -24,12 +24,17 @@ import org.springframework.stereotype.Component;
 
 /**
  * Webhook-driven subscription state machine. The only authority that flips a subscription
- * between TRIAL/ACTIVE/PAST_DUE/CANCELLED/EXPIRED in response to Stripe events.
+ * between TRIAL/ACTIVE/PAST_DUE/CANCELLED/EXPIRED in response to provider events.
+ *
+ * <p>Provider-neutral: it switches on the normalized {@link io.bunnycal.payments.provider.BillingEventType}
+ * and reads pre-extracted fields from {@link ProviderWebhookEvent.Data}. No provider-specific
+ * event-type strings or JSON field names appear here, so adding Dodo/Razorpay needs no change
+ * to this class — the new provider just maps its raw events into the neutral shape.
  *
  * <p>Runs inside {@code WebhookIngestionService}'s transaction, so its mutations commit
  * atomically with the {@code webhook_events} PROCESSED marker. Idempotent: replaying the
- * same event converges on the same state. Unknown event types are ignored (logged) so
- * the event is still marked PROCESSED and not retried forever.
+ * same event converges on the same state. UNKNOWN event types are ignored (logged) so the
+ * event is still marked PROCESSED and not retried forever.
  *
  * <p>{@code @Primary} so it wins over the M1 {@code LoggingWebhookEventHandler}.
  */
@@ -43,7 +48,6 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
     private static final String ENTITY = "Subscription";
 
     private final SubscriptionRepository subscriptionRepository;
-    private final ObjectMapper objectMapper;
     private final TimeSource timeSource;
     private final BillingProperties billingProperties;
     private final PaymentAuditService auditService;
@@ -56,23 +60,23 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
 
     @Override
     public void handle(ProviderWebhookEvent event) {
-        JsonNode object = parseDataObject(event);
+        ProviderWebhookEvent.Data data = event.data();
         switch (event.type()) {
-            case "checkout.session.completed" -> onCheckoutCompleted(object);
-            case "customer.subscription.created",
-                 "customer.subscription.updated" -> onSubscriptionUpserted(object);
-            case "customer.subscription.deleted" -> onSubscriptionDeleted(object);
-            case "invoice.paid" -> onInvoicePaid(object);
-            case "invoice.payment_failed" -> onInvoiceFailed(object);
-            case "charge.refunded" -> onChargeRefunded(object);
-            default -> log.info("billing.webhook.ignored type={} id={}", event.type(), event.providerEventId());
+            case CHECKOUT_COMPLETED -> onCheckoutCompleted(data);
+            case SUBSCRIPTION_UPSERTED -> onSubscriptionUpserted(data);
+            case SUBSCRIPTION_DELETED -> onSubscriptionDeleted(data);
+            case INVOICE_PAID -> onInvoicePaid(data);
+            case INVOICE_FAILED -> onInvoiceFailed(data);
+            case REFUND_PROCESSED -> onRefundProcessed(data);
+            case UNKNOWN -> log.info("billing.webhook.ignored rawType={} id={}",
+                    event.rawType(), event.providerEventId());
         }
     }
 
-    private void onCheckoutCompleted(JsonNode session) {
-        String customerId = text(session, "customer");
-        String subscriptionId = text(session, "subscription");
-        String userId = text(session.path("metadata"), "user_id");
+    private void onCheckoutCompleted(ProviderWebhookEvent.Data data) {
+        String subscriptionId = data.providerSubscriptionId();
+        String customerId = data.providerCustomerId();
+        String userId = data.userId();
         if (subscriptionId == null) {
             return; // not a subscription checkout
         }
@@ -93,10 +97,10 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         audit(subscription, "CHECKOUT_COMPLETED");
     }
 
-    private void onSubscriptionUpserted(JsonNode sub) {
-        String subscriptionId = text(sub, "id");
+    private void onSubscriptionUpserted(ProviderWebhookEvent.Data data) {
+        String subscriptionId = data.providerSubscriptionId();
         Subscription subscription = subscriptionRepository.findByProviderSubscriptionId(subscriptionId)
-                .or(() -> linkByCustomer(text(sub, "customer"), subscriptionId))
+                .or(() -> linkByCustomer(data.providerCustomerId(), subscriptionId))
                 .orElse(null);
         if (subscription == null) {
             log.warn("billing.webhook.subscription_unmatched sub={}", subscriptionId);
@@ -104,15 +108,13 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         }
 
         SubscriptionStatus before = subscription.getStatus();
-        subscription.setStatus(mapStatus(text(sub, "status")));
-        subscription.setCancelAtPeriodEnd(sub.path("cancel_at_period_end").asBoolean(false));
-        Instant periodStart = epochToInstant(sub, "current_period_start");
-        Instant periodEnd = epochToInstant(sub, "current_period_end");
-        if (periodStart != null) {
-            subscription.setCurrentPeriodStart(periodStart);
+        subscription.setStatus(mapStatus(data.status()));
+        subscription.setCancelAtPeriodEnd(data.cancelAtPeriodEnd());
+        if (data.currentPeriodStart() != null) {
+            subscription.setCurrentPeriodStart(data.currentPeriodStart());
         }
-        if (periodEnd != null) {
-            subscription.setCurrentPeriodEnd(periodEnd);
+        if (data.currentPeriodEnd() != null) {
+            subscription.setCurrentPeriodEnd(data.currentPeriodEnd());
         }
         subscriptionRepository.save(subscription);
         if (before != subscription.getStatus()) {
@@ -120,8 +122,8 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         }
     }
 
-    private void onSubscriptionDeleted(JsonNode sub) {
-        subscriptionRepository.findByProviderSubscriptionId(text(sub, "id")).ifPresent(subscription -> {
+    private void onSubscriptionDeleted(ProviderWebhookEvent.Data data) {
+        subscriptionRepository.findByProviderSubscriptionId(data.providerSubscriptionId()).ifPresent(subscription -> {
             SubscriptionStatus before = subscription.getStatus();
             if (before == SubscriptionStatus.CANCELLED) {
                 return; // already cancelled; avoid a duplicate email on redelivery
@@ -135,8 +137,8 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         });
     }
 
-    private void onInvoicePaid(JsonNode invoice) {
-        linkInvoiceSubscription(invoice).ifPresent(subscription -> {
+    private void onInvoicePaid(ProviderWebhookEvent.Data data) {
+        linkInvoiceSubscription(data).ifPresent(subscription -> {
             SubscriptionStatus before = subscription.getStatus();
             subscription.setStatus(SubscriptionStatus.ACTIVE);
             subscription.setGraceUntil(null);
@@ -147,7 +149,7 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             // Defensive: skip invoice creation if the payload lacks the essentials so a
             // malformed event still completes the subscription state change (and is marked
             // PROCESSED) rather than aborting the whole transaction.
-            var input = toPaidInvoiceInput(invoice);
+            var input = toPaidInvoiceInput(data);
             if (input.currency() != null) {
                 // Only notify on first sight of this provider invoice, so a webhook
                 // redelivery does not re-send emails.
@@ -169,38 +171,33 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
             }
 
             // Mirror the card used, if the provider included it (display only).
-            mirrorPaymentMethod(subscription, invoice);
+            mirrorPaymentMethod(subscription, data);
         });
     }
 
-    private void onChargeRefunded(JsonNode charge) {
-        long amountRefunded = charge.path("amount_refunded").asLong(0);
+    private void onRefundProcessed(ProviderWebhookEvent.Data data) {
+        long amountRefunded = data.amountRefundedMinor();
         if (amountRefunded <= 0) {
             return;
         }
-        // Resolve the invoice: prefer the charge's invoice id, else the payment intent's transaction.
-        io.bunnycal.billing.domain.SubscriptionInvoice invoice = resolveInvoiceForCharge(charge);
+        io.bunnycal.billing.domain.SubscriptionInvoice invoice = resolveInvoiceForRefund(data);
         if (invoice == null) {
-            log.warn("billing.webhook.refund_no_invoice charge={}", text(charge, "id"));
+            log.warn("billing.webhook.refund_no_invoice refundId={}", data.providerRefundId());
             return;
         }
-        // Most recent provider refund id, if present, is the idempotency anchor.
-        JsonNode refunds = charge.path("refunds").path("data");
-        String providerRefundId = refunds.isArray() && !refunds.isEmpty()
-                ? text(refunds.path(0), "id") : null;
-        refundService.reconcileFromWebhook(invoice, providerRefundId, amountRefunded);
+        refundService.reconcileFromWebhook(invoice, data.providerRefundId(), amountRefunded);
     }
 
     @org.springframework.lang.Nullable
-    private io.bunnycal.billing.domain.SubscriptionInvoice resolveInvoiceForCharge(JsonNode charge) {
-        String invoiceId = text(charge, "invoice");
+    private io.bunnycal.billing.domain.SubscriptionInvoice resolveInvoiceForRefund(ProviderWebhookEvent.Data data) {
+        String invoiceId = data.refundProviderInvoiceId();
         if (invoiceId != null) {
             var byProvider = invoiceRepository.findByProviderInvoiceId(invoiceId);
             if (byProvider.isPresent()) {
                 return byProvider.get();
             }
         }
-        String paymentIntentId = text(charge, "payment_intent");
+        String paymentIntentId = data.providerPaymentIntentId();
         if (paymentIntentId != null) {
             return transactionRepository.findByProviderPaymentIntentId(paymentIntentId)
                     .map(io.bunnycal.billing.domain.PaymentTransaction::getInvoiceId)
@@ -210,39 +207,22 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         return null;
     }
 
-    private io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput toPaidInvoiceInput(JsonNode invoice) {
-        long subtotal = invoice.path("subtotal").asLong(0);
-        long total = invoice.has("amount_paid")
-                ? invoice.path("amount_paid").asLong(0)
-                : invoice.path("total").asLong(0);
-        long discount = Math.max(0, invoice.path("total_discount_amounts").isArray()
-                ? sumDiscountAmounts(invoice.path("total_discount_amounts"))
-                : Math.max(0, subtotal - total));
-        String currency = upperCurrency(text(invoice, "currency"));
-        JsonNode firstLinePeriod = invoice.path("lines").path("data").path(0).path("period");
+    private io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput toPaidInvoiceInput(ProviderWebhookEvent.Data data) {
         return new io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput(
-                text(invoice, "id"),
-                text(invoice, "payment_intent"),
-                subtotal,
-                discount,
-                total,
-                currency,
-                epochToInstant(firstLinePeriod, "start"),
-                epochToInstant(firstLinePeriod, "end"));
+                data.providerInvoiceId(),
+                data.providerPaymentIntentId(),
+                data.subtotalMinor(),
+                data.discountMinor(),
+                data.totalMinor(),
+                upperCurrency(data.currency()),
+                data.invoicePeriodStart(),
+                data.invoicePeriodEnd());
     }
 
-    private static long sumDiscountAmounts(JsonNode arr) {
-        long sum = 0;
-        for (JsonNode n : arr) {
-            sum += n.path("amount").asLong(0);
-        }
-        return sum;
-    }
-
-    private void mirrorPaymentMethod(Subscription subscription, JsonNode invoice) {
-        JsonNode card = invoice.path("charge").path("payment_method_details").path("card");
-        String pmId = text(invoice, "payment_method");
-        if (pmId == null || card.isMissingNode()) {
+    private void mirrorPaymentMethod(Subscription subscription, ProviderWebhookEvent.Data data) {
+        CardInfo card = data.card();
+        String pmId = data.providerPaymentMethodId();
+        if (pmId == null || card == null) {
             return;
         }
         if (paymentMethodRepository.findByProviderPmId(pmId).isPresent()) {
@@ -253,10 +233,10 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
                 .subscriptionId(subscription.getId())
                 .userId(subscription.getUserId())
                 .providerPmId(pmId)
-                .brand(text(card, "brand"))
-                .last4(text(card, "last4"))
-                .expMonth(card.path("exp_month").isNumber() ? card.path("exp_month").asInt() : null)
-                .expYear(card.path("exp_year").isNumber() ? card.path("exp_year").asInt() : null)
+                .brand(card.brand())
+                .last4(card.last4())
+                .expMonth(card.expMonth())
+                .expYear(card.expYear())
                 .isDefault(true)
                 .build());
     }
@@ -265,8 +245,8 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         return currency == null ? null : currency.toUpperCase(java.util.Locale.ROOT);
     }
 
-    private void onInvoiceFailed(JsonNode invoice) {
-        linkInvoiceSubscription(invoice).ifPresent(subscription -> {
+    private void onInvoiceFailed(ProviderWebhookEvent.Data data) {
+        linkInvoiceSubscription(data).ifPresent(subscription -> {
             SubscriptionStatus before = subscription.getStatus();
             subscription.setStatus(SubscriptionStatus.PAST_DUE);
             if (subscription.getGraceUntil() == null) {
@@ -282,13 +262,13 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         });
     }
 
-    private Optional<Subscription> linkInvoiceSubscription(JsonNode invoice) {
-        String subscriptionId = text(invoice, "subscription");
+    private Optional<Subscription> linkInvoiceSubscription(ProviderWebhookEvent.Data data) {
+        String subscriptionId = data.providerSubscriptionId();
         if (subscriptionId == null) {
             return Optional.empty();
         }
         return subscriptionRepository.findByProviderSubscriptionId(subscriptionId)
-                .or(() -> linkByCustomer(text(invoice, "customer"), subscriptionId));
+                .or(() -> linkByCustomer(data.providerCustomerId(), subscriptionId));
     }
 
     /** Attach a provider subscription id to a live subscription matched by customer id. */
@@ -303,39 +283,17 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
                 });
     }
 
-    private static SubscriptionStatus mapStatus(String stripeStatus) {
-        if (stripeStatus == null) {
+    private static SubscriptionStatus mapStatus(SubscriptionStatusSignal signal) {
+        if (signal == null) {
             return SubscriptionStatus.INCOMPLETE;
         }
-        return switch (stripeStatus) {
-            case "trialing" -> SubscriptionStatus.TRIAL;
-            case "active" -> SubscriptionStatus.ACTIVE;
-            case "past_due", "unpaid" -> SubscriptionStatus.PAST_DUE;
-            case "canceled" -> SubscriptionStatus.CANCELLED;
-            case "incomplete", "incomplete_expired" -> SubscriptionStatus.INCOMPLETE;
-            default -> SubscriptionStatus.INCOMPLETE;
+        return switch (signal) {
+            case TRIAL -> SubscriptionStatus.TRIAL;
+            case ACTIVE -> SubscriptionStatus.ACTIVE;
+            case PAST_DUE -> SubscriptionStatus.PAST_DUE;
+            case CANCELLED -> SubscriptionStatus.CANCELLED;
+            case INCOMPLETE -> SubscriptionStatus.INCOMPLETE;
         };
-    }
-
-    private JsonNode parseDataObject(ProviderWebhookEvent event) {
-        try {
-            return objectMapper.readTree(event.rawPayload()).path("data").path("object");
-        } catch (Exception e) {
-            // Malformed payload is permanent — log and treat as empty so the event is
-            // marked PROCESSED rather than retried forever.
-            log.warn("billing.webhook.unparseable id={} type={}", event.providerEventId(), event.type(), e);
-            return objectMapper.createObjectNode();
-        }
-    }
-
-    private static String text(JsonNode node, String field) {
-        JsonNode v = node.get(field);
-        return v == null || v.isNull() ? null : v.asText();
-    }
-
-    private static Instant epochToInstant(JsonNode node, String field) {
-        JsonNode v = node.get(field);
-        return v == null || v.isNull() || !v.isNumber() ? null : Instant.ofEpochSecond(v.asLong());
     }
 
     private void audit(Subscription s, String action) {

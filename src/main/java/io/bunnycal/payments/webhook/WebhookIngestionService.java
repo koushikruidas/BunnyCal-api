@@ -32,7 +32,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class WebhookIngestionService {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookIngestionService.class);
-    private static final String PROVIDER = "STRIPE";
     private static final String ENTITY_TYPE = "WebhookEvent";
 
     private final WebhookEventRepository webhookEventRepository;
@@ -42,30 +41,32 @@ public class WebhookIngestionService {
     /**
      * Persists and routes a verified webhook event exactly once.
      *
+     * @param provider the provider that delivered the event (e.g. {@code STRIPE}, {@code DODO}),
+     *                 stored on {@code webhook_events.provider} and part of the idempotency key.
      * @return true when the event was processed (fresh), false when it was a duplicate
      *         redelivery that was safely ignored.
      */
     @Transactional
-    public boolean ingest(ProviderWebhookEvent event) {
+    public boolean ingest(String provider, ProviderWebhookEvent event) {
         var existing = webhookEventRepository.findByProviderAndProviderEventId(
-                PROVIDER, event.providerEventId());
+                provider, event.providerEventId());
         if (existing.isPresent() && existing.get().getStatus() == WebhookEventStatus.PROCESSED) {
-            log.info("billing.webhook.duplicate id={} type={}", event.providerEventId(), event.type());
+            log.info("billing.webhook.duplicate id={} type={}", event.providerEventId(), event.rawType());
             return false;
         }
 
         WebhookEvent persisted;
         try {
             persisted = existing.orElseGet(() -> webhookEventRepository.save(WebhookEvent.builder()
-                    .provider(PROVIDER)
+                    .provider(provider)
                     .providerEventId(event.providerEventId())
-                    .type(event.type())
+                    .type(event.rawType())
                     .payload(event.rawPayload())
                     .status(WebhookEventStatus.RECEIVED)
                     .build()));
         } catch (DataIntegrityViolationException race) {
             // Concurrent redelivery inserted the row first; treat as duplicate.
-            log.info("billing.webhook.insert_race id={} type={}", event.providerEventId(), event.type());
+            log.info("billing.webhook.insert_race id={} type={}", event.providerEventId(), event.rawType());
             return false;
         }
 
@@ -77,7 +78,7 @@ public class WebhookIngestionService {
                 null,
                 java.util.Map.of(
                         "providerEventId", event.providerEventId(),
-                        "type", event.type()));
+                        "type", event.rawType()));
 
         handler.handle(event);
 

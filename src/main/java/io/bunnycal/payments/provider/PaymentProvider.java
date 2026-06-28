@@ -48,12 +48,16 @@ public interface PaymentProvider {
     RefundResult refund(RefundRequest request);
 
     /**
-     * Verifies the authenticity of an inbound webhook callback and parses it into a
-     * neutral {@link ProviderWebhookEvent}.
+     * Verifies the authenticity of an inbound webhook callback and normalizes it into a
+     * neutral {@link ProviderWebhookEvent} (typed {@link BillingEventType} + pre-extracted
+     * fields). Different providers sign with different headers (Stripe: {@code Stripe-Signature};
+     * Dodo / Standard Webhooks: {@code webhook-id} / {@code webhook-signature} /
+     * {@code webhook-timestamp}), so the full header map is passed and each implementation
+     * reads what it needs.
      *
-     * @param payload   the raw request body bytes (must be the exact bytes received)
-     * @param signature the provider signature header value
+     * @param payload the raw request body bytes (must be the exact bytes received)
+     * @param headers all inbound request headers (case-insensitive lookup expected)
      * @throws WebhookVerificationException if the signature is invalid
      */
-    ProviderWebhookEvent verifyWebhook(byte[] payload, String signature);
+    ProviderWebhookEvent verifyWebhook(byte[] payload, java.util.Map<String, String> headers);
 }

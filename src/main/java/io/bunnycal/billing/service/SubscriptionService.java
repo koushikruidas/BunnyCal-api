@@ -19,7 +19,7 @@ import io.bunnycal.payments.provider.ProviderRequests.CreateCustomerRequest;
 import io.bunnycal.payments.provider.ProviderRequests.CustomerRef;
 import io.bunnycal.payments.provider.ProviderRequests.PortalSession;
 import io.bunnycal.payments.provider.ProviderRequests.PortalSessionRequest;
-import io.bunnycal.payments.config.StripeProperties;
+import io.bunnycal.payments.config.BillingRedirectProperties;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
@@ -50,7 +50,7 @@ public class SubscriptionService {
     private final PlanService planService;
     private final TimeSource timeSource;
     private final BillingProperties billingProperties;
-    private final StripeProperties stripeProperties;
+    private final BillingRedirectProperties redirectProperties;
     private final PaymentAuditService auditService;
     private final PromotionService promotionService;
     @Nullable
@@ -61,7 +61,7 @@ public class SubscriptionService {
                                PlanService planService,
                                TimeSource timeSource,
                                BillingProperties billingProperties,
-                               StripeProperties stripeProperties,
+                               BillingRedirectProperties redirectProperties,
                                PaymentAuditService auditService,
                                PromotionService promotionService,
                                @Autowired(required = false) @Nullable PaymentProvider paymentProvider) {
@@ -70,7 +70,7 @@ public class SubscriptionService {
         this.planService = planService;
         this.timeSource = timeSource;
         this.billingProperties = billingProperties;
-        this.stripeProperties = stripeProperties;
+        this.redirectProperties = redirectProperties;
         this.auditService = auditService;
         this.promotionService = promotionService;
         this.paymentProvider = paymentProvider;
@@ -189,8 +189,8 @@ public class SubscriptionService {
                 customerId,
                 plan.getProviderPriceId(),
                 trialDays,
-                stripeProperties.successUrl(),
-                stripeProperties.cancelUrl(),
+                redirectProperties.successUrl(),
+                redirectProperties.cancelUrl(),
                 providerCouponId));
     }
 
@@ -217,7 +217,7 @@ public class SubscriptionService {
                     "No billing customer exists yet. Start a checkout first.");
         }
         return provider.createPortalSession(new PortalSessionRequest(
-                subscription.getProviderCustomerId(), stripeProperties.portalReturnUrl()));
+                subscription.getProviderCustomerId(), redirectProperties.portalReturnUrl()));
     }
 
     /** Cancels the user's subscription (immediately or at period end). */

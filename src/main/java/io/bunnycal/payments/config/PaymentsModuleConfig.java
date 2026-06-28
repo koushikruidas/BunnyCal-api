@@ -11,7 +11,10 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @EnableConfigurationProperties({
         BillingProperties.class,
-        StripeProperties.class
+        BillingRedirectProperties.class,
+        InvoicePresentationProperties.class,
+        StripeProperties.class,
+        DodoProperties.class
 })
 public class PaymentsModuleConfig {
 }
