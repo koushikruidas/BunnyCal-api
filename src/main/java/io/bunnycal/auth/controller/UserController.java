@@ -12,6 +12,8 @@ import io.bunnycal.auth.dto.TimezoneUpdateRequest;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.TimeZoneService;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.EntitlementsDto;
 import io.bunnycal.billing.service.SubscriptionStateService;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +44,7 @@ public class UserController {
     private final AccountDeletionService accountDeletionService;
     private final ProfileAvatarService profileAvatarService;
     private final SubscriptionStateService subscriptionStateService;
+    private final EntitlementService entitlementService;
 
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(
@@ -61,6 +64,7 @@ public class UserController {
 
         UserDto dto = UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user));
         dto.setSubscription(subscriptionStateService.resolve(userId));
+        dto.setEntitlements(EntitlementsDto.from(entitlementService.resolve(userId)));
         return ResponseEntity.ok(ApiResponse.success(dto));
     }
 

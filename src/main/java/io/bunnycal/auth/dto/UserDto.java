@@ -2,6 +2,7 @@ package io.bunnycal.auth.dto;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.billing.dto.SubscriptionStateDto;
+import io.bunnycal.billing.entitlement.EntitlementsDto;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -26,6 +27,8 @@ public class UserDto {
     private String timezone;
     /** Subscription/entitlement summary for client-side feature gating; null if omitted. */
     private SubscriptionStateDto subscription;
+    /** Resolved feature/limit entitlements for the client (UX gating only); null if omitted. */
+    private EntitlementsDto entitlements;
 
     public static UserDto from(User user, String profileImage) {
         return UserDto.builder()
