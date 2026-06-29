@@ -266,7 +266,8 @@ billing:
     enabled: ${BILLING_ADMIN_ENABLED:false}
   # Public-facing trial length for the single Phase-1 plan (days). The plan row in
   # subscription_plans is the source of truth; this is the seed/default.
-  trial-days: ${BILLING_TRIAL_DAYS:15}
+  # 14 days per Product Specification v1.0, Chapter 2 §10 / Chapter 3 BR-002.
+  trial-days: ${BILLING_TRIAL_DAYS:14}
   # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
   grace-days: ${BILLING_GRACE_DAYS:3}
   # Trial-ending reminders run daily; dunning sweep runs hourly. ShedLock-guarded.
