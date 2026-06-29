@@ -151,6 +151,21 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     long countActiveConnections(@Param("provider") CalendarProviderType provider);
 
     /**
+     * Count of a user's currently-connected calendars across all providers, for the Free-plan
+     * "max connected calendars" limit (Spec Ch2 §9). A connection counts while it is live or
+     * mid-setup (ACTIVE or SYNCING); DISCONNECTED/REVOKED/FAILED/ERROR rows are not connected.
+     */
+    @Query("""
+            SELECT COUNT(c)
+            FROM CalendarConnection c
+            WHERE c.userId = :userId
+              AND c.status IN (
+                    io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE,
+                    io.bunnycal.calendar.domain.CalendarConnectionStatus.SYNCING)
+            """)
+    long countConnectedByUser(@Param("userId") UUID userId);
+
+    /**
      * Phase 4 R1 fix: ACTIVE rows that either have no watch channel (initial creation
      * silently failed) OR have a channel expiring within the renewal threshold.
      *

@@ -96,6 +96,7 @@ public class PublicBookingService {
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final EventTypeParticipantRepository eventTypeParticipantRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
+    private final io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
@@ -129,6 +130,7 @@ public class PublicBookingService {
                                 BookingSubmissionFormatter bookingSubmissionFormatter,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
+                                io.bunnycal.billing.entitlement.EntitlementService entitlementService,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 // projection-first availability. If the connection's last
@@ -165,6 +167,7 @@ public class PublicBookingService {
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.eventTypeParticipantRepository = eventTypeParticipantRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
+        this.entitlementService = entitlementService;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
@@ -195,6 +198,7 @@ public class PublicBookingService {
                                 ProfileAvatarService profileAvatarService,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
+                                io.bunnycal.billing.entitlement.EntitlementService entitlementService,
                                 MeterRegistry meterRegistry,
                                 long capabilityTokenTtlDays,
                                 long projectionFreshnessSlaSeconds) {
@@ -205,7 +209,7 @@ public class PublicBookingService {
                 collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
                 participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
-                meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
+                entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
     }
 
     @Transactional(readOnly = true)
@@ -334,6 +338,11 @@ public class PublicBookingService {
         // The public page remains reachable but no new slots/holds/bookings are allowed.
         requirePublished(target.eventTypeId());
 
+        // Gate: a premium event type whose owner is no longer entitled is inactive — it cannot
+        // accept NEW bookings (Spec Ch5 §11/§14-16). Existing bookings are untouched (this only
+        // runs on the create/hold path). Neutral rejection, no billing detail leaked (Principle 9).
+        requireOwnerEntitledForBooking(target);
+
         PublicHoldResponse response;
         if (target.kind() == EventKind.GROUP) {
             response = holdGroupRegistration(target, request, inviteeAuth);
@@ -356,6 +365,20 @@ public class PublicBookingService {
     private void requirePublished(UUID eventTypeId) {
         EventType et = bookingEventTypeResolver.requireByEventTypeId(eventTypeId);
         if (!et.isPublished()) {
+            throw new CustomException(ErrorCode.EVENT_TYPE_NOT_PUBLISHED);
+        }
+    }
+
+    /**
+     * Rejects a new booking on a premium event type whose owner is not currently entitled.
+     * Reuses the neutral {@code EVENT_TYPE_NOT_PUBLISHED} response so a public visitor sees the
+     * same "not accepting bookings" message regardless of why (no billing/subscription leak,
+     * Principle 9). One-to-One is always allowed and is skipped.
+     */
+    private void requireOwnerEntitledForBooking(PublicBookingTargetResolver.ResolvedTarget target) {
+        var requiredFeature = io.bunnycal.availability.service.EventKindEntitlements.requiredFeature(target.kind());
+        if (requiredFeature != null
+                && !entitlementService.resolve(target.userId()).has(requiredFeature)) {
             throw new CustomException(ErrorCode.EVENT_TYPE_NOT_PUBLISHED);
         }
     }

@@ -7,6 +7,8 @@ import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.service.ParticipantEligibilityReason;
 import io.bunnycal.availability.service.ParticipantEligibilityService;
 import io.bunnycal.availability.service.ParticipantReadinessStatus;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ErrorCode;
@@ -59,6 +61,7 @@ public class TeamService {
     private final ParticipantEligibilityService eligibilityService;
     private final TimeSource timeSource;
     private final ProfileAvatarService profileAvatarService;
+    private final EntitlementService entitlementService;
     private final String frontendBaseUrl;
 
     public TeamService(TeamRepository teamRepository,
@@ -70,6 +73,7 @@ public class TeamService {
                        ParticipantEligibilityService eligibilityService,
                        TimeSource timeSource,
                        ProfileAvatarService profileAvatarService,
+                       EntitlementService entitlementService,
                        @Value("${app.public-base-url:http://localhost:5173}") String frontendBaseUrl) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
@@ -80,6 +84,7 @@ public class TeamService {
         this.eligibilityService = eligibilityService;
         this.timeSource = timeSource;
         this.profileAvatarService = profileAvatarService;
+        this.entitlementService = entitlementService;
         this.frontendBaseUrl = frontendBaseUrl;
     }
 
@@ -90,6 +95,8 @@ public class TeamService {
         if (request == null || request.name() == null || request.name().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Team name is required.");
         }
+        // Teams are a premium feature (Spec Ch2 §5). Authorization via EntitlementService.
+        entitlementService.require(ownerUserId, Feature.TEAMS);
         User owner = sessionUserResolver.require(ownerUserId, "POST:/api/teams");
 
         String slug = normalizeSlug(request.slug() != null && !request.slug().isBlank()

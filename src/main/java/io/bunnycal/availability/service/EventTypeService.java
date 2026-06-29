@@ -10,6 +10,8 @@ import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
@@ -35,6 +37,7 @@ public class EventTypeService {
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
     private final BookingExperienceRepository experienceRepository;
+    private final EntitlementService entitlementService;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
@@ -44,7 +47,8 @@ public class EventTypeService {
                             PublishReadinessService publishReadinessService,
                             OutboxPublisher outboxPublisher,
                             TimeSource timeSource,
-                            BookingExperienceRepository experienceRepository) {
+                            BookingExperienceRepository experienceRepository,
+                            EntitlementService entitlementService) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -54,7 +58,9 @@ public class EventTypeService {
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
         this.experienceRepository = experienceRepository;
+        this.entitlementService = entitlementService;
     }
+
 
     @Transactional
     public EventTypeSummaryResponse create(UUID userId, CreateEventTypeRequest request) {
@@ -70,6 +76,13 @@ public class EventTypeService {
                 : AvailabilityMode.ALL_CONNECTED;
 
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        // Premium event kinds (Group/Round Robin/Collective) require the matching plan feature;
+        // One-to-One is always allowed (Spec Ch2 §5). One-time gate at creation — kind is
+        // immutable thereafter. All authorization flows through EntitlementService.
+        Feature requiredFeature = EventKindEntitlements.requiredFeature(kind);
+        if (requiredFeature != null) {
+            entitlementService.require(userId, requiredFeature);
+        }
         int capacity = request.capacity() != null ? request.capacity() : 1;
         // COLLECTIVE events start unpublished — no participants or readiness evaluation has
         // occurred yet. All other kinds start published (single-host, always ready).

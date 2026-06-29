@@ -2,6 +2,8 @@ package io.bunnycal.embed.public_;
 
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -29,6 +31,7 @@ public class EmbedQueryService {
     private final FormRepository formRepository;
     private final FormQuestionRepository questionRepository;
     private final EmbedTokenService embedTokenService;
+    private final EntitlementService entitlementService;
 
     public EmbedQueryService(BookingExperienceRepository experienceRepository,
                              UserRepository userRepository,
@@ -36,7 +39,8 @@ public class EmbedQueryService {
                              PublicBookingService publicBookingService,
                              FormRepository formRepository,
                              FormQuestionRepository questionRepository,
-                             EmbedTokenService embedTokenService) {
+                             EmbedTokenService embedTokenService,
+                             EntitlementService entitlementService) {
         this.experienceRepository = experienceRepository;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
@@ -44,6 +48,7 @@ public class EmbedQueryService {
         this.formRepository = formRepository;
         this.questionRepository = questionRepository;
         this.embedTokenService = embedTokenService;
+        this.entitlementService = entitlementService;
     }
 
     public PublicEmbedConfigResponse getEmbedConfig(String experienceSlug) {
@@ -51,6 +56,13 @@ public class EmbedQueryService {
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND));
 
         if (experience.getStatus() != ExperienceStatus.ACTIVE) {
+            throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND);
+        }
+
+        // An active experience whose owner is no longer entitled to Experiences is inactive to
+        // the public — treat as not-found (same neutral response as a non-ACTIVE experience), so
+        // no billing/subscription state leaks to the embed visitor (Principle 9).
+        if (!entitlementService.resolve(experience.getOwnerId()).has(Feature.EXPERIENCES)) {
             throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND);
         }
 

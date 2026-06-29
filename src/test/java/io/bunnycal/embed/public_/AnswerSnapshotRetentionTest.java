@@ -43,6 +43,7 @@ class AnswerSnapshotRetentionTest {
     @Mock private FormRepository formRepository;
     @Mock private FormQuestionRepository questionRepository;
     @Mock private BookingExperienceRepository experienceRepository;
+    @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     private FormService formService;
 
     // --- persistence (EmbedBookingSupport) ---
@@ -58,7 +59,7 @@ class AnswerSnapshotRetentionTest {
 
     @BeforeEach
     void setUp() {
-        formService = new FormService(formRepository, questionRepository, experienceRepository);
+        formService = new FormService(formRepository, questionRepository, experienceRepository, entitlementService);
         embedBookingSupport = new EmbedBookingSupport(
                 embedTokenService, experienceRepository, formService, answerRepository, new ObjectMapper());
     }

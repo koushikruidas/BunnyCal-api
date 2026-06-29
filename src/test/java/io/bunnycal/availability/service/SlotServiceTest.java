@@ -80,6 +80,7 @@ class SlotServiceTest {
     @Mock private io.bunnycal.booking.service.RoundRobinAssignmentService roundRobinAssignmentService;
     @Mock private io.bunnycal.booking.service.RoundRobinSlotTokenService roundRobinSlotTokenService;
     @Mock private io.bunnycal.booking.service.CollectiveSlotTokenService collectiveSlotTokenService;
+    @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     private SlotService slotService;
     private TimeConversionService timeConversionService;
@@ -116,7 +117,13 @@ class SlotServiceTest {
                 participantAvailabilityService,
                 roundRobinAssignmentService,
                 roundRobinSlotTokenService,
-                collectiveSlotTokenService);
+                collectiveSlotTokenService,
+                entitlementService);
+        // Default: owner is entitled (PROFESSIONAL) so the entitlement gate in getSlots is a
+        // pass-through for premium kinds. Tests that assert the un-entitled path can override.
+        org.mockito.Mockito.lenient().when(entitlementService.resolve(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(io.bunnycal.billing.entitlement.PlanCatalog.forTier(
+                        io.bunnycal.billing.entitlement.PlanTier.PROFESSIONAL));
 
         host = User.builder()
                 .id(userId)

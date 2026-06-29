@@ -100,6 +100,8 @@ public class GlobalExceptionHandler {
             case FORBIDDEN:
             case TEAM_OWNER_REQUIRED:
             case TEAM_INVITATION_EMAIL_MISMATCH:
+            case FEATURE_NOT_IN_PLAN:
+            case PLAN_LIMIT_REACHED:
                 return HttpStatus.FORBIDDEN;
             case RESOURCE_NOT_FOUND:
             case TEAM_INVITATION_INVALID:

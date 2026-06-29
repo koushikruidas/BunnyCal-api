@@ -82,6 +82,7 @@ public class SlotService {
     private final RoundRobinAssignmentService roundRobinAssignmentService;
     private final RoundRobinSlotTokenService roundRobinSlotTokenService;
     private final CollectiveSlotTokenService collectiveSlotTokenService;
+    private final io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     public SlotService(
             UserRepository userRepository,
@@ -103,7 +104,8 @@ public class SlotService {
             ParticipantAvailabilityService participantAvailabilityService,
             RoundRobinAssignmentService roundRobinAssignmentService,
             RoundRobinSlotTokenService roundRobinSlotTokenService,
-            CollectiveSlotTokenService collectiveSlotTokenService) {
+            CollectiveSlotTokenService collectiveSlotTokenService,
+            io.bunnycal.billing.entitlement.EntitlementService entitlementService) {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -124,6 +126,7 @@ public class SlotService {
         this.roundRobinAssignmentService = roundRobinAssignmentService;
         this.roundRobinSlotTokenService = roundRobinSlotTokenService;
         this.collectiveSlotTokenService = collectiveSlotTokenService;
+        this.entitlementService = entitlementService;
     }
 
     public SlotResponse getSlots(SlotRequest request) {
@@ -146,6 +149,18 @@ public class SlotService {
         // 3. Load event type (cross-user check is implicit; soft-deleted types are not schedulable).
         EventType eventType = eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
+
+        // 3a. Entitlement gate: a premium event type whose owner is no longer entitled is
+        //     effectively inactive — it generates NO slots (Spec Ch4 §10, Ch5 §5/§14-16). We
+        //     mirror the unpublished-event behavior (empty slots, neutral) rather than leaking
+        //     any billing/subscription state to the public visitor (Principle 9). One-to-One is
+        //     always allowed and skips this check.
+        if (EventKindEntitlements.isPremium(eventType.getKind())
+                && !entitlementService.resolve(userId).has(EventKindEntitlements.requiredFeature(eventType.getKind()))) {
+            return new SlotResponse(userId, eventTypeId, date, host.getTimezone(),
+                    slotCacheVersionService.getCurrentVersion(userId), dbClockRepository.now(),
+                    false, List.of());
+        }
 
         // 4. Multi-participant kinds bypass the single-user cache.
         //    ROUND_ROBIN: UNION of eligible participants.

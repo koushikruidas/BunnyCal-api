@@ -34,6 +34,7 @@ class FormServiceDeleteTest {
     @Mock private FormRepository formRepository;
     @Mock private FormQuestionRepository questionRepository;
     @Mock private BookingExperienceRepository experienceRepository;
+    @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     private FormService service;
 
@@ -42,7 +43,7 @@ class FormServiceDeleteTest {
 
     @BeforeEach
     void setUp() {
-        service = new FormService(formRepository, questionRepository, experienceRepository);
+        service = new FormService(formRepository, questionRepository, experienceRepository, entitlementService);
     }
 
     private Form ownedForm() {

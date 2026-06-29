@@ -35,6 +35,7 @@ class BookingExperienceActivateTest {
     @Mock private BookingExperienceRepository experienceRepository;
     @Mock private EventTypeRepository eventTypeRepository;
     @Mock private FormRepository formRepository;
+    @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     private BookingExperienceService service;
 
@@ -45,7 +46,8 @@ class BookingExperienceActivateTest {
 
     @BeforeEach
     void setUp() {
-        service = new BookingExperienceService(experienceRepository, eventTypeRepository, formRepository);
+        service = new BookingExperienceService(experienceRepository, eventTypeRepository, formRepository,
+                entitlementService);
     }
 
     private BookingExperience archivedExperience(UUID attachedFormId) {

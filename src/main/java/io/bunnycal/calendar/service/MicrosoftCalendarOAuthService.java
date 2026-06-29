@@ -44,6 +44,7 @@ public class MicrosoftCalendarOAuthService {
     private final CalendarInventoryHydrator inventoryHydrator;
     private final ParticipantSetupRequestService setupRequestService;
     private final ParticipantEligibilityService eligibilityService;
+    private final CalendarConnectionLimitGuard connectionLimitGuard;
 
     public MicrosoftCalendarOAuthService(CalendarConnectionRepository repository,
                                          MicrosoftApiClient microsoftApiClient,
@@ -57,7 +58,8 @@ public class MicrosoftCalendarOAuthService {
                                          CalendarWebhookProperties webhookProperties,
                                          CalendarInventoryHydrator inventoryHydrator,
                                          ParticipantSetupRequestService setupRequestService,
-                                         ParticipantEligibilityService eligibilityService) {
+                                         ParticipantEligibilityService eligibilityService,
+                                         CalendarConnectionLimitGuard connectionLimitGuard) {
         this.repository = repository;
         this.microsoftApiClient = microsoftApiClient;
         this.properties = properties;
@@ -71,6 +73,7 @@ public class MicrosoftCalendarOAuthService {
         this.inventoryHydrator = inventoryHydrator;
         this.setupRequestService = setupRequestService;
         this.eligibilityService = eligibilityService;
+        this.connectionLimitGuard = connectionLimitGuard;
     }
 
     public String buildMicrosoftConnectUrl(UUID userId, String source, String returnTo, String bookingSessionId) {
@@ -94,6 +97,9 @@ public class MicrosoftCalendarOAuthService {
             throw new OAuthStateException(OAuthStateException.Reason.MISSING_USER, "OAuth state missing userId");
         }
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, MICROSOFT_PROVIDER);
+        // Enforce the per-plan connected-calendar limit before any provider work. Re-auth of an
+        // already-connected Microsoft account (existing present) is always allowed.
+        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
         OAuthTokenExchangeResult token = microsoftApiClient.exchangeCodeForToken(
                 code,
                 properties.getRedirectUri(),

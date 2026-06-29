@@ -1,6 +1,8 @@
 package io.bunnycal.experience.service;
 
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.experience.domain.BookingExperience;
@@ -24,13 +26,16 @@ public class BookingExperienceService {
     private final BookingExperienceRepository experienceRepository;
     private final EventTypeRepository eventTypeRepository;
     private final FormRepository formRepository;
+    private final EntitlementService entitlementService;
 
     public BookingExperienceService(BookingExperienceRepository experienceRepository,
                                     EventTypeRepository eventTypeRepository,
-                                    FormRepository formRepository) {
+                                    FormRepository formRepository,
+                                    EntitlementService entitlementService) {
         this.experienceRepository = experienceRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.formRepository = formRepository;
+        this.entitlementService = entitlementService;
     }
 
     public BookingExperienceResponse createExperience(UUID ownerId, CreateExperienceRequest request) {
@@ -90,6 +95,10 @@ public class BookingExperienceService {
 
     public BookingExperienceResponse activateExperience(UUID ownerId, UUID experienceId) {
         BookingExperience experience = requireOwned(ownerId, experienceId);
+
+        // Experiences are a premium feature: editing a DRAFT is allowed on any plan, but
+        // ACTIVATING (going live) requires the EXPERIENCES feature (Spec Ch2 §5, Ch4 §12-13).
+        entitlementService.require(ownerId, Feature.EXPERIENCES);
 
         // Re-validate the underlying resources before going (or back) live. An experience
         // may have been DRAFT or ARCHIVED for a while; its event type or form could have

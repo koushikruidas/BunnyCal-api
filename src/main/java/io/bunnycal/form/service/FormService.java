@@ -1,5 +1,7 @@
 package io.bunnycal.form.service;
 
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.form.domain.Form;
@@ -35,15 +37,20 @@ public class FormService {
     private final FormRepository formRepository;
     private final FormQuestionRepository questionRepository;
     private final BookingExperienceRepository experienceRepository;
+    private final EntitlementService entitlementService;
 
     public FormService(FormRepository formRepository, FormQuestionRepository questionRepository,
-                       BookingExperienceRepository experienceRepository) {
+                       BookingExperienceRepository experienceRepository,
+                       EntitlementService entitlementService) {
         this.formRepository = formRepository;
         this.questionRepository = questionRepository;
         this.experienceRepository = experienceRepository;
+        this.entitlementService = entitlementService;
     }
 
     public FormResponse createForm(UUID ownerId, FormRequest request) {
+        // Booking forms are a premium feature (Spec Ch2 §5). Authorization via EntitlementService.
+        entitlementService.require(ownerId, Feature.BOOKING_FORMS);
         Form form = Form.builder()
                 .ownerId(ownerId)
                 .name(request.name())

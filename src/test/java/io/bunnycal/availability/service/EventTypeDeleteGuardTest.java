@@ -42,6 +42,7 @@ class EventTypeDeleteGuardTest {
     @Mock private PublishReadinessService publishReadinessService;
     @Mock private OutboxPublisher outboxPublisher;
     @Mock private BookingExperienceRepository experienceRepository;
+    @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     private final TimeSource timeSource = () -> Instant.parse("2026-06-24T12:00:00Z");
 
@@ -61,7 +62,8 @@ class EventTypeDeleteGuardTest {
                 publishReadinessService,
                 outboxPublisher,
                 timeSource,
-                experienceRepository);
+                experienceRepository,
+                entitlementService);
     }
 
     private EventType ownedEventType() {
