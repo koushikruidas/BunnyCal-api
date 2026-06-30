@@ -171,17 +171,25 @@
     `io.bunnycal.admin.common.PageResponse<T>` and frontend `components/Pagination` +
     `PageResponse<T>` type (in features/audit/types.ts — promote to shared lib on 2nd consumer).
   - **System Health (#10)** — aggregate Actuator + provider/integration pings.
-  - **Analytics** (product, not revenue) — signups, bookings created/cancelled, conversion,
-    popular event, timezones, countries.
+  - **Analytics** (product, not revenue) — DONE. `io.bunnycal.admin.analytics`
+    AdminAnalyticsController `GET /api/admin/analytics/summary`, `/top-events`, `/timezones`,
+    `/countries` + ProductAnalyticsService. Metrics are backed by stored user + booking data:
+    new users in range, bookings created, bookings cancelled, successful bookings, booking
+    conversion, average successful booking duration, top event types by successful bookings,
+    and current user timezone distribution. UI: features/analytics AnalyticsPage with range
+    selector, summary cards, top-event table, timezone table, and countries placeholder.
+    HONEST GAPS: **conversion is booking conversion** (successful bookings / bookings created in
+    range), not visitor/session funnel conversion; **countries** remain unavailable because no
+    canonical country field is stored on users, bookings, or invoices.
   - **Announcements** — NEW `announcements` table + public read endpoint + banner.
   - **Settings** — NEW `app_settings` table (non-secret dynamic config), SettingsService with
     `@Value` fallback.
 
 ## Rough remaining size
-~11 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
-Revenue, Promotions, Operations, System Jobs, Feature Flags) + both foundations. Per agreed
-order, next: **Analytics → Announcements → Settings → Global Search/⌘K → Dashboard growth
-charts**. Plus Webhooks retry (needs payments-core parse/verify split).
+~12 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics) + both foundations. Per
+agreed order, next: **Announcements → Settings → Global Search/⌘K → Dashboard growth charts**.
+Plus Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
 (features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
@@ -195,8 +203,8 @@ in new modules.
    past-due subs, promo issues, jobs needing attention). DONE.
 4. **System Jobs** — outbox/email/sync/dead-letters. DONE.
 5. **Feature Flags** — data-backed overrides layered over plan entitlements. DONE.
-6. Analytics · 7. Announcements · 8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth
-charts.
+6. Analytics. DONE.
+7. Announcements · 8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).

@@ -66,6 +66,14 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Boolean getReconcileSuppressed();
     }
 
+    interface TopEventRow {
+        UUID getEventTypeId();
+        String getEventName();
+        Long getBookingCount();
+        Boolean getPublished();
+        Boolean getActive();
+    }
+
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
     // Used by the phantom-pending-explosion guard in BookingService. Native query
     // required because Booking entity does not map the status column.
@@ -98,6 +106,62 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     // Called by the Micrometer scrape thread (Prometheus pull), not on any request path.
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE status = :status", nativeQuery = true)
     long countByStatus(@Param("status") String status);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+            """, nativeQuery = true)
+    long countCreatedBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE status = 'CANCELLED'
+              AND updated_at >= :from
+              AND updated_at < :to
+            """, nativeQuery = true)
+    long countCancelledBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+              AND status IN ('CONFIRMED', 'COMPLETED')
+            """, nativeQuery = true)
+    long countConvertedFromCreatedBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+              AND status IN ('CONFIRMED', 'COMPLETED')
+            """, nativeQuery = true)
+    Double averageSuccessfulDurationMinutesBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT
+                b.event_type_id AS eventTypeId,
+                et.name AS eventName,
+                COUNT(*) AS bookingCount,
+                et.published AS published,
+                (et.deleted_at IS NULL) AS active
+            FROM bookings b
+            JOIN event_types et ON et.id = b.event_type_id
+            WHERE b.created_at >= :from
+              AND b.created_at < :to
+              AND b.status IN ('CONFIRMED', 'COMPLETED')
+            GROUP BY b.event_type_id, et.name, et.published, et.deleted_at
+            ORDER BY COUNT(*) DESC, et.name ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<TopEventRow> topEventsBetween(
+            @Param("from") Instant from,
+            @Param("to") Instant to,
+            @Param("limit") int limit);
 
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE host_id = :hostId", nativeQuery = true)
     long countByHostId(@Param("hostId") UUID hostId);
