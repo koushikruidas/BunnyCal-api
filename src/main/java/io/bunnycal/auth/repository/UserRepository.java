@@ -18,6 +18,12 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     /** Admin user search by partial, case-insensitive email. */
     java.util.List<User> findTop20ByEmailContainingIgnoreCaseOrderByEmailAsc(String email);
 
+    /** Count of users in a given status — admin dashboard metrics. */
+    long countByStatus(io.bunnycal.common.enums.UserStatus status);
+
+    /** New users created since {@code since} — admin growth metric. */
+    long countByCreatedAtGreaterThanEqual(java.time.Instant since);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
     Optional<User> findByIdForUpdate(@Param("id") UUID id);

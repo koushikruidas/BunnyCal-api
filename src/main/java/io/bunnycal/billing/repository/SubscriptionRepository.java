@@ -20,6 +20,34 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
     /** All subscriptions for a user, newest first — admin detail view. */
     List<Subscription> findByUserIdOrderByCreatedAtDesc(UUID userId);
 
+    /** Count of subscriptions in a given status — admin dashboard metrics. */
+    long countByStatus(SubscriptionStatus status);
+
+    /** Distinct users who hold a live (entitled-or-recoverable) subscription — admin metrics. */
+    @Query("""
+            select count(distinct s.userId) from Subscription s
+            where s.status in (
+                io.bunnycal.billing.domain.SubscriptionStatus.ACTIVE,
+                io.bunnycal.billing.domain.SubscriptionStatus.TRIAL,
+                io.bunnycal.billing.domain.SubscriptionStatus.PAST_DUE)
+            """)
+    long countDistinctUsersWithLiveSubscription();
+
+    /**
+     * Monthly recurring revenue (minor units) from ACTIVE subscriptions: each plan's amount
+     * normalized to a monthly figure (YEAR ÷ 12). Excludes lifetime/zero-amount grants
+     * implicitly via the plan amount. Returns 0 when none.
+     */
+    @Query("""
+            select coalesce(sum(
+                case when p.billingInterval = io.bunnycal.billing.domain.BillingInterval.YEAR
+                     then p.amountMinor / 12
+                     else p.amountMinor end), 0)
+            from Subscription s join SubscriptionPlan p on p.id = s.planId
+            where s.status = io.bunnycal.billing.domain.SubscriptionStatus.ACTIVE
+            """)
+    long sumMonthlyRecurringRevenueMinor();
+
     /** Live subscription for a provider customer — used to link a subscription id arriving via webhook. */
     @Query("""
             select s from Subscription s
