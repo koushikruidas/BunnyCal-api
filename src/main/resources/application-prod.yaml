@@ -217,6 +217,7 @@ microsoft:
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:https://bunnycal.io}
+  admin-base-url: ${APP_ADMIN_BASE_URL:https://admin.bunnycal.io}
   security:
     cors:
       # No localhost origins in production.

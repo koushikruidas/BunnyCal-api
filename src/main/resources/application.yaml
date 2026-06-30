@@ -220,6 +220,7 @@ microsoft:
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
+  admin-base-url: ${APP_ADMIN_BASE_URL:http://localhost:5174}
   security:
     cors:
       allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:http://localhost:5173}
