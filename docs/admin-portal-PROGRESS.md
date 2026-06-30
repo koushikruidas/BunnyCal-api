@@ -112,8 +112,12 @@
     evaluation hook alongside EntitlementService.
   - **Webhooks (#8)** — read-only viewer + retry over existing `webhook_events` table +
     WebhookIngestionService. Light.
-  - **Audit Logs (#9)** — browser over `admin_audit_logs` (already being written). Light;
-    good quick win.
+  - **Audit Logs (#9)** — DONE. `io.bunnycal.admin.audit` AdminAuditController
+    `GET /api/admin/audit` (paginated, filters via JPA Specification) + AdminAuditQueryService +
+    AdminAuditLogDto; repo extends JpaSpecificationExecutor. UI: features/audit AuditLogPage
+    (filter bar + table + expandable before/after JSON). Added reusable backend
+    `io.bunnycal.admin.common.PageResponse<T>` and frontend `components/Pagination` +
+    `PageResponse<T>` type (in features/audit/types.ts — promote to shared lib on 2nd consumer).
   - **System Health (#10)** — aggregate Actuator + provider/integration pings.
   - **Analytics** (product, not revenue) — signups, bookings created/cancelled, conversion,
     popular event, timezones, countries.
@@ -125,10 +129,10 @@
   AdminBillingController (creation already exists). Mostly UI.
 
 ## Rough remaining size
-~4 of ~16 modules done (Plans, Users, Subscriptions, Dashboard) + both foundations. Light
-remaining: Webhooks, Audit viewer, Promotions, System Jobs. Medium: Revenue, Analytics (new
-queries), Feature Flags, Announcements, Settings (new tables). One focused build: ⌘K palette +
-global search. Plus Dashboard growth time-series.
+~5 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer) + both foundations.
+Light remaining: Webhooks, Promotions, System Jobs. Medium: Revenue, Analytics (new queries),
+Feature Flags, Announcements, Settings (new tables). One focused build: ⌘K palette + global
+search. Plus Dashboard growth time-series.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).
