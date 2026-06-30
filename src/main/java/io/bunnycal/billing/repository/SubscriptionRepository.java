@@ -14,6 +14,12 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 
     Optional<Subscription> findByProviderSubscriptionId(String providerSubscriptionId);
 
+    /** Any subscription (including terminal) for a provider customer — admin search/lookup. */
+    Optional<Subscription> findFirstByProviderCustomerIdOrderByCreatedAtDesc(String providerCustomerId);
+
+    /** All subscriptions for a user, newest first — admin detail view. */
+    List<Subscription> findByUserIdOrderByCreatedAtDesc(UUID userId);
+
     /** Live subscription for a provider customer — used to link a subscription id arriving via webhook. */
     @Query("""
             select s from Subscription s

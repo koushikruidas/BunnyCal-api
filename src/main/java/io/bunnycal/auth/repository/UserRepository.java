@@ -15,6 +15,9 @@ public interface UserRepository extends JpaRepository<User, UUID> {
     Optional<User> findByUsername(String username);
     Optional<User> findByIdAndDeletionRequestedAtIsNull(UUID id);
 
+    /** Admin user search by partial, case-insensitive email. */
+    java.util.List<User> findTop20ByEmailContainingIgnoreCaseOrderByEmailAsc(String email);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
     Optional<User> findByIdForUpdate(@Param("id") UUID id);
