@@ -223,11 +223,18 @@ app:
   security:
     cors:
       allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:http://localhost:5173}
+      admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:http://localhost:5174}
   docs:
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
   embed:
     token-secret: ${APP_EMBED_TOKEN_SECRET:9f4c7d8e2a1b6c5d7e8f9a0b1c2d3e4f}
     token-ttl-seconds: ${APP_EMBED_TOKEN_TTL_SECONDS:7200}
+
+# Admin portal. Set admin.bootstrap.email to an existing user's email to grant them
+# SUPER_ADMIN on startup (idempotent). Leave blank once the first super-admin exists.
+admin:
+  bootstrap:
+    email: ${ADMIN_BOOTSTRAP_EMAIL:}
 
 booking:
   confirm:

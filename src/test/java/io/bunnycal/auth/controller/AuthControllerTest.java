@@ -2,10 +2,13 @@ package io.bunnycal.auth.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.bunnycal.admin.security.AdminRoleService;
 import io.bunnycal.auth.domain.token.RefreshToken;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.account.AccountAccessGuard;
@@ -18,6 +21,7 @@ import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.bunnycal.auth.service.RefreshTokenService;
 import io.bunnycal.common.api.ApiResponse;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import jakarta.servlet.http.HttpServletResponse;
@@ -48,6 +52,9 @@ class AuthControllerTest {
     @Mock
     private ProfileAvatarService profileAvatarService;
 
+    @Mock
+    private AdminRoleService adminRoleService;
+
     private AuthController authController;
 
     @BeforeEach
@@ -59,7 +66,8 @@ class AuthControllerTest {
                 userRepository,
                 authIdentityRepository,
                 accountAccessGuard,
-                profileAvatarService
+                profileAvatarService,
+                adminRoleService
         );
     }
 
@@ -79,7 +87,9 @@ class AuthControllerTest {
                 .build();
 
         when(refreshTokenService.validateRefreshToken(oldRefresh)).thenReturn(refreshToken);
-        when(jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail())).thenReturn(accessToken);
+        when(adminRoleService.activeRolesForUser(user.getId())).thenReturn(List.of());
+        when(jwtTokenProvider.generateAccessToken(eq(user.getId()), eq(user.getEmail()), any()))
+                .thenReturn(accessToken);
         when(refreshTokenService.rotateRefreshToken(refreshToken)).thenReturn(newRefresh);
 
         ApiResponse<AuthResponse> response = authController.refresh(RefreshRequest.builder().refreshToken(oldRefresh).build());

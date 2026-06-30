@@ -1,5 +1,7 @@
 package io.bunnycal.auth.controller;
 
+import io.bunnycal.admin.security.AdminRole;
+import io.bunnycal.admin.security.AdminRoleService;
 import io.bunnycal.auth.account.AccountAccessGuard;
 import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.domain.identity.AuthIdentity;
@@ -44,6 +46,7 @@ public class AuthController {
     private final AuthIdentityRepository authIdentityRepository;
     private final AccountAccessGuard accountAccessGuard;
     private final ProfileAvatarService profileAvatarService;
+    private final AdminRoleService adminRoleService;
 
     @Value("${google.oauth.client-id:}")
     private String googleClientId;
@@ -56,7 +59,10 @@ public class AuthController {
         RefreshToken refreshToken = refreshTokenService.validateRefreshToken(request.getRefreshToken());
         User user = refreshToken.getUser();
 
-        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail());
+        List<String> roleNames = adminRoleService.activeRolesForUser(user.getId()).stream()
+                .map(AdminRole::name)
+                .toList();
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail(), roleNames);
         String rotatedRefreshToken = refreshTokenService.rotateRefreshToken(refreshToken);
 
         AuthResponse response = AuthResponse.builder()

@@ -221,6 +221,7 @@ app:
     cors:
       # No localhost origins in production.
       allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:https://bunnycal.io}
+      admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:https://admin.bunnycal.io}
   docs:
     # API docs stay private in production unless explicitly enabled.
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}

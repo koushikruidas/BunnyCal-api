@@ -1,5 +1,7 @@
 package io.bunnycal.auth.oauth.handler;
 
+import io.bunnycal.admin.security.AdminRole;
+import io.bunnycal.admin.security.AdminRoleService;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -12,6 +14,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +34,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     private final IdentityLinkingService identityLinkingService;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
+    private final AdminRoleService adminRoleService;
 
     @Value("${auth.refresh-token.ttl-days}")
     private int refreshTokenTtlDays;
@@ -109,9 +113,14 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
                 provider, providerUserId, email, name, imageUrl
         );
 
+        List<String> roleNames = adminRoleService.activeRolesForUser(user.getId()).stream()
+                .map(AdminRole::name)
+                .toList();
+
         String accessToken = jwtTokenProvider.generateAccessToken(
                 user.getId(),
-                user.getEmail()
+                user.getEmail(),
+                roleNames
         );
 
         String refreshToken = refreshTokenService.createRefreshToken(user.getId());

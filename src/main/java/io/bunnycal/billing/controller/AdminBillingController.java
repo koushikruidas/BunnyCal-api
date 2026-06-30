@@ -17,6 +17,7 @@ import io.bunnycal.common.exception.CustomException;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,13 +27,14 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Administrative billing endpoints: create coupons / promo codes and grant manual
  * discounts. The security spec forbids the customer frontend from issuing these, so they
- * live behind {@code /api/admin/billing} and are gated by {@code billing.admin.enabled}
- * (off by default). Until a real admin-role system exists, these require authentication
- * and the config flag — mirroring the existing /api/admin/sync precedent.
+ * live behind {@code /api/admin/billing}. Authorization is enforced two ways: the
+ * {@code /api/admin/**} URL rule in SecurityConfig and the class-level {@code @PreAuthorize}
+ * below (FINANCE owns billing). The {@code billing.admin.enabled} flag remains as a kill switch.
  */
 @RestController
 @RequestMapping("/api/admin/billing")
 @ConditionalOnProperty(name = "billing.admin.enabled", havingValue = "true")
+@PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN', 'FINANCE')")
 public class AdminBillingController {
 
     private final CouponRepository couponRepository;
