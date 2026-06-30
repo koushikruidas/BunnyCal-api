@@ -193,14 +193,24 @@
     HONEST GAP: the customer-facing banner currently renders in the **dashboard shell**,
     not across every public marketing page; that keeps `FREE` vs `PAID` audience behavior
     correct without inventing client-side audience inference.
-  - **Settings** — NEW `app_settings` table (non-secret dynamic config), SettingsService with
-    `@Value` fallback.
+  - **Settings** — DONE. `V111_0__app_settings.sql` adds `app_settings` (JSONB values,
+    category, description, secret marker, updated_by/updated_at) and seeds the first explicit
+    registry of non-secret billing/email/Dodo operational keys plus masked read-only Dodo
+    secret placeholders. Backend: `io.bunnycal.admin.settings` AdminSettingsController
+    `GET /api/admin/settings?category=`, `GET /{key}`, `PUT /{key}` + AppSettingsService.
+    Values show either `DATABASE` or `FALLBACK` source; secret rows are masked and read-only;
+    writes require a reason and are audited. UI: features/settings SettingsPage with category
+    filter, grouped setting table, JSON editor, required audit reason, and disabled secret rows.
+    HONEST GAP: this first pass creates the dynamic settings registry and admin surface, but
+    runtime services still read their constructor-bound `@Value` / `@ConfigurationProperties`
+    values directly. Moving individual consumers onto AppSettingsService should be done one key
+    at a time as those settings become operationally dynamic.
 
 ## Rough remaining size
-~13 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
-Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics, Announcements) + both
-foundations. Per agreed order, next: **Settings → Global Search/⌘K → Dashboard growth charts**.
-Plus Webhooks retry (needs payments-core parse/verify split).
+~14 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics, Announcements, Settings)
++ both foundations. Per agreed order, next: **Global Search/⌘K → Dashboard growth charts**. Plus
+Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
 (features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
@@ -216,7 +226,8 @@ in new modules.
 5. **Feature Flags** — data-backed overrides layered over plan entitlements. DONE.
 6. Analytics. DONE.
 7. Announcements. DONE.
-8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth charts.
+8. Settings. DONE.
+9. Global Search + ⌘K · 10. Dashboard growth charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).
