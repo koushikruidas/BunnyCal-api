@@ -43,6 +43,9 @@ public class SubscriptionPlan extends BaseEntity {
     @Column(columnDefinition = "TEXT")
     private String description;
 
+    @Column(name = "provider_product_id", length = 255)
+    private String providerProductId;
+
     @Column(name = "provider_price_id", length = 255)
     private String providerPriceId;
 
@@ -63,6 +66,11 @@ public class SubscriptionPlan extends BaseEntity {
     @Column(nullable = false)
     @Builder.Default
     private boolean active = true;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    @Builder.Default
+    private PlanVisibility visibility = PlanVisibility.PUBLIC;
 
     @Column(name = "sort_order", nullable = false)
     private int sortOrder;
