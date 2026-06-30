@@ -26,4 +26,12 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
 
     /** Count of refunds (any status) created since {@code since}. */
     long countByCreatedAtGreaterThanEqual(Instant since);
+
+    /** Total SUCCEEDED refund amount (minor units) within [from, to) — admin revenue report. */
+    @Query("""
+            select coalesce(sum(r.amountMinor), 0) from Refund r
+            where r.status = io.bunnycal.billing.domain.RefundStatus.SUCCEEDED
+              and r.createdAt >= :from and r.createdAt < :to
+            """)
+    long sumSucceededMinorBetween(Instant from, Instant to);
 }

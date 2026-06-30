@@ -285,6 +285,11 @@ billing:
   notifications:
     enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
     from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
+  # Processor / Merchant-of-Record fee rate (basis points; 500 = 5%) used to ESTIMATE fees
+  # and net in the admin Revenue report. Per-transaction fees are not persisted, so this is
+  # an estimate. 0 (default) = not configured: the report shows fees/net as unavailable.
+  fees:
+    processor-percent-bps: ${BILLING_FEES_PROCESSOR_PERCENT_BPS:0}
   # Provider-neutral redirect URLs for hosted Checkout / Customer Portal. Identical
   # regardless of provider. (STRIPE_* env vars are still honored as defaults for
   # backward compatibility with existing deployments.)

@@ -101,8 +101,18 @@
 - **Phase 2 — Dashboard DONE (metrics).** Still pending: **growth time-series** chart, and the
   **⌘K command palette + global search** (`GET /api/admin/search` fan-out over
   users/subs/invoices/bookings/webhooks).
-- **Phase 3 — Revenue (#5).** gross/fees/taxes/net/refunds, by-plan, by-country. Aggregation
-  over invoices/refunds/payment transactions.
+- **Phase 3 — Revenue (#5).** DONE. `io.bunnycal.admin.revenue` AdminRevenueController
+  `GET /api/admin/revenue?from&to` (default 30d) + RevenueReportService + RevenueReportDto.
+  MoR waterfall Gross→Fees→Refunds→Net + Payouts placeholder; by-plan (invoice→sub→plan join),
+  over-time (native date_trunc daily). Aggregate queries added to Invoice repo (revenueTotals,
+  revenueByPlan, revenueByDay, currenciesByVolume — projections) and Refund repo
+  (sumSucceededMinorBetween). UI: features/revenue RevenuePage (waterfall + bar chart + by-plan
+  table + range selector). HONEST GAPS: **fees are ESTIMATED** from
+  `billing.fees.processor-percent-bps` (new config, default 0 = "not configured" → UI shows fees/net
+  unavailable; per-txn fees not stored); **payouts** = placeholder (reconciliation not implemented);
+  **by-country** = "not available yet" (no country stored on invoices). NOTE: BillingProperties got a
+  new `Fees` record param — fixed the one test that constructed it directly. The native revenueByDay
+  + JPQL plan-join compile but weren't run under auth (verify in manual wiring).
 - **Phase 4 — Operations** (daily landing page). `GET /api/admin/operations/summary`
   action-needed counts (failed webhooks/payments, pending refunds, subs needing sync). Make it
   the default route.
@@ -136,15 +146,24 @@
   AdminBillingController (creation already exists). Mostly UI.
 
 ## Rough remaining size
-~6 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer) +
-both foundations. Light remaining: Promotions, System Jobs. Medium: Revenue, Analytics (new
-queries), Feature Flags, Announcements, Settings (new tables). One focused build: ⌘K palette +
-global search. Plus Dashboard growth time-series, and Webhooks retry (needs payments-core
-parse/verify split).
+~7 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue) + both foundations. Per agreed order, next: **Promotions → Operations (make default
+landing) → System Jobs → Feature Flags → Analytics → Announcements → Settings → Global Search/⌘K
+→ Dashboard growth charts**. Plus Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
 (features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
 in new modules.
+
+## Agreed build order from here (user, 2026-06-30)
+1. **Revenue** (next) — MoR waterfall: Gross → Dodo Fees → Refunds → Net → **Payouts (placeholder
+   section even if not implemented)**. Plus revenue by plan / by country / over time.
+2. **Promotions** — UI over existing PromotionService/RefundService + list/disable.
+3. **Operations** — make it the DEFAULT landing page (failed payments/webhooks, pending refunds,
+   past-due subs, promo issues, jobs needing attention).
+4. **System Jobs** — outbox/email/sync/dead-letters.
+5. Feature Flags · 6. Analytics · 7. Announcements · 8. Settings · 9. Global Search + ⌘K ·
+10. Dashboard growth charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).
