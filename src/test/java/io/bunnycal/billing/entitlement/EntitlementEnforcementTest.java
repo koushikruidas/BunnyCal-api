@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.when;
 
+import io.bunnycal.admin.flags.FeatureFlagService;
 import io.bunnycal.billing.service.SubscriptionStateService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -22,12 +23,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class EntitlementEnforcementTest {
 
     @Mock private SubscriptionStateService subscriptionStateService;
+    @Mock private FeatureFlagService featureFlagService;
 
     private final UUID userId = UUID.randomUUID();
 
     private EntitlementServiceImpl serviceForTier(PlanTier tier) {
         when(subscriptionStateService.resolveTier(userId)).thenReturn(tier);
-        return new EntitlementServiceImpl(subscriptionStateService);
+        Entitlements base = PlanCatalog.forTier(tier);
+        when(featureFlagService.applyOverrides(userId, base)).thenReturn(base);
+        return new EntitlementServiceImpl(subscriptionStateService, featureFlagService);
     }
 
     // ── require(Feature) ──────────────────────────────────────────────────────────────

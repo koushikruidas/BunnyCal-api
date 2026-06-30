@@ -17,4 +17,7 @@ public interface PaymentTransactionRepository extends JpaRepository<PaymentTrans
 
     /** Count of charge attempts in a status since {@code since} — admin metrics (failed payments). */
     long countByStatusAndOccurredAtGreaterThanEqual(PaymentTransactionStatus status, Instant since);
+
+    /** Current failed payments count irrespective of age — used by Operations. */
+    long countByStatus(PaymentTransactionStatus status);
 }

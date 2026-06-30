@@ -113,13 +113,48 @@
   **by-country** = "not available yet" (no country stored on invoices). NOTE: BillingProperties got a
   new `Fees` record param — fixed the one test that constructed it directly. The native revenueByDay
   + JPQL plan-join compile but weren't run under auth (verify in manual wiring).
-- **Phase 4 — Operations** (daily landing page). `GET /api/admin/operations/summary`
-  action-needed counts (failed webhooks/payments, pending refunds, subs needing sync). Make it
-  the default route.
+- **Promotions (#6).** DONE. Backend: new `io.bunnycal.admin.promotions` module with
+  AdminPromotionController `/api/admin/promotions/coupons` and `/promo-codes` (paginated list over
+  JPA Specifications, newest first) plus audited `PATCH .../{id}/disable` endpoints for coupons and
+  promo codes. Reused the existing `AdminBillingController` create endpoints for coupon/promo-code
+  creation and added the missing `AdminAuditService.record(...)` hooks to billing writes
+  (coupon/promo creation, manual discount grant, refund issue). UI: features/promotions
+  PromotionsPage with create cards + list/filter/disable tables, sidebar enabled, route wired.
+  HONEST GAP: this module does **not** add a standalone manual-discount or refund browser yet;
+  those actions remain surfaced from user/subscription flows and Revenue/Operations.
+- **Phase 4 — Operations.** DONE. `io.bunnycal.admin.operations` AdminOperationsController
+  `GET /api/admin/operations/summary` + OperationsService. Action-needed counts over existing
+  systems: failed payments (last 30d), failed webhooks, pending refunds, past-due subscriptions,
+  promo issues (active coupons/promo codes that are expired/exhausted/broken), and jobs needing
+  attention (sync dead letters + outbox retrying/failed). UI: features/operations OperationsPage,
+  sidebar enabled, and **Operations is now the default landing route** (`/` and fallthrough both
+  redirect to `/operations`).
+  HONEST GAPS: there is still **no dedicated failed-payments browser**, **no standalone
+  subscriptions browser**; Operations links to the nearest existing surface where available and
+  labels the missing drill-downs directly instead of faking actions. Pending refunds currently
+  count `RefundStatus.PENDING` only; they are surfaced in Operations before a dedicated refund
+  queue exists.
+- **System Jobs.** DONE. `io.bunnycal.admin.jobs` AdminJobsController `/api/admin/jobs` +
+  SystemJobsService. Backend: paginated outbox browser (`GET /outbox` with status / aggregate /
+  event-type filters), sync dead letters (`GET /dead-letters` over existing SyncAdminService), and
+  audited retry actions for outbox events (`POST /outbox/{id}/retry`) and sync dead letters
+  (`POST /dead-letters/{id}/requeue`). UI: features/jobs SystemJobsPage, sidebar enabled, and
+  Operations now links into a real Jobs screen. HONEST GAP: there is **no separate persisted
+  email queue** in the current system; email delivery runs through `outbox_events`, so the Jobs UI
+  calls that out explicitly instead of inventing a fake queue.
+- **Feature Flags (#7).** DONE. `V109_0__feature_flags.sql` adds `feature_flags` and
+  `feature_flag_overrides` (seeded from the existing `Feature` enum). Backend:
+  `io.bunnycal.admin.flags` FeatureFlagService + AdminFeatureFlagController `/api/admin/flags`,
+  plus the entitlement evaluation hook now runs through FeatureFlagService inside
+  `EntitlementServiceImpl`. Precedence implemented as:
+  **kill switch (`enabled=false`) → per-user override → global override → `default_value=true`
+  → `PlanCatalog` fallback**. UI: features/flags FeatureFlagsPage with definition editing,
+  global/user override upsert, inspected-user effective-value preview by UUID, and audited
+  override deletion.
+  HONEST GAPS: this first pass covers the existing boolean `Feature` enum only — no numeric-limit
+  overrides, no user search/picker in the Flags UI (UUID entry only), and no inline flags tab on
+  the user detail page yet.
 - **Phase 5 — everything else:**
-  - **Feature Flags (#7)** — NEW tables `feature_flags` + `feature_flag_overrides` (V109/V110),
-    FeatureFlagService with precedence (per-user override → global → default → PlanCatalog),
-    evaluation hook alongside EntitlementService.
   - **Webhooks (#8)** — DONE (viewer only). `io.bunnycal.admin.webhooks` AdminWebhookController
     `GET /api/admin/webhooks` (paginated, filter status/provider/type via Specification) + `GET /{id}`
     (with raw payload). WebhookEventRepository now extends JpaSpecificationExecutor. UI:
@@ -138,32 +173,30 @@
   - **System Health (#10)** — aggregate Actuator + provider/integration pings.
   - **Analytics** (product, not revenue) — signups, bookings created/cancelled, conversion,
     popular event, timezones, countries.
-  - **System Jobs** — outbox/email/sync/dead-letters over SyncAdminService + outbox repos.
   - **Announcements** — NEW `announcements` table + public read endpoint + banner.
   - **Settings** — NEW `app_settings` table (non-secret dynamic config), SettingsService with
     `@Value` fallback.
-- **Promotions (#6)** — list/disable UI over existing PromotionService/RefundService +
-  AdminBillingController (creation already exists). Mostly UI.
 
 ## Rough remaining size
-~7 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
-Revenue) + both foundations. Per agreed order, next: **Promotions → Operations (make default
-landing) → System Jobs → Feature Flags → Analytics → Announcements → Settings → Global Search/⌘K
-→ Dashboard growth charts**. Plus Webhooks retry (needs payments-core parse/verify split).
+~11 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue, Promotions, Operations, System Jobs, Feature Flags) + both foundations. Per agreed
+order, next: **Analytics → Announcements → Settings → Global Search/⌘K → Dashboard growth
+charts**. Plus Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
 (features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
 in new modules.
 
 ## Agreed build order from here (user, 2026-06-30)
-1. **Revenue** (next) — MoR waterfall: Gross → Dodo Fees → Refunds → Net → **Payouts (placeholder
-   section even if not implemented)**. Plus revenue by plan / by country / over time.
-2. **Promotions** — UI over existing PromotionService/RefundService + list/disable.
+1. **Revenue** — MoR waterfall: Gross → Dodo Fees → Refunds → Net → **Payouts (placeholder
+   section even if not implemented)**. Plus revenue by plan / by country / over time. DONE.
+2. **Promotions** — UI over existing PromotionService/RefundService + list/disable. DONE.
 3. **Operations** — make it the DEFAULT landing page (failed payments/webhooks, pending refunds,
-   past-due subs, promo issues, jobs needing attention).
-4. **System Jobs** — outbox/email/sync/dead-letters.
-5. Feature Flags · 6. Analytics · 7. Announcements · 8. Settings · 9. Global Search + ⌘K ·
-10. Dashboard growth charts.
+   past-due subs, promo issues, jobs needing attention). DONE.
+4. **System Jobs** — outbox/email/sync/dead-letters. DONE.
+5. **Feature Flags** — data-backed overrides layered over plan entitlements. DONE.
+6. Analytics · 7. Announcements · 8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth
+charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).

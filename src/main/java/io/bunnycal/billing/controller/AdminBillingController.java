@@ -1,5 +1,8 @@
 package io.bunnycal.billing.controller;
 
+import io.bunnycal.admin.audit.AdminAuditService;
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.billing.domain.Coupon;
 import io.bunnycal.billing.domain.DiscountDuration;
 import io.bunnycal.billing.domain.DiscountType;
@@ -41,20 +44,26 @@ public class AdminBillingController {
     private final PromoCodeRepository promoCodeRepository;
     private final PromotionService promotionService;
     private final RefundService refundService;
+    private final AdminAuditService adminAuditService;
+    private final UserRepository userRepository;
 
     public AdminBillingController(CouponRepository couponRepository,
                                  PromoCodeRepository promoCodeRepository,
                                  PromotionService promotionService,
-                                 RefundService refundService) {
+                                 RefundService refundService,
+                                 AdminAuditService adminAuditService,
+                                 UserRepository userRepository) {
         this.couponRepository = couponRepository;
         this.promoCodeRepository = promoCodeRepository;
         this.promotionService = promotionService;
         this.refundService = refundService;
+        this.adminAuditService = adminAuditService;
+        this.userRepository = userRepository;
     }
 
     @PostMapping("/coupons")
     public ResponseEntity<ApiResponse<Coupon>> createCoupon(Authentication auth, @RequestBody CreateCouponRequest req) {
-        requireAuth(auth);
+        UUID adminId = requireAuth(auth);
         Coupon coupon = couponRepository.save(Coupon.builder()
                 .name(req.name())
                 .type(req.type())
@@ -69,12 +78,13 @@ public class AdminBillingController {
                 .restrictedPlanIds(req.restrictedPlanIds())
                 .active(true)
                 .build());
+        audit(adminId, "COUPON_CREATE", "COUPON", coupon.getId(), null, null, coupon);
         return ResponseEntity.ok(ApiResponse.success(coupon));
     }
 
     @PostMapping("/promo-codes")
     public ResponseEntity<ApiResponse<PromoCode>> createPromoCode(Authentication auth, @RequestBody CreatePromoCodeRequest req) {
-        requireAuth(auth);
+        UUID adminId = requireAuth(auth);
         if (couponRepository.findById(req.couponId()).isEmpty()) {
             throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Coupon not found.");
         }
@@ -85,6 +95,7 @@ public class AdminBillingController {
                 .validUntil(req.validUntil())
                 .active(true)
                 .build());
+        audit(adminId, "PROMO_CODE_CREATE", "PROMO_CODE", promo.getId(), null, null, promo);
         return ResponseEntity.ok(ApiResponse.success(promo));
     }
 
@@ -95,6 +106,7 @@ public class AdminBillingController {
         ManualDiscount discount = promotionService.grantManualDiscount(
                 req.subscriptionId(), req.type(), req.percentOff(), req.amountOffMinor(),
                 req.currency(), req.duration(), req.durationMonths(), req.reason(), adminId);
+        audit(adminId, "MANUAL_DISCOUNT_GRANT", "MANUAL_DISCOUNT", discount.getId(), req.reason(), null, discount);
         return ResponseEntity.ok(ApiResponse.success(discount));
     }
 
@@ -103,6 +115,7 @@ public class AdminBillingController {
         UUID adminId = requireAuth(auth);
         Refund refund = refundService.issueRefund(
                 req.invoiceId(), req.amountMinor(), req.reasonCode(), req.note(), adminId);
+        audit(adminId, "REFUND_ISSUE", "REFUND", refund.getId(), req.note(), null, refund);
         return ResponseEntity.ok(ApiResponse.success(refund));
     }
 
@@ -134,5 +147,11 @@ public class AdminBillingController {
 
     /** amountMinor null = full refund of the remaining balance. */
     public record RefundRequest(UUID invoiceId, Long amountMinor, RefundReasonCode reasonCode, String note) {
+    }
+
+    private void audit(UUID adminId, String action, String targetType, UUID targetId,
+                       String reason, Object before, Object after) {
+        String email = userRepository.findById(adminId).map(User::getEmail).orElse(null);
+        adminAuditService.record(adminId, email, action, targetType, targetId, reason, before, after);
     }
 }

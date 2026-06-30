@@ -3,6 +3,7 @@ package io.bunnycal.billing.entitlement;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 
+import io.bunnycal.admin.flags.FeatureFlagService;
 import io.bunnycal.billing.service.SubscriptionStateService;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -20,12 +21,15 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class EntitlementServiceTest {
 
     @Mock private SubscriptionStateService subscriptionStateService;
+    @Mock private FeatureFlagService featureFlagService;
 
     @Test
     void freeTierResolvesToFreeEntitlements() {
-        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService);
+        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService, featureFlagService);
         UUID userId = UUID.randomUUID();
         when(subscriptionStateService.resolveTier(userId)).thenReturn(PlanTier.FREE);
+        when(featureFlagService.applyOverrides(userId, PlanCatalog.forTier(PlanTier.FREE)))
+                .thenReturn(PlanCatalog.forTier(PlanTier.FREE));
 
         Entitlements e = service.resolve(userId);
 
@@ -37,9 +41,11 @@ class EntitlementServiceTest {
 
     @Test
     void professionalTierResolvesToProfessionalEntitlements() {
-        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService);
+        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService, featureFlagService);
         UUID userId = UUID.randomUUID();
         when(subscriptionStateService.resolveTier(userId)).thenReturn(PlanTier.PROFESSIONAL);
+        when(featureFlagService.applyOverrides(userId, PlanCatalog.forTier(PlanTier.PROFESSIONAL)))
+                .thenReturn(PlanCatalog.forTier(PlanTier.PROFESSIONAL));
 
         Entitlements e = service.resolve(userId);
 
@@ -51,9 +57,11 @@ class EntitlementServiceTest {
 
     @Test
     void enterpriseTierResolvesToEnterpriseEntitlements() {
-        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService);
+        EntitlementServiceImpl service = new EntitlementServiceImpl(subscriptionStateService, featureFlagService);
         UUID userId = UUID.randomUUID();
         when(subscriptionStateService.resolveTier(userId)).thenReturn(PlanTier.ENTERPRISE);
+        when(featureFlagService.applyOverrides(userId, PlanCatalog.forTier(PlanTier.ENTERPRISE)))
+                .thenReturn(PlanCatalog.forTier(PlanTier.ENTERPRISE));
 
         Entitlements e = service.resolve(userId);
 

@@ -11,4 +11,6 @@ public interface WebhookEventRepository
     Optional<WebhookEvent> findByProviderAndProviderEventId(String provider, String providerEventId);
 
     boolean existsByProviderAndProviderEventId(String provider, String providerEventId);
+
+    long countByStatus(WebhookEventStatus status);
 }

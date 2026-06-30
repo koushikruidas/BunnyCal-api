@@ -1,6 +1,7 @@
 package io.bunnycal.billing.repository;
 
 import io.bunnycal.billing.domain.Refund;
+import io.bunnycal.billing.domain.RefundStatus;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -26,6 +27,9 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
 
     /** Count of refunds (any status) created since {@code since}. */
     long countByCreatedAtGreaterThanEqual(Instant since);
+
+    /** Current refunds in a given status — used by Operations. */
+    long countByStatus(RefundStatus status);
 
     /** Total SUCCEEDED refund amount (minor units) within [from, to) — admin revenue report. */
     @Query("""

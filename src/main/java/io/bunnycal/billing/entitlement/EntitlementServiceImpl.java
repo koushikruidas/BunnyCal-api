@@ -21,12 +21,12 @@ import org.springframework.stereotype.Service;
 public class EntitlementServiceImpl implements EntitlementService {
 
     private final SubscriptionStateService subscriptionStateService;
+    private final io.bunnycal.admin.flags.FeatureFlagService featureFlagService;
 
     @Override
     public Entitlements resolve(UUID userId) {
         PlanTier tier = subscriptionStateService.resolveTier(userId);
-        return PlanCatalog.forTier(tier);
-        // Future (Phase 3+): merge active entitlement overrides for userId on top of this.
+        return featureFlagService.applyOverrides(userId, PlanCatalog.forTier(tier));
     }
 
     @Override

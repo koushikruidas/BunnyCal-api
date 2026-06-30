@@ -378,6 +378,34 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
     @Query(value = """
             SELECT *
             FROM calendar_sync_jobs
+            WHERE status = 'FAILED'
+              AND updated_at < NOW() - INTERVAL '1 hour'
+              AND (last_error IS NULL OR last_error NOT IN (
+                  'TERMINAL_EXTERNAL_DELETE',
+                  'EXTERNAL_ACTION_REQUIRED',
+                  'PROVIDER_STATE_ORPHANED'
+              ))
+            ORDER BY updated_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<CalendarSyncJob> findDeadLettersAll(@Param("limit") int limit);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM calendar_sync_jobs
+            WHERE status = 'FAILED'
+              AND updated_at < NOW() - INTERVAL '1 hour'
+              AND (last_error IS NULL OR last_error NOT IN (
+                  'TERMINAL_EXTERNAL_DELETE',
+                  'EXTERNAL_ACTION_REQUIRED',
+                  'PROVIDER_STATE_ORPHANED'
+              ))
+            """, nativeQuery = true)
+    long countDeadLetters();
+
+    @Query(value = """
+            SELECT *
+            FROM calendar_sync_jobs
             WHERE status = 'SYNCED'
               AND (last_error IS NULL OR last_error NOT IN (
                   'TERMINAL_EXTERNAL_DELETE',
