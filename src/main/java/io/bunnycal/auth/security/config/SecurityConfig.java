@@ -134,6 +134,9 @@ public class SecurityConfig {
                         .requestMatchers("/integrations/calendar/webhooks/**").permitAll()
                         .requestMatchers("/integrations/calendar/**").authenticated()
                         .requestMatchers("/integrations/conferencing/**").authenticated()
+                        // Customer-facing announcement banner. Optional JWT may still populate
+                        // Authentication so the service can resolve FREE vs PAID audience.
+                        .requestMatchers("/api/announcements/active").permitAll()
                         // Provider webhooks authenticate via signature, not JWT. Must precede /api/**.
                         .requestMatchers("/api/billing/webhooks/**").permitAll()
                         // Admin API requires an admin role. Must precede the generic /api/** rule.

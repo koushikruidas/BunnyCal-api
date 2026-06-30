@@ -181,14 +181,25 @@
     HONEST GAPS: **conversion is booking conversion** (successful bookings / bookings created in
     range), not visitor/session funnel conversion; **countries** remain unavailable because no
     canonical country field is stored on users, bookings, or invoices.
-  - **Announcements** — NEW `announcements` table + public read endpoint + banner.
+  - **Announcements** — DONE. `V110_0__announcements.sql` adds the new `announcements`
+    table. Backend: shared `io.bunnycal.announcements` domain + public
+    `GET /api/announcements/active`, plus `io.bunnycal.admin.announcements`
+    `GET /api/admin/announcements`, `POST`, `PUT`, `PATCH /{id}/active`, `DELETE /{id}`.
+    Admin writes are all audited with required reasons. Audience filtering is resolved
+    server-side: unauthenticated visitors only see `ALL`; authenticated users resolve to
+    `ALL + FREE` or `ALL + PAID` from the entitlement tier. UI: admin AnnouncementsPage
+    (list/filter/create/edit/activate/deactivate/delete) and customer dashboard banner
+    rendering from the public endpoint.
+    HONEST GAP: the customer-facing banner currently renders in the **dashboard shell**,
+    not across every public marketing page; that keeps `FREE` vs `PAID` audience behavior
+    correct without inventing client-side audience inference.
   - **Settings** — NEW `app_settings` table (non-secret dynamic config), SettingsService with
     `@Value` fallback.
 
 ## Rough remaining size
-~12 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
-Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics) + both foundations. Per
-agreed order, next: **Announcements → Settings → Global Search/⌘K → Dashboard growth charts**.
+~13 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics, Announcements) + both
+foundations. Per agreed order, next: **Settings → Global Search/⌘K → Dashboard growth charts**.
 Plus Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
@@ -204,7 +215,8 @@ in new modules.
 4. **System Jobs** — outbox/email/sync/dead-letters. DONE.
 5. **Feature Flags** — data-backed overrides layered over plan entitlements. DONE.
 6. Analytics. DONE.
-7. Announcements · 8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth charts.
+7. Announcements. DONE.
+8. Settings · 9. Global Search + ⌘K · 10. Dashboard growth charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).
