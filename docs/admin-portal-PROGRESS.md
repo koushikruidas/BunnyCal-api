@@ -110,8 +110,15 @@
   - **Feature Flags (#7)** — NEW tables `feature_flags` + `feature_flag_overrides` (V109/V110),
     FeatureFlagService with precedence (per-user override → global → default → PlanCatalog),
     evaluation hook alongside EntitlementService.
-  - **Webhooks (#8)** — read-only viewer + retry over existing `webhook_events` table +
-    WebhookIngestionService. Light.
+  - **Webhooks (#8)** — DONE (viewer only). `io.bunnycal.admin.webhooks` AdminWebhookController
+    `GET /api/admin/webhooks` (paginated, filter status/provider/type via Specification) + `GET /{id}`
+    (with raw payload). WebhookEventRepository now extends JpaSpecificationExecutor. UI:
+    features/webhooks WebhooksPage (filter bar + table + expandable payload, lazy-loads detail).
+    **RETRY DEFERRED**: the domain handler routes on ProviderWebhookEvent.data() (pre-extracted
+    fields) which is NOT persisted — only rawPayload is — and the parser is coupled to signature
+    verification inside DodoProvider.verifyWebhook. A faithful reprocess needs a parse/verify split
+    in the payments core (don't ride it along with a read-only module). Provider redelivery remains
+    the recovery path.
   - **Audit Logs (#9)** — DONE. `io.bunnycal.admin.audit` AdminAuditController
     `GET /api/admin/audit` (paginated, filters via JPA Specification) + AdminAuditQueryService +
     AdminAuditLogDto; repo extends JpaSpecificationExecutor. UI: features/audit AuditLogPage
@@ -129,10 +136,15 @@
   AdminBillingController (creation already exists). Mostly UI.
 
 ## Rough remaining size
-~5 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer) + both foundations.
-Light remaining: Webhooks, Promotions, System Jobs. Medium: Revenue, Analytics (new queries),
-Feature Flags, Announcements, Settings (new tables). One focused build: ⌘K palette + global
-search. Plus Dashboard growth time-series.
+~6 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer) +
+both foundations. Light remaining: Promotions, System Jobs. Medium: Revenue, Analytics (new
+queries), Feature Flags, Announcements, Settings (new tables). One focused build: ⌘K palette +
+global search. Plus Dashboard growth time-series, and Webhooks retry (needs payments-core
+parse/verify split).
+
+Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
+(features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
+in new modules.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).
