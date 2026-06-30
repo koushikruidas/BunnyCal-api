@@ -12,7 +12,36 @@ import org.springframework.data.repository.query.Param;
 
 public interface SubscriptionRepository extends JpaRepository<Subscription, UUID> {
 
+    interface SubscriptionSearchRow {
+        UUID getId();
+        UUID getUserId();
+        String getStatus();
+        String getProviderCustomerId();
+        String getProviderSubscriptionId();
+        Instant getCreatedAt();
+    }
+
     Optional<Subscription> findByProviderSubscriptionId(String providerSubscriptionId);
+
+    @Query(value = """
+            SELECT id,
+                   user_id AS userId,
+                   status,
+                   provider_customer_id AS providerCustomerId,
+                   provider_subscription_id AS providerSubscriptionId,
+                   created_at AS createdAt
+            FROM subscriptions
+            WHERE CAST(id AS text) = :exact
+               OR CAST(user_id AS text) = :exact
+               OR lower(coalesce(provider_customer_id, '')) LIKE :pattern
+               OR lower(coalesce(provider_subscription_id, '')) LIKE :pattern
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<SubscriptionSearchRow> searchAdmin(
+            @Param("exact") String exact,
+            @Param("pattern") String pattern,
+            @Param("limit") int limit);
 
     /** Any subscription (including terminal) for a provider customer — admin search/lookup. */
     Optional<Subscription> findFirstByProviderCustomerIdOrderByCreatedAtDesc(String providerCustomerId);

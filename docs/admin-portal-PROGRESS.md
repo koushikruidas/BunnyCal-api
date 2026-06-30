@@ -99,8 +99,7 @@
 > `apps/admin/src/layout/navConfig.ts` — enable as each ships.
 
 - **Phase 2 — Dashboard DONE (metrics).** Still pending: **growth time-series** chart, and the
-  **⌘K command palette + global search** (`GET /api/admin/search` fan-out over
-  users/subs/invoices/bookings/webhooks).
+  **growth time-series** chart.
 - **Phase 3 — Revenue (#5).** DONE. `io.bunnycal.admin.revenue` AdminRevenueController
   `GET /api/admin/revenue?from&to` (default 30d) + RevenueReportService + RevenueReportDto.
   MoR waterfall Gross→Fees→Refunds→Net + Payouts placeholder; by-plan (invoice→sub→plan join),
@@ -207,10 +206,10 @@
     at a time as those settings become operationally dynamic.
 
 ## Rough remaining size
-~14 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
-Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics, Announcements, Settings)
-+ both foundations. Per agreed order, next: **Global Search/⌘K → Dashboard growth charts**. Plus
-Webhooks retry (needs payments-core parse/verify split).
+~15 of ~16 modules done (Plans, Users, Subscriptions, Dashboard, Audit viewer, Webhooks viewer,
+Revenue, Promotions, Operations, System Jobs, Feature Flags, Analytics, Announcements, Settings,
+Global Search/Command Palette) + both foundations. Per agreed order, next: **Dashboard growth
+charts**. Plus Webhooks retry (needs payments-core parse/verify split).
 
 Frontend shared pieces promoted: `lib/pagination.ts` now holds the generic `PageResponse<T>`
 (features/audit/types.ts re-exports it). Reuse it + `components/Pagination` + `components/MetricCard`
@@ -227,7 +226,16 @@ in new modules.
 6. Analytics. DONE.
 7. Announcements. DONE.
 8. Settings. DONE.
-9. Global Search + ⌘K · 10. Dashboard growth charts.
+9. Global Search + ⌘K. DONE. Backend: `io.bunnycal.admin.search` AdminSearchController
+   `GET /api/admin/search?q=` fans out over users, subscriptions, invoices, bookings, and
+   webhooks with a small cap per group. Repository projections were added for subscription,
+   invoice, booking, and webhook search; booking search stays projection-only and includes
+   `hostId` so it does not introduce unsafe broad entity reads across the partitioned bookings
+   table. UI: shell-level CommandPalette opened from the top bar or `Cmd/Ctrl+K`; includes
+   enabled module navigation commands plus grouped live search results.
+   HONEST GAP: subscriptions, invoices, and bookings route to the nearest existing admin
+   surface (usually user detail or Webhooks) until standalone drill-down pages exist.
+10. Dashboard growth charts.
 
 ## Open decisions for the user
 1. reset-onboarding semantics (or drop it).

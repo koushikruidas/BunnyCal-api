@@ -9,7 +9,43 @@ import org.springframework.data.jpa.repository.Query;
 
 public interface SubscriptionInvoiceRepository extends JpaRepository<SubscriptionInvoice, UUID> {
 
+    interface InvoiceSearchRow {
+        UUID getId();
+        UUID getUserId();
+        UUID getSubscriptionId();
+        String getInvoiceNumber();
+        String getProviderInvoiceId();
+        String getStatus();
+        Long getTotalMinor();
+        String getCurrency();
+        java.time.Instant getIssuedAt();
+    }
+
     Optional<SubscriptionInvoice> findByProviderInvoiceId(String providerInvoiceId);
+
+    @Query(value = """
+            SELECT id,
+                   user_id AS userId,
+                   subscription_id AS subscriptionId,
+                   invoice_number AS invoiceNumber,
+                   provider_invoice_id AS providerInvoiceId,
+                   status,
+                   total_minor AS totalMinor,
+                   currency,
+                   issued_at AS issuedAt
+            FROM subscription_invoices
+            WHERE CAST(id AS text) = :exact
+               OR CAST(user_id AS text) = :exact
+               OR CAST(subscription_id AS text) = :exact
+               OR lower(invoice_number) LIKE :pattern
+               OR lower(coalesce(provider_invoice_id, '')) LIKE :pattern
+            ORDER BY issued_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<InvoiceSearchRow> searchAdmin(
+            @org.springframework.data.repository.query.Param("exact") String exact,
+            @org.springframework.data.repository.query.Param("pattern") String pattern,
+            @org.springframework.data.repository.query.Param("limit") int limit);
 
     boolean existsByProviderInvoiceId(String providerInvoiceId);
 

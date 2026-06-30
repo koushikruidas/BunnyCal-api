@@ -74,6 +74,18 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Boolean getActive();
     }
 
+    interface BookingSearchRow {
+        UUID getId();
+        UUID getHostId();
+        UUID getEventTypeId();
+        String getEventTypeName();
+        String getStatus();
+        Instant getStartTime();
+        Instant getEndTime();
+        String getGuestEmail();
+        String getGuestName();
+    }
+
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
     // Used by the phantom-pending-explosion guard in BookingService. Native query
     // required because Booking entity does not map the status column.
@@ -161,6 +173,31 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     List<TopEventRow> topEventsBetween(
             @Param("from") Instant from,
             @Param("to") Instant to,
+            @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT b.id,
+                   b.host_id AS hostId,
+                   b.event_type_id AS eventTypeId,
+                   et.name AS eventTypeName,
+                   b.status,
+                   b.start_time AS startTime,
+                   b.end_time AS endTime,
+                   b.guest_email AS guestEmail,
+                   b.guest_name AS guestName
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            WHERE CAST(b.id AS text) = :exact
+               OR CAST(b.host_id AS text) = :exact
+               OR lower(coalesce(b.guest_email, '')) LIKE :pattern
+               OR lower(coalesce(b.guest_name, '')) LIKE :pattern
+               OR lower(coalesce(et.name, '')) LIKE :pattern
+            ORDER BY b.created_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<BookingSearchRow> searchAdmin(
+            @Param("exact") String exact,
+            @Param("pattern") String pattern,
             @Param("limit") int limit);
 
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE host_id = :hostId", nativeQuery = true)
