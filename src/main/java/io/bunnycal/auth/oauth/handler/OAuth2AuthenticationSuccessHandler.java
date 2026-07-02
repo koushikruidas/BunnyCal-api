@@ -1,5 +1,7 @@
 package io.bunnycal.auth.oauth.handler;
 
+import io.bunnycal.admin.security.AdminRole;
+import io.bunnycal.admin.security.AdminRoleService;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -8,10 +10,13 @@ import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.bunnycal.auth.dto.AuthResponse;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.service.RefreshTokenService;
+import io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +36,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     private final IdentityLinkingService identityLinkingService;
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
+    private final AdminRoleService adminRoleService;
 
     @Value("${auth.refresh-token.ttl-days}")
     private int refreshTokenTtlDays;
@@ -40,6 +46,9 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
 
     @Value("${app.public-base-url:http://localhost:5173}")
     private String frontendBaseUrl;
+
+    @Value("${app.admin-base-url:http://localhost:5174}")
+    private String adminBaseUrl;
 
     @Value("${auth.oauth2.success-path:/dashboard}")
     private String frontendSuccessPath;
@@ -109,9 +118,14 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
                 provider, providerUserId, email, name, imageUrl
         );
 
+        List<String> roleNames = adminRoleService.activeRolesForUser(user.getId()).stream()
+                .map(AdminRole::name)
+                .toList();
+
         String accessToken = jwtTokenProvider.generateAccessToken(
                 user.getId(),
-                user.getEmail()
+                user.getEmail(),
+                roleNames
         );
 
         String refreshToken = refreshTokenService.createRefreshToken(user.getId());
@@ -133,7 +147,11 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
          *
          * */
 
-        String frontendRedirectUrl = resolveFrontendRedirectUrl();
+        boolean adminLogin = isAdminLogin(request);
+        if (adminLogin) {
+            clearOauthClientCookie(request, response);
+        }
+        String frontendRedirectUrl = resolveFrontendRedirectUrl(adminLogin);
         boolean secureRequest = request.isSecure();
         String sameSite = secureRequest ? "None" : "Lax";
 
@@ -222,16 +240,53 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         return value == null ? null : String.valueOf(value);
     }
 
-    private String resolveFrontendRedirectUrl() {
+    /**
+     * Admin logins go to the admin app root (its router forwards an authenticated admin to the
+     * default Operations route); customer logins keep the configured success path. Which app
+     * started the flow is remembered in the {@code oauthClient} cookie set by
+     * {@link io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver}.
+     */
+    private String resolveFrontendRedirectUrl(boolean adminLogin) {
+        if (adminLogin) {
+            if (!hasText(adminBaseUrl)) {
+                throw new IllegalStateException("app.admin-base-url must not be empty");
+            }
+            return stripTrailingSlash(adminBaseUrl) + "/";
+        }
         if (!hasText(frontendBaseUrl)) {
             throw new IllegalStateException("app.public-base-url must not be empty");
         }
         if (!hasText(frontendSuccessPath) || !frontendSuccessPath.startsWith("/")) {
             throw new IllegalStateException("auth.oauth2.success-path must start with '/'");
         }
-        String base = frontendBaseUrl.endsWith("/")
-                ? frontendBaseUrl.substring(0, frontendBaseUrl.length() - 1)
-                : frontendBaseUrl;
-        return base + frontendSuccessPath;
+        return stripTrailingSlash(frontendBaseUrl) + frontendSuccessPath;
+    }
+
+    private static String stripTrailingSlash(String url) {
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+
+    private static boolean isAdminLogin(HttpServletRequest request) {
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
+            return false;
+        }
+        for (Cookie cookie : cookies) {
+            if (CustomOAuth2AuthorizationRequestResolver.OAUTH_CLIENT_COOKIE.equals(cookie.getName())) {
+                return "admin".equalsIgnoreCase(cookie.getValue());
+            }
+        }
+        return false;
+    }
+
+    /** Expire the one-shot client-intent cookie now that it has been consumed. */
+    private static void clearOauthClientCookie(HttpServletRequest request, HttpServletResponse response) {
+        Cookie cookie = new Cookie(
+                CustomOAuth2AuthorizationRequestResolver.OAUTH_CLIENT_COOKIE, "");
+        cookie.setHttpOnly(true);
+        cookie.setSecure(request.isSecure());
+        cookie.setPath("/");
+        cookie.setMaxAge(0);
+        response.addCookie(cookie);
     }
 }

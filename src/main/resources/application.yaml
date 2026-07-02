@@ -220,11 +220,22 @@ microsoft:
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:http://localhost:5173}
+  admin-base-url: ${APP_ADMIN_BASE_URL:http://localhost:5174}
   security:
     cors:
       allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:http://localhost:5173}
+      admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:http://localhost:5174}
   docs:
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
+  embed:
+    token-secret: ${APP_EMBED_TOKEN_SECRET:9f4c7d8e2a1b6c5d7e8f9a0b1c2d3e4f}
+    token-ttl-seconds: ${APP_EMBED_TOKEN_TTL_SECONDS:7200}
+
+# Admin portal. Set admin.bootstrap.email to an existing user's email to grant them
+# SUPER_ADMIN on startup (idempotent). Leave blank once the first super-admin exists.
+admin:
+  bootstrap:
+    email: ${ADMIN_BOOTSTRAP_EMAIL:}
 
 booking:
   confirm:
@@ -248,6 +259,64 @@ booking:
     # Leave empty to disable (no prod impact).
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
 
+billing:
+  # Master switch for the SaaS subscription billing module. Disabled by default so
+  # dev/test boot without provider credentials; enable in environments that have the
+  # active provider's secrets configured. Mirrors the booking.notifications.enabled pattern.
+  enabled: ${BILLING_ENABLED:false}
+  # Active payment provider: "stripe" (direct merchant) or "dodo" (Merchant of Record).
+  # Switching providers is a single env-var change — no code change. Selects which
+  # PaymentProvider bean loads (@ConditionalOnProperty).
+  provider: ${BILLING_PROVIDER:stripe}
+  # Exposes /api/admin/billing (coupons, promo codes, manual discounts). Off by default;
+  # there is no admin-role system yet, so keep this disabled outside trusted operators.
+  admin:
+    enabled: ${BILLING_ADMIN_ENABLED:false}
+  # Public-facing trial length for the single Phase-1 plan (days). The plan row in
+  # subscription_plans is the source of truth; this is the seed/default.
+  # 14 days per Product Specification v1.0, Chapter 2 §10 / Chapter 3 BR-002.
+  trial-days: ${BILLING_TRIAL_DAYS:14}
+  # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
+  grace-days: ${BILLING_GRACE_DAYS:3}
+  # Trial-ending reminders run daily; dunning sweep runs hourly. ShedLock-guarded.
+  trial-reminder:
+    cron: ${BILLING_TRIAL_REMINDER_CRON:0 0 9 * * *}
+  dunning:
+    cron: ${BILLING_DUNNING_CRON:0 30 * * * *}
+  notifications:
+    enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
+    from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
+  # Processor / Merchant-of-Record fee rate (basis points; 500 = 5%) used to ESTIMATE fees
+  # and net in the admin Revenue report. Per-transaction fees are not persisted, so this is
+  # an estimate. 0 (default) = not configured: the report shows fees/net as unavailable.
+  fees:
+    processor-percent-bps: ${BILLING_FEES_PROCESSOR_PERCENT_BPS:0}
+  # Provider-neutral redirect URLs for hosted Checkout / Customer Portal. Identical
+  # regardless of provider. (STRIPE_* env vars are still honored as defaults for
+  # backward compatibility with existing deployments.)
+  redirect:
+    success-url: ${BILLING_SUCCESS_URL:${STRIPE_SUCCESS_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=success}}
+    cancel-url: ${BILLING_CANCEL_URL:${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=cancelled}}
+    portal-return-url: ${BILLING_PORTAL_RETURN_URL:${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing}}
+  # Customer-facing document presentation. "direct-merchant" (Stripe) issues a real
+  # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues an internal "Payment
+  # Summary" and names the Merchant of Record that issued the official receipt.
+  invoice-presentation:
+    mode: ${BILLING_INVOICE_MODE:direct-merchant}
+    seller-name: ${BILLING_SELLER_NAME:BunnyCal}
+    merchant-of-record-name: ${BILLING_MOR_NAME:Dodo Payments}
+  stripe:
+    secret-key: ${STRIPE_SECRET_KEY:}
+    # Signing secret for the webhook endpoint (whsec_...). Verified on every callback.
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+  dodo:
+    # Dodo API key (Bearer token). Used for /checkouts, /customers, /subscriptions, /refunds.
+    api-key: ${DODO_API_KEY:}
+    # Standard-Webhooks signing secret used to verify the webhook-signature header.
+    webhook-secret: ${DODO_WEBHOOK_SECRET:}
+    # When true, the API targets test.dodopayments.com; otherwise live.dodopayments.com.
+    test-mode: ${DODO_TEST_MODE:true}
+
 draft:
   ttl:
     days: ${DRAFT_TTL_DAYS:21}
@@ -259,9 +328,14 @@ zoom:
   oauth:
     client-id: ${ZOOM_CLIENT_ID:}
     client-secret: ${ZOOM_CLIENT_SECRET:}
-    redirect-uri: ${ZOOM_REDIRECT_URI:http://localhost:8080/integrations/conferencing/zoom/callback}
+    # Must byte-for-byte match a URL in the Zoom app's OAuth allow list. Zoom
+    # rejects the hostname "localhost"; 127.0.0.1 is the allowed local form.
+    redirect-uri: ${ZOOM_REDIRECT_URI:http://127.0.0.1:8080/integrations/conferencing/zoom/callback}
     frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:http://localhost:5173/dashboard/integrations}
     frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:http://localhost:5173/calendar-error}
+    # Secret Token from the Zoom app's Features > Access (webhook) section; used to
+    # verify x-zm-signature on deauthorization events.
+    webhook-secret-token: ${ZOOM_WEBHOOK_SECRET_TOKEN:}
 
 kind: Application
 

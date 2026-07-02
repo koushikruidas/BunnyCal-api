@@ -1,60 +1,60 @@
 services:
-  bunnycal-api:
-    image: koushikruidas/bunnycal-api:sha-f3460ce
-    build:
-      context: .
-      dockerfile: Dockerfile
-    logging:
-      driver: json-file
-      options:
-        max-size: "100m"
-        max-file: "5"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      LOG_DIR: /app/logs
-    volumes:
-      - ./logs:/app/logs
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - bunnycal
-
-  caddy:
-    image: caddy:2.8-alpine
-    restart: unless-stopped
-    stop_grace_period: 30s   # prevents mid-write kill on compose down
-    logging:
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "3"
-    ports:
-      - "443:443"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - bunnycal-api
-    networks:
-      - bunnycal
+#  bunnycal-api:
+#    image: koushikruidas/bunnycal-api:sha-f3460ce
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    logging:
+#      driver: json-file
+#      options:
+#        max-size: "100m"
+#        max-file: "5"
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+#      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+#      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+#      SPRING_DATA_REDIS_HOST: redis
+#      SPRING_DATA_REDIS_PORT: 6379
+#      LOG_DIR: /app/logs
+#    volumes:
+#      - ./logs:/app/logs
+#    restart: unless-stopped
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    networks:
+#      - bunnycal
+#
+#  caddy:
+#    image: caddy:2.8-alpine
+#    restart: unless-stopped
+#    stop_grace_period: 30s   # prevents mid-write kill on compose down
+#    logging:
+#      driver: json-file
+#      options:
+#        max-size: "50m"
+#        max-file: "3"
+#    ports:
+#      - "443:443"
+#    env_file:
+#      - path: .env
+#        required: false
+#    environment:
+#      APP_DOMAIN: ${APP_DOMAIN}
+#    volumes:
+#      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+#      - caddy_data:/data
+#      - caddy_config:/config
+#    depends_on:
+#      - bunnycal-api
+#    networks:
+#      - bunnycal
 
   postgres:
     image: postgres:16-alpine

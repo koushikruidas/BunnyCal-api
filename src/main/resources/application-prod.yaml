@@ -217,13 +217,18 @@ microsoft:
 
 app:
   public-base-url: ${APP_PUBLIC_BASE_URL:https://bunnycal.io}
+  admin-base-url: ${APP_ADMIN_BASE_URL:https://admin.bunnycal.io}
   security:
     cors:
       # No localhost origins in production.
       allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:https://bunnycal.io}
+      admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:https://admin.bunnycal.io}
   docs:
     # API docs stay private in production unless explicitly enabled.
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
+  embed:
+    token-secret: ${APP_EMBED_TOKEN_SECRET}
+    token-ttl-seconds: ${APP_EMBED_TOKEN_TTL_SECONDS:7200}
 
 booking:
   confirm:
@@ -259,6 +264,7 @@ zoom:
     redirect-uri: ${ZOOM_REDIRECT_URI:https://api.bunnycal.io/integrations/conferencing/zoom/callback}
     frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:https://bunnycal.io/dashboard/integrations}
     frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:https://bunnycal.io/calendar-error}
+    webhook-secret-token: ${ZOOM_WEBHOOK_SECRET_TOKEN:}
 
 kind: Application
 

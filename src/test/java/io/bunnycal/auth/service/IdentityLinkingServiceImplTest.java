@@ -7,10 +7,13 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import io.bunnycal.auth.domain.identity.AuthIdentity;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.dto.UserDto;
+import io.bunnycal.auth.account.DeletedAccountTombstoneRepository;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.common.enums.AuthProvider;
@@ -35,6 +38,12 @@ class IdentityLinkingServiceImplTest {
     @Mock
     private AuthIdentityRepository authIdentityRepository;
 
+    @Mock
+    private DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
+
+    @Mock
+    private ProfileAvatarService profileAvatarService;
+
     private IdentityLinkingServiceImpl identityLinkingService;
 
     @BeforeEach
@@ -42,8 +51,16 @@ class IdentityLinkingServiceImplTest {
         identityLinkingService = new IdentityLinkingServiceImpl(
                 userRepository,
                 authIdentityRepository,
-                new UserTimezoneServiceImpl(new TimezoneService())
+                deletedAccountTombstoneRepository,
+                new UserTimezoneServiceImpl(new TimezoneService()),
+                profileAvatarService
         );
+        lenient().when(deletedAccountTombstoneRepository.findByProviderAndProviderUserId(any(), any()))
+                .thenReturn(Optional.empty());
+        lenient().when(deletedAccountTombstoneRepository.findByNormalizedEmail(any()))
+                .thenReturn(Optional.empty());
+        lenient().when(profileAvatarService.resolveProfileImageUrl(any(User.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0, User.class).getProfileImageUrl());
     }
 
     @Test

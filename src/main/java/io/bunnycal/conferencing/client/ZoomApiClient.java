@@ -19,7 +19,7 @@ public interface ZoomApiClient {
 
     record OAuthTokenExchangeResult(String accessToken, String refreshToken, Instant expiresAt) {}
 
-    record TokenRefreshResult(String accessToken, Instant expiresAt) {}
+    record TokenRefreshResult(String accessToken, String refreshToken, Instant expiresAt) {}
 
     record MeetingDetails(String meetingId, String joinUrl, String hostUrl) {}
 }

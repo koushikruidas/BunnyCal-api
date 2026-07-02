@@ -98,6 +98,19 @@ public abstract class AbstractBookingIT {
                 Timestamp.from(at), Timestamp.from(at), Timestamp.from(at));
     }
 
+    protected void insertFailedIdempotencyKey(UUID id, String key, UUID userId,
+            String route, String hash, int responseStatus, Instant at) {
+        jdbc.update("""
+                INSERT INTO idempotency_keys
+                    (id, key, user_id, route, request_hash, status,
+                     response_status, response_body, started_at, completed_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'FAILED',
+                        ?, '{\"error\":{\"code\":\"FAILED\",\"message\":\"cached failure\"}}', ?, ?, ?, ?)
+                """,
+                id, key, userId, route, hash, responseStatus,
+                Timestamp.from(at), Timestamp.from(at), Timestamp.from(at), Timestamp.from(at));
+    }
+
     protected UUID insertPendingOutboxEvent(Instant at) {
         UUID id = UUID.randomUUID();
         insertPendingOutboxEvent(id, at);

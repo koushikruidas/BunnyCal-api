@@ -1,5 +1,7 @@
 package io.bunnycal.auth.service;
 
+import io.bunnycal.auth.account.DeletedAccountTombstoneRepository;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.UserStatus;
@@ -22,7 +24,9 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
 
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
+    private final DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
     private final TimeZoneService userTimezoneServiceImpl;
+    private final ProfileAvatarService profileAvatarService;
 
     @Override
     @Transactional
@@ -30,12 +34,16 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
         String normalizedEmail = normalizeAndValidateEmail(email);
         String normalizedName = normalizeName(name, normalizedEmail);
         String normalizedImageUrl = normalizeImageUrl(imageUrl);
+        boolean tombstoned = deletedAccountTombstoneRepository.findByProviderAndProviderUserId(provider, providerUserId).isPresent()
+                || deletedAccountTombstoneRepository.findByNormalizedEmail(normalizedEmail).isPresent();
 
         User user = authIdentityRepository.findByProviderAndProviderUserId(provider, providerUserId)
                 .map(AuthIdentity::getUser)
-                .orElseGet(() -> resolveByEmailOrCreate(provider, providerUserId, normalizedEmail, normalizedName, normalizedImageUrl));
+                .orElseGet(() -> tombstoned
+                        ? createUserAndIdentity(provider, providerUserId, normalizedEmail, normalizedName, normalizedImageUrl)
+                        : resolveByEmailOrCreate(provider, providerUserId, normalizedEmail, normalizedName, normalizedImageUrl));
         maybeUpdateProfileImage(user, normalizedImageUrl);
-        return UserDto.from(user);
+        return UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user));
     }
 
     private User resolveByEmailOrCreate(AuthProvider provider, String providerUserId, String email, String name, String imageUrl) {

@@ -100,6 +100,8 @@ public class GlobalExceptionHandler {
             case FORBIDDEN:
             case TEAM_OWNER_REQUIRED:
             case TEAM_INVITATION_EMAIL_MISMATCH:
+            case FEATURE_NOT_IN_PLAN:
+            case PLAN_LIMIT_REACHED:
                 return HttpStatus.FORBIDDEN;
             case RESOURCE_NOT_FOUND:
             case TEAM_INVITATION_INVALID:
@@ -108,6 +110,10 @@ public class GlobalExceptionHandler {
             case TEAM_MEMBER_ALREADY_EXISTS:
             case TEAM_INVITATION_ALREADY_PENDING:
             case TEAM_LAST_OWNER:
+            case EVENT_TYPE_ATTACHED_TO_EXPERIENCE:
+            case FORM_ATTACHED_TO_ACTIVE_EXPERIENCE:
+            case ACTIVE_EXPERIENCE_DELETE_REQUIRES_ARCHIVE:
+            case EXPERIENCE_NOT_ACTIVATABLE:
                 return HttpStatus.CONFLICT;
             case VALIDATION_ERROR:
             case PARTICIPANTS_REQUIRED:

@@ -1,8 +1,11 @@
 package io.bunnycal.booking.domain;
 
 import io.bunnycal.common.audit.BaseEntity;
+import io.bunnycal.common.enums.AuthProvider;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -54,6 +57,16 @@ public class Booking extends BaseEntity {
 
     @Column(name = "guest_name", length = 120)
     private String guestName;
+
+    @Column(name = "guest_notes", columnDefinition = "TEXT")
+    private String guestNotes;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "invitee_auth_provider", length = 32)
+    private AuthProvider inviteeAuthProvider;
+
+    @Column(name = "invitee_provider_user_id", length = 255)
+    private String inviteeProviderUserId;
 
     @Builder.Default
     @Column(name = "calendar_sequence", nullable = false)

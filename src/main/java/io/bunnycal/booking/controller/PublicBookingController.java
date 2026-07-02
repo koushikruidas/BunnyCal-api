@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
 
 @RestController
 @RequestMapping("/public")
@@ -73,6 +74,7 @@ public class PublicBookingController {
     @PostMapping("/{username}/{eventTypeSlug}/book")
     public ResponseEntity<?> hold(@PathVariable String username,
                                   @PathVariable String eventTypeSlug,
+                                  Authentication authentication,
                                   @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
                                   @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
                                   @RequestBody PublicBookRequest request) {
@@ -91,7 +93,10 @@ public class PublicBookingController {
                 normalizedStart,
                 request.guestEmail(),
                 request.guestName(),
-                request.slotToken());
+                request.notes(),
+                request.slotToken(),
+                request.answers(),
+                request.embedToken());
 
         String route = IdempotencyRoutes.PUBLIC_BOOK_HOLD;
         Map<String, Object> hashPayload = new java.util.LinkedHashMap<>();
@@ -100,6 +105,9 @@ public class PublicBookingController {
         hashPayload.put("startTime", normalizedRequest.startTime());
         hashPayload.put("guestEmail", normalizeGuestEmail(request.guestEmail()));
         hashPayload.put("guestName", normalizeGuestName(request.guestName()));
+        hashPayload.put("notes", normalizeNotes(request.notes()));
+        hashPayload.put("answers", request.answers());
+        hashPayload.put("embedToken", request.embedToken());
         hashPayload.put("slotToken", request.slotToken());
         String requestHash = RequestHasher.hash(hashPayload, objectMapper);
 
@@ -108,10 +116,22 @@ public class PublicBookingController {
                 routeScopeUser(username, eventTypeSlug),
                 route,
                 requestHash,
-                () -> new ResponseEnvelope<>(201, publicBookingService.hold(username, eventTypeSlug, normalizedRequest))
+                () -> new ResponseEnvelope<>(201, publicBookingService.hold(
+                        username,
+                        eventTypeSlug,
+                        normalizedRequest,
+                        extractOptionalUserId(authentication)))
         );
 
         return outcome.toResponseEntity(objectMapper);
+    }
+
+    public ResponseEntity<?> hold(String username,
+                                  String eventTypeSlug,
+                                  String idempotencyKey,
+                                  String timezoneHeader,
+                                  PublicBookRequest request) {
+        return hold(username, eventTypeSlug, null, idempotencyKey, timezoneHeader, request);
     }
 
     @GetMapping("/{username}/{eventTypeSlug}/book/{bookingId}")
@@ -219,5 +239,29 @@ public class PublicBookingController {
         if (value == null) return null;
         String v = value.trim();
         return v.isBlank() ? null : v;
+    }
+
+    private static String normalizeNotes(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        return v.isBlank() ? null : v;
+    }
+
+    private static java.util.UUID extractOptionalUserId(Authentication authentication) {
+        if (authentication == null || authentication.getPrincipal() == null) {
+            return null;
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof java.util.UUID uuid) {
+            return uuid;
+        }
+        if (principal instanceof String text) {
+            try {
+                return java.util.UUID.fromString(text);
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 }

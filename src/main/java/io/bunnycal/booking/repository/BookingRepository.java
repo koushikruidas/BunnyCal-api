@@ -66,6 +66,26 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         Boolean getReconcileSuppressed();
     }
 
+    interface TopEventRow {
+        UUID getEventTypeId();
+        String getEventName();
+        Long getBookingCount();
+        Boolean getPublished();
+        Boolean getActive();
+    }
+
+    interface BookingSearchRow {
+        UUID getId();
+        UUID getHostId();
+        UUID getEventTypeId();
+        String getEventTypeName();
+        String getStatus();
+        Instant getStartTime();
+        Instant getEndTime();
+        String getGuestEmail();
+        String getGuestName();
+    }
+
     // Counts PENDING bookings for a host whose time range overlaps [start, end).
     // Used by the phantom-pending-explosion guard in BookingService. Native query
     // required because Booking entity does not map the status column.
@@ -98,6 +118,87 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     // Called by the Micrometer scrape thread (Prometheus pull), not on any request path.
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE status = :status", nativeQuery = true)
     long countByStatus(@Param("status") String status);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+            """, nativeQuery = true)
+    long countCreatedBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE status = 'CANCELLED'
+              AND updated_at >= :from
+              AND updated_at < :to
+            """, nativeQuery = true)
+    long countCancelledBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+              AND status IN ('CONFIRMED', 'COMPLETED')
+            """, nativeQuery = true)
+    long countConvertedFromCreatedBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT AVG(EXTRACT(EPOCH FROM (end_time - start_time)) / 60.0)
+            FROM bookings
+            WHERE created_at >= :from
+              AND created_at < :to
+              AND status IN ('CONFIRMED', 'COMPLETED')
+            """, nativeQuery = true)
+    Double averageSuccessfulDurationMinutesBetween(@Param("from") Instant from, @Param("to") Instant to);
+
+    @Query(value = """
+            SELECT
+                b.event_type_id AS eventTypeId,
+                et.name AS eventName,
+                COUNT(*) AS bookingCount,
+                et.published AS published,
+                (et.deleted_at IS NULL) AS active
+            FROM bookings b
+            JOIN event_types et ON et.id = b.event_type_id
+            WHERE b.created_at >= :from
+              AND b.created_at < :to
+              AND b.status IN ('CONFIRMED', 'COMPLETED')
+            GROUP BY b.event_type_id, et.name, et.published, et.deleted_at
+            ORDER BY COUNT(*) DESC, et.name ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<TopEventRow> topEventsBetween(
+            @Param("from") Instant from,
+            @Param("to") Instant to,
+            @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT b.id,
+                   b.host_id AS hostId,
+                   b.event_type_id AS eventTypeId,
+                   et.name AS eventTypeName,
+                   b.status,
+                   b.start_time AS startTime,
+                   b.end_time AS endTime,
+                   b.guest_email AS guestEmail,
+                   b.guest_name AS guestName
+            FROM bookings b
+            LEFT JOIN event_types et ON et.id = b.event_type_id
+            WHERE CAST(b.id AS text) = :exact
+               OR CAST(b.host_id AS text) = :exact
+               OR lower(coalesce(b.guest_email, '')) LIKE :pattern
+               OR lower(coalesce(b.guest_name, '')) LIKE :pattern
+               OR lower(coalesce(et.name, '')) LIKE :pattern
+            ORDER BY b.created_at DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<BookingSearchRow> searchAdmin(
+            @Param("exact") String exact,
+            @Param("pattern") String pattern,
+            @Param("limit") int limit);
 
     @Query(value = "SELECT COUNT(*) FROM bookings WHERE host_id = :hostId", nativeQuery = true)
     long countByHostId(@Param("hostId") UUID hostId);
@@ -568,6 +669,16 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
     List<MeetingRow> findUpcomingMeetingsForHost(@Param("hostId") UUID hostId,
                                                  @Param("now") Instant now,
                                                  @Param("limit") int limit);
+
+    @Query(value = """
+            SELECT id, host_id, status, version, expires_at, terminal_intent_epoch
+            FROM bookings
+            WHERE host_id = :hostId
+              AND start_time > :now
+              AND status IN ('PENDING','CONFIRMED')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<BookingStateRow> findFutureActiveStatesByHostId(@Param("hostId") UUID hostId, @Param("now") Instant now);
 
     @Query(value = """
             SELECT

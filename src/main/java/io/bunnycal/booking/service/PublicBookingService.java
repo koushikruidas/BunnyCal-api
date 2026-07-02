@@ -1,7 +1,9 @@
 package io.bunnycal.booking.service;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
@@ -37,6 +39,7 @@ import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
 import io.bunnycal.booking.repository.CollectiveParticipantHoldRepository;
 import io.bunnycal.sync.FencingTokenGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.Duration;
@@ -46,7 +49,13 @@ import java.time.ZoneId;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import io.bunnycal.embed.public_.EmbedBookingSupport;
+import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
+import io.bunnycal.form.dto.AnswerSnapshot;
+import io.bunnycal.common.enums.AuthProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -54,6 +63,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 @Service
 public class PublicBookingService {
     private static final Logger log = LoggerFactory.getLogger(PublicBookingService.class);
+
+    // Optional: only present when embed module is on the classpath (always in practice)
+    @Autowired(required = false)
+    private EmbedBookingSupport embedBookingSupport;
+
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
     private final BookingService bookingService;
@@ -76,12 +90,18 @@ public class PublicBookingService {
     private final ParticipantEligibilityService participantEligibilityService;
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final UserRepository userRepository;
+    private final ProfileAvatarService profileAvatarService;
+    private final AuthIdentityRepository authIdentityRepository;
+    private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
+    private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final EventTypeParticipantRepository eventTypeParticipantRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
+    private final io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
     private final MeterRegistry meterRegistry;
 
+    @Autowired
     public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
                                 SlotService slotService,
                                 BookingService bookingService,
@@ -104,8 +124,13 @@ public class PublicBookingService {
                                 ParticipantEligibilityService participantEligibilityService,
                                 BookingAssignmentRepository bookingAssignmentRepository,
                                 UserRepository userRepository,
+                                ProfileAvatarService profileAvatarService,
+                                AuthIdentityRepository authIdentityRepository,
+                                BookingQuestionAnswerRepository bookingQuestionAnswerRepository,
+                                BookingSubmissionFormatter bookingSubmissionFormatter,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
+                                io.bunnycal.billing.entitlement.EntitlementService entitlementService,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
                                 // projection-first availability. If the connection's last
@@ -136,11 +161,55 @@ public class PublicBookingService {
         this.participantEligibilityService = participantEligibilityService;
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.userRepository = userRepository;
+        this.profileAvatarService = profileAvatarService;
+        this.authIdentityRepository = authIdentityRepository;
+        this.bookingQuestionAnswerRepository = bookingQuestionAnswerRepository;
+        this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.eventTypeParticipantRepository = eventTypeParticipantRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
+        this.entitlementService = entitlementService;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
         this.projectionFreshnessSla = Duration.ofSeconds(Math.max(1L, projectionFreshnessSlaSeconds));
+    }
+
+    public PublicBookingService(PublicBookingTargetResolver publicBookingTargetResolver,
+                                SlotService slotService,
+                                BookingService bookingService,
+                                BookingRepository bookingRepository,
+                                CalendarBusyTimeService calendarBusyTimeService,
+                                CalendarConnectionRepository calendarConnectionRepository,
+                                CalendarService calendarService,
+                                CalendarEventMappingRepository calendarEventMappingRepository,
+                                FencingTokenGenerator fencingTokenGenerator,
+                                TimeConversionService timeConversionService,
+                                BookingLifecycleService bookingLifecycleService,
+                                GuestCapabilityTokenService guestCapabilityTokenService,
+                                SessionService sessionService,
+                                SessionRegistrationRepository sessionRegistrationRepository,
+                                RoundRobinSlotTokenService roundRobinSlotTokenService,
+                                RoundRobinAssignmentService roundRobinAssignmentService,
+                                CollectiveSlotTokenService collectiveSlotTokenService,
+                                CollectiveAssignmentService collectiveAssignmentService,
+                                CollectiveParticipantHoldRepository collectiveParticipantHoldRepository,
+                                ParticipantEligibilityService participantEligibilityService,
+                                BookingAssignmentRepository bookingAssignmentRepository,
+                                UserRepository userRepository,
+                                ProfileAvatarService profileAvatarService,
+                                EventTypeParticipantRepository eventTypeParticipantRepository,
+                                BookingEventTypeResolver bookingEventTypeResolver,
+                                io.bunnycal.billing.entitlement.EntitlementService entitlementService,
+                                MeterRegistry meterRegistry,
+                                long capabilityTokenTtlDays,
+                                long projectionFreshnessSlaSeconds) {
+        this(publicBookingTargetResolver, slotService, bookingService, bookingRepository, calendarBusyTimeService,
+                calendarConnectionRepository, calendarService, calendarEventMappingRepository, fencingTokenGenerator,
+                timeConversionService, bookingLifecycleService, guestCapabilityTokenService, sessionService,
+                sessionRegistrationRepository, roundRobinSlotTokenService, roundRobinAssignmentService,
+                collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
+                participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
+                new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
+                entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
     }
 
     @Transactional(readOnly = true)
@@ -155,7 +224,7 @@ public class PublicBookingService {
                     .map(p -> {
                         var user = userRepository.findById(p.getUserId()).orElse(null);
                         String name = user != null ? (user.getName() != null ? user.getName() : user.getEmail()) : null;
-                        String avatarUrl = user != null ? user.getProfileImageUrl() : null;
+                        String avatarUrl = user != null ? profileAvatarService.resolveProfileImageUrl(user) : null;
                         return new PublicParticipantInfo(name, avatarUrl);
                     })
                     .filter(p -> p.name() != null)
@@ -246,25 +315,51 @@ public class PublicBookingService {
 
     @Transactional
     public PublicHoldResponse hold(String username, String eventTypeSlug, PublicBookRequest request) {
+        return hold(username, eventTypeSlug, request, null);
+    }
+
+    @Transactional
+    public PublicHoldResponse hold(String username, String eventTypeSlug, PublicBookRequest request, UUID authenticatedInviteeId) {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
+
+        InviteeAuthContext inviteeAuth = resolveInviteeAuthContext(authenticatedInviteeId);
+
+        // Step 1 & 2: validate embed token + answers BEFORE any booking state mutation
+        List<AnswerSnapshot> answerSnapshots = List.of();
+        if (request.embedToken() != null && !request.embedToken().isBlank() && embedBookingSupport != null) {
+            answerSnapshots = embedBookingSupport.validateEmbedRequest(request.embedToken(), request.answers());
+        }
+
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
         // Gate: unpublished event types do not accept new holds.
         // The public page remains reachable but no new slots/holds/bookings are allowed.
         requirePublished(target.eventTypeId());
 
+        // Gate: a premium event type whose owner is no longer entitled is inactive — it cannot
+        // accept NEW bookings (Spec Ch5 §11/§14-16). Existing bookings are untouched (this only
+        // runs on the create/hold path). Neutral rejection, no billing detail leaked (Principle 9).
+        requireOwnerEntitledForBooking(target);
+
+        PublicHoldResponse response;
         if (target.kind() == EventKind.GROUP) {
-            return holdGroupRegistration(target, request);
+            response = holdGroupRegistration(target, request, inviteeAuth);
+        } else if (target.kind() == EventKind.ROUND_ROBIN) {
+            response = holdRoundRobinBooking(target, request, inviteeAuth);
+        } else if (target.kind() == EventKind.COLLECTIVE) {
+            response = holdCollectiveBooking(target, request, inviteeAuth);
+        } else {
+            response = holdOneOnOneBooking(target, request, inviteeAuth);
         }
-        if (target.kind() == EventKind.ROUND_ROBIN) {
-            return holdRoundRobinBooking(target, request);
+
+        // Step 4: persist answers in the same transaction (booking just created in step 3)
+        if (!answerSnapshots.isEmpty() && response.bookingId() != null && embedBookingSupport != null) {
+            embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
-        if (target.kind() == EventKind.COLLECTIVE) {
-            return holdCollectiveBooking(target, request);
-        }
-        return holdOneOnOneBooking(target, request);
+
+        return response;
     }
 
     private void requirePublished(UUID eventTypeId) {
@@ -274,20 +369,48 @@ public class PublicBookingService {
         }
     }
 
+    /**
+     * Rejects a new booking on a premium event type whose owner is not currently entitled.
+     * Reuses the neutral {@code EVENT_TYPE_NOT_PUBLISHED} response so a public visitor sees the
+     * same "not accepting bookings" message regardless of why (no billing/subscription leak,
+     * Principle 9). One-to-One is always allowed and is skipped.
+     */
+    private void requireOwnerEntitledForBooking(PublicBookingTargetResolver.ResolvedTarget target) {
+        var requiredFeature = io.bunnycal.availability.service.EventKindEntitlements.requiredFeature(target.kind());
+        if (requiredFeature != null
+                && !entitlementService.resolve(target.userId()).has(requiredFeature)) {
+            throw new CustomException(ErrorCode.EVENT_TYPE_NOT_PUBLISHED);
+        }
+    }
+
     private PublicHoldResponse holdOneOnOneBooking(PublicBookingTargetResolver.ResolvedTarget target,
-                                                   PublicBookRequest request) {
+                                                   PublicBookRequest request,
+                                                   InviteeAuthContext inviteeAuth) {
         Instant start = request.startTime();
         Instant end = start.plus(target.duration());
 
-        var booking = bookingService.createHeldBooking(
-                target.userId(),
-                target.eventTypeId(),
-                start,
-                end,
-                target.holdDuration(),
-                normalizeGuestEmail(request.guestEmail()),
-                normalizeGuestName(request.guestName())
-        );
+        String guestNotes = normalizeNotes(request.notes());
+        var booking = guestNotes == null && inviteeAuth.provider() == null && inviteeAuth.providerUserId() == null
+                ? bookingService.createHeldBooking(
+                        target.userId(),
+                        target.eventTypeId(),
+                        start,
+                        end,
+                        target.holdDuration(),
+                        normalizeGuestEmail(request.guestEmail()),
+                        normalizeGuestName(request.guestName()))
+                : bookingService.createHeldBooking(
+                        target.userId(),
+                        target.eventTypeId(),
+                        start,
+                        end,
+                        target.holdDuration(),
+                        normalizeGuestEmail(request.guestEmail()),
+                        normalizeGuestName(request.guestName()),
+                        guestNotes,
+                        inviteeAuth.provider(),
+                        inviteeAuth.providerUserId()
+                );
         log.info("booking_hold_created bookingId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={} guestNamePresent={}",
                 booking.getId(),
                 target.userId(),
@@ -308,7 +431,8 @@ public class PublicBookingService {
     }
 
     private PublicHoldResponse holdRoundRobinBooking(PublicBookingTargetResolver.ResolvedTarget target,
-                                                     PublicBookRequest request) {
+                                                     PublicBookRequest request,
+                                                     InviteeAuthContext inviteeAuth) {
         if (request.slotToken() == null || request.slotToken().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotToken is required for round robin booking.");
         }
@@ -324,15 +448,28 @@ public class PublicBookingService {
         }
 
         EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        String guestNotes = normalizeNotes(request.notes());
         RoundRobinAssignmentService.AssignedRoundRobinBooking assigned =
-                roundRobinAssignmentService.assignAndCreateHeldBooking(
-                        eventType,
-                        start,
-                        end,
-                        token.candidateParticipantIds(),
-                        target.holdDuration(),
-                        normalizeGuestEmail(request.guestEmail()),
-                        normalizeGuestName(request.guestName()));
+                guestNotes == null && inviteeAuth.provider() == null && inviteeAuth.providerUserId() == null
+                        ? roundRobinAssignmentService.assignAndCreateHeldBooking(
+                                eventType,
+                                start,
+                                end,
+                                token.candidateParticipantIds(),
+                                target.holdDuration(),
+                                normalizeGuestEmail(request.guestEmail()),
+                                normalizeGuestName(request.guestName()))
+                        : roundRobinAssignmentService.assignAndCreateHeldBooking(
+                                eventType,
+                                start,
+                                end,
+                                token.candidateParticipantIds(),
+                                target.holdDuration(),
+                                normalizeGuestEmail(request.guestEmail()),
+                                normalizeGuestName(request.guestName()),
+                                guestNotes,
+                                inviteeAuth.provider(),
+                                inviteeAuth.providerUserId());
 
         var state = bookingRepository.findStateByIdAndEventTypeId(assigned.booking().getId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
@@ -345,7 +482,8 @@ public class PublicBookingService {
     }
 
     private PublicHoldResponse holdCollectiveBooking(PublicBookingTargetResolver.ResolvedTarget target,
-                                                     PublicBookRequest request) {
+                                                     PublicBookRequest request,
+                                                     InviteeAuthContext inviteeAuth) {
         if (request.slotToken() == null || request.slotToken().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotToken is required for collective booking.");
         }
@@ -377,7 +515,10 @@ public class PublicBookingService {
                         currentParticipantIds,
                         target.holdDuration(),
                         normalizeGuestEmail(request.guestEmail()),
-                        normalizeGuestName(request.guestName()));
+                        normalizeGuestName(request.guestName()),
+                        normalizeNotes(request.notes()),
+                        inviteeAuth.provider(),
+                        inviteeAuth.providerUserId());
 
         var state = bookingRepository.findStateByIdAndEventTypeId(result.booking().getId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
@@ -394,7 +535,8 @@ public class PublicBookingService {
     }
 
     private PublicHoldResponse holdGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
-                                                     PublicBookRequest request) {
+                                                     PublicBookRequest request,
+                                                     InviteeAuthContext inviteeAuth) {
         Instant start = request.startTime();
         Instant end = start.plus(target.duration());
 
@@ -406,6 +548,9 @@ public class PublicBookingService {
                 target.capacity(),
                 normalizeGuestEmail(request.guestEmail()),
                 normalizeGuestName(request.guestName()),
+                normalizeNotes(request.notes()),
+                inviteeAuth.provider(),
+                inviteeAuth.providerUserId(),
                 target.holdDuration()
         );
         log.info("group_registration_held registrationId={} sessionId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={}",
@@ -607,6 +752,10 @@ public class PublicBookingService {
                 : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
                         provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
                         conferenceUrl, null, null, null, "projection");
+        var questionnaireResponses = bookingSubmissionFormatter.toResponses(
+                bookingQuestionAnswerRepository == null
+                        ? List.of()
+                        : bookingQuestionAnswerRepository.findByBookingIdAndHostId(bookingId, booking.getHostId()));
         return new PublicManageBookingResponse(
                 row.getBookingId(),
                 eventTitle,
@@ -615,9 +764,11 @@ public class PublicBookingService {
                 row.getEndTime(),
                 assignedHost.getName(),
                 assignedHost.getUsername(),
-                assignedHost.getProfileImageUrl(),
+                profileAvatarService.resolveProfileImageUrl(assignedHost),
                 row.getGuestName(),
                 row.getGuestEmail(),
+                booking.getGuestNotes(),
+                questionnaireResponses,
                 conferenceDetails,
                 row.getBookingStatus(),
                 row.getExternalLifecycleState(),
@@ -749,6 +900,26 @@ public class PublicBookingService {
         if (value == null) return null;
         String v = value.trim();
         return v.isEmpty() ? null : v;
+    }
+
+    private static String normalizeNotes(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        return v.isEmpty() ? null : v;
+    }
+
+    private InviteeAuthContext resolveInviteeAuthContext(UUID authenticatedInviteeId) {
+        if (authenticatedInviteeId == null || authIdentityRepository == null) {
+            return InviteeAuthContext.NONE;
+        }
+        return authIdentityRepository.findByUserIdOrderByCreatedAtDesc(authenticatedInviteeId).stream()
+                .findFirst()
+                .map(identity -> new InviteeAuthContext(identity.getProvider(), identity.getProviderUserId()))
+                .orElse(InviteeAuthContext.NONE);
+    }
+
+    private record InviteeAuthContext(AuthProvider provider, String providerUserId) {
+        private static final InviteeAuthContext NONE = new InviteeAuthContext(null, null);
     }
 
     private String resolveBookingHostTimezone(Booking booking) {

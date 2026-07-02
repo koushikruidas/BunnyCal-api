@@ -72,8 +72,10 @@ class PublicBookingServiceTest {
     @Mock io.bunnycal.availability.service.ParticipantEligibilityService participantEligibilityService;
     @Mock io.bunnycal.booking.repository.BookingAssignmentRepository bookingAssignmentRepository;
     @Mock io.bunnycal.auth.repository.UserRepository userRepository;
+    @Mock io.bunnycal.auth.avatar.ProfileAvatarService profileAvatarService;
     @Mock io.bunnycal.availability.repository.EventTypeParticipantRepository eventTypeParticipantRepository;
     @Mock BookingEventTypeResolver bookingEventTypeResolver;
+    @Mock io.bunnycal.billing.entitlement.EntitlementService entitlementService;
 
     private PublicBookingService service;
     private TimeConversionService timeConversionService;
@@ -107,12 +109,19 @@ class PublicBookingServiceTest {
                 participantEligibilityService,
                 bookingAssignmentRepository,
                 userRepository,
+                profileAvatarService,
                 eventTypeParticipantRepository,
                 bookingEventTypeResolver,
+                entitlementService,
                 new SimpleMeterRegistry(),
                 14L,
                 120L
         );
+        // Default: booking owner is entitled (PROFESSIONAL) so the entitlement gate on the hold
+        // path is a pass-through for premium kinds. Tests asserting the un-entitled path override.
+        Mockito.lenient().when(entitlementService.resolve(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(io.bunnycal.billing.entitlement.PlanCatalog.forTier(
+                        io.bunnycal.billing.entitlement.PlanTier.PROFESSIONAL));
         Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),

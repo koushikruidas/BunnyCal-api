@@ -1,0 +1,157 @@
+package io.bunnycal.billing.controller;
+
+import io.bunnycal.admin.audit.AdminAuditService;
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.billing.domain.Coupon;
+import io.bunnycal.billing.domain.DiscountDuration;
+import io.bunnycal.billing.domain.DiscountType;
+import io.bunnycal.billing.domain.ManualDiscount;
+import io.bunnycal.billing.domain.PromoCode;
+import io.bunnycal.billing.domain.Refund;
+import io.bunnycal.billing.domain.RefundReasonCode;
+import io.bunnycal.billing.repository.CouponRepository;
+import io.bunnycal.billing.repository.PromoCodeRepository;
+import io.bunnycal.billing.service.PromotionService;
+import io.bunnycal.billing.service.RefundService;
+import io.bunnycal.common.api.ApiResponse;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
+import java.util.UUID;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * Administrative billing endpoints: create coupons / promo codes and grant manual
+ * discounts. The security spec forbids the customer frontend from issuing these, so they
+ * live behind {@code /api/admin/billing}. Authorization is enforced two ways: the
+ * {@code /api/admin/**} URL rule in SecurityConfig and the class-level {@code @PreAuthorize}
+ * below (FINANCE owns billing). The {@code billing.admin.enabled} flag remains as a kill switch.
+ */
+@RestController
+@RequestMapping("/api/admin/billing")
+@ConditionalOnProperty(name = "billing.admin.enabled", havingValue = "true")
+@PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN', 'FINANCE')")
+public class AdminBillingController {
+
+    private final CouponRepository couponRepository;
+    private final PromoCodeRepository promoCodeRepository;
+    private final PromotionService promotionService;
+    private final RefundService refundService;
+    private final AdminAuditService adminAuditService;
+    private final UserRepository userRepository;
+
+    public AdminBillingController(CouponRepository couponRepository,
+                                 PromoCodeRepository promoCodeRepository,
+                                 PromotionService promotionService,
+                                 RefundService refundService,
+                                 AdminAuditService adminAuditService,
+                                 UserRepository userRepository) {
+        this.couponRepository = couponRepository;
+        this.promoCodeRepository = promoCodeRepository;
+        this.promotionService = promotionService;
+        this.refundService = refundService;
+        this.adminAuditService = adminAuditService;
+        this.userRepository = userRepository;
+    }
+
+    @PostMapping("/coupons")
+    public ResponseEntity<ApiResponse<Coupon>> createCoupon(Authentication auth, @RequestBody CreateCouponRequest req) {
+        UUID adminId = requireAuth(auth);
+        Coupon coupon = couponRepository.save(Coupon.builder()
+                .name(req.name())
+                .type(req.type())
+                .percentOff(req.percentOff())
+                .amountOffMinor(req.amountOffMinor())
+                .currency(req.currency())
+                .duration(req.duration() == null ? DiscountDuration.ONCE : req.duration())
+                .durationMonths(req.durationMonths())
+                .providerCouponId(req.providerCouponId())
+                .maxRedemptions(req.maxRedemptions())
+                .validUntil(req.validUntil())
+                .restrictedPlanIds(req.restrictedPlanIds())
+                .active(true)
+                .build());
+        audit(adminId, "COUPON_CREATE", "COUPON", coupon.getId(), null, null, coupon);
+        return ResponseEntity.ok(ApiResponse.success(coupon));
+    }
+
+    @PostMapping("/promo-codes")
+    public ResponseEntity<ApiResponse<PromoCode>> createPromoCode(Authentication auth, @RequestBody CreatePromoCodeRequest req) {
+        UUID adminId = requireAuth(auth);
+        if (couponRepository.findById(req.couponId()).isEmpty()) {
+            throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Coupon not found.");
+        }
+        PromoCode promo = promoCodeRepository.save(PromoCode.builder()
+                .code(PromotionService.normalize(req.code()))
+                .couponId(req.couponId())
+                .maxRedemptions(req.maxRedemptions())
+                .validUntil(req.validUntil())
+                .active(true)
+                .build());
+        audit(adminId, "PROMO_CODE_CREATE", "PROMO_CODE", promo.getId(), null, null, promo);
+        return ResponseEntity.ok(ApiResponse.success(promo));
+    }
+
+    @PostMapping("/manual-discounts")
+    public ResponseEntity<ApiResponse<ManualDiscount>> grantManualDiscount(
+            Authentication auth, @RequestBody GrantManualDiscountRequest req) {
+        UUID adminId = requireAuth(auth);
+        ManualDiscount discount = promotionService.grantManualDiscount(
+                req.subscriptionId(), req.type(), req.percentOff(), req.amountOffMinor(),
+                req.currency(), req.duration(), req.durationMonths(), req.reason(), adminId);
+        audit(adminId, "MANUAL_DISCOUNT_GRANT", "MANUAL_DISCOUNT", discount.getId(), req.reason(), null, discount);
+        return ResponseEntity.ok(ApiResponse.success(discount));
+    }
+
+    @PostMapping("/refunds")
+    public ResponseEntity<ApiResponse<Refund>> issueRefund(Authentication auth, @RequestBody RefundRequest req) {
+        UUID adminId = requireAuth(auth);
+        Refund refund = refundService.issueRefund(
+                req.invoiceId(), req.amountMinor(), req.reasonCode(), req.note(), adminId);
+        audit(adminId, "REFUND_ISSUE", "REFUND", refund.getId(), req.note(), null, refund);
+        return ResponseEntity.ok(ApiResponse.success(refund));
+    }
+
+    private UUID requireAuth(Authentication auth) {
+        if (auth == null || auth.getPrincipal() == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+        try {
+            return UUID.fromString(auth.getPrincipal().toString());
+        } catch (IllegalArgumentException e) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+    }
+
+    public record CreateCouponRequest(
+            String name, DiscountType type, Integer percentOff, Long amountOffMinor, String currency,
+            DiscountDuration duration, Integer durationMonths, String providerCouponId,
+            Integer maxRedemptions, java.time.Instant validUntil, String restrictedPlanIds) {
+    }
+
+    public record CreatePromoCodeRequest(
+            String code, UUID couponId, Integer maxRedemptions, java.time.Instant validUntil) {
+    }
+
+    public record GrantManualDiscountRequest(
+            UUID subscriptionId, DiscountType type, Integer percentOff, Long amountOffMinor, String currency,
+            DiscountDuration duration, Integer durationMonths, String reason) {
+    }
+
+    /** amountMinor null = full refund of the remaining balance. */
+    public record RefundRequest(UUID invoiceId, Long amountMinor, RefundReasonCode reasonCode, String note) {
+    }
+
+    private void audit(UUID adminId, String action, String targetType, UUID targetId,
+                       String reason, Object before, Object after) {
+        String email = userRepository.findById(adminId).map(User::getEmail).orElse(null);
+        adminAuditService.record(adminId, email, action, targetType, targetId, reason, before, after);
+    }
+}

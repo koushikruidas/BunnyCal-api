@@ -1,10 +1,12 @@
 package io.bunnycal.calendar.client;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
+import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -17,10 +19,12 @@ import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
+import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
 import java.util.Locale;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
@@ -40,6 +44,29 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     private final CalendarConnectionCalendarRepository calendarRepository;
     private final MicrosoftCalendarProvider microsoftCalendarProvider;
     private final BookingOwnershipRepository bookingOwnershipRepository;
+    private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
+    private final BookingSubmissionFormatter bookingSubmissionFormatter;
+
+    @Autowired
+    public MicrosoftCalendarProviderClient(BookingRepository bookingRepository,
+                                           EventTypeRepository eventTypeRepository,
+                                           UserRepository userRepository,
+                                           CalendarConnectionRepository connectionRepository,
+                                           CalendarConnectionCalendarRepository calendarRepository,
+                                           MicrosoftCalendarProvider microsoftCalendarProvider,
+                                           BookingOwnershipRepository bookingOwnershipRepository,
+                                           BookingQuestionAnswerRepository bookingQuestionAnswerRepository,
+                                           BookingSubmissionFormatter bookingSubmissionFormatter) {
+        this.bookingRepository = bookingRepository;
+        this.eventTypeRepository = eventTypeRepository;
+        this.userRepository = userRepository;
+        this.connectionRepository = connectionRepository;
+        this.calendarRepository = calendarRepository;
+        this.microsoftCalendarProvider = microsoftCalendarProvider;
+        this.bookingOwnershipRepository = bookingOwnershipRepository;
+        this.bookingQuestionAnswerRepository = bookingQuestionAnswerRepository;
+        this.bookingSubmissionFormatter = bookingSubmissionFormatter;
+    }
 
     public MicrosoftCalendarProviderClient(BookingRepository bookingRepository,
                                            EventTypeRepository eventTypeRepository,
@@ -48,13 +75,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                                            CalendarConnectionCalendarRepository calendarRepository,
                                            MicrosoftCalendarProvider microsoftCalendarProvider,
                                            BookingOwnershipRepository bookingOwnershipRepository) {
-        this.bookingRepository = bookingRepository;
-        this.eventTypeRepository = eventTypeRepository;
-        this.userRepository = userRepository;
-        this.connectionRepository = connectionRepository;
-        this.calendarRepository = calendarRepository;
-        this.microsoftCalendarProvider = microsoftCalendarProvider;
-        this.bookingOwnershipRepository = bookingOwnershipRepository;
+        this(bookingRepository, eventTypeRepository, userRepository, connectionRepository, calendarRepository,
+                microsoftCalendarProvider, bookingOwnershipRepository, null, new BookingSubmissionFormatter(new ObjectMapper()));
     }
 
     @Override
@@ -71,7 +93,7 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         String title = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
                 : "Scheduled Meeting";
-        String description = "bookingId=" + booking.getId();
+        String description = buildBookingDescription(booking);
         var response = microsoftCalendarProvider.createEvent(new CreateEventRequest(
                 connection.getId(),
                 title,
@@ -103,7 +125,7 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
         String title = eventType != null && eventType.getName() != null && !eventType.getName().isBlank()
                 ? eventType.getName()
                 : "Scheduled Meeting";
-        String description = "bookingId=" + booking.getId();
+        String description = buildBookingDescription(booking);
         String updated = microsoftCalendarProvider.updateEvent(new UpdateEventRequest(
                 connection.getId(),
                 externalEventId,
@@ -185,6 +207,15 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
             throw new CalendarClientException(400, "projection calendar ownership is missing");
         }
         return calendarId.trim();
+    }
+
+    private String buildBookingDescription(Booking booking) {
+        return bookingSubmissionFormatter.buildBookingDescription(
+                booking,
+                bookingSubmissionFormatter.toResponses(
+                        bookingQuestionAnswerRepository == null
+                                ? java.util.List.of()
+                                : bookingQuestionAnswerRepository.findByBookingIdAndHostId(booking.getId(), booking.getHostId())));
     }
 
     private static String normalizeAttendeeEmail(String email) {

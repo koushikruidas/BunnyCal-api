@@ -60,8 +60,11 @@ public class HttpZoomApiClient implements ZoomApiClient {
                     .retrieve()
                     .toEntity(Map.class);
             String accessToken = (String) response.getBody().get("access_token");
+            // Zoom rotates the refresh token on every refresh; the previous one is
+            // invalidated, so the caller must persist this replacement.
+            String rotatedRefreshToken = (String) response.getBody().get("refresh_token");
             Number expiresIn = (Number) response.getBody().getOrDefault("expires_in", 3600);
-            return new TokenRefreshResult(accessToken, Instant.now().plusSeconds(expiresIn.longValue()));
+            return new TokenRefreshResult(accessToken, rotatedRefreshToken, Instant.now().plusSeconds(expiresIn.longValue()));
         } catch (RestClientException ex) {
             throw classify(ex);
         }

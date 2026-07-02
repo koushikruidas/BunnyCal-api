@@ -11,6 +11,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import java.time.Instant;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -47,8 +48,14 @@ public class User extends BaseEntity {
     @Column(name = "profile_image_url", length = 1024)
     private String profileImageUrl;
 
+    @Column(name = "avatar_version")
+    private Long avatarVersion;
+
     @Column(nullable = false, length = 50)
     private String timezone;
+
+    @Column(name = "deletion_requested_at")
+    private Instant deletionRequestedAt;
 
     @Builder.Default
     @Enumerated(EnumType.STRING)

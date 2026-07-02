@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import io.bunnycal.admin.security.AdminRoleService;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.bunnycal.auth.service.IdentityLinkingService;
@@ -39,12 +40,15 @@ class OAuth2AuthenticationSuccessHandlerTest {
     private JwtTokenProvider jwtTokenProvider;
     @Mock
     private RefreshTokenService refreshTokenService;
+    @Mock
+    private AdminRoleService adminRoleService;
 
     private OAuth2AuthenticationSuccessHandler handler;
 
     @BeforeEach
     void setUp() throws Exception {
-        handler = new OAuth2AuthenticationSuccessHandler(identityLinkingService, jwtTokenProvider, refreshTokenService);
+        handler = new OAuth2AuthenticationSuccessHandler(
+                identityLinkingService, jwtTokenProvider, refreshTokenService, adminRoleService);
         setField(handler, "refreshTokenTtlDays", 7);
         setField(handler, "accessTokenExpirationMs", 3600000L);
         setField(handler, "frontendBaseUrl", "http://localhost:5173");
@@ -68,7 +72,9 @@ class OAuth2AuthenticationSuccessHandlerTest {
         when(identityLinkingService.resolveOrCreateUser(
                 eq(AuthProvider.MICROSOFT), eq("ms-oid-123"), eq("test.user@contoso.com"), eq("Test User"), eq(null)))
                 .thenReturn(user);
-        when(jwtTokenProvider.generateAccessToken(userId, "test.user@contoso.com")).thenReturn("access-token");
+        when(adminRoleService.activeRolesForUser(userId)).thenReturn(List.of());
+        when(jwtTokenProvider.generateAccessToken(eq(userId), eq("test.user@contoso.com"), any()))
+                .thenReturn("access-token");
         when(refreshTokenService.createRefreshToken(userId)).thenReturn("refresh-token");
 
         MockHttpServletResponse response = new MockHttpServletResponse();

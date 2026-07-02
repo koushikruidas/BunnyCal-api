@@ -9,6 +9,7 @@ import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.CollectiveParticipantHoldRepository;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.exception.CustomException;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -91,6 +92,32 @@ public class CollectiveAssignmentService {
                                                       Duration holdDuration,
                                                       String guestEmail,
                                                       String guestName) {
+        return createHeldBooking(
+                eventType,
+                ownerUserId,
+                start,
+                end,
+                participantIds,
+                holdDuration,
+                guestEmail,
+                guestName,
+                null,
+                null,
+                null);
+    }
+
+    @Transactional
+    public CreatedCollectiveBooking createHeldBooking(EventType eventType,
+                                                      UUID ownerUserId,
+                                                      Instant start,
+                                                      Instant end,
+                                                      List<UUID> participantIds,
+                                                      Duration holdDuration,
+                                                      String guestEmail,
+                                                      String guestName,
+                                                      String guestNotes,
+                                                      AuthProvider inviteeAuthProvider,
+                                                      String inviteeProviderUserId) {
         // 1. Re-check every participant: rules + calendar + writeback.
         for (UUID participantId : participantIds) {
             var eligibility = eligibilityService.checkForRoundRobin(participantId);
@@ -117,8 +144,26 @@ public class CollectiveAssignmentService {
         // 2. Create the booking row (owner is host_id).
         Booking booking;
         try {
-            booking = bookingService.createHeldBooking(
-                    ownerUserId, eventType.getId(), start, end, holdDuration, guestEmail, guestName);
+            booking = guestNotes == null && inviteeAuthProvider == null && inviteeProviderUserId == null
+                    ? bookingService.createHeldBooking(
+                            ownerUserId,
+                            eventType.getId(),
+                            start,
+                            end,
+                            holdDuration,
+                            guestEmail,
+                            guestName)
+                    : bookingService.createHeldBooking(
+                            ownerUserId,
+                            eventType.getId(),
+                            start,
+                            end,
+                            holdDuration,
+                            guestEmail,
+                            guestName,
+                            guestNotes,
+                            inviteeAuthProvider,
+                            inviteeProviderUserId);
         } catch (CustomException ex) {
             // Propagate SLOT_ALREADY_BOOKED / TOO_MANY_PENDING_BOOKINGS as SLOT_UNAVAILABLE.
             if (ex.getErrorCode() == ErrorCode.SLOT_ALREADY_BOOKED

@@ -1,5 +1,9 @@
 package io.bunnycal.auth.controller;
 
+import io.bunnycal.admin.security.AdminRole;
+import io.bunnycal.admin.security.AdminRoleService;
+import io.bunnycal.auth.account.AccountAccessGuard;
+import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.domain.identity.AuthIdentity;
 import io.bunnycal.auth.domain.token.RefreshToken;
 import io.bunnycal.auth.domain.user.User;
@@ -40,6 +44,9 @@ public class AuthController {
     private final JwtTokenProvider jwtTokenProvider;
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
+    private final AccountAccessGuard accountAccessGuard;
+    private final ProfileAvatarService profileAvatarService;
+    private final AdminRoleService adminRoleService;
 
     @Value("${google.oauth.client-id:}")
     private String googleClientId;
@@ -52,13 +59,16 @@ public class AuthController {
         RefreshToken refreshToken = refreshTokenService.validateRefreshToken(request.getRefreshToken());
         User user = refreshToken.getUser();
 
-        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail());
+        List<String> roleNames = adminRoleService.activeRolesForUser(user.getId()).stream()
+                .map(AdminRole::name)
+                .toList();
+        String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getEmail(), roleNames);
         String rotatedRefreshToken = refreshTokenService.rotateRefreshToken(refreshToken);
 
         AuthResponse response = AuthResponse.builder()
                 .accessToken(accessToken)
                 .refreshToken(rotatedRefreshToken)
-                .user(UserDto.from(user))
+                .user(UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user)))
                 .build();
 
         return ApiResponse.success(response);
@@ -92,6 +102,7 @@ public class AuthController {
                     log.warn("session_user_not_found userId={} endpoint=GET:/auth/session reason=user_not_found", authenticatedUserId);
                     return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
                 });
+        accountAccessGuard.requireAccessible(user, authenticatedUserId, "GET:/auth/session");
         List<AuthIdentity> identities = authIdentityRepository.findByUserIdOrderByCreatedAtDesc(authenticatedUserId);
         String activeProvider = identities.stream()
                 .max(Comparator.comparing(AuthIdentity::getCreatedAt))
@@ -112,7 +123,7 @@ public class AuthController {
         // and activeProvider is null when the user has no auth identities.
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("authenticated", true);
-        payload.put("user", UserDto.from(user));
+        payload.put("user", UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user)));
         payload.put("activeIdentityProvider", activeProvider);
         payload.put("linkedIdentities", linkedIdentities);
         return ApiResponse.success(payload);

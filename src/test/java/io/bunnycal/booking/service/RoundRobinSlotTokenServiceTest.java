@@ -42,7 +42,9 @@ class RoundRobinSlotTokenServiceTest {
                 Instant.parse("2026-06-15T09:30:00Z"),
                 List.of(UUID.randomUUID()));
 
-        String tampered = token.substring(0, token.length() - 1) + (token.endsWith("A") ? "B" : "A");
+        String[] parts = token.split("\\.", 2);
+        String tamperedPayload = (parts[0].startsWith("A") ? "B" : "A") + parts[0].substring(1);
+        String tampered = tamperedPayload + "." + parts[1];
 
         CustomException ex = assertThrows(CustomException.class, () -> service.verify(tampered));
         assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());

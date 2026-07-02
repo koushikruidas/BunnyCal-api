@@ -47,6 +47,7 @@ public class CalendarOAuthService {
     private final CalendarInventoryHydrator inventoryHydrator;
     private final ParticipantSetupRequestService setupRequestService;
     private final ParticipantEligibilityService eligibilityService;
+    private final CalendarConnectionLimitGuard connectionLimitGuard;
 
     public CalendarOAuthService(CalendarConnectionRepository repository,
                                 GoogleApiClient googleApiClient,
@@ -61,7 +62,8 @@ public class CalendarOAuthService {
                                 CalendarWebhookProperties webhookProperties,
                                 CalendarInventoryHydrator inventoryHydrator,
                                 ParticipantSetupRequestService setupRequestService,
-                                ParticipantEligibilityService eligibilityService) {
+                                ParticipantEligibilityService eligibilityService,
+                                CalendarConnectionLimitGuard connectionLimitGuard) {
         this.repository = repository;
         this.googleApiClient = googleApiClient;
         this.properties = properties;
@@ -76,6 +78,7 @@ public class CalendarOAuthService {
         this.inventoryHydrator = inventoryHydrator;
         this.setupRequestService = setupRequestService;
         this.eligibilityService = eligibilityService;
+        this.connectionLimitGuard = connectionLimitGuard;
     }
 
     public String buildGoogleConnectUrl(UUID userId) {
@@ -111,6 +114,9 @@ public class CalendarOAuthService {
                 stateRef, userId, payload.source(), payload.returnTo(), payload.bookingSessionId() != null);
         log.info("calendar_connection_lookup_by_user provider={} userId={}", GOOGLE_PROVIDER, userId);
         Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
+        // Enforce the per-plan connected-calendar limit before doing any provider work. Re-auth
+        // of an already-connected Google account (existing present) is always allowed.
+        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
         OAuthTokenExchangeResult token = googleApiClient.exchangeCodeForToken(
                 code,
                 properties.getRedirectUri(),

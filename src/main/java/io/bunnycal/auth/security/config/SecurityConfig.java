@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 @Configuration
+@EnableMethodSecurity
 @RequiredArgsConstructor
 @ConditionalOnProperty(
         name = "security.enabled",
@@ -35,25 +37,49 @@ public class SecurityConfig {
     private final OAuth2AuthorizationRequestResolver customResolver;
     @Value("${app.security.cors.allowed-origins:http://localhost:5173}")
     private String allowedOrigins;
+    @Value("${app.security.cors.admin-allowed-origins:http://localhost:5174}")
+    private String adminAllowedOrigins;
 
     @Bean
     public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
-        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
-
-        List<String> origins = Arrays.stream(allowedOrigins.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toList());
-        configuration.setAllowedOriginPatterns(origins);
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("*"));
-        configuration.setAllowCredentials(true);
-
         org.springframework.web.cors.UrlBasedCorsConfigurationSource source =
                 new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
 
+        // Public embed endpoints accept any origin (served into third-party iframes).
+        // No credentials — embed tokens are in the request body, not cookies.
+        org.springframework.web.cors.CorsConfiguration embedConfig = new org.springframework.web.cors.CorsConfiguration();
+        embedConfig.setAllowedOriginPatterns(List.of("*"));
+        embedConfig.setAllowedMethods(List.of("GET", "POST", "OPTIONS"));
+        embedConfig.setAllowedHeaders(List.of("*"));
+        embedConfig.setAllowCredentials(false);
+        source.registerCorsConfiguration("/public/embed/**", embedConfig);
+
+        // Admin API: only the admin origin (admin.bunnycal.io) may send credentialed requests.
+        // Registered before the /** rule so it takes precedence for /api/admin/**. Combined with
+        // the ROLE_* check, a customer-origin request can never reach admin endpoints.
+        org.springframework.web.cors.CorsConfiguration adminConfig = new org.springframework.web.cors.CorsConfiguration();
+        adminConfig.setAllowedOriginPatterns(parseOrigins(adminAllowedOrigins));
+        adminConfig.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        adminConfig.setAllowedHeaders(List.of("*"));
+        adminConfig.setAllowCredentials(true);
+        source.registerCorsConfiguration("/api/admin/**", adminConfig);
+
+        // All other paths: allow only configured origins with credentials (dashboard, booking page).
+        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
+        configuration.setAllowedOriginPatterns(parseOrigins(allowedOrigins));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowCredentials(true);
         source.registerCorsConfiguration("/**", configuration);
+
         return source;
+    }
+
+    private static List<String> parseOrigins(String csv) {
+        return Arrays.stream(csv.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
     }
 
     @Bean
@@ -106,8 +132,19 @@ public class SecurityConfig {
                         .requestMatchers("/integrations/calendar/*/callback").permitAll()
                         .requestMatchers("/integrations/conferencing/*/callback").permitAll()
                         .requestMatchers("/integrations/calendar/webhooks/**").permitAll()
+                        // Zoom marketplace webhooks (deauthorization) authenticate via
+                        // x-zm-signature HMAC, not JWT.
+                        .requestMatchers("/integrations/conferencing/zoom/webhooks").permitAll()
                         .requestMatchers("/integrations/calendar/**").authenticated()
                         .requestMatchers("/integrations/conferencing/**").authenticated()
+                        // Customer-facing announcement banner. Optional JWT may still populate
+                        // Authentication so the service can resolve FREE vs PAID audience.
+                        .requestMatchers("/api/announcements/active").permitAll()
+                        // Provider webhooks authenticate via signature, not JWT. Must precede /api/**.
+                        .requestMatchers("/api/billing/webhooks/**").permitAll()
+                        // Admin API requires an admin role. Must precede the generic /api/** rule.
+                        .requestMatchers("/api/admin/**")
+                            .hasAnyRole("ADMIN", "SUPER_ADMIN", "SUPPORT", "FINANCE", "OPERATIONS")
                         .requestMatchers("/api/**").authenticated()
                         .anyRequest().permitAll()
                 )

@@ -186,6 +186,7 @@ public class SessionQueryService {
                 row.getHostId(),
                 row.getGuestEmail(),
                 row.getGuestName(),
+                row.getGuestNotes(),
                 row.getStatus(),
                 row.getExpiresAt(),
                 row.getCreatedAt(),

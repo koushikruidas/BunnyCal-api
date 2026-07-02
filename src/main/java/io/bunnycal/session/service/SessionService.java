@@ -11,6 +11,7 @@ import io.bunnycal.booking.service.BookingActionType;
 import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
 import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.exception.RegistrationHoldActiveException;
 import io.bunnycal.common.time.TimeSource;
@@ -76,6 +77,21 @@ public class SessionService {
                                          String guestEmail,
                                          String guestName,
                                          Duration holdDuration) {
+        return joinSession(hostId, eventTypeId, startTime, endTime, capacity, guestEmail, guestName, null, null, null, holdDuration);
+    }
+
+    @Transactional
+    public JoinSessionResult joinSession(UUID hostId,
+                                         UUID eventTypeId,
+                                         Instant startTime,
+                                         Instant endTime,
+                                         int capacity,
+                                         String guestEmail,
+                                         String guestName,
+                                         String guestNotes,
+                                         AuthProvider inviteeAuthProvider,
+                                         String inviteeProviderUserId,
+                                         Duration holdDuration) {
         // 1. Acquire advisory lock for this (host, slot) pair — serializes all concurrent joins.
         sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(startTime.getEpochSecond()));
 
@@ -126,6 +142,9 @@ public class SessionService {
                     .hostId(hostId)
                     .guestEmail(guestEmail)
                     .guestName(guestName)
+                    .guestNotes(guestNotes)
+                    .inviteeAuthProvider(inviteeAuthProvider)
+                    .inviteeProviderUserId(inviteeProviderUserId)
                     .status(RegistrationStatus.PENDING)
                     .expiresAt(expiresAt)
                     .build());
@@ -219,12 +238,12 @@ public class SessionService {
                 new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CONFIRMED", 1,
                         new RegistrationConfirmedEvent(sessionId, registrationId, hostId,
                                 ctx.hostUsername(), ctx.eventName(), ctx.eventSlug(),
-                                reg.getGuestEmail(), reg.getGuestName(),
+                                reg.getGuestEmail(), reg.getGuestName(), reg.getGuestNotes(),
                                 session.getStartTime(), session.getEndTime(),
                                 (int) updatedSession.getCalendarSequence(),
                                 token,
                                 confirmedAttendees.stream()
-                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName()))
+                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName(), r.getGuestNotes()))
                                         .toList())));
 
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
@@ -286,7 +305,7 @@ public class SessionService {
                 new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CANCELLED", 1,
                         new RegistrationCancelledEvent(sessionId, registrationId, hostId,
                                 ctxCancel.hostUsername(), ctxCancel.eventName(), ctxCancel.eventSlug(),
-                                reg.getGuestEmail(), reg.getGuestName(), wasConfirmed,
+                                reg.getGuestEmail(), reg.getGuestName(), reg.getGuestNotes(), wasConfirmed,
                                 startTimeForCancel, endTimeForCancel, calSeqForCancel)));
 
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
@@ -338,7 +357,7 @@ public class SessionService {
                                 updatedSession.getStartTime(), updatedSession.getEndTime(),
                                 (int) updatedSession.getCalendarSequence(),
                                 activeRegs.stream()
-                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName()))
+                                        .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName(), r.getGuestNotes()))
                                         .toList())));
 
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
@@ -398,7 +417,7 @@ public class SessionService {
 
     record RegistrationConfirmedEvent(UUID sessionId, UUID registrationId, UUID hostId,
                                        String hostUsername, String eventName, String eventSlug,
-                                       String guestEmail, String guestName,
+                                       String guestEmail, String guestName, String guestNotes,
                                        Instant startTime, Instant endTime,
                                        int calendarSequence,
                                        String capabilityToken,
@@ -406,7 +425,7 @@ public class SessionService {
 
     record RegistrationCancelledEvent(UUID sessionId, UUID registrationId, UUID hostId,
                                        String hostUsername, String eventName, String eventSlug,
-                                       String guestEmail, String guestName,
+                                       String guestEmail, String guestName, String guestNotes,
                                        boolean wasConfirmed,
                                        Instant startTime, Instant endTime,
                                        int calendarSequence) {}
@@ -417,5 +436,5 @@ public class SessionService {
                                   int calendarSequence,
                                   List<AttendeeInfo> attendees) {}
 
-    public record AttendeeInfo(String email, String name) {}
+    public record AttendeeInfo(String email, String name, String notes) {}
 }

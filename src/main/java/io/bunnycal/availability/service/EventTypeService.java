@@ -10,11 +10,14 @@ import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.billing.entitlement.EntitlementService;
+import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.common.time.TimeSource;
 import java.time.Duration;
 import java.util.List;
@@ -33,6 +36,8 @@ public class EventTypeService {
     private final PublishReadinessService publishReadinessService;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
+    private final BookingExperienceRepository experienceRepository;
+    private final EntitlementService entitlementService;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
@@ -41,7 +46,9 @@ public class EventTypeService {
                             EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                             PublishReadinessService publishReadinessService,
                             OutboxPublisher outboxPublisher,
-                            TimeSource timeSource) {
+                            TimeSource timeSource,
+                            BookingExperienceRepository experienceRepository,
+                            EntitlementService entitlementService) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -50,7 +57,10 @@ public class EventTypeService {
         this.publishReadinessService = publishReadinessService;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
+        this.experienceRepository = experienceRepository;
+        this.entitlementService = entitlementService;
     }
+
 
     @Transactional
     public EventTypeSummaryResponse create(UUID userId, CreateEventTypeRequest request) {
@@ -66,6 +76,13 @@ public class EventTypeService {
                 : AvailabilityMode.ALL_CONNECTED;
 
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        // Premium event kinds (Group/Round Robin/Collective) require the matching plan feature;
+        // One-to-One is always allowed (Spec Ch2 §5). One-time gate at creation — kind is
+        // immutable thereafter. All authorization flows through EntitlementService.
+        Feature requiredFeature = EventKindEntitlements.requiredFeature(kind);
+        if (requiredFeature != null) {
+            entitlementService.require(userId, requiredFeature);
+        }
         int capacity = request.capacity() != null ? request.capacity() : 1;
         // COLLECTIVE events start unpublished — no participants or readiness evaluation has
         // occurred yet. All other kinds start published (single-host, always ready).
@@ -156,6 +173,12 @@ public class EventTypeService {
     @Transactional
     public void delete(UUID actingUserId, UUID eventTypeId) {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        // Block deletion while any non-deleted booking experience still references this event type.
+        // DRAFT and ARCHIVED experiences are included because either can be activated later,
+        // and ACTIVE experiences would break immediately on the public embed path.
+        if (experienceRepository.existsByEventTypeIdAndDeletedAtIsNull(eventTypeId)) {
+            throw new CustomException(ErrorCode.EVENT_TYPE_ATTACHED_TO_EXPERIENCE);
+        }
         eventType.setDeletedAt(timeSource.now());
         eventTypeRepository.save(eventType);
     }

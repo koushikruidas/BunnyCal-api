@@ -1,5 +1,7 @@
 package io.bunnycal.auth.security.filter;
 
+import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -8,13 +10,14 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
@@ -29,13 +32,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String ACCESS_TOKEN_COOKIE = "accessToken";
 
     private final JwtTokenProvider jwtTokenProvider;
+    private final UserRepository userRepository;
     private final boolean cookieFallbackEnabled;
 
     public JwtAuthenticationFilter(
             JwtTokenProvider jwtTokenProvider,
+            UserRepository userRepository,
             @Value("${auth.access-token.cookie-fallback-enabled:true}") boolean cookieFallbackEnabled
     ) {
         this.jwtTokenProvider = jwtTokenProvider;
+        this.userRepository = userRepository;
         this.cookieFallbackEnabled = cookieFallbackEnabled;
     }
 
@@ -116,12 +122,23 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         Claims claims = jwtTokenProvider.getClaims(token);
         UUID userId = jwtTokenProvider.getUserIdFromClaims(claims);
+        User user = userRepository.findByIdAndDeletionRequestedAtIsNull(userId).orElse(null);
+        if (user == null) {
+            log.info("jwt_filter_blocked_deleted_or_missing_user uri={} userId={}", request.getRequestURI(), userId);
+            return;
+        }
+
+        // Admin roles (if any) are carried as the "roles" claim. Map each to a ROLE_* authority
+        // so Spring URL/method security can gate /api/admin/**. Empty for normal customers.
+        List<GrantedAuthority> authorities = jwtTokenProvider.getRolesFromClaims(claims).stream()
+                .map(role -> (GrantedAuthority) new SimpleGrantedAuthority("ROLE_" + role))
+                .toList();
 
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(
                         userId,
                         null,
-                        Collections.emptyList() // replace later with roles if needed
+                        authorities
                 );
 
         authentication.setDetails(

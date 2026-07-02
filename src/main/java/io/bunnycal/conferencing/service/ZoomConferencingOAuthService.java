@@ -35,7 +35,7 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
                                         TokenCipher tokenCipher,
                                         @Value("${zoom.oauth.client-id:}") String clientId,
                                         @Value("${zoom.oauth.client-secret:}") String clientSecret,
-                                        @Value("${zoom.oauth.redirect-uri:http://localhost:8080/integrations/conferencing/zoom/callback}") String redirectUri) {
+                                        @Value("${zoom.oauth.redirect-uri:http://127.0.0.1:8080/integrations/conferencing/zoom/callback}") String redirectUri) {
         this.repository = repository;
         this.zoomApiClient = zoomApiClient;
         this.stateService = stateService;
@@ -117,8 +117,26 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
             zoomApiClient.revokeToken(refreshToken);
         } catch (RuntimeException ignored) {
         }
-        connection.setStatus(ConferencingConnectionStatus.REVOKED);
-        repository.save(connection);
+        // Data-deletion guarantee for Zoom marketplace compliance: no token
+        // material or provider identifiers are retained after disconnect.
+        repository.delete(connection);
+    }
+
+    /**
+     * Handles the Zoom {@code app_deauthorized} marketplace event: the user removed
+     * the app from their Zoom account, so Zoom has already invalidated the tokens.
+     * All stored connection data for that Zoom user must be deleted (Zoom requires
+     * deletion within 10 days of deauthorization).
+     */
+    @Transactional
+    public void handleDeauthorized(String providerUserId) {
+        if (providerUserId == null || providerUserId.isBlank()) {
+            return;
+        }
+        var connections = repository.findAllByProviderUserId(providerUserId);
+        if (!connections.isEmpty()) {
+            repository.deleteAll(connections);
+        }
     }
 
     private static String enc(String value) {

@@ -18,9 +18,11 @@ public class SyncAdminService {
 
     @Transactional(readOnly = true)
     public List<DeadLetterView> deadLetters(String provider, int limit) {
-        String effectiveProvider = provider == null || provider.isBlank() ? "google" : provider;
         int boundedLimit = Math.max(1, Math.min(limit, 500));
-        return repository.findDeadLetters(effectiveProvider, boundedLimit).stream()
+        var jobs = provider == null || provider.isBlank()
+                ? repository.findDeadLettersAll(boundedLimit)
+                : repository.findDeadLetters(provider.trim(), boundedLimit);
+        return jobs.stream()
                 .map(job -> new DeadLetterView(
                         job.getId(),
                         job.getProvider(),
@@ -50,4 +52,3 @@ public class SyncAdminService {
             String lastError,
             Instant updatedAt) {}
 }
-

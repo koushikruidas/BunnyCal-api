@@ -1,6 +1,7 @@
 package io.bunnycal.booking.dto;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 public record PublicManageBookingResponse(
@@ -14,6 +15,8 @@ public record PublicManageBookingResponse(
         String hostAvatarUrl,
         String attendeeName,
         String attendeeEmail,
+        String notes,
+        List<QuestionnaireResponse> questionnaireResponses,
         ConferenceDetailsResponse conferenceDetails,
         String status,
         String externalLifecycleState,

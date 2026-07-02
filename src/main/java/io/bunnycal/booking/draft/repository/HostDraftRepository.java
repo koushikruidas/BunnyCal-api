@@ -6,7 +6,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 public interface HostDraftRepository extends JpaRepository<HostDraft, UUID> {
     Optional<HostDraft> findByPublicSlugAndExpiresAtAfter(String publicSlug, Instant now);
@@ -15,4 +18,8 @@ public interface HostDraftRepository extends JpaRepository<HostDraft, UUID> {
     Optional<HostDraft> findByPublicSlugAndManagementTokenHash(String publicSlug, String managementTokenHash);
     Optional<HostDraft> findFirstByShadowUserIdOrderByCreatedAtDesc(UUID shadowUserId);
     List<HostDraft> findTop200ByStateAndExpiresAtBeforeOrderByExpiresAtAsc(DraftLifecycleState state, Instant now);
+
+    @Modifying
+    @Query("delete from HostDraft d where d.claimedUserId = :userId or d.shadowUserId = :userId")
+    void deleteByClaimedOrShadowUserId(@Param("userId") UUID userId);
 }

@@ -8,6 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -35,6 +36,10 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
 
     java.util.List<CalendarConnection> findByUserIdAndStatusNot(UUID userId, CalendarConnectionStatus status);
+
+    @Modifying
+    @Query("delete from CalendarConnection c where c.userId = :userId")
+    void deleteByUserId(@Param("userId") UUID userId);
 
     /**
      * F7: rows that are due to be swept. ACTIVE/SYNCING always; FAILED/ERROR only when
@@ -144,6 +149,21 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
               AND c.status = io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE
             """)
     long countActiveConnections(@Param("provider") CalendarProviderType provider);
+
+    /**
+     * Count of a user's currently-connected calendars across all providers, for the Free-plan
+     * "max connected calendars" limit (Spec Ch2 §9). A connection counts while it is live or
+     * mid-setup (ACTIVE or SYNCING); DISCONNECTED/REVOKED/FAILED/ERROR rows are not connected.
+     */
+    @Query("""
+            SELECT COUNT(c)
+            FROM CalendarConnection c
+            WHERE c.userId = :userId
+              AND c.status IN (
+                    io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE,
+                    io.bunnycal.calendar.domain.CalendarConnectionStatus.SYNCING)
+            """)
+    long countConnectedByUser(@Param("userId") UUID userId);
 
     /**
      * Phase 4 R1 fix: ACTIVE rows that either have no watch channel (initial creation
