@@ -219,17 +219,15 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
                 .slots()
                 .get(0);
-        String tampered = slot.bookingToken().substring(0, slot.bookingToken().length() - 1)
-                + (slot.bookingToken().endsWith("A") ? "B" : "A");
+        String[] tokenParts = slot.bookingToken().split("\\.", 2);
+        String tamperedPayload = (tokenParts[0].startsWith("A") ? "B" : "A") + tokenParts[0].substring(1);
+        String tampered = tamperedPayload + "." + tokenParts[1];
 
-        try {
-            publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
-                    new PublicBookRequest(slot.start(), "guest-j@test.com", "Guest J", tampered));
-        } catch (CustomException ex) {
-            assertThat(ex.getErrorCode()).isEqualTo(ErrorCode.VALIDATION_ERROR);
-            return;
-        }
-        throw new AssertionError("Expected invalid slot token to be rejected");
+        assertThatThrownBy(() -> publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
+                new PublicBookRequest(slot.start(), "guest-j@test.com", "Guest J", tampered)))
+                .isInstanceOf(CustomException.class)
+                .extracting(ex -> ((CustomException) ex).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
     }
 
     // ── Audit #1: Confirm-time eligibility revalidation ──────────────────────
