@@ -64,6 +64,10 @@ public class ZoomConferencingProvider implements ConferencingProvider {
         }
         String refreshToken = tokenCipher.decrypt(connection.getRefreshTokenCiphertext());
         ZoomApiClient.TokenRefreshResult refreshed = zoomApiClient.refreshAccessToken(refreshToken, clientId, clientSecret);
+        if (refreshed.refreshToken() != null && !refreshed.refreshToken().isBlank()
+                && !refreshed.refreshToken().equals(refreshToken)) {
+            connection.setRefreshTokenCiphertext(tokenCipher.encrypt(refreshed.refreshToken()));
+        }
         connection.setLastTokenExpiresAt(refreshed.expiresAt());
         connection.setStatus(ConferencingConnectionStatus.ACTIVE);
         repository.save(connection);

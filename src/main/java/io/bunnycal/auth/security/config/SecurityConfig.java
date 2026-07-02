@@ -132,6 +132,9 @@ public class SecurityConfig {
                         .requestMatchers("/integrations/calendar/*/callback").permitAll()
                         .requestMatchers("/integrations/conferencing/*/callback").permitAll()
                         .requestMatchers("/integrations/calendar/webhooks/**").permitAll()
+                        // Zoom marketplace webhooks (deauthorization) authenticate via
+                        // x-zm-signature HMAC, not JWT.
+                        .requestMatchers("/integrations/conferencing/zoom/webhooks").permitAll()
                         .requestMatchers("/integrations/calendar/**").authenticated()
                         .requestMatchers("/integrations/conferencing/**").authenticated()
                         // Customer-facing announcement banner. Optional JWT may still populate

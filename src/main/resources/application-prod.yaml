@@ -264,6 +264,7 @@ zoom:
     redirect-uri: ${ZOOM_REDIRECT_URI:https://api.bunnycal.io/integrations/conferencing/zoom/callback}
     frontend-success-redirect: ${ZOOM_FRONTEND_SUCCESS_REDIRECT:https://bunnycal.io/dashboard/integrations}
     frontend-error-redirect: ${ZOOM_FRONTEND_ERROR_REDIRECT:https://bunnycal.io/calendar-error}
+    webhook-secret-token: ${ZOOM_WEBHOOK_SECRET_TOKEN:}
 
 kind: Application
 
