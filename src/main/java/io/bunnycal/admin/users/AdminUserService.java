@@ -158,9 +158,23 @@ public class AdminUserService {
     }
 
     @Transactional
+    public AdminUserDetailDto grantTrial(UUID adminId, UUID userId, Integer days, String reason) {
+        requireUser(userId);
+        adminSubscriptionService.grantTrial(adminId, userId, days, reason);
+        return detail(userId);
+    }
+
+    @Transactional
+    public AdminUserDetailDto setFree(UUID adminId, UUID userId, String reason) {
+        requireUser(userId);
+        adminSubscriptionService.setFree(adminId, userId, reason);
+        return detail(userId);
+    }
+
+    @Transactional
     public AdminUserDetailDto removePro(UUID adminId, UUID userId, String reason) {
         requireUser(userId);
-        adminSubscriptionService.removePro(adminId, userId, reason);
+        adminSubscriptionService.setFree(adminId, userId, reason);
         return detail(userId);
     }
 

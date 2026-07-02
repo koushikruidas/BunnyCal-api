@@ -62,6 +62,19 @@ public class AdminUserController {
         return ApiResponse.success(service.grantPro(adminId(auth), id, reason(req)));
     }
 
+    @PostMapping("/{id}/grant-trial")
+    public ApiResponse<AdminUserDetailDto> grantTrial(Authentication auth, @PathVariable UUID id,
+                                                      @RequestBody(required = false) TrialRequest req) {
+        return ApiResponse.success(service.grantTrial(adminId(auth), id,
+                req == null ? null : req.days(), req == null ? null : req.reason()));
+    }
+
+    @PostMapping("/{id}/set-free")
+    public ApiResponse<AdminUserDetailDto> setFree(Authentication auth, @PathVariable UUID id,
+                                                   @RequestBody(required = false) ReasonRequest req) {
+        return ApiResponse.success(service.setFree(adminId(auth), id, reason(req)));
+    }
+
     @PostMapping("/{id}/remove-pro")
     public ApiResponse<AdminUserDetailDto> removePro(Authentication auth, @PathVariable UUID id,
                                                      @RequestBody(required = false) ReasonRequest req) {
@@ -90,5 +103,8 @@ public class AdminUserController {
     }
 
     public record ReasonRequest(String reason) {
+    }
+
+    public record TrialRequest(Integer days, String reason) {
     }
 }

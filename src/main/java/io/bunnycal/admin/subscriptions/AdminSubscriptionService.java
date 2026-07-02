@@ -12,6 +12,7 @@ import io.bunnycal.billing.service.SubscriptionStateService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.payments.config.BillingProperties;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -41,19 +42,22 @@ public class AdminSubscriptionService {
     private final AdminAuditService auditService;
     private final UserRepository userRepository;
     private final TimeSource timeSource;
+    private final BillingProperties billingProperties;
 
     public AdminSubscriptionService(SubscriptionRepository subscriptionRepository,
                                     SubscriptionStateService stateService,
                                     PlanService planService,
                                     AdminAuditService auditService,
                                     UserRepository userRepository,
-                                    TimeSource timeSource) {
+                                    TimeSource timeSource,
+                                    BillingProperties billingProperties) {
         this.subscriptionRepository = subscriptionRepository;
         this.stateService = stateService;
         this.planService = planService;
         this.auditService = auditService;
         this.userRepository = userRepository;
         this.timeSource = timeSource;
+        this.billingProperties = billingProperties;
     }
 
     @Transactional(readOnly = true)
@@ -140,24 +144,79 @@ public class AdminSubscriptionService {
         return grant(adminId, userId, reason, false, "SUBSCRIPTION_GRANT_PRO");
     }
 
+    /** Puts the user into a fresh trial window, creating a live row if none exists. */
+    @Transactional
+    public AdminSubscriptionDto grantTrial(UUID adminId, UUID userId, Integer days, String reason) {
+        int trialDays = days == null ? defaultTrialDays() : days;
+        if (trialDays <= 0) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "days must be > 0.");
+        }
+
+        Subscription sub = subscriptionRepository.findLiveByUserId(userId).orElse(null);
+        AdminSubscriptionDto before = sub == null ? null : toDto(sub);
+        SubscriptionPlan plan = planService.requireDefaultPlan();
+        Instant now = timeSource.now();
+        Instant trialEnd = now.plus(trialDays, ChronoUnit.DAYS);
+
+        if (sub == null) {
+            sub = Subscription.builder()
+                    .userId(userId)
+                    .planId(plan.getId())
+                    .build();
+        } else {
+            sub.setPlanId(plan.getId());
+            sub.setCanceledAt(null);
+            sub.setGraceUntil(null);
+        }
+
+        sub.setStatus(SubscriptionStatus.TRIAL);
+        sub.setTrialStart(now);
+        sub.setTrialEnd(trialEnd);
+        sub.setTrialConsumed(true);
+        sub.setCurrentPeriodStart(now);
+        sub.setCurrentPeriodEnd(trialEnd);
+        sub.setCancelAtPeriodEnd(false);
+
+        Subscription saved = subscriptionRepository.save(sub);
+        audit(adminId, "SUBSCRIPTION_GRANT_TRIAL", saved.getId(), reason, before, toDto(saved));
+        return toDto(saved);
+    }
+
     /** Grants a lifetime subscription (ACTIVE, far-future period end, no provider renewal). */
     @Transactional
     public AdminSubscriptionDto grantLifetime(UUID adminId, UUID userId, String reason) {
         return grant(adminId, userId, reason, true, "SUBSCRIPTION_GRANT_LIFETIME");
     }
 
-    /** Removes Pro by expiring the user's live subscription, if any. */
+    /** Removes paid/trial access and prevents lazy trial recreation, leaving the user FREE. */
     @Transactional
-    public AdminSubscriptionDto removePro(UUID adminId, UUID userId, String reason) {
-        Subscription sub = subscriptionRepository.findLiveByUserId(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.SUBSCRIPTION_NOT_FOUND,
-                        "User has no live subscription to remove."));
-        AdminSubscriptionDto before = toDto(sub);
+    public AdminSubscriptionDto setFree(UUID adminId, UUID userId, String reason) {
+        Subscription sub = subscriptionRepository.findLiveByUserId(userId).orElse(null);
+        AdminSubscriptionDto before = sub == null ? null : toDto(sub);
+        if (sub == null) {
+            SubscriptionPlan plan = planService.requireDefaultPlan();
+            sub = Subscription.builder()
+                    .userId(userId)
+                    .planId(plan.getId())
+                    .status(SubscriptionStatus.EXPIRED)
+                    .trialConsumed(true)
+                    .build();
+            before = null;
+        }
         sub.setStatus(SubscriptionStatus.EXPIRED);
         sub.setCancelAtPeriodEnd(false);
+        sub.setCanceledAt(timeSource.now());
+        sub.setGraceUntil(null);
+        sub.setTrialConsumed(true);
         Subscription saved = subscriptionRepository.save(sub);
-        audit(adminId, "SUBSCRIPTION_REMOVE_PRO", saved.getId(), reason, before, toDto(saved));
+        audit(adminId, "SUBSCRIPTION_SET_FREE", saved.getId(), reason, before, toDto(saved));
         return toDto(saved);
+    }
+
+    /** Backward-compatible name for existing callers. */
+    @Transactional
+    public AdminSubscriptionDto removePro(UUID adminId, UUID userId, String reason) {
+        return setFree(adminId, userId, reason);
     }
 
     private AdminSubscriptionDto grant(UUID adminId, UUID userId, String reason,
@@ -171,13 +230,16 @@ public class AdminSubscriptionService {
                     .userId(userId)
                     .planId(plan.getId())
                     .status(SubscriptionStatus.ACTIVE)
+                    .trialConsumed(true)
                     .currentPeriodStart(now)
                     .currentPeriodEnd(lifetime ? LIFETIME_END : null)
                     .build();
         } else {
             sub.setStatus(SubscriptionStatus.ACTIVE);
+            sub.setTrialConsumed(true);
             sub.setCancelAtPeriodEnd(false);
             sub.setCanceledAt(null);
+            sub.setGraceUntil(null);
             if (lifetime) {
                 sub.setCurrentPeriodEnd(LIFETIME_END);
             }
@@ -199,5 +261,16 @@ public class AdminSubscriptionService {
     private void audit(UUID adminId, String action, UUID subId, String reason, Object before, Object after) {
         String email = userRepository.findById(adminId).map(u -> u.getEmail()).orElse(null);
         auditService.record(adminId, email, action, TARGET_TYPE, subId, reason, before, after);
+    }
+
+    private int defaultTrialDays() {
+        SubscriptionPlan plan = planService.requireDefaultPlan();
+        if (plan.getTrialDays() > 0) {
+            return plan.getTrialDays();
+        }
+        if (billingProperties.trialDays() > 0) {
+            return billingProperties.trialDays();
+        }
+        return 14;
     }
 }
