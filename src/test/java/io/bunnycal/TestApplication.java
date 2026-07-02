@@ -6,6 +6,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 @SpringBootConfiguration
@@ -27,6 +28,9 @@ import org.springframework.web.client.RestClient;
         "io.bunnycal.team",
         "io.bunnycal.payments",
         "io.bunnycal.billing",
+        "io.bunnycal.admin.audit",
+        "io.bunnycal.admin.common",
+        "io.bunnycal.admin.flags",
         "io.bunnycal.common",
         "io.bunnycal.auth.service",
         "io.bunnycal.auth.account",
@@ -36,6 +40,6 @@ public class TestApplication {
     @Bean
     @ConditionalOnMissingBean(RestClient.Builder.class)
     RestClient.Builder restClientBuilder() {
-        return RestClient.builder();
+        return RestClient.builder().requestFactory(new SimpleClientHttpRequestFactory());
     }
 }
