@@ -72,6 +72,9 @@ public class AvailabilityValidationService {
         if (request.getDate() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Override date is required.");
         }
+        if (request.getLabel() != null && request.getLabel().length() > 120) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Label must be 120 characters or fewer.");
+        }
 
         if (!request.isAvailable()) {
             if (request.getStartTime() != null || request.getEndTime() != null) {

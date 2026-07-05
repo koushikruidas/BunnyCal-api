@@ -21,4 +21,5 @@ public class AvailabilityOverrideResponse {
     private boolean isAvailable;
     private LocalTime startTime;
     private LocalTime endTime;
+    private String label;
 }
