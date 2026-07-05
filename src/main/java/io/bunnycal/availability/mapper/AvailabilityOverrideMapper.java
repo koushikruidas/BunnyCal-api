@@ -16,6 +16,7 @@ public class AvailabilityOverrideMapper {
                 .isAvailable(request.isAvailable())
                 .startTime(request.getStartTime())
                 .endTime(request.getEndTime())
+                .label(normalizeLabel(request.getLabel()))
                 .build();
     }
 
@@ -26,6 +27,13 @@ public class AvailabilityOverrideMapper {
                 .isAvailable(override.isAvailable())
                 .startTime(override.getStartTime())
                 .endTime(override.getEndTime())
+                .label(override.getLabel())
                 .build();
+    }
+
+    private String normalizeLabel(String label) {
+        if (label == null) return null;
+        String trimmed = label.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }

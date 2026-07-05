@@ -108,6 +108,7 @@ public interface GroupEventReservationWindowRepository
                        w.endTime,
                        w.scheduleType,
                        w.eventDate,
+                       w.startDate,
                        w.recurrenceEndMode,
                        w.untilDate,
                        w.occurrenceCount)

@@ -57,6 +57,10 @@ public class AvailabilityOverride {
     @Column(name = "end_time")
     private LocalTime endTime;
 
+    /** Optional user-facing name for this override, e.g. "Diwali" or "Vacation". */
+    @Column(name = "label", length = 120)
+    private String label;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
