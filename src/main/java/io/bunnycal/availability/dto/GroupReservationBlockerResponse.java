@@ -16,6 +16,7 @@ public record GroupReservationBlockerResponse(
         LocalTime endTime,
         ScheduleType scheduleType,
         LocalDate eventDate,
+        LocalDate startDate,
         RecurrenceEndMode recurrenceEndMode,
         LocalDate untilDate,
         Integer occurrenceCount) {
