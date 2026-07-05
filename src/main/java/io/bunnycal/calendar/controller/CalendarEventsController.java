@@ -66,7 +66,8 @@ public class CalendarEventsController {
                             e.getConnectionId().toString(),
                             sourceName,
                             e.getProvider(),
-                            "busy"
+                            "busy",
+                            e.getExternalEventId()
                     );
                 })
                 .toList();

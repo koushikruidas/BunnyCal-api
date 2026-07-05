@@ -10,5 +10,6 @@ public record CalendarEventDto(
         String sourceId,
         String sourceName,
         String provider,
-        String status
+        String status,
+        String externalEventId
 ) {}
