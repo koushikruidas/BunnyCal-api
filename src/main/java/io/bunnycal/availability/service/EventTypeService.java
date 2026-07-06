@@ -287,6 +287,7 @@ public class EventTypeService {
                 "/public/" + username + "/" + eventType.getSlug(),
                 eventType.getKind(),
                 eventType.getCapacity(),
+                (int) eventType.getDuration().toMinutes(),
                 eventType.isPublished(),
                 degraded,
                 availability,
