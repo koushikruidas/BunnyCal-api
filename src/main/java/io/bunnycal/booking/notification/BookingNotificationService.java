@@ -22,6 +22,8 @@ import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.common.logging.OpsLogSupport;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
@@ -305,12 +307,20 @@ public class BookingNotificationService {
             if (event.getId() == null) {
                 log.warn("booking_notification_send_skipped_missing_event_id bookingId={} recipient={} role={} eventType={}",
                         booking.getId(), recipient, role, event.getEventType());
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
+                        booking.getId(), null, OpsLogSupport.maskEmail(recipient), role, event.getEventType(),
+                        OpsLogSupport.notificationReasonCode("missing_event_id"));
                 continue;
             }
             boolean claimed = notificationSendDedupService.claim(event.getId(), recipient, event.getEventType());
             if (!claimed) {
                 log.info("booking_notification_send_skipped_duplicate eventId={} bookingId={} recipient={} eventType={}",
                         event.getId(), booking.getId(), recipient, event.getEventType());
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), role, event.getEventType(),
+                        OpsLogSupport.notificationReasonCode("duplicate"));
                 continue;
             }
             String manageLink = null;
@@ -350,6 +360,10 @@ public class BookingNotificationService {
                         booking.getId(), description);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true);
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), role, event.getEventType(), true,
+                        conferenceDetails == null ? "NONE" : conferenceDetails.provider());
                 log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
                         booking.getId(),
                         eventType == null ? "unknown" : eventType.getProjectionProvider(),
@@ -361,6 +375,10 @@ public class BookingNotificationService {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={} message={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), true, ex.getMessage());
+                OpsLoggers.NOTIFICATION.warn(
+                        "notification_send_failed bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} reasonCode={} message={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), role, event.getEventType(), true,
+                        "MAIL_PROVIDER_ERROR", OpsLogSupport.truncate(ex.getMessage(), 160));
                 throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
             }
         }
@@ -464,12 +482,20 @@ public class BookingNotificationService {
             if (event.getId() == null) {
                 log.warn("booking_notification_send_skipped_missing_event_id bookingId={} recipient={} eventType={}",
                         booking.getId(), recipient, event.getEventType());
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
+                        booking.getId(), null, OpsLogSupport.maskEmail(recipient), "PARTICIPANT", event.getEventType(),
+                        OpsLogSupport.notificationReasonCode("missing_event_id"));
                 continue;
             }
             boolean claimed = notificationSendDedupService.claim(event.getId(), recipient, event.getEventType());
             if (!claimed) {
                 log.info("booking_notification_send_skipped_duplicate eventId={} bookingId={} recipient={} eventType={}",
                         event.getId(), booking.getId(), recipient, event.getEventType());
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), "PARTICIPANT", event.getEventType(),
+                        OpsLogSupport.notificationReasonCode("duplicate"));
                 continue;
             }
             try {
@@ -477,10 +503,18 @@ public class BookingNotificationService {
                         conferenceDetails, booking.getId(), description);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, event.getEventType(), true);
+                OpsLoggers.NOTIFICATION.info(
+                        "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), "PARTICIPANT", event.getEventType(),
+                        true, conferenceDetails == null ? "NONE" : conferenceDetails.provider());
             } catch (Exception ex) {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} eventType={} message={}",
                         event.getId(), booking.getId(), recipient, event.getEventType(), ex.getMessage());
+                OpsLoggers.NOTIFICATION.warn(
+                        "notification_send_failed bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} reasonCode={} message={}",
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), "PARTICIPANT", event.getEventType(),
+                        true, "MAIL_PROVIDER_ERROR", OpsLogSupport.truncate(ex.getMessage(), 160));
                 throw new IllegalStateException("notification delivery failed for recipient " + recipient, ex);
             }
         }
@@ -639,6 +673,9 @@ public class BookingNotificationService {
                         booking.getId(), providerType, details.sourceOfTruth(), details.joinUrl() != null);
                 log.info("canonical_conference_projection_created bookingId={} provider={} sourceOfTruth={} updatedAt={}",
                         booking.getId(), details.provider(), details.sourceOfTruth(), details.updatedAt());
+                OpsLoggers.CONFERENCE.info(
+                        "conference_create_success bookingId={} provider={} hostId={} eventTypeId={} source={} hasJoinUrl={}",
+                        booking.getId(), details.provider(), booking.getHostId(), eventType.getId(), details.sourceOfTruth(), true);
                 return details;
             }
         } catch (RuntimeException ex) {
@@ -646,6 +683,10 @@ public class BookingNotificationService {
             // remains the durable retry path. Fall through to read-only lookup.
             log.warn("booking_notification_conferencing_prepare_failed bookingId={} provider={} eventType={} message={}",
                     booking.getId(), providerType, outboxEventType, ex.getMessage());
+            OpsLoggers.CONFERENCE.warn(
+                    "conference_create_failed bookingId={} provider={} hostId={} eventTypeId={} eventType={} reasonCode={} message={}",
+                    booking.getId(), providerType, booking.getHostId(), eventType.getId(), outboxEventType,
+                    "CONFERENCE_CREATE_FAILED", OpsLogSupport.truncate(ex.getMessage(), 160));
         }
 
         ConferenceDetails details = conferencingEventMappingRepository
@@ -677,6 +718,15 @@ public class BookingNotificationService {
         }
         log.info("conference_details_projection_verified bookingId={} provider={} source={} hasJoinUrl={}",
                 booking.getId(), details.provider(), details.sourceOfTruth(), details.joinUrl() != null);
+        OpsLoggers.CONFERENCE.info(
+                "conference_create_skipped bookingId={} provider={} hostId={} eventTypeId={} source={} reasonCode={} hasJoinUrl={}",
+                booking.getId(),
+                details.provider(),
+                booking.getHostId(),
+                eventType.getId(),
+                details.sourceOfTruth(),
+                details.joinUrl() == null || details.joinUrl().isBlank() ? "NO_CONFERENCE_URL" : "EXISTING_PROJECTION",
+                details.joinUrl() != null && !details.joinUrl().isBlank());
         return details;
     }
 

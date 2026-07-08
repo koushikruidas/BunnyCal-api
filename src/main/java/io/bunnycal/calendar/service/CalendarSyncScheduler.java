@@ -152,13 +152,18 @@ public class CalendarSyncScheduler {
         // Log name is provider-neutral; the actual provider is on the `provider` tag.
         // Historical name was `microsoft_incremental_sync_*` which lied for Google
         // connections (audit fix #5).
-        log.info("calendar_incremental_sync_start connectionId={} userId={} provider={} hasCursor={}",
+        log.debug("calendar_incremental_sync_start connectionId={} userId={} provider={} hasCursor={}",
                 connection.getId(), connection.getUserId(), providerTag, expectedCursor != null);
         try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
-                log.info("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount={} isFullResync={} nextCursorPresent={}",
-                        connection.getId(), providerTag, batch.events().size(), batch.fullResyncWindow(), batch.nextCursor() != null);
+                if (batch.events().isEmpty() && !batch.fullResyncWindow()) {
+                    log.debug("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount=0 isFullResync=false nextCursorPresent={}",
+                            connection.getId(), providerTag, batch.nextCursor() != null);
+                } else {
+                    log.info("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount={} isFullResync={} nextCursorPresent={}",
+                            connection.getId(), providerTag, batch.events().size(), batch.fullResyncWindow(), batch.nextCursor() != null);
+                }
                 ingestionService.upsertEvents(connection.getId(), batch.events(), SyncSourceAttribution.PULL_SYNC);
                 if (batch.events().isEmpty()) {
                     meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", providerTag, "source", "PULL_SYNC")
@@ -180,9 +185,14 @@ public class CalendarSyncScheduler {
                         connection.getLastTokenExpiresAt(),
                         connection.getLastSyncedAt(),
                         "scheduler_incremental_success");
-                log.info("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
-                        connection.getId(), connection.getUserId(), previousStatus,
-                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart));
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart);
+                if (previousStatus != CalendarConnectionStatus.ACTIVE || !batch.events().isEmpty()) {
+                    log.info("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
+                            connection.getId(), connection.getUserId(), previousStatus, elapsedMs);
+                } else {
+                    log.debug("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
+                            connection.getId(), connection.getUserId(), previousStatus, elapsedMs);
+                }
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
                 connectionWriteService.invalidateProviderCursor(connection.getId(), Instant.now(), "scheduler_sync_cursor_invalidated");
                 ExternalCalendarSyncClient.SyncBatch fullBatch =

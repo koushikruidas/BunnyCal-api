@@ -4,6 +4,7 @@ import io.bunnycal.calendar.config.GoogleOAuthProperties;
 import io.bunnycal.calendar.provider.CreateEventRequest;
 import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -445,7 +446,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
     private SyncWindow listEvents(String accessToken, String externalCalendarId, String syncCursor) {
         String calendarIdRaw = normalizeGoogleCalendarId(externalCalendarId);
         String requestPathTemplate = "/calendar/v3/calendars/{calendarId}/events";
-        log.info("google_calendar_request_build calendarIdRaw={} calendarIdEncoded={} requestUrl={}",
+        OpsLoggers.CALENDAR_HTTP.debug("google_calendar_request_build calendarIdRaw={} calendarIdEncoded={} requestUrl={}",
                 calendarIdRaw, "<framework-encoded>", requestPathTemplate.replace("{calendarId}", calendarIdRaw));
         try {
             List<CalendarEventObservation> observations = new ArrayList<>();

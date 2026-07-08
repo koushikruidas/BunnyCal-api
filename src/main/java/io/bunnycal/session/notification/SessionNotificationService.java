@@ -7,6 +7,8 @@ import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.booking.service.BookingSubmissionFormatter;
+import io.bunnycal.common.logging.OpsLogSupport;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import jakarta.mail.internet.MimeBodyPart;
@@ -215,16 +217,27 @@ public class SessionNotificationService {
         if (!claimed) {
             log.info("session_notification_send_skipped_duplicate eventId={} recipient={} eventType={}",
                     event.getId(), recipient, event.getEventType());
+            OpsLoggers.NOTIFICATION.info(
+                    "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
+                    null, event.getId(), OpsLogSupport.maskEmail(recipient), "GROUP_ATTENDEE", event.getEventType(),
+                    OpsLogSupport.notificationReasonCode("duplicate"));
             return;
         }
         try {
             sendMail(recipient, subject, ics, method, body);
             log.info("session_notification_send_success eventId={} recipient={} eventType={}",
                     event.getId(), recipient, event.getEventType());
+            OpsLoggers.NOTIFICATION.info(
+                    "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
+                    null, event.getId(), OpsLogSupport.maskEmail(recipient), "GROUP_ATTENDEE", event.getEventType(), true, "SESSION");
         } catch (Exception ex) {
             dedupService.release(event.getId(), recipient, event.getEventType());
             log.warn("session_notification_send_failed_retryable eventId={} recipient={} eventType={} message={}",
                     event.getId(), recipient, event.getEventType(), ex.getMessage());
+            OpsLoggers.NOTIFICATION.warn(
+                    "notification_send_failed bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} reasonCode={} message={}",
+                    null, event.getId(), OpsLogSupport.maskEmail(recipient), "GROUP_ATTENDEE", event.getEventType(), true,
+                    "MAIL_PROVIDER_ERROR", OpsLogSupport.truncate(ex.getMessage(), 160));
             throw new IllegalStateException("session notification delivery failed for recipient " + recipient, ex);
         }
     }

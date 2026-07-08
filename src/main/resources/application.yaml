@@ -142,6 +142,10 @@ auth:
 logging:
   level:
     org.flywaydb: INFO
+    io.bunnycal.calendar.http: INFO
+    io.bunnycal.sync.scheduler: INFO
+    io.bunnycal.sync.reconcile: INFO
+    io.bunnycal.availability.trace: INFO
 
 calendar:
   sync:

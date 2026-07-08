@@ -127,7 +127,7 @@ public class TokenRefresher {
                                     "provider", provider.name().toLowerCase(Locale.ROOT))
                             .increment();
                 }
-                log.info("calendar_refresh_token_rotated provider={} connectionId={} previousTokenHashPrefix={} newTokenHashPrefix={}",
+                log.debug("calendar_refresh_token_rotated provider={} connectionId={} previousTokenHashPrefix={} newTokenHashPrefix={}",
                         provider, connection.getId(),
                         tokenFingerprint(currentRefreshToken), tokenFingerprint(rotatedPlain));
             }
@@ -139,7 +139,7 @@ public class TokenRefresher {
                     rotatedCiphertext);
             accessTokenCache.put(connection.getId(), token, refresh.expiresAt());
             tokenRefreshSuccessCount.increment();
-            log.info("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\",\"provider\":\"{}\"}}",
+            log.debug("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\",\"provider\":\"{}\"}}",
                     connection.getId(), provider);
             return token;
         } catch (RuntimeException ex) {

@@ -128,7 +128,11 @@ public class BookingSyncWorker {
 
     public int processPending(int batchSize) {
         List<UUID> claimedIds = syncJobRepository.claimPendingBatch(Instant.now(), batchSize);
-        log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
+        if (claimedIds.isEmpty()) {
+            log.debug("sync_job_batch_claim batchSize={} claimedCount=0", batchSize);
+        } else {
+            log.info("sync_job_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
+        }
         for (UUID id : claimedIds) {
             log.info("sync_job_claimed jobId={}", id);
             try {

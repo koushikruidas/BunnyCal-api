@@ -15,6 +15,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -163,6 +164,10 @@ public class MicrosoftCalendarOAuthService {
         if (saved.getStatus() == CalendarConnectionStatus.ACTIVE && eligibilityService.isReady(userId)) {
             setupRequestService.markAllCompletedForTarget(userId);
         }
+        OpsLoggers.HOST.info(
+                "calendar_connection_created hostId={} connectionId={} provider={} status={} scopes={} reauth={}",
+                userId, saved.getId(), MICROSOFT_PROVIDER, saved.getStatus(),
+                saved.getScopes() == null ? 0 : saved.getScopes().size(), existing.isPresent());
         return new CalendarOAuthService.OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
@@ -210,6 +215,9 @@ public class MicrosoftCalendarOAuthService {
         // upstream cleanup. Local cleanup is non-negotiable.
         connectionWriteService.clearRefreshTokenCiphertext(connection.getId(), "oauth_disconnect_clear_token");
         log.info("microsoft_calendar_disconnected userId={} connectionId={}", userId, connection.getId());
+        OpsLoggers.HOST.info(
+                "calendar_connection_disconnected hostId={} connectionId={} provider={} reason={}",
+                userId, connection.getId(), MICROSOFT_PROVIDER, "USER_INITIATED");
     }
 
     @Transactional(readOnly = true)
