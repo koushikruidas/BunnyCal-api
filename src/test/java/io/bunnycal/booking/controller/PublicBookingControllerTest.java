@@ -9,6 +9,7 @@ import io.bunnycal.booking.dto.PublicBookRequest;
 import io.bunnycal.booking.idempotency.IdempotencyOutcome;
 import io.bunnycal.booking.idempotency.IdempotencyService;
 import io.bunnycal.booking.service.PublicBookingService;
+import io.bunnycal.booking.service.PublicGroupSessionQueryService;
 import io.bunnycal.common.time.TimeConversionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -27,11 +28,17 @@ class PublicBookingControllerTest {
     private IdempotencyService idempotencyService;
     @Mock
     private TimeConversionService timeConversionService;
+    @Mock
+    private PublicGroupSessionQueryService publicGroupSessionQueryService;
 
     @Test
     void hold_requestHashIncludesNormalizedGuestFields() {
         PublicBookingController controller = new PublicBookingController(
-                publicBookingService, idempotencyService, new ObjectMapper().findAndRegisterModules(), timeConversionService);
+                publicBookingService,
+                publicGroupSessionQueryService,
+                idempotencyService,
+                new ObjectMapper().findAndRegisterModules(),
+                timeConversionService);
         when(timeConversionService.normalizeClientInstant(any(), any())).thenAnswer(inv -> inv.getArgument(0));
         when(idempotencyService.execute(anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(new IdempotencyOutcome.Fresh<>(201, Map.of("ok", true)));

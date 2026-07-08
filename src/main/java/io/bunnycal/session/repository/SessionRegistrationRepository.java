@@ -90,6 +90,15 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
     @Query("SELECT r FROM SessionRegistration r WHERE r.sessionId = :sessionId AND r.status = 'CONFIRMED'")
     List<SessionRegistration> findConfirmedBySessionId(@Param("sessionId") UUID sessionId);
 
+    @Query("""
+            SELECT r
+            FROM SessionRegistration r
+            WHERE r.sessionId IN :sessionIds
+              AND r.status = 'CONFIRMED'
+            ORDER BY r.createdAt ASC, r.id ASC
+            """)
+    List<SessionRegistration> findConfirmedBySessionIds(@Param("sessionIds") List<UUID> sessionIds);
+
     // CAS PENDING→CONFIRMED; also enforces expiry check.
     @Modifying
     @Query(value = """
