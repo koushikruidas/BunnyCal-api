@@ -18,6 +18,7 @@ import io.bunnycal.team.dto.TeamResponse;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.team.repository.TeamInvitationRepository;
 import io.bunnycal.team.service.TeamService;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -141,10 +142,13 @@ class TeamInvitationNotificationIT extends AbstractTeamIT {
         // Manually expire the invitation.
         inTx(() -> {
             teamInvitationRepository.findByToken(invite.token()).ifPresent(inv -> {
-                inv.setExpiresAt(java.time.Instant.now().minusSeconds(1));
+                inv.setExpiresAt(Instant.parse("2000-01-01T00:00:00Z"));
                 teamInvitationRepository.save(inv);
             });
         });
+
+        assertThat(teamInvitationRepository.findByToken(invite.token()).orElseThrow().getExpiresAt())
+                .isBefore(Instant.now());
 
         assertThatThrownBy(() -> teamService.acceptInvitation(invitee.getId(), invite.token()))
                 .isInstanceOf(CustomException.class)

@@ -156,19 +156,24 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public boolean eventExists(UUID internalId, String provider, String externalEventId) {
+    public boolean eventExists(UUID internalId, String provider, String externalEventId,
+                               @Nullable UUID schedulingConnectionId) {
         if (externalEventId == null || externalEventId.isBlank()) {
             return false;
         }
         Booking booking = bookingRepository.findAnyById(internalId)
                 .orElseThrow(() -> new CalendarClientException(404, "booking not found"));
-        CalendarConnection connection = resolveAnyConnection(booking.getHostId(), provider);
+        CalendarConnection connection = schedulingConnectionId != null
+                ? connectionRepository.findById(schedulingConnectionId)
+                        .orElseGet(() -> resolveAnyConnection(booking.getHostId(), provider))
+                : resolveAnyConnection(booking.getHostId(), provider);
         return microsoftCalendarProvider.eventExists(new DeleteEventRequest(connection.getId(), externalEventId));
     }
 
     @Override
-    public boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
-        return eventExists(internalId, provider, externalEventId);
+    public boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey,
+                                @Nullable UUID schedulingConnectionId) {
+        return eventExists(internalId, provider, externalEventId, schedulingConnectionId);
     }
 
     private CalendarConnection resolveConnection(UUID userId, String provider,

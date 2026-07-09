@@ -219,9 +219,10 @@ class TokenRefresherTest {
         CalendarConnection conn = connection(id, Instant.now().plusSeconds(3600), CalendarConnectionStatus.REVOKED);
         when(repository.findById(id)).thenReturn(Optional.of(conn));
 
-        assertThrows(IllegalStateException.class,
+        CalendarConnectionStateException ex = assertThrows(CalendarConnectionStateException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> token));
 
+        assertEquals("CONNECTION_REVOKED", ex.getErrorCode());
         verify(googleTokenClient, never()).refreshAccessToken(any());
     }
 
@@ -232,9 +233,10 @@ class TokenRefresherTest {
         conn.setLastErrorAt(Instant.now().minusSeconds(10));
         when(repository.findById(id)).thenReturn(Optional.of(conn));
 
-        assertThrows(IllegalStateException.class,
+        CalendarConnectionStateException ex = assertThrows(CalendarConnectionStateException.class,
                 () -> tokenRefresher.executeWithValidToken(id, token -> token));
 
+        assertEquals("PROVIDER_DOWN", ex.getErrorCode());
         verify(googleTokenClient, never()).refreshAccessToken(any());
     }
 

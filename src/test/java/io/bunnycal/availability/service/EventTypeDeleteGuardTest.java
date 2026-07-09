@@ -14,6 +14,7 @@ import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
@@ -43,6 +44,7 @@ class EventTypeDeleteGuardTest {
     @Mock private OutboxPublisher outboxPublisher;
     @Mock private BookingExperienceRepository experienceRepository;
     @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
+    @Mock private GroupEventReservationWindowRepository reservationWindowRepository;
 
     private final TimeSource timeSource = () -> Instant.parse("2026-06-24T12:00:00Z");
 
@@ -63,7 +65,8 @@ class EventTypeDeleteGuardTest {
                 outboxPublisher,
                 timeSource,
                 experienceRepository,
-                entitlementService);
+                entitlementService,
+                reservationWindowRepository);
     }
 
     private EventType ownedEventType() {

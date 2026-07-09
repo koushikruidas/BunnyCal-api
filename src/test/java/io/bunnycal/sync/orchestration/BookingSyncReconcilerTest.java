@@ -2,6 +2,7 @@ package io.bunnycal.sync.orchestration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -15,6 +16,7 @@ import io.bunnycal.sync.reconcile.ReconcileInputSnapshot;
 import io.bunnycal.sync.reconcile.ReconcileSnapshotCanonicalizer;
 import io.bunnycal.sync.reconcile.SnapshotInputParity;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import io.bunnycal.sync.retry.SyncRetryPolicy;
 import io.bunnycal.sync.repository.SyncReconcileDecisionLogRepository;
 import io.bunnycal.sync.state.CalendarSyncJob;
 import io.bunnycal.sync.state.InternalRefType;
@@ -44,6 +46,8 @@ class BookingSyncReconcilerTest {
     private PersistedReconcileSnapshotAssembler snapshotAssembler;
     @Mock
     private ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
+    @Mock
+    private SyncRetryPolicy retryPolicy;
 
     private DeterministicReconcileEvaluator evaluator;
     private ReconcileShadowParityClassifier parityClassifier;
@@ -60,7 +64,7 @@ class BookingSyncReconcilerTest {
         PlatformTransactionManager txManager = org.mockito.Mockito.mock(PlatformTransactionManager.class);
         when(txManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         reconciler = new BookingSyncReconciler(
-                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, terminalDeleteConvergenceService, txManager, 0L, true, new SimpleMeterRegistry());
+                repository, calendarService, idempotencyKeyFactory, evaluator, parityClassifier, canonicalizer, snapshotAssembler, decisionLogRepository, terminalDeleteConvergenceService, retryPolicy, txManager, 0L, true, new SimpleMeterRegistry());
 
         when(snapshotAssembler.assembleAndPersist(any(), any(), any())).thenAnswer(invocation -> {
             var runtime = invocation.getArgument(2, ReconcileInputSnapshot.class);
@@ -69,6 +73,7 @@ class BookingSyncReconcilerTest {
                     runtime,
                     SnapshotInputParity.EXACT_MATCH);
         });
+        when(retryPolicy.nextRetryAt(anyInt())).thenReturn(java.time.Instant.parse("2026-07-09T10:00:00Z"));
     }
 
     @Test
@@ -161,6 +166,31 @@ class BookingSyncReconcilerTest {
                 .requeue(any(), anyLong(), any(), any(), any());
     }
 
+    @Test
+    void retryableObserveFailure_schedulesBackoffOnSyncedJob() {
+        CalendarSyncJob job = synced("ext-5", 8L);
+        job.setAttemptCount(2);
+        when(repository.findSyncedCandidates(10)).thenReturn(List.of(job));
+        when(idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())).thenReturn("google:key");
+        when(calendarService.observeEvent(any()))
+                .thenReturn(CalendarService.ObserveEventResult.retryable("PROVIDER_DOWN"));
+        when(repository.markReconcileRetryable(
+                eq(job.getId()),
+                eq(8L),
+                eq(java.time.Instant.parse("2026-07-09T10:00:00Z")),
+                eq("PROVIDER_DOWN")))
+                .thenReturn(1);
+
+        reconciler.reconcile(10);
+
+        verify(retryPolicy).nextRetryAt(2);
+        verify(repository).markReconcileRetryable(
+                job.getId(),
+                8L,
+                java.time.Instant.parse("2026-07-09T10:00:00Z"),
+                "PROVIDER_DOWN");
+    }
+
     private static CalendarSyncJob synced(String externalId, long version) {
         CalendarSyncJob job = new CalendarSyncJob();
         job.setId(UUID.randomUUID());
@@ -171,6 +201,7 @@ class BookingSyncReconcilerTest {
         job.setStatus(SyncJobStatus.SYNCED);
         job.setExternalEventId(externalId);
         job.setVersion(version);
+        job.setAttemptCount(0);
         return job;
     }
 }

@@ -173,6 +173,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SET status = 'SYNCED',
                 external_event_id = :externalEventId,
                 last_error = NULL,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE id = :id
               AND status = 'PROCESSING'
@@ -193,6 +195,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                 conference_provider = :conferenceProvider,
                 conference_metadata_json = :conferenceMetadataJson,
                 last_error = NULL,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE id = :id
               AND status = 'PROCESSING'
@@ -216,6 +220,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
                 conference_provider = COALESCE(:conferenceProvider, conference_provider),
                 conference_metadata_json = COALESCE(:conferenceMetadataJson, conference_metadata_json),
                 last_error = NULL,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE internal_ref_type = 'SESSION'
               AND internal_ref_id = :sessionId
@@ -237,6 +243,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SET status = 'SYNCED',
                 external_event_id = :externalEventId,
                 last_error = :lifecycleCode,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE id = :id
               AND status = 'PROCESSING'
@@ -254,6 +262,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SET status = 'SYNCED',
                 external_event_id = :externalEventId,
                 last_error = :lifecycleCode,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE id = :id
               AND status = 'SYNCED'
@@ -271,6 +281,8 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SET status = 'SYNCED',
                 external_event_id = COALESCE(external_event_id, :externalEventId),
                 last_error = :lifecycleCode,
+                attempt_count = 0,
+                next_retry_at = NOW(),
                 version = version + 1
             WHERE internal_ref_type = :internalRefType
               AND internal_ref_id = :internalRefId
@@ -407,6 +419,7 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             SELECT *
             FROM calendar_sync_jobs
             WHERE status = 'SYNCED'
+              AND next_retry_at <= NOW()
               AND (last_error IS NULL OR last_error NOT IN (
                   'TERMINAL_EXTERNAL_DELETE',
                   'EXTERNAL_ACTION_REQUIRED',
@@ -434,6 +447,24 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             @Param("version") long version,
             @Param("desiredAction") String desiredAction,
             @Param("externalEventId") String externalEventId,
+            @Param("lastError") String lastError);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE calendar_sync_jobs
+            SET status = 'SYNCED',
+                attempt_count = attempt_count + 1,
+                next_retry_at = :nextRetryAt,
+                last_error = :lastError,
+                version = version + 1
+            WHERE id = :id
+              AND status = 'SYNCED'
+              AND version = :version
+            """, nativeQuery = true)
+    int markReconcileRetryable(
+            @Param("id") UUID id,
+            @Param("version") long version,
+            @Param("nextRetryAt") Instant nextRetryAt,
             @Param("lastError") String lastError);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)

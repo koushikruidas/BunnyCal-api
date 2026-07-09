@@ -62,12 +62,24 @@ public class TokenRefresher {
                 .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
 
         if (connection.getStatus() == CalendarConnectionStatus.REVOKED) {
-            throw new IllegalStateException("Calendar connection revoked");
+            throw new CalendarConnectionStateException(
+                    "CONNECTION_REVOKED",
+                    false,
+                    "Calendar connection revoked");
+        }
+        if (connection.getStatus() == CalendarConnectionStatus.DISCONNECTED) {
+            throw new CalendarConnectionStateException(
+                    "CALENDAR_DISCONNECTED",
+                    false,
+                    "Calendar connection disconnected");
         }
         if (connection.getStatus() == CalendarConnectionStatus.ERROR
                 && connection.getLastErrorAt() != null
                 && connection.getLastErrorAt().plus(FAILURE_COOLDOWN).isAfter(Instant.now())) {
-            throw new IllegalStateException("Calendar connection temporarily unavailable");
+            throw new CalendarConnectionStateException(
+                    "PROVIDER_DOWN",
+                    true,
+                    "Calendar connection temporarily unavailable");
         }
 
         String token = ensureActiveAccessToken(connection);
