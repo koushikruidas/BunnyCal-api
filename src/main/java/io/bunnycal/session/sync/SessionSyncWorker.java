@@ -109,7 +109,11 @@ public class SessionSyncWorker {
 
     public int processPending(int batchSize) {
         List<UUID> claimedIds = syncJobRepository.claimPendingBatchForSessions(Instant.now(), batchSize);
-        log.info("session_sync_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
+        if (claimedIds.isEmpty()) {
+            log.debug("session_sync_batch_claim batchSize={} claimedCount=0", batchSize);
+        } else {
+            log.info("session_sync_batch_claim batchSize={} claimedCount={}", batchSize, claimedIds.size());
+        }
         for (UUID id : claimedIds) {
             processJob(id);
         }

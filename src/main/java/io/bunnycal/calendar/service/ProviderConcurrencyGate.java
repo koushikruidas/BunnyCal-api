@@ -7,6 +7,7 @@ import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -23,8 +24,11 @@ import org.springframework.stereotype.Component;
  * up concurrent retries. It does not coordinate across replicas; for that, the scheduler
  * already holds a ShedLock.
  *
- * <p>Defaults are deliberately high (effectively unbounded for the current single-threaded
- * sweep). The values become load-bearing as soon as Phase 4 introduces per-tick parallelism.
+ * <p>The per-provider permit counts became load-bearing once the sweep gained per-tick
+ * parallelism (see {@code calendar.sync.parallel-enabled}). With the parallel path active,
+ * this gate is the per-provider cap on concurrent outbound calls; the sweep's worker-pool
+ * size ({@code calendar.sync.parallelism}) sits at or below the gate so the gate — not the
+ * pool — bounds provider fan-out.
  */
 @Component
 public class ProviderConcurrencyGate {
@@ -72,12 +76,50 @@ public class ProviderConcurrencyGate {
             return true;
         }
         boolean acquired = semaphore.tryAcquire();
-        if (!acquired && meterRegistry != null) {
+        if (!acquired) {
+            recordDeferred(provider);
+        }
+        return acquired;
+    }
+
+    /**
+     * Bounded attempt to reserve a permit for the provider, waiting up to {@code timeoutMillis}.
+     *
+     * <p>Used by the parallel sweep so a worker briefly waits for a busy provider rather than
+     * immediately giving up, but never blocks for long: keep the timeout small (~100–250ms) so
+     * one saturated provider cannot tie up a worker thread that could otherwise process a
+     * different provider's connections. On timeout the work is deferred to the next sweep and
+     * a {@code calendar.sync.concurrency.deferred.total} counter is incremented, exactly as the
+     * non-blocking {@link #tryAcquire(CalendarProviderType)} does.
+     */
+    public boolean tryAcquire(CalendarProviderType provider, long timeoutMillis) {
+        if (provider == null) {
+            return true;
+        }
+        Semaphore semaphore = permits.get(provider);
+        if (semaphore == null) {
+            return true;
+        }
+        boolean acquired;
+        try {
+            acquired = semaphore.tryAcquire(Math.max(0L, timeoutMillis), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            recordDeferred(provider);
+            return false;
+        }
+        if (!acquired) {
+            recordDeferred(provider);
+        }
+        return acquired;
+    }
+
+    private void recordDeferred(CalendarProviderType provider) {
+        if (meterRegistry != null) {
             meterRegistry.counter("calendar.sync.concurrency.deferred.total",
                             "provider", provider.name().toLowerCase(Locale.ROOT))
                     .increment();
         }
-        return acquired;
     }
 
     public void release(CalendarProviderType provider) {

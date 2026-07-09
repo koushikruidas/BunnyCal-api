@@ -4,6 +4,7 @@ import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicBookRequest;
 import io.bunnycal.booking.dto.PublicEventInfoResponse;
+import io.bunnycal.booking.dto.PublicGroupSessionsResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.idempotency.IdempotencyOutcome;
@@ -11,6 +12,7 @@ import io.bunnycal.booking.idempotency.IdempotencyRoutes;
 import io.bunnycal.booking.idempotency.IdempotencyService;
 import io.bunnycal.booking.idempotency.ResponseEnvelope;
 import io.bunnycal.booking.service.PublicBookingService;
+import io.bunnycal.booking.service.PublicGroupSessionQueryService;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -39,15 +41,18 @@ import org.springframework.security.core.Authentication;
 public class PublicBookingController {
     private static final Logger log = LoggerFactory.getLogger(PublicBookingController.class);
     private final PublicBookingService publicBookingService;
+    private final PublicGroupSessionQueryService publicGroupSessionQueryService;
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
     private final TimeConversionService timeConversionService;
 
     public PublicBookingController(PublicBookingService publicBookingService,
+                                   PublicGroupSessionQueryService publicGroupSessionQueryService,
                                    IdempotencyService idempotencyService,
                                    ObjectMapper objectMapper,
                                    TimeConversionService timeConversionService) {
         this.publicBookingService = publicBookingService;
+        this.publicGroupSessionQueryService = publicGroupSessionQueryService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
         this.timeConversionService = timeConversionService;
@@ -69,6 +74,18 @@ public class PublicBookingController {
     public ResponseEntity<ApiResponse<PublicEventInfoResponse>> eventInfo(@PathVariable String username,
                                                                           @PathVariable String eventTypeSlug) {
         return ResponseEntity.ok(ApiResponse.success(publicBookingService.eventInfo(username, eventTypeSlug)));
+    }
+
+    @GetMapping("/{username}/{eventTypeSlug}/group-sessions")
+    public ResponseEntity<ApiResponse<PublicGroupSessionsResponse>> groupSessions(
+            @PathVariable String username,
+            @PathVariable String eventTypeSlug,
+            @RequestParam(value = "startDate", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+            LocalDate startDate,
+            @RequestParam(value = "days", required = false) Integer days) {
+        return ResponseEntity.ok(ApiResponse.success(
+                publicGroupSessionQueryService.getGroupSessions(username, eventTypeSlug, startDate, days)));
     }
 
     @PostMapping("/{username}/{eventTypeSlug}/book")

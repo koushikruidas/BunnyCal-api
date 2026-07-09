@@ -9,12 +9,20 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import jakarta.annotation.PreDestroy;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,9 +48,48 @@ public class CalendarSyncScheduler {
     private final TransactionTemplate txTemplate;
     private final Timer sweepTimer;
     private final Timer perConnectionTimer;
+    private final Counter deadlineHitCounter;
     private final int batchSize;
     private final int maxConnectionsPerTick;
 
+    // Phase 4 (calendar.sync.parallel-enabled): parallel sweep configuration.
+    private final boolean parallelEnabled;
+    private final int parallelism;
+    private final long providerAcquireTimeoutMs;
+    private final Duration sweepMaxRuntime;
+    private final ExecutorService sweepExecutor;
+
+    // Phase 4 (calendar.sync.webhook-fresh-gating-enabled): when enabled, connections with a
+    // fresh (non-expired) webhook channel poll only on the backstop cadence rather than every
+    // tick. See CalendarConnectionRepository.findDueForSyncBatchGated.
+    private final boolean webhookFreshGatingEnabled;
+    private final Duration webhookFreshBackstop;
+    // Last sweep's count of due connections eligible but not processed (deadline hit or
+    // gate-deferred). Published as a gauge so operators can see the sweep falling behind.
+    private final AtomicLong lastUnprocessedDue = new AtomicLong(0);
+
+    /**
+     * Convenience constructor defaulting the parallel path OFF (sequential behavior). Retained
+     * for existing callers/tests that predate the parallel-sweep parameters.
+     */
+    public CalendarSyncScheduler(CalendarConnectionRepository connectionRepository,
+                                 CalendarEventIngestionService ingestionService,
+                                 CalendarSyncClientRegistry syncClientRegistry,
+                                 SlotCacheVersionService slotCacheVersionService,
+                                 CalendarConnectionWriteService connectionWriteService,
+                                 ProviderConcurrencyGate concurrencyGate,
+                                 PlatformTransactionManager transactionManager,
+                                 MeterRegistry meterRegistry,
+                                 int batchSize,
+                                 int maxConnectionsPerTick) {
+        this(connectionRepository, ingestionService, syncClientRegistry, slotCacheVersionService,
+                connectionWriteService, concurrencyGate, transactionManager, meterRegistry,
+                batchSize, maxConnectionsPerTick,
+                false, 8, 150L, Duration.ofSeconds(25),
+                false, Duration.ofMinutes(15));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
     public CalendarSyncScheduler(CalendarConnectionRepository connectionRepository,
                                  CalendarEventIngestionService ingestionService,
                                  CalendarSyncClientRegistry syncClientRegistry,
@@ -52,7 +99,13 @@ public class CalendarSyncScheduler {
                                  PlatformTransactionManager transactionManager,
                                  MeterRegistry meterRegistry,
                                  @Value("${calendar.sync.batch-size:100}") int batchSize,
-                                 @Value("${calendar.sync.max-connections-per-tick:2000}") int maxConnectionsPerTick) {
+                                 @Value("${calendar.sync.max-connections-per-tick:2000}") int maxConnectionsPerTick,
+                                 @Value("${calendar.sync.parallel-enabled:false}") boolean parallelEnabled,
+                                 @Value("${calendar.sync.parallelism:8}") int parallelism,
+                                 @Value("${calendar.sync.provider-acquire-timeout-ms:150}") long providerAcquireTimeoutMs,
+                                 @Value("${calendar.sync.sweep-max-runtime:PT25S}") Duration sweepMaxRuntime,
+                                 @Value("${calendar.sync.webhook-fresh-gating-enabled:false}") boolean webhookFreshGatingEnabled,
+                                 @Value("${calendar.sync.webhook-fresh-backstop:PT15M}") Duration webhookFreshBackstop) {
         this.connectionRepository = connectionRepository;
         this.ingestionService = ingestionService;
         this.syncClientRegistry = syncClientRegistry;
@@ -62,6 +115,28 @@ public class CalendarSyncScheduler {
         this.meterRegistry = meterRegistry;
         this.batchSize = Math.max(1, batchSize);
         this.maxConnectionsPerTick = Math.max(this.batchSize, maxConnectionsPerTick);
+        this.parallelEnabled = parallelEnabled;
+        this.parallelism = Math.max(1, parallelism);
+        this.providerAcquireTimeoutMs = Math.max(0L, providerAcquireTimeoutMs);
+        // Guard against a misconfigured non-positive runtime that would make every sweep an
+        // immediate no-op; fall back to the documented default.
+        this.sweepMaxRuntime = (sweepMaxRuntime == null || sweepMaxRuntime.isNegative() || sweepMaxRuntime.isZero())
+                ? Duration.ofSeconds(25)
+                : sweepMaxRuntime;
+        this.webhookFreshGatingEnabled = webhookFreshGatingEnabled;
+        this.webhookFreshBackstop = (webhookFreshBackstop == null || webhookFreshBackstop.isNegative())
+                ? Duration.ofMinutes(15)
+                : webhookFreshBackstop;
+        // Bounded worker pool for the parallel path. Fixed `parallelism` threads with a queue
+        // holding at most one page of work at a time — runParallel submits a page (≤ batchSize)
+        // then joins it fully before fetching the next, so the queue depth is bounded by
+        // batchSize and never grows across pages. The pool is shut down explicitly in
+        // @PreDestroy. Threads are daemon so a JVM shutdown is never blocked by an idle pool.
+        this.sweepExecutor = new ThreadPoolExecutor(
+                this.parallelism, this.parallelism,
+                60L, TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(),
+                namedThreadFactory("calendar-sync-worker-"));
         // Per-connection tx boundary. Outer sync() loop is non-transactional so a slow
         // provider call on connection N never holds a DB connection across the entire
         // candidate list. REQUIRES_NEW because the scheduler runs outside any tx and we
@@ -76,8 +151,55 @@ public class CalendarSyncScheduler {
                 .description("Wall-clock duration of one connection's sync within a sweep.")
                 .publishPercentileHistogram()
                 .register(meterRegistry);
+        this.deadlineHitCounter = Counter.builder("calendar.sync.sweep.deadline_hit.total")
+                .description("Sweeps that stopped submitting work because the sweep-max-runtime deadline was reached.")
+                .register(meterRegistry);
+        io.micrometer.core.instrument.Gauge.builder("calendar.sync.sweep.unprocessed_due", lastUnprocessedDue, AtomicLong::get)
+                .description("Due connections eligible but not processed in the last sweep (deadline hit or gate-deferred).")
+                .register(meterRegistry);
     }
 
+    private static java.util.concurrent.ThreadFactory namedThreadFactory(String prefix) {
+        AtomicLong seq = new AtomicLong(0);
+        return runnable -> {
+            Thread thread = new Thread(runnable, prefix + seq.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    @PreDestroy
+    void shutdownExecutor() {
+        sweepExecutor.shutdown();
+        try {
+            if (!sweepExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
+                sweepExecutor.shutdownNow();
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            sweepExecutor.shutdownNow();
+        }
+    }
+
+    /**
+     * NO-OVERLAP INVARIANT (read before changing this method).
+     *
+     * <p>The same {@link CalendarConnection} must never be processed by two workers at once —
+     * the due-query ({@code findDueForSyncBatch}) is a plain SELECT with no row-level claim
+     * (no FOR UPDATE / SKIP LOCKED / claim column), so nothing at the row level prevents
+     * double-processing. Safety rests entirely on sweeps not overlapping:
+     * <ul>
+     *   <li>Same node: Spring's {@code @Scheduled(fixedDelay)} runs this task on a single
+     *       thread and only starts the next tick after this method RETURNS. The parallel
+     *       fan-out below lives inside one invocation and is fully joined before we return,
+     *       so no worker outlives the sweep.</li>
+     *   <li>Across replicas: {@code @SchedulerLock} holds the lock for at most {@code PT2M}.
+     *       If a sweep ran longer than that, ShedLock would release and a second replica
+     *       could start an overlapping sweep. The hard {@code sweep-max-runtime} deadline
+     *       (default PT25S, strictly &lt; lockAtMostFor) guarantees we return well inside the
+     *       lock window, so overlap cannot happen.</li>
+     * </ul>
+     */
     @Scheduled(fixedDelayString = "${calendar.sync.fixed-delay-ms:30000}")
     @SchedulerLock(
             name = "calendar-sync-sweep",
@@ -87,7 +209,34 @@ public class CalendarSyncScheduler {
     public void sync() {
         long sweepStart = System.nanoTime();
         Instant now = Instant.now();
+        try {
+            if (parallelEnabled) {
+                runParallel(now);
+            } else {
+                runSequential(now);
+            }
+        } finally {
+            sweepTimer.record(System.nanoTime() - sweepStart, TimeUnit.NANOSECONDS);
+        }
+    }
 
+    /**
+     * Fetch one page of due connections, choosing the webhook-aware gated query when
+     * {@code webhook-fresh-gating-enabled} is set (fresh-webhook connections only appear once
+     * their backstop has elapsed), otherwise the original every-tick due-query. Both queries
+     * share the same deterministic ordering so pagination is stable either way.
+     */
+    private List<CalendarConnection> fetchDuePage(Instant now, int pageIndex, int pageLimit) {
+        if (webhookFreshGatingEnabled) {
+            Instant backstopThreshold = now.minus(webhookFreshBackstop);
+            return connectionRepository.findDueForSyncBatchGated(
+                    now, backstopThreshold, PageRequest.of(pageIndex, pageLimit));
+        }
+        return connectionRepository.findDueForSyncBatch(now, PageRequest.of(pageIndex, pageLimit));
+    }
+
+    /** Original single-threaded sweep. Unchanged behavior; runs when parallel is disabled. */
+    private void runSequential(Instant now) {
         // Phase 3 batching: paginate the due-query so we never load the entire candidate
         // set into memory. Ordered deterministically (NULLS FIRST nextRetryAt, then id) so
         // pagination is stable across calls and across ticks.
@@ -97,8 +246,7 @@ public class CalendarSyncScheduler {
         while (processed < maxConnectionsPerTick) {
             int remaining = maxConnectionsPerTick - processed;
             int pageLimit = Math.min(batchSize, remaining);
-            List<CalendarConnection> page = connectionRepository.findDueForSyncBatch(
-                    now, PageRequest.of(pageIndex, pageLimit));
+            List<CalendarConnection> page = fetchDuePage(now, pageIndex, pageLimit);
             if (page.isEmpty()) {
                 break;
             }
@@ -136,11 +284,135 @@ public class CalendarSyncScheduler {
                 break;
             }
         }
+        lastUnprocessedDue.set(deferred);
+        log.info("calendar_sync_scheduler_start mode=sequential processed={} deferred={} pages={} batchSize={}",
+                processed, deferred, pageIndex + 1, batchSize);
+    }
 
-        long elapsedNanos = System.nanoTime() - sweepStart;
-        sweepTimer.record(elapsedNanos, TimeUnit.NANOSECONDS);
-        log.info("calendar_sync_scheduler_start processed={} deferred={} pages={} batchSize={} elapsedMs={}",
-                processed, deferred, pageIndex + 1, batchSize, TimeUnit.NANOSECONDS.toMillis(elapsedNanos));
+    /**
+     * Parallel sweep: fan connections out across the worker pool, bounded by a hard deadline
+     * and the per-provider {@link ProviderConcurrencyGate}. See the NO-OVERLAP INVARIANT on
+     * {@link #sync()} — all submitted work is joined before this method returns.
+     */
+    private void runParallel(Instant now) {
+        Instant deadline = now.plus(sweepMaxRuntime);
+        int processed = 0;
+        int deferred = 0;
+        int pageIndex = 0;
+        boolean deadlineHit = false;
+
+        while (processed < maxConnectionsPerTick) {
+            if (!Instant.now().isBefore(deadline)) {
+                deadlineHit = true;
+                break;
+            }
+            int remaining = maxConnectionsPerTick - processed;
+            int pageLimit = Math.min(batchSize, remaining);
+            List<CalendarConnection> page = fetchDuePage(now, pageIndex, pageLimit);
+            if (page.isEmpty()) {
+                break;
+            }
+
+            List<Future<Boolean>> futures = new ArrayList<>(page.size());
+            for (CalendarConnection connection : page) {
+                if (!Instant.now().isBefore(deadline)) {
+                    deadlineHit = true;
+                    break;
+                }
+                futures.add(sweepExecutor.submit(() -> processConnection(connection)));
+            }
+
+            // Join this page's work before advancing pagination, so the due-query's stable
+            // ordered prefix stays consistent and no worker outlives the sweep.
+            for (Future<Boolean> future : futures) {
+                Boolean processedOne = awaitConnection(future, deadline);
+                if (processedOne == null) {
+                    // Timed out / interrupted waiting — count as unprocessed, leave eligible.
+                    deferred++;
+                } else if (processedOne) {
+                    processed++;
+                } else {
+                    deferred++;
+                }
+            }
+
+            if (deadlineHit) {
+                break;
+            }
+            if (page.size() < pageLimit) {
+                break;
+            }
+            pageIndex++;
+        }
+
+        if (deadlineHit) {
+            deadlineHitCounter.increment();
+        }
+        lastUnprocessedDue.set(deferred);
+        long elapsedMs = Duration.between(now, Instant.now()).toMillis();
+        if (deadlineHit || deferred > 0) {
+            log.warn("calendar_sync_scheduler_start mode=parallel processed={} unprocessedDue={} pages={} parallelism={} deadlineHit={} elapsedMs={}",
+                    processed, deferred, pageIndex + 1, parallelism, deadlineHit, elapsedMs);
+        } else {
+            log.info("calendar_sync_scheduler_start mode=parallel processed={} unprocessedDue={} pages={} parallelism={} deadlineHit=false elapsedMs={}",
+                    processed, deferred, pageIndex + 1, parallelism, elapsedMs);
+        }
+    }
+
+    /**
+     * Process one connection on a worker thread. Returns {@code true} if a permit was acquired
+     * and the connection was synced (success or handled failure), {@code false} if the provider
+     * gate deferred it — in which case it is left eligible for the next sweep.
+     */
+    private boolean processConnection(CalendarConnection connection) {
+        CalendarProviderType provider = connection.getProvider();
+        if (!concurrencyGate.tryAcquire(provider, providerAcquireTimeoutMs)) {
+            // Provider saturated within the short acquire window — do NOT block the worker;
+            // defer this connection to the next sweep (still eligible via the due-query). This
+            // is what keeps a saturated provider from starving the other provider's work.
+            return false;
+        }
+        long perConnectionStart = System.nanoTime();
+        try {
+            txTemplate.executeWithoutResult(status -> syncOne(connection));
+        } catch (RuntimeException ex) {
+            // Per-connection tx already rolled back; markFailure was attempted inside.
+            // Don't let one bad connection abort the whole sweep.
+            log.warn("calendar_sync_scheduler_connection_uncaught connectionId={} userId={}",
+                    connection.getId(), connection.getUserId(), ex);
+        } finally {
+            concurrencyGate.release(provider);
+            perConnectionTimer.record(System.nanoTime() - perConnectionStart, TimeUnit.NANOSECONDS);
+        }
+        return true;
+    }
+
+    /**
+     * Await one submitted connection task, bounded by the sweep deadline (plus a small grace so
+     * an in-flight provider call already past the deadline can still commit rather than being
+     * abandoned mid-write). Returns the task result, or {@code null} if the wait timed out or
+     * was interrupted.
+     */
+    private Boolean awaitConnection(Future<Boolean> future, Instant deadline) {
+        long graceMillis = 2000L;
+        long remainingMillis = Duration.between(Instant.now(), deadline).toMillis() + graceMillis;
+        try {
+            return future.get(Math.max(0L, remainingMillis), TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException ex) {
+            // The task is still running past the drain budget. Do not cancel with interrupt —
+            // that could abort a provider write mid-flight; let it finish and commit its own
+            // REQUIRES_NEW tx. It simply isn't counted as processed this sweep.
+            future.cancel(false);
+            return null;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (java.util.concurrent.ExecutionException ex) {
+            // processConnection swallows per-connection RuntimeExceptions, so reaching here is
+            // unexpected; treat as processed-with-error so we don't loop on it.
+            log.warn("calendar_sync_scheduler_task_failed", ex.getCause());
+            return Boolean.TRUE;
+        }
     }
 
     private void syncOne(CalendarConnection connection) {
@@ -152,13 +424,18 @@ public class CalendarSyncScheduler {
         // Log name is provider-neutral; the actual provider is on the `provider` tag.
         // Historical name was `microsoft_incremental_sync_*` which lied for Google
         // connections (audit fix #5).
-        log.info("calendar_incremental_sync_start connectionId={} userId={} provider={} hasCursor={}",
+        log.debug("calendar_incremental_sync_start connectionId={} userId={} provider={} hasCursor={}",
                 connection.getId(), connection.getUserId(), providerTag, expectedCursor != null);
         try {
                 ExternalCalendarSyncClient.SyncBatch batch =
                         syncClient.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
-                log.info("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount={} isFullResync={} nextCursorPresent={}",
-                        connection.getId(), providerTag, batch.events().size(), batch.fullResyncWindow(), batch.nextCursor() != null);
+                if (batch.events().isEmpty() && !batch.fullResyncWindow()) {
+                    log.debug("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount=0 isFullResync=false nextCursorPresent={}",
+                            connection.getId(), providerTag, batch.nextCursor() != null);
+                } else {
+                    log.info("calendar_incremental_sync_batch_received connectionId={} provider={} eventCount={} isFullResync={} nextCursorPresent={}",
+                            connection.getId(), providerTag, batch.events().size(), batch.fullResyncWindow(), batch.nextCursor() != null);
+                }
                 ingestionService.upsertEvents(connection.getId(), batch.events(), SyncSourceAttribution.PULL_SYNC);
                 if (batch.events().isEmpty()) {
                     meterRegistry.counter("calendar.sync.provider_drift_detected.total", "provider", providerTag, "source", "PULL_SYNC")
@@ -180,9 +457,14 @@ public class CalendarSyncScheduler {
                         connection.getLastTokenExpiresAt(),
                         connection.getLastSyncedAt(),
                         "scheduler_incremental_success");
-                log.info("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
-                        connection.getId(), connection.getUserId(), previousStatus,
-                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart));
+                long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart);
+                if (previousStatus != CalendarConnectionStatus.ACTIVE || !batch.events().isEmpty()) {
+                    log.info("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
+                            connection.getId(), connection.getUserId(), previousStatus, elapsedMs);
+                } else {
+                    log.debug("calendar_sync_scheduler_transition connectionId={} userId={} prevStatus={} nextStatus=ACTIVE mode=incremental elapsedMs={}",
+                            connection.getId(), connection.getUserId(), previousStatus, elapsedMs);
+                }
             } catch (ExternalCalendarSyncClient.SyncTokenInvalidException invalid) {
                 connectionWriteService.invalidateProviderCursor(connection.getId(), Instant.now(), "scheduler_sync_cursor_invalidated");
                 ExternalCalendarSyncClient.SyncBatch fullBatch =

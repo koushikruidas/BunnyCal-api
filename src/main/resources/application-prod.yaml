@@ -139,6 +139,17 @@ logging:
 
 calendar:
   sync:
+    # Phase 4 parallel sweep — default OFF; flip CALENDAR_SYNC_PARALLEL_ENABLED=true per
+    # environment once validated. sweep-max-runtime MUST stay below the scheduler's
+    # @SchedulerLock lockAtMostFor (PT2M) so sweeps never overlap across replicas.
+    parallel-enabled: ${CALENDAR_SYNC_PARALLEL_ENABLED:false}
+    parallelism: ${CALENDAR_SYNC_PARALLELISM:8}
+    provider-acquire-timeout-ms: ${CALENDAR_SYNC_PROVIDER_ACQUIRE_TIMEOUT_MS:150}
+    sweep-max-runtime: ${CALENDAR_SYNC_SWEEP_MAX_RUNTIME:PT25S}
+    # Webhook-fresh poll gating — default OFF; flip CALENDAR_SYNC_WEBHOOK_FRESH_GATING_ENABLED
+    # per environment only after the parallel sweep is stable and webhook delivery is healthy.
+    webhook-fresh-gating-enabled: ${CALENDAR_SYNC_WEBHOOK_FRESH_GATING_ENABLED:false}
+    webhook-fresh-backstop: ${CALENDAR_SYNC_WEBHOOK_FRESH_BACKSTOP:PT15M}
     incremental:
       enabled: ${CALENDAR_SYNC_INCREMENTAL_ENABLED:true}
       shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:false}

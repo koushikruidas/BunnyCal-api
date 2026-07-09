@@ -6,6 +6,8 @@ import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.BookingId;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.common.logging.OpsLogSupport;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.domain.ConferencingEventMapping;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import java.util.UUID;
@@ -60,11 +62,25 @@ public class ConferencingCoordinator {
         return switch (providerType) {
             case NONE -> {
                 log.info("conferencing_prepare_none bookingId={} hostId={}", bookingId, booking.getHostId());
+                OpsLoggers.CONFERENCE.info(
+                        "conference_create_skipped bookingId={} provider={} hostId={} eventTypeId={} source={} reasonCode={} hasJoinUrl={}",
+                        bookingId, ConferencingProviderType.NONE, booking.getHostId(), booking.getEventTypeId(),
+                        "conferencing_provider_none", "NO_PROVIDER", false);
                 yield ConferencingInstruction.none();
             }
-            case CUSTOM_URL -> instructionFromCustomUrl(eventType);
+            case CUSTOM_URL -> {
+                OpsLoggers.CONFERENCE.info(
+                        "conference_create_skipped bookingId={} provider={} hostId={} eventTypeId={} source={} reasonCode={} hasJoinUrl={}",
+                        bookingId, ConferencingProviderType.CUSTOM_URL, booking.getHostId(), booking.getEventTypeId(),
+                        "custom_conference_url", "CUSTOM_URL", eventType.getCustomConferenceUrl() != null && !eventType.getCustomConferenceUrl().isBlank());
+                yield instructionFromCustomUrl(eventType);
+            }
             case GOOGLE_MEET, MICROSOFT_TEAMS -> {
                 log.info("conferencing_prepare_native_meet bookingId={} hostId={}", bookingId, booking.getHostId());
+                OpsLoggers.CONFERENCE.info(
+                        "conference_create_skipped bookingId={} provider={} hostId={} eventTypeId={} source={} reasonCode={} hasJoinUrl={}",
+                        bookingId, providerType, booking.getHostId(), booking.getEventTypeId(),
+                        "native_calendar_provider", "NATIVE_PROVIDER", false);
                 yield ConferencingInstruction.requestNativeMeet(providerType);
             }
             case ZOOM -> createExternalMeeting(booking, eventType, providerType);
@@ -135,6 +151,9 @@ public class ConferencingCoordinator {
             log.info("conferencing_prepare_created bookingId={} provider={} meetingId={} joinUrl={} hostUrlPresent={}",
                     booking.getId(), providerType, details.meetingId(), details.joinUrl(),
                     details.hostUrl() != null && !details.hostUrl().isBlank());
+            OpsLoggers.CONFERENCE.info(
+                    "conference_create_success bookingId={} provider={} hostId={} eventTypeId={} source={} hasJoinUrl={}",
+                    booking.getId(), providerType, booking.getHostId(), booking.getEventTypeId(), "conferencing_provider", true);
             return ConferencingInstruction.urlEmbedded(providerType, details.joinUrl(),
                     details.hostUrl(), details.meetingId());
         });
@@ -176,6 +195,10 @@ public class ConferencingCoordinator {
             } catch (RuntimeException ex) {
                 mapping.setLastError(truncateError(ex.getMessage()));
                 mappingRepository.save(mapping);
+                OpsLoggers.CONFERENCE.warn(
+                        "conference_create_failed bookingId={} provider={} hostId={} eventTypeId={} eventType={} reasonCode={} message={}",
+                        booking.getId(), providerType, booking.getHostId(), booking.getEventTypeId(), "BOOKING_CANCELLED",
+                        "CONFERENCE_CREATE_FAILED", OpsLogSupport.truncate(ex.getMessage(), 160));
                 throw ex;
             }
         }

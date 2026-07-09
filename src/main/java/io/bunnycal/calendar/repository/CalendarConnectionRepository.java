@@ -85,6 +85,51 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     java.util.List<CalendarConnection> findDueForSyncBatch(@Param("now") Instant now, Pageable pageable);
 
     /**
+     * Phase 4 (calendar.sync.webhook-fresh-gating-enabled): webhook-aware variant of
+     * {@link #findDueForSyncBatch}. A connection with a fresh, non-expired webhook channel
+     * receives real-time changes via webhook, so it only needs a slow backstop poll — it is
+     * returned only once {@code lastSyncedAt} is older than {@code backstopThreshold}
+     * (= now − webhook-fresh-backstop). Connections that are watchless or whose channel has
+     * expired keep the every-tick cadence, exactly as today.
+     *
+     * <p>Branches (ACTIVE/SYNCING):
+     * <ul>
+     *   <li>watchless/expiring — {@code webhookChannelExpiresAt IS NULL OR <= now}: every tick;</li>
+     *   <li>fresh watch but backstop-stale — {@code webhookChannelExpiresAt > now AND
+     *       (lastSyncedAt IS NULL OR lastSyncedAt <= backstopThreshold)}: backstop only.</li>
+     * </ul>
+     * Plus the unchanged backed-off {@code FAILED/ERROR AND nextRetryAt <= now} branch. Same
+     * deterministic ordering as {@link #findDueForSyncBatch} so pagination/parallelism stay
+     * stable. REVOKED is excluded (reconnect is the only exit).
+     */
+    @Query("""
+            SELECT c
+            FROM CalendarConnection c
+            WHERE (
+                    c.status IN (
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ACTIVE,
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.SYNCING)
+                    AND (
+                        c.webhookChannelExpiresAt IS NULL
+                        OR c.webhookChannelExpiresAt <= :now
+                        OR c.lastSyncedAt IS NULL
+                        OR c.lastSyncedAt <= :backstopThreshold
+                    )
+                  )
+               OR (c.status IN (
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.FAILED,
+                        io.bunnycal.calendar.domain.CalendarConnectionStatus.ERROR)
+                   AND (c.nextRetryAt IS NULL OR c.nextRetryAt <= :now))
+            ORDER BY
+              CASE WHEN c.nextRetryAt IS NULL THEN 0 ELSE 1 END,
+              c.nextRetryAt ASC,
+              c.id ASC
+            """)
+    java.util.List<CalendarConnection> findDueForSyncBatchGated(@Param("now") Instant now,
+                                                                @Param("backstopThreshold") Instant backstopThreshold,
+                                                                Pageable pageable);
+
+    /**
      * Phase 3: cheap count of due rows for the {@code calendar.sync.due_queue_size} gauge.
      */
     @Query("""

@@ -17,6 +17,7 @@ import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.common.time.TimeSource;
 import java.time.Duration;
@@ -117,6 +118,10 @@ public class EventTypeService {
                 .build();
 
         EventType saved = eventTypeRepository.save(eventType);
+        OpsLoggers.HOST.info(
+                "event_type_created hostId={} eventTypeId={} eventTypeKind={} eventTypeName=\"{}\" slug={} durationMin={} published={}",
+                userId, saved.getId(), saved.getKind(), saved.getName(), saved.getSlug(),
+                saved.getDuration().toMinutes(), saved.isPublished());
         return toSummary(saved, username);
     }
 
@@ -144,6 +149,9 @@ public class EventTypeService {
                 new OutboxPayloadEnvelope(
                         java.util.UUID.randomUUID().toString(),
                         EventTypeLifecycleOutboxPayload.EVENT_PUBLISHED, 1, payload));
+        OpsLoggers.HOST.info(
+                "event_type_published hostId={} eventTypeId={} eventTypeKind={} eventTypeName=\"{}\" published={}",
+                actingUserId, eventType.getId(), eventType.getKind(), eventType.getName(), true);
 
         return publishReadinessService.publishReadinessResponse(eventType);
     }
@@ -153,6 +161,9 @@ public class EventTypeService {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
         eventType.setPublished(false);
         eventTypeRepository.save(eventType);
+        OpsLoggers.HOST.info(
+                "event_type_unpublished hostId={} eventTypeId={} eventTypeKind={} eventTypeName=\"{}\" published={}",
+                actingUserId, eventType.getId(), eventType.getKind(), eventType.getName(), false);
         return publishReadinessService.publishReadinessResponse(eventType);
     }
 
@@ -181,6 +192,9 @@ public class EventTypeService {
         }
         eventType.setDeletedAt(timeSource.now());
         eventTypeRepository.save(eventType);
+        OpsLoggers.HOST.info(
+                "event_type_archived hostId={} eventTypeId={} eventTypeKind={} eventTypeName=\"{}\" archived={}",
+                actingUserId, eventType.getId(), eventType.getKind(), eventType.getName(), true);
     }
 
     @Transactional(readOnly = true)
@@ -287,6 +301,7 @@ public class EventTypeService {
                 "/public/" + username + "/" + eventType.getSlug(),
                 eventType.getKind(),
                 eventType.getCapacity(),
+                (int) eventType.getDuration().toMinutes(),
                 eventType.isPublished(),
                 degraded,
                 availability,

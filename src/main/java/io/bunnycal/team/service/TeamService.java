@@ -13,6 +13,7 @@ import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.team.domain.InvitationStatus;
 import io.bunnycal.team.domain.Team;
@@ -121,6 +122,10 @@ public class TeamService {
                 .joinedAt(timeSource.now())
                 .build());
 
+        OpsLoggers.HOST.info(
+                "team_created hostId={} teamId={} teamName=\"{}\" slug={} memberCount={}",
+                ownerUserId, team.getId(), team.getName(), team.getSlug(), 1);
+
         return toTeamResponse(team);
     }
 
@@ -170,6 +175,10 @@ public class TeamService {
         User removedUser = userRepository.findById(memberUserId).orElse(null);
         publishMemberRemovedEvent(member, team, actor, removedUser);
         teamMemberRepository.delete(member);
+        OpsLoggers.HOST.info(
+                "team_member_removed hostId={} teamId={} teamName=\"{}\" memberUserId={} memberEmail={} actorUserId={}",
+                actingUserId, team.getId(), team.getName(), memberUserId,
+                removedUser == null ? "" : removedUser.getEmail(), actingUserId);
     }
 
     // ── Invitations ──────────────────────────────────────────────────────────
@@ -217,6 +226,9 @@ public class TeamService {
                 .build());
 
         publishInvitationCreatedEvent(invitation, team, inviter);
+        OpsLoggers.HOST.info(
+                "team_member_invite_sent hostId={} teamId={} teamName=\"{}\" inviteId={} inviteeEmail={} role={}",
+                actingUserId, team.getId(), team.getName(), invitation.getId(), invitation.getInvitedEmail(), invitation.getRole());
 
         return toInvitationResponse(invitation);
     }
@@ -266,6 +278,10 @@ public class TeamService {
 
         invitation.setStatus(InvitationStatus.ACCEPTED);
         teamInvitationRepository.save(invitation);
+        OpsLoggers.HOST.info(
+                "team_member_invite_accepted hostId={} teamId={} inviteId={} inviteeEmail={} memberUserId={} role={}",
+                invitation.getInvitedBy(), invitation.getTeamId(), invitation.getId(), invitation.getInvitedEmail(),
+                acceptingUserId, invitation.getRole());
 
         return toMemberResponse(member, user);
     }

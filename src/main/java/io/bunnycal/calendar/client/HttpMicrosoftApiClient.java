@@ -344,7 +344,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     private SyncWindow listEvents(String accessToken, String pathOrDeltaLink) {
         try {
             URI uri = URI.create(pathOrDeltaLink);
-            graphLog.info("microsoft_graph_request url=\"{}\"", pathOrDeltaLink.length() > 300 ? pathOrDeltaLink.substring(0, 300) + "..." : pathOrDeltaLink);
+            graphLog.debug("microsoft_graph_request url=\"{}\"", pathOrDeltaLink.length() > 300 ? pathOrDeltaLink.substring(0, 300) + "..." : pathOrDeltaLink);
             ResponseEntity<Map> response = graphClient.get()
                     .uri(uri)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
@@ -364,7 +364,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
             if (delta == null) {
                 delta = asStringLoose(response.getBody() == null ? null : response.getBody().get("@odata.nextLink"));
             }
-            graphLog.info("microsoft_graph_response_parsed url_prefix=\"{}\" rawValueCount={} hasDeltaLink={}",
+            graphLog.debug("microsoft_graph_response_parsed url_prefix=\"{}\" rawValueCount={} hasDeltaLink={}",
                     pathOrDeltaLink.length() > 80 ? pathOrDeltaLink.substring(0, 80) : pathOrDeltaLink,
                     events.size(), delta != null);
             return new SyncWindow(List.copyOf(events), delta);
@@ -413,7 +413,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                     nextUrl = page.nextLink;
                 }
             }
-            graphLog.info("microsoft_calendar_view_delta_complete calendarId={} pages={} events={} hasDeltaLink={}",
+            graphLog.debug("microsoft_calendar_view_delta_complete calendarId={} pages={} events={} hasDeltaLink={}",
                     externalCalendarId, pageCount, events.size(), finalDeltaLink != null);
             return new SyncWindow(List.copyOf(events), finalDeltaLink);
         } catch (RestClientException ex) {
@@ -423,7 +423,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
 
     private PageReadResult readDeltaPage(String accessToken, String pathOrLink) {
         URI uri = URI.create(pathOrLink);
-        graphLog.info("microsoft_graph_request url=\"{}\"",
+        graphLog.debug("microsoft_graph_request url=\"{}\"",
                 pathOrLink.length() > 300 ? pathOrLink.substring(0, 300) + "..." : pathOrLink);
         ResponseEntity<Map> response = graphClient.get()
                 .uri(uri)

@@ -32,7 +32,12 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.availability.repository.EventTypeParticipantRepository;
 import io.bunnycal.booking.dto.PublicParticipantInfo;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.common.logging.OpsLogSupport;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.common.time.TimeConversionService;
+import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.domain.SessionRegistration;
+import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.session.service.ConfirmRegistrationResult;
 import io.bunnycal.session.service.JoinSessionResult;
@@ -81,6 +86,7 @@ public class PublicBookingService {
     private final BookingLifecycleService bookingLifecycleService;
     private final GuestCapabilityTokenService guestCapabilityTokenService;
     private final SessionService sessionService;
+    private final EventSessionRepository eventSessionRepository;
     private final SessionRegistrationRepository sessionRegistrationRepository;
     private final RoundRobinSlotTokenService roundRobinSlotTokenService;
     private final RoundRobinAssignmentService roundRobinAssignmentService;
@@ -115,6 +121,7 @@ public class PublicBookingService {
                                 BookingLifecycleService bookingLifecycleService,
                                 GuestCapabilityTokenService guestCapabilityTokenService,
                                 SessionService sessionService,
+                                EventSessionRepository eventSessionRepository,
                                 SessionRegistrationRepository sessionRegistrationRepository,
                                 RoundRobinSlotTokenService roundRobinSlotTokenService,
                                 RoundRobinAssignmentService roundRobinAssignmentService,
@@ -152,6 +159,7 @@ public class PublicBookingService {
         this.bookingLifecycleService = bookingLifecycleService;
         this.guestCapabilityTokenService = guestCapabilityTokenService;
         this.sessionService = sessionService;
+        this.eventSessionRepository = eventSessionRepository;
         this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.roundRobinSlotTokenService = roundRobinSlotTokenService;
         this.roundRobinAssignmentService = roundRobinAssignmentService;
@@ -186,6 +194,7 @@ public class PublicBookingService {
                                 BookingLifecycleService bookingLifecycleService,
                                 GuestCapabilityTokenService guestCapabilityTokenService,
                                 SessionService sessionService,
+                                EventSessionRepository eventSessionRepository,
                                 SessionRegistrationRepository sessionRegistrationRepository,
                                 RoundRobinSlotTokenService roundRobinSlotTokenService,
                                 RoundRobinAssignmentService roundRobinAssignmentService,
@@ -205,7 +214,7 @@ public class PublicBookingService {
         this(publicBookingTargetResolver, slotService, bookingService, bookingRepository, calendarBusyTimeService,
                 calendarConnectionRepository, calendarService, calendarEventMappingRepository, fencingTokenGenerator,
                 timeConversionService, bookingLifecycleService, guestCapabilityTokenService, sessionService,
-                sessionRegistrationRepository, roundRobinSlotTokenService, roundRobinAssignmentService,
+                eventSessionRepository, sessionRegistrationRepository, roundRobinSlotTokenService, roundRobinAssignmentService,
                 collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
                 participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
@@ -411,13 +420,13 @@ public class PublicBookingService {
                         inviteeAuth.provider(),
                         inviteeAuth.providerUserId()
                 );
-        log.info("booking_hold_created bookingId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={} guestNamePresent={}",
+        OpsLoggers.BOOKING.info("booking_hold_created bookingId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={} guestNamePresent={}",
                 booking.getId(),
                 target.userId(),
                 target.eventTypeId(),
                 booking.getStartTime(),
                 booking.getEndTime(),
-                maskEmail(booking.getGuestEmail()),
+                OpsLogSupport.maskEmail(booking.getGuestEmail()),
                 booking.getGuestName() != null && !booking.getGuestName().isBlank());
 
         var state = bookingRepository.findStateByIdAndHostAndEventType(booking.getId(), target.userId(), target.eventTypeId())
@@ -523,7 +532,7 @@ public class PublicBookingService {
         var state = bookingRepository.findStateByIdAndEventTypeId(result.booking().getId(), target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Booking state missing."));
 
-        log.info("collective_hold_created bookingId={} ownerUserId={} eventTypeId={} participantCount={} start={} end={}",
+        OpsLoggers.BOOKING.info("collective_hold_created bookingId={} ownerUserId={} eventTypeId={} participantCount={} start={} end={}",
                 result.booking().getId(), target.userId(), target.eventTypeId(),
                 result.participantIds().size(), start, end);
 
@@ -553,14 +562,14 @@ public class PublicBookingService {
                 inviteeAuth.providerUserId(),
                 target.holdDuration()
         );
-        log.info("group_registration_held registrationId={} sessionId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={}",
+        OpsLoggers.BOOKING.info("group_registration_held registrationId={} sessionId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={}",
                 result.registrationId(),
                 result.sessionId(),
                 target.userId(),
                 target.eventTypeId(),
                 start,
                 end,
-                maskEmail(request.guestEmail()));
+                OpsLogSupport.maskEmail(request.guestEmail()));
 
         return new PublicHoldResponse(
                 result.registrationId(),
@@ -574,17 +583,28 @@ public class PublicBookingService {
     @Transactional
     public PublicConfirmResponse confirm(String username, String eventTypeSlug, UUID bookingId) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
-
-        if (target.kind() == EventKind.GROUP) {
-            return confirmGroupRegistration(target, bookingId);
+        BookingLogContext context = buildConfirmContext(target, bookingId);
+        long startedAtNanos = System.nanoTime();
+        try {
+            PublicConfirmResponse response;
+            if (target.kind() == EventKind.GROUP) {
+                response = confirmGroupRegistration(target, bookingId);
+            } else if (target.kind() == EventKind.ROUND_ROBIN) {
+                response = confirmRoundRobinBooking(target, bookingId);
+            } else if (target.kind() == EventKind.COLLECTIVE) {
+                response = confirmCollectiveBooking(target, bookingId);
+            } else {
+                response = confirmOneOnOneBooking(target, bookingId);
+            }
+            emitConfirmSuccess(target, bookingId, context, startedAtNanos);
+            return response;
+        } catch (CustomException ex) {
+            emitConfirmRejected(target, bookingId, context, ex, startedAtNanos);
+            throw ex;
+        } catch (RuntimeException ex) {
+            emitConfirmFailed(target, bookingId, context, ex, startedAtNanos);
+            throw ex;
         }
-        if (target.kind() == EventKind.ROUND_ROBIN) {
-            return confirmRoundRobinBooking(target, bookingId);
-        }
-        if (target.kind() == EventKind.COLLECTIVE) {
-            return confirmCollectiveBooking(target, bookingId);
-        }
-        return confirmOneOnOneBooking(target, bookingId);
     }
 
     private PublicConfirmResponse confirmRoundRobinBooking(PublicBookingTargetResolver.ResolvedTarget target,
@@ -934,15 +954,176 @@ public class PublicBookingService {
                 .orElse("UTC");
     }
 
-    private static String maskEmail(String email) {
-        if (email == null || email.isBlank()) {
-            return "";
+    private BookingLogContext buildConfirmContext(PublicBookingTargetResolver.ResolvedTarget target, UUID aggregateId) {
+        if (target.kind() == EventKind.GROUP) {
+            return sessionRegistrationRepository.findByIdAndHostId(aggregateId, target.userId())
+                    .map(registration -> {
+                        EventSession session = eventSessionRepository.findById(registration.getSessionId()).orElse(null);
+                        return new BookingLogContext(
+                                registration.getId(),
+                                registration.getSessionId(),
+                                target.userId(),
+                                target.eventTypeId(),
+                                registration.getGuestEmail(),
+                                registration.getGuestName(),
+                                session == null ? null : session.getStartTime(),
+                                session == null ? null : session.getEndTime());
+                    })
+                    .orElse(new BookingLogContext(aggregateId, null, target.userId(), target.eventTypeId(), null, null, null, null));
         }
-        int at = email.indexOf('@');
-        if (at <= 1) {
-            return "***";
+        return bookingRepository.findAnyByIdAndEventTypeId(aggregateId, target.eventTypeId())
+                .map(booking -> new BookingLogContext(
+                        booking.getId(),
+                        null,
+                        booking.getHostId(),
+                        booking.getEventTypeId(),
+                        booking.getGuestEmail(),
+                        booking.getGuestName(),
+                        booking.getStartTime(),
+                        booking.getEndTime()))
+                .orElse(new BookingLogContext(aggregateId, null, target.userId(), target.eventTypeId(), null, null, null, null));
+    }
+
+    private void emitConfirmSuccess(PublicBookingTargetResolver.ResolvedTarget target,
+                                    UUID aggregateId,
+                                    BookingLogContext context,
+                                    long startedAtNanos) {
+        long elapsedMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        if (target.kind() == EventKind.GROUP) {
+            OpsLoggers.BOOKING.info(
+                    "group_registration_flow_completed registrationId={} sessionId={} hostId={} eventTypeId={} guestEmail={} guestNamePresent={} startTimeUtc={} endTimeUtc={} result=SUCCESS reasonCode=NONE slow={} elapsedMs={}",
+                    aggregateId,
+                    context.sessionId(),
+                    context.hostId(),
+                    context.eventTypeId(),
+                    OpsLogSupport.maskEmail(context.guestEmail()),
+                    context.guestName() != null && !context.guestName().isBlank(),
+                    context.startTime(),
+                    context.endTime(),
+                    elapsedMs > 2000,
+                    elapsedMs);
+            return;
         }
-        return email.charAt(0) + "***" + email.substring(at);
+        OpsLoggers.BOOKING.info(
+                "booking_flow_completed bookingId={} hostId={} eventTypeId={} guestEmail={} guestNamePresent={} startTimeUtc={} endTimeUtc={} result=SUCCESS reasonCode=NONE slow={} elapsedMs={}",
+                aggregateId,
+                context.hostId(),
+                context.eventTypeId(),
+                OpsLogSupport.maskEmail(context.guestEmail()),
+                context.guestName() != null && !context.guestName().isBlank(),
+                context.startTime(),
+                context.endTime(),
+                elapsedMs > 2000,
+                elapsedMs);
+    }
+
+    private void emitConfirmRejected(PublicBookingTargetResolver.ResolvedTarget target,
+                                     UUID aggregateId,
+                                     BookingLogContext context,
+                                     CustomException exception,
+                                     long startedAtNanos) {
+        String reasonCode = OpsLogSupport.bookingReasonCode(exception);
+        long elapsedMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        if (target.kind() == EventKind.GROUP) {
+            OpsLoggers.BOOKING.info(
+                    "group_registration_rejected registrationId={} sessionId={} hostId={} eventTypeId={} guestEmail={} reasonCode={} message={}",
+                    aggregateId,
+                    context.sessionId(),
+                    context.hostId(),
+                    context.eventTypeId(),
+                    OpsLogSupport.maskEmail(context.guestEmail()),
+                    reasonCode,
+                    OpsLogSupport.truncate(exception.getMessage(), 160));
+            OpsLoggers.BOOKING.info(
+                    "group_registration_flow_completed registrationId={} sessionId={} hostId={} eventTypeId={} guestEmail={} startTimeUtc={} endTimeUtc={} result=REJECTED reasonCode={} slow={} elapsedMs={}",
+                    aggregateId,
+                    context.sessionId(),
+                    context.hostId(),
+                    context.eventTypeId(),
+                    OpsLogSupport.maskEmail(context.guestEmail()),
+                    context.startTime(),
+                    context.endTime(),
+                    reasonCode,
+                    elapsedMs > 2000,
+                    elapsedMs);
+            return;
+        }
+        OpsLoggers.BOOKING.info(
+                "booking_rejected bookingId={} hostId={} eventTypeId={} guestEmail={} reasonCode={} message={}",
+                aggregateId,
+                context.hostId(),
+                context.eventTypeId(),
+                OpsLogSupport.maskEmail(context.guestEmail()),
+                reasonCode,
+                OpsLogSupport.truncate(exception.getMessage(), 160));
+        OpsLoggers.BOOKING.info(
+                "booking_flow_completed bookingId={} hostId={} eventTypeId={} guestEmail={} startTimeUtc={} endTimeUtc={} result=REJECTED reasonCode={} slow={} elapsedMs={}",
+                aggregateId,
+                context.hostId(),
+                context.eventTypeId(),
+                OpsLogSupport.maskEmail(context.guestEmail()),
+                context.startTime(),
+                context.endTime(),
+                reasonCode,
+                elapsedMs > 2000,
+                elapsedMs);
+    }
+
+    private void emitConfirmFailed(PublicBookingTargetResolver.ResolvedTarget target,
+                                   UUID aggregateId,
+                                   BookingLogContext context,
+                                   RuntimeException exception,
+                                   long startedAtNanos) {
+        long elapsedMs = Duration.ofNanos(System.nanoTime() - startedAtNanos).toMillis();
+        if (target.kind() == EventKind.GROUP) {
+            OpsLoggers.BOOKING.warn(
+                    "group_registration_confirmation_failed registrationId={} sessionId={} hostId={} eventTypeId={} guestEmail={} reasonCode=INTERNAL_ERROR message={}",
+                    aggregateId,
+                    context.sessionId(),
+                    context.hostId(),
+                    context.eventTypeId(),
+                    OpsLogSupport.maskEmail(context.guestEmail()),
+                    OpsLogSupport.truncate(exception.getMessage(), 160));
+            OpsLoggers.BOOKING.info(
+                    "group_registration_flow_completed registrationId={} sessionId={} hostId={} eventTypeId={} guestEmail={} startTimeUtc={} endTimeUtc={} result=FAILED reasonCode=INTERNAL_ERROR slow={} elapsedMs={}",
+                    aggregateId,
+                    context.sessionId(),
+                    context.hostId(),
+                    context.eventTypeId(),
+                    OpsLogSupport.maskEmail(context.guestEmail()),
+                    context.startTime(),
+                    context.endTime(),
+                    elapsedMs > 2000,
+                    elapsedMs);
+            return;
+        }
+        OpsLoggers.BOOKING.warn(
+                "booking_confirmation_failed bookingId={} hostId={} eventTypeId={} guestEmail={} reasonCode=INTERNAL_ERROR message={}",
+                aggregateId,
+                context.hostId(),
+                context.eventTypeId(),
+                OpsLogSupport.maskEmail(context.guestEmail()),
+                OpsLogSupport.truncate(exception.getMessage(), 160));
+        OpsLoggers.BOOKING.info(
+                "booking_flow_completed bookingId={} hostId={} eventTypeId={} guestEmail={} startTimeUtc={} endTimeUtc={} result=FAILED reasonCode=INTERNAL_ERROR slow={} elapsedMs={}",
+                aggregateId,
+                context.hostId(),
+                context.eventTypeId(),
+                OpsLogSupport.maskEmail(context.guestEmail()),
+                context.startTime(),
+                context.endTime(),
+                elapsedMs > 2000,
+                elapsedMs);
+    }
+
+    private record BookingLogContext(UUID aggregateId,
+                                     UUID sessionId,
+                                     UUID hostId,
+                                     UUID eventTypeId,
+                                     String guestEmail,
+                                     String guestName,
+                                     Instant startTime,
+                                     Instant endTime) {
     }
 
     private static SlotResponse notReadyAvailability(UUID userId,

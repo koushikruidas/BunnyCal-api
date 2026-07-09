@@ -56,6 +56,9 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
     Optional<EventSession> findByHostIdAndEventTypeIdAndStartTime(
             UUID hostId, UUID eventTypeId, Instant startTime);
 
+    List<EventSession> findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
+            UUID eventTypeId, Instant rangeStart, Instant rangeEnd);
+
     @Query(value = """
             SELECT
                 s.id AS sessionId,

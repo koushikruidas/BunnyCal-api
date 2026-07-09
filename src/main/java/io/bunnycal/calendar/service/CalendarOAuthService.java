@@ -16,6 +16,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URLEncoder;
@@ -89,7 +90,7 @@ public class CalendarOAuthService {
         String effectiveSource = (source == null || source.isBlank()) ? OAuthStateService.SOURCE_DASHBOARD : source;
         String state = stateService.generate(userId, effectiveSource, returnTo, bookingSessionId);
         String clientId = properties.getClientId();
-        log.info("DEBUG Google clientId='{}'", clientId);
+        log.debug("google_oauth_client_id_present clientIdPresent={}", clientId != null && !clientId.isBlank());
         Assert.hasText(clientId, "Google clientId must not be empty");
         String scope = String.join(" ", properties.getScopes());
         return "https://accounts.google.com/o/oauth2/v2/auth"
@@ -195,6 +196,10 @@ public class CalendarOAuthService {
             setupRequestService.markAllCompletedForTarget(userId);
         }
         log.info("{{\"event\":\"calendar_connected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
+        OpsLoggers.HOST.info(
+                "calendar_connection_created hostId={} connectionId={} provider={} status={} scopes={} reauth={}",
+                userId, saved.getId(), GOOGLE_PROVIDER, saved.getStatus(),
+                saved.getScopes() == null ? 0 : saved.getScopes().size(), existing.isPresent());
         return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
@@ -265,6 +270,9 @@ public class CalendarOAuthService {
         // the row to REVOKED so any racing scheduler tick is already filtered out.
         connectionWriteService.clearRefreshTokenCiphertext(connection.getId(), "oauth_disconnect_clear_token");
         log.info("{{\"event\":\"calendar_disconnected\",\"userId\":\"{}\",\"provider\":\"GOOGLE\"}}", userId);
+        OpsLoggers.HOST.info(
+                "calendar_connection_disconnected hostId={} connectionId={} provider={} reason={}",
+                userId, connection.getId(), GOOGLE_PROVIDER, "USER_INITIATED");
     }
 
     private static String enc(String value) {

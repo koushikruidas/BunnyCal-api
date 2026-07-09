@@ -63,6 +63,7 @@ class PublicBookingServiceTest {
     @Mock BookingLifecycleService bookingLifecycleService;
     @Mock GuestCapabilityTokenService guestCapabilityTokenService;
     @Mock io.bunnycal.session.service.SessionService sessionService;
+    @Mock io.bunnycal.session.repository.EventSessionRepository eventSessionRepository;
     @Mock io.bunnycal.session.repository.SessionRegistrationRepository sessionRegistrationRepository;
     @Mock RoundRobinSlotTokenService roundRobinSlotTokenService;
     @Mock RoundRobinAssignmentService roundRobinAssignmentService;
@@ -100,6 +101,7 @@ class PublicBookingServiceTest {
                 bookingLifecycleService,
                 guestCapabilityTokenService,
                 sessionService,
+                eventSessionRepository,
                 sessionRegistrationRepository,
                 roundRobinSlotTokenService,
                 roundRobinAssignmentService,
