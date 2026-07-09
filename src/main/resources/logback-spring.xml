@@ -7,7 +7,7 @@
     <!-- ========================= -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss} %-5level %logger{24} - %replace(%msg){'[\r\n]+',' | '} cid=%X{correlationId} bid=%X{bookingId} sid=%X{sessionId}%n</pattern>
+            <pattern>%d{HH:mm:ss} %-5level %logger{24} - %replace(%msg){'[\r\n]+',' | '}%replace(%mdc{correlationId}){'^(.+)$',' cid=$1'}%replace(%mdc{bookingId}){'^(.+)$',' bid=$1'}%replace(%mdc{sessionId}){'^(.+)$',' sid=$1'}%n</pattern>
         </encoder>
     </appender>
 
@@ -23,7 +23,10 @@
             <totalSizeCap>400MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger - %msg cid=%X{correlationId:-} bid=%X{bookingId:-} sid=%X{sessionId:-} etid=%X{eventTypeId:-} hid=%X{hostId:-} xid=%X{externalEventId:-}%n</pattern>
+            <!-- Trace ids append only when set. eventTypeId/hostId had no MDC.put call sites and
+                 always printed empty; externalEventId is already carried in the message bodies
+                 that populate it. -->
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%replace(%mdc{correlationId}){'^(.+)$',' cid=$1'}%replace(%mdc{bookingId}){'^(.+)$',' bid=$1'}%replace(%mdc{sessionId}){'^(.+)$',' sid=$1'}%n</pattern>
         </encoder>
     </appender>
 
@@ -39,7 +42,7 @@
             <totalSizeCap>350MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
-            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{48} - %msg cid=%X{correlationId:-} bid=%X{bookingId:-} sid=%X{sessionId:-} etid=%X{eventTypeId:-} hid=%X{hostId:-}%n</pattern>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level %logger{48} - %msg%replace(%mdc{correlationId}){'^(.+)$',' cid=$1'}%replace(%mdc{bookingId}){'^(.+)$',' bid=$1'}%replace(%mdc{sessionId}){'^(.+)$',' sid=$1'}%n</pattern>
         </encoder>
     </appender>
 
@@ -66,6 +69,12 @@
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="APP_FILE"/>
     </root>
+
+    <!-- Calendar sync re-observes every event on every sweep, so the per-event trail
+         (filter_decision, apply_attempt, apply_result, upsert, recomputed) is DEBUG and the
+         steady state logs one summary line per connection. To diagnose an ingest/projection
+         issue, set BUNNYCAL_CALENDAR_LOG_LEVEL=DEBUG and reproduce. -->
+    <logger name="io.bunnycal.calendar" level="${BUNNYCAL_CALENDAR_LOG_LEVEL:-INFO}"/>
 
     <logger name="io.bunnycal.ops" level="INFO" additivity="false">
         <appender-ref ref="CONSOLE"/>

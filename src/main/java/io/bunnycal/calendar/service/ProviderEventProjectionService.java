@@ -163,7 +163,7 @@ public class ProviderEventProjectionService {
             }
 
             ProviderEventVersionComparator.ComparisonResult compare = comparator.compare(incomingVector, persistedVector);
-            log.info("projection_apply_attempt provider={} connectionId={} externalEventId={} compareResult={} incomingSequence={} persistedSequence={} incomingUpdatedAt={} persistedUpdatedAt={}",
+            log.debug("projection_apply_attempt provider={} connectionId={} externalEventId={} compareResult={} incomingSequence={} persistedSequence={} incomingUpdatedAt={} persistedUpdatedAt={}",
                     provider,
                     connectionId,
                     incoming.externalEventId(),
@@ -186,7 +186,8 @@ public class ProviderEventProjectionService {
                     // prior transaction split between the projection commit and the calendar_events write.
                     if (linkedBookingId == null && existing.isPresent()) {
                         counter("sync.projection.external_stable_passthrough.total", provider, "reason", "unlinked_idempotent").increment();
-                        log.info("projection_apply_result provider={} connectionId={} externalEventId={} applied=true reason=external_stable_passthrough",
+                        // Steady-state no-op: unchanged external event re-observed on every sweep.
+                        log.debug("projection_apply_result provider={} connectionId={} externalEventId={} applied=true reason=external_stable_passthrough",
                                 provider, connectionId, incoming.externalEventId());
                         return true;
                     }
@@ -244,7 +245,8 @@ public class ProviderEventProjectionService {
             projection.setPayloadHash(incoming.payloadHash());
             projection.setLastObservedAt(Instant.now());
             repository.saveAndFlush(projection);
-            log.info("projection_observation_applied provider={} projection_version={} terminal_intent_epoch={} {}",
+            // Full lineage detail; projection_apply_result below carries the same outcome at INFO.
+            log.debug("projection_observation_applied provider={} projection_version={} terminal_intent_epoch={} {}",
                     provider,
                     projection.getProjectionVersion(),
                     safeMdc("terminalIntentEpoch"),
@@ -356,7 +358,8 @@ public class ProviderEventProjectionService {
             return BookingLinkResolution.linked(linkage.bookingId().get(), linkage.reason(), linkage.matches());
         }
         counter("sync.projection.booking_linkage.total", provider, "result", linkage.reason()).increment();
-        log.info("provider_event_booking_linkage_absent provider={} connectionId={} externalEventId={} reason={} matches={}",
+        // Expected for any external event that is not a BunnyCal booking.
+        log.debug("provider_event_booking_linkage_absent provider={} connectionId={} externalEventId={} reason={} matches={}",
                 provider, connectionId, externalEventId, linkage.reason(), linkage.matches());
         LinkageClassification classification = "ambiguous".equals(linkage.reason())
                 ? LinkageClassification.RISKY_AMBIGUOUS
