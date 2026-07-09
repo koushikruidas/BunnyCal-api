@@ -20,6 +20,13 @@ public interface MicrosoftApiClient {
 
     String fetchProviderUserId(String accessToken);
 
+    /**
+     * The connected account's display email, from the same Graph identity used by
+     * {@link #fetchProviderUserId}. Distinct from that opaque id — this is what the UI shows.
+     * May return null if Graph exposes neither {@code mail} nor {@code userPrincipalName}.
+     */
+    String fetchAccountEmail(String accessToken);
+
     List<ProviderCalendarInventoryEntry> listCalendars(String accessToken);
 
     List<BusyInterval> fetchBusyIntervals(String accessToken, Instant start, Instant end);
