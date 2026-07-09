@@ -6,10 +6,14 @@ import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.domain.RecurrenceEndMode;
+import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.billing.entitlement.EntitlementService;
 import io.bunnycal.billing.entitlement.Feature;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
@@ -21,6 +25,7 @@ import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.common.time.TimeSource;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -39,6 +44,7 @@ public class EventTypeService {
     private final TimeSource timeSource;
     private final BookingExperienceRepository experienceRepository;
     private final EntitlementService entitlementService;
+    private final GroupEventReservationWindowRepository reservationWindowRepository;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
@@ -49,7 +55,8 @@ public class EventTypeService {
                             OutboxPublisher outboxPublisher,
                             TimeSource timeSource,
                             BookingExperienceRepository experienceRepository,
-                            EntitlementService entitlementService) {
+                            EntitlementService entitlementService,
+                            GroupEventReservationWindowRepository reservationWindowRepository) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -60,6 +67,7 @@ public class EventTypeService {
         this.timeSource = timeSource;
         this.experienceRepository = experienceRepository;
         this.entitlementService = entitlementService;
+        this.reservationWindowRepository = reservationWindowRepository;
     }
 
 
@@ -294,6 +302,9 @@ public class EventTypeService {
         // Evaluate degraded only for COLLECTIVE; other kinds are single-host and always non-degraded.
         boolean degraded = eventType.getKind() == EventKind.COLLECTIVE
                 && publishReadinessService.evaluate(eventType).degraded();
+        GroupSeriesBounds groupSeriesBounds = eventType.getKind() == EventKind.GROUP
+                ? summarizeGroupSeriesBounds(eventType.getId())
+                : GroupSeriesBounds.empty();
         return new EventTypeSummaryResponse(
                 eventType.getId(),
                 eventType.getName(),
@@ -304,10 +315,68 @@ public class EventTypeService {
                 (int) eventType.getDuration().toMinutes(),
                 eventType.isPublished(),
                 degraded,
+                groupSeriesBounds.startDate(),
+                groupSeriesBounds.endDate(),
                 availability,
                 conference,
                 projectionDestination
         );
+    }
+
+    private GroupSeriesBounds summarizeGroupSeriesBounds(UUID eventTypeId) {
+        List<GroupEventReservationWindow> windows = reservationWindowRepository.findByEventTypeId(eventTypeId);
+        if (windows.isEmpty()) return GroupSeriesBounds.empty();
+
+        LocalDate minStart = null;
+        LocalDate maxEnd = null;
+        boolean openEnded = false;
+
+        for (GroupEventReservationWindow window : windows) {
+            LocalDate start = reservationWindowStart(window);
+            if (start != null && (minStart == null || start.isBefore(minStart))) {
+                minStart = start;
+            }
+
+            LocalDate end = reservationWindowEnd(window);
+            if (end == null && isOpenEnded(window)) {
+                openEnded = true;
+            } else if (end != null && (maxEnd == null || end.isAfter(maxEnd))) {
+                maxEnd = end;
+            }
+        }
+
+        return new GroupSeriesBounds(minStart, openEnded ? null : maxEnd);
+    }
+
+    private static LocalDate reservationWindowStart(GroupEventReservationWindow window) {
+        return window.getScheduleType() == ScheduleType.ONE_TIME ? window.getEventDate() : window.getStartDate();
+    }
+
+    private static LocalDate reservationWindowEnd(GroupEventReservationWindow window) {
+        if (window.getScheduleType() == ScheduleType.ONE_TIME) {
+            return window.getEventDate();
+        }
+        if (window.getRecurrenceEndMode() == RecurrenceEndMode.UNTIL_DATE) {
+            return window.getUntilDate();
+        }
+        if (window.getRecurrenceEndMode() == RecurrenceEndMode.OCCURRENCE_COUNT
+                && window.getStartDate() != null
+                && window.getOccurrenceCount() != null
+                && window.getOccurrenceCount() > 0) {
+            return window.getStartDate().plusWeeks(window.getOccurrenceCount() - 1L);
+        }
+        return null;
+    }
+
+    private static boolean isOpenEnded(GroupEventReservationWindow window) {
+        return window.getScheduleType() == ScheduleType.RECURRING
+                && (window.getRecurrenceEndMode() == null || window.getRecurrenceEndMode() == RecurrenceEndMode.NONE);
+    }
+
+    private record GroupSeriesBounds(LocalDate startDate, LocalDate endDate) {
+        private static GroupSeriesBounds empty() {
+            return new GroupSeriesBounds(null, null);
+        }
     }
 
     private static String trimToNull(String value) {

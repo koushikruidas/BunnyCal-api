@@ -7,6 +7,7 @@ import io.bunnycal.sync.reconcile.*;
 import io.bunnycal.sync.reconcile.ReconcileShadowParityClassifier;
 import io.bunnycal.sync.reconcile.PersistedReconcileSnapshotAssembler;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
+import io.bunnycal.sync.retry.SyncRetryPolicy;
 import io.bunnycal.sync.repository.SyncReconcileDecisionLogRepository;
 import io.bunnycal.sync.state.CalendarSyncJob;
 import io.bunnycal.sync.state.SyncDesiredAction;
@@ -15,7 +16,11 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -28,6 +33,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class BookingSyncReconciler {
     private static final Logger log = LoggerFactory.getLogger(BookingSyncReconciler.class);
+    private static final Duration RECONCILE_DECISION_LOG_SUMMARY_WINDOW = Duration.ofMinutes(20);
+    private static final Duration RECONCILE_DECISION_LOG_RETENTION = Duration.ofHours(2);
 
     private final CalendarSyncJobRepository repository;
     private final CalendarService calendarService;
@@ -38,6 +45,7 @@ public class BookingSyncReconciler {
     private final PersistedReconcileSnapshotAssembler snapshotAssembler;
     private final SyncReconcileDecisionLogRepository decisionLogRepository;
     private final ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService;
+    private final SyncRetryPolicy retryPolicy;
     private final Clock clock;
     private final long throttleDelayMs;
     private final Counter checkedCounter;
@@ -48,10 +56,13 @@ public class BookingSyncReconciler {
     private final Counter driftDetectedCount;
     private final Counter repairSuccessCount;
     private final Counter repairFailureCount;
+    private final Counter decisionLogSuppressedCount;
+    private final Counter decisionLogSummaryCount;
     private final MeterRegistry meterRegistry;
     private final Timer convergenceLatency;
     private final boolean externalLifecycleSemanticsEnabled;
     private final TransactionTemplate txTemplate;
+    private final ConcurrentMap<ReconcileDecisionLogKey, ReconcileDecisionLogWindow> decisionLogWindows = new ConcurrentHashMap<>();
 
     public BookingSyncReconciler(CalendarSyncJobRepository repository,
                                  CalendarService calendarService,
@@ -62,6 +73,7 @@ public class BookingSyncReconciler {
                                  PersistedReconcileSnapshotAssembler snapshotAssembler,
                                  SyncReconcileDecisionLogRepository decisionLogRepository,
                                  ExternalTerminalDeleteConvergenceService terminalDeleteConvergenceService,
+                                 SyncRetryPolicy retryPolicy,
                                  PlatformTransactionManager transactionManager,
                                  @Value("${sync.reconcile.throttle-ms:25}") long throttleDelayMs,
                                  @Value("${sync.reconcile.external-lifecycle.enabled:false}") boolean externalLifecycleSemanticsEnabled,
@@ -75,6 +87,7 @@ public class BookingSyncReconciler {
         this.snapshotAssembler = snapshotAssembler;
         this.decisionLogRepository = decisionLogRepository;
         this.terminalDeleteConvergenceService = terminalDeleteConvergenceService;
+        this.retryPolicy = retryPolicy;
         this.clock = Clock.systemUTC();
         this.throttleDelayMs = Math.max(0L, throttleDelayMs);
         this.externalLifecycleSemanticsEnabled = externalLifecycleSemanticsEnabled;
@@ -87,6 +100,8 @@ public class BookingSyncReconciler {
         this.driftDetectedCount = meterRegistry.counter("sync.reconcile.drift_detected.total");
         this.repairSuccessCount = meterRegistry.counter("sync.reconcile.repair_success.total");
         this.repairFailureCount = meterRegistry.counter("sync.reconcile.repair_failure.total");
+        this.decisionLogSuppressedCount = meterRegistry.counter("sync.reconcile.decision_log_suppressed.total");
+        this.decisionLogSummaryCount = meterRegistry.counter("sync.reconcile.decision_log_summary.total");
         this.convergenceLatency = Timer.builder("sync.convergence.latency.ms")
                 .publishPercentileHistogram()
                 .register(meterRegistry);
@@ -134,7 +149,8 @@ public class BookingSyncReconciler {
                             job.getInternalRefId(),
                             job.getProvider(),
                             job.getExternalEventId(),
-                            idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId())));
+                            idempotencyKeyFactory.build(job.getProvider(), job.getInternalRefId()),
+                            job.getSchedulingConnectionId()));
             ReconcileInputSnapshot snapshot = new ReconcileInputSnapshot(
                     job.getId(),
                     job.getInternalRefId(),
@@ -152,14 +168,7 @@ public class BookingSyncReconciler {
 
             ReconcileDecisionResult shadowDecision = evaluator.evaluate(assembly.authoritativeInput());
             persistShadowDecision(assembly.authoritativeInput(), shadowDecision);
-            log.info("reconcile_decision_classified syncJobId={} bookingId={} provider={} decision={} lifecycleState={} suppressReconcile={} rationaleCode={}",
-                    job.getId(),
-                    job.getInternalRefId(),
-                    job.getProvider(),
-                    shadowDecision.decision(),
-                    shadowDecision.lifecycleState(),
-                    shadowDecision.suppressReconcile(),
-                    shadowDecision.rationaleCode());
+            emitReconcileDecisionLog(job, shadowDecision);
             meterRegistry.counter("sync.reconcile.lifecycle_state.total",
                     "provider", job.getProvider(),
                     "state", shadowDecision.lifecycleState().name()).increment();
@@ -219,7 +228,7 @@ public class BookingSyncReconciler {
                 }
                 case MISMATCH -> enqueueRepair(job, SyncDesiredAction.UPDATE, job.getExternalEventId(),
                         "DRIFT_DATA_MISMATCH");
-                case RETRYABLE_FAILURE -> errorCounter.increment();
+                case RETRYABLE_FAILURE -> deferRetryableObserveFailure(job, observed.errorCode());
                 case PERMANENT_FAILURE -> {
                     if (job.getDesiredAction() == SyncDesiredAction.DELETE
                             && "INVALID_REQUEST".equals(observed.errorCode())) {
@@ -237,6 +246,148 @@ public class BookingSyncReconciler {
         } finally {
             clearMdc();
         }
+    }
+
+    private void emitReconcileDecisionLog(CalendarSyncJob job, ReconcileDecisionResult decision) {
+        Instant now = clock.instant();
+        pruneDecisionLogWindows(now);
+        ReconcileDecisionLogKey key = new ReconcileDecisionLogKey(
+                job.getInternalRefId(),
+                job.getProvider(),
+                decision.decision().name(),
+                decision.lifecycleState().name(),
+                decision.suppressReconcile(),
+                decision.rationaleCode());
+        ReconcileDecisionLogOutcome outcome = recordDecisionLogOccurrence(key, now);
+        if (outcome.emitSummary()) {
+            if (isWarningDecision(decision)) {
+                log.warn("reconcile_decision_repeating bookingId={} provider={} decision={} lifecycleState={} suppressReconcile={} rationaleCode={} occurrences={} windowMinutes={} firstSeen={} latestSyncJobId={}",
+                        job.getInternalRefId(),
+                        job.getProvider(),
+                        decision.decision(),
+                        decision.lifecycleState(),
+                        decision.suppressReconcile(),
+                        decision.rationaleCode(),
+                        outcome.occurrences(),
+                        RECONCILE_DECISION_LOG_SUMMARY_WINDOW.toMinutes(),
+                        outcome.firstSeen(),
+                        job.getId());
+            } else {
+                log.info("reconcile_decision_repeating bookingId={} provider={} decision={} lifecycleState={} suppressReconcile={} rationaleCode={} occurrences={} windowMinutes={} firstSeen={} latestSyncJobId={}",
+                        job.getInternalRefId(),
+                        job.getProvider(),
+                        decision.decision(),
+                        decision.lifecycleState(),
+                        decision.suppressReconcile(),
+                        decision.rationaleCode(),
+                        outcome.occurrences(),
+                        RECONCILE_DECISION_LOG_SUMMARY_WINDOW.toMinutes(),
+                        outcome.firstSeen(),
+                        job.getId());
+            }
+            decisionLogSummaryCount.increment();
+            return;
+        }
+        if (outcome.emitFirstOccurrence()) {
+            if (isWarningDecision(decision)) {
+                log.warn("reconcile_decision_classified syncJobId={} bookingId={} provider={} decision={} lifecycleState={} suppressReconcile={} rationaleCode={}",
+                        job.getId(),
+                        job.getInternalRefId(),
+                        job.getProvider(),
+                        decision.decision(),
+                        decision.lifecycleState(),
+                        decision.suppressReconcile(),
+                        decision.rationaleCode());
+            } else {
+                log.info("reconcile_decision_classified syncJobId={} bookingId={} provider={} decision={} lifecycleState={} suppressReconcile={} rationaleCode={}",
+                        job.getId(),
+                        job.getInternalRefId(),
+                        job.getProvider(),
+                        decision.decision(),
+                        decision.lifecycleState(),
+                        decision.suppressReconcile(),
+                        decision.rationaleCode());
+            }
+            return;
+        }
+        decisionLogSuppressedCount.increment();
+    }
+
+    private ReconcileDecisionLogOutcome recordDecisionLogOccurrence(ReconcileDecisionLogKey key, Instant now) {
+        ReconcileDecisionLogWindow updated = decisionLogWindows.compute(key, (ignored, existing) -> {
+            if (existing == null || existing.lastSeen().plus(RECONCILE_DECISION_LOG_RETENTION).isBefore(now)) {
+                return ReconcileDecisionLogWindow.first(now);
+            }
+            long count = existing.occurrences() + 1;
+            Instant lastSummaryAt = existing.lastSummaryAt();
+            long lastSummaryCount = existing.lastSummaryCount();
+            boolean summaryDue = false;
+            if (existing.firstSeen().plus(RECONCILE_DECISION_LOG_SUMMARY_WINDOW).isBefore(now)
+                    || existing.firstSeen().plus(RECONCILE_DECISION_LOG_SUMMARY_WINDOW).equals(now)) {
+                if (lastSummaryAt == null
+                        || lastSummaryAt.plus(RECONCILE_DECISION_LOG_SUMMARY_WINDOW).isBefore(now)
+                        || lastSummaryAt.plus(RECONCILE_DECISION_LOG_SUMMARY_WINDOW).equals(now)) {
+                    summaryDue = true;
+                    lastSummaryAt = now;
+                    lastSummaryCount = count;
+                }
+            }
+            return new ReconcileDecisionLogWindow(
+                    existing.firstSeen(),
+                    now,
+                    count,
+                    lastSummaryAt,
+                    lastSummaryCount,
+                    false,
+                    summaryDue);
+        });
+        return new ReconcileDecisionLogOutcome(
+                updated.emitFirstOccurrence(),
+                updated.emitSummary(),
+                updated.occurrences(),
+                updated.firstSeen());
+    }
+
+    private void pruneDecisionLogWindows(Instant now) {
+        decisionLogWindows.entrySet().removeIf(entry ->
+                entry.getValue().lastSeen().plus(RECONCILE_DECISION_LOG_RETENTION).isBefore(now));
+    }
+
+    private static boolean isWarningDecision(ReconcileDecisionResult decision) {
+        return switch (decision.decision()) {
+            case NO_ACTION, IGNORE_STALE -> false;
+            default -> true;
+        };
+    }
+
+    private record ReconcileDecisionLogKey(
+            UUID bookingId,
+            String provider,
+            String decision,
+            String lifecycleState,
+            boolean suppressReconcile,
+            String rationaleCode) {
+    }
+
+    private record ReconcileDecisionLogWindow(
+            Instant firstSeen,
+            Instant lastSeen,
+            long occurrences,
+            Instant lastSummaryAt,
+            long lastSummaryCount,
+            boolean emitFirstOccurrence,
+            boolean emitSummary) {
+
+        private static ReconcileDecisionLogWindow first(Instant now) {
+            return new ReconcileDecisionLogWindow(now, now, 1, null, 0, true, false);
+        }
+    }
+
+    private record ReconcileDecisionLogOutcome(
+            boolean emitFirstOccurrence,
+            boolean emitSummary,
+            long occurrences,
+            Instant firstSeen) {
     }
 
     private void applyDecision(CalendarSyncJob job,
@@ -299,7 +450,7 @@ public class BookingSyncReconciler {
                     enqueueRepair(job, SyncDesiredAction.UPDATE, job.getExternalEventId(), decision.rationaleCode());
                 }
             }
-            case REQUIRE_RESYNC -> errorCounter.increment();
+            case REQUIRE_RESYNC -> deferRetryableObserveFailure(job, observed.errorCode());
             case REQUIRE_MANUAL_REVIEW -> {
                 String err = observed.errorCode() == null ? decision.rationaleCode() : observed.errorCode();
                 if (decision.lifecycleState() == ExternalLifecycleState.TERMINAL_EXTERNAL_DELETE) {
@@ -346,6 +497,18 @@ public class BookingSyncReconciler {
             noopCounter.increment();
             repairFailureCount.increment();
         }
+    }
+
+    private void deferRetryableObserveFailure(CalendarSyncJob job, String errorCode) {
+        Instant nextRetryAt = retryPolicy.nextRetryAt(job.getAttemptCount());
+        String persistedError = errorCode == null || errorCode.isBlank() ? "PROVIDER_DOWN" : errorCode;
+        int updated = repository.markReconcileRetryable(job.getId(), job.getVersion(), nextRetryAt, persistedError);
+        if (updated == 1) {
+            meterRegistry.counter("sync.reconcile.retry_scheduled.total",
+                    "provider", job.getProvider(),
+                    "error_code", persistedError).increment();
+        }
+        errorCounter.increment();
     }
 
     private void persistShadowDecision(ReconcileInputSnapshot snapshot, ReconcileDecisionResult shadowDecision) {

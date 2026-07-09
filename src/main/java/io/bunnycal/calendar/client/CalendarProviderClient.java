@@ -24,9 +24,11 @@ public interface CalendarProviderClient {
     void deleteEvent(UUID internalId, String provider, String externalEventId,
                      @Nullable UUID schedulingConnectionId);
 
-    boolean eventExists(UUID internalId, String provider, String externalEventId);
+    boolean eventExists(UUID internalId, String provider, String externalEventId,
+                        @Nullable UUID schedulingConnectionId);
 
-    boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey);
+    boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey,
+                         @Nullable UUID schedulingConnectionId);
 
     record CreateEventDetails(String externalEventId,
                               String providerEventUrl,

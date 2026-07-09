@@ -1,5 +1,6 @@
 package io.bunnycal.calendar.service;
 
+import io.bunnycal.calendar.auth.CalendarConnectionStateException;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.CalendarProviderClient;
 import io.bunnycal.calendar.client.CalendarProviderClientRegistry;
@@ -143,7 +144,8 @@ public class DefaultCalendarService implements CalendarService {
             boolean exists = providerClient.eventExists(
                     command.internalId(),
                     command.provider(),
-                    command.externalEventId());
+                    command.externalEventId(),
+                    command.schedulingConnectionId());
             if (!exists) {
                 return ObserveEventResult.missing();
             }
@@ -152,7 +154,8 @@ public class DefaultCalendarService implements CalendarService {
                         command.internalId(),
                         command.provider(),
                         command.externalEventId(),
-                        command.idempotencyKey());
+                        command.idempotencyKey(),
+                        command.schedulingConnectionId());
                 if (!matches) {
                     return ObserveEventResult.mismatch();
                 }
@@ -164,6 +167,11 @@ public class DefaultCalendarService implements CalendarService {
                 return ObserveEventResult.retryable(code);
             }
             return ObserveEventResult.permanent(code);
+        } catch (CalendarConnectionStateException ex) {
+            if (ex.isRetryable()) {
+                return ObserveEventResult.retryable(ex.getErrorCode());
+            }
+            return ObserveEventResult.permanent(ex.getErrorCode());
         } catch (RuntimeException ex) {
             return ObserveEventResult.retryable("PROVIDER_DOWN");
         }

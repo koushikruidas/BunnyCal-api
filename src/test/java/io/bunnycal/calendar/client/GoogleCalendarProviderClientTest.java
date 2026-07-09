@@ -197,7 +197,7 @@ class GoogleCalendarProviderClientTest {
                 .thenReturn(Optional.of(connection));
         when(googleCalendarProvider.eventExists(any(DeleteEventRequest.class))).thenReturn(false);
 
-        boolean exists = client.eventExists(bookingId, "google", "ext-1");
+        boolean exists = client.eventExists(bookingId, "google", "ext-1", null);
 
         assertEquals(false, exists);
         verify(googleCalendarProvider).eventExists(any(DeleteEventRequest.class));

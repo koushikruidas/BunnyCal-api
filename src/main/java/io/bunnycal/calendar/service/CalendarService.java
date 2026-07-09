@@ -68,7 +68,14 @@ public interface CalendarService {
     record ObserveEventCommand(UUID internalId,
                                String provider,
                                String externalEventId,
-                               String idempotencyKey) {
+                               String idempotencyKey,
+                               @Nullable UUID schedulingConnectionId) {
+        public ObserveEventCommand(UUID internalId,
+                                   String provider,
+                                   String externalEventId,
+                                   String idempotencyKey) {
+            this(internalId, provider, externalEventId, idempotencyKey, null);
+        }
     }
 
     enum CreateEventStatus {

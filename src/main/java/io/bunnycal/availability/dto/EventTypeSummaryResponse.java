@@ -2,6 +2,7 @@ package io.bunnycal.availability.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.bunnycal.availability.domain.EventKind;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -15,12 +16,14 @@ public record EventTypeSummaryResponse(
         int durationMinutes,
         boolean published,
         boolean degraded,
+        @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesStartDate,
+        @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesEndDate,
         List<AvailabilityCalendarResponse> availabilityCalendars,
         ConferenceResponse conference,
         ProjectionDestinationResponse projectionDestination
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, 30, true, false, List.of(), null, null);
+        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, 30, true, false, null, null, List.of(), null, null);
     }
 
     public record AvailabilityCalendarResponse(

@@ -59,13 +59,15 @@ public class InMemoryCalendarProviderClient implements CalendarProviderClient {
     }
 
     @Override
-    public boolean eventExists(UUID internalId, String provider, String externalEventId) {
+    public boolean eventExists(UUID internalId, String provider, String externalEventId,
+                               @Nullable UUID schedulingConnectionId) {
         return externalEventId != null && eventsByExternalId.containsKey(externalEventId);
     }
 
     @Override
-    public boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey) {
-        if (!eventExists(internalId, provider, externalEventId)) {
+    public boolean eventMatches(UUID internalId, String provider, String externalEventId, String idempotencyKey,
+                                @Nullable UUID schedulingConnectionId) {
+        if (!eventExists(internalId, provider, externalEventId, schedulingConnectionId)) {
             return false;
         }
         String expectedExternal = eventsByIdempotency.get(provider + ":" + idempotencyKey);
