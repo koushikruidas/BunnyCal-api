@@ -149,6 +149,30 @@ logging:
 
 calendar:
   sync:
+    # Phase 4 parallel sweep. Default OFF: the scheduler runs the original single-threaded
+    # path until parallel-enabled is flipped, so deploying this is a no-op behavior change.
+    # See CalendarSyncScheduler for the no-overlap invariant that sweep-max-runtime protects.
+    parallel-enabled: ${CALENDAR_SYNC_PARALLEL_ENABLED:false}
+    # Worker-pool size. Kept conservative for the first rollout and at/below the per-provider
+    # concurrency gate (concurrency.google/microsoft, default 32) so the gate — not the pool —
+    # bounds outbound provider fan-out. Raise cautiously while watching the Hikari pool.
+    parallelism: ${CALENDAR_SYNC_PARALLELISM:8}
+    # Short, non-blocking gate acquire: a worker waits at most this long for a provider permit
+    # before deferring the connection to the next sweep, so a saturated provider never ties up
+    # a worker that could process the other provider's connections.
+    provider-acquire-timeout-ms: ${CALENDAR_SYNC_PROVIDER_ACQUIRE_TIMEOUT_MS:150}
+    # Hard per-run deadline. MUST stay strictly below the @SchedulerLock lockAtMostFor (PT2M)
+    # so every sweep returns inside the ShedLock window and cross-replica overlap is impossible.
+    sweep-max-runtime: ${CALENDAR_SYNC_SWEEP_MAX_RUNTIME:PT25S}
+    # Webhook-fresh poll gating. Default OFF. When enabled, a connection with a fresh
+    # (non-expired) webhook channel is polled only on the backstop cadence below instead of
+    # every tick — webhooks still deliver real-time changes, so the poll becomes a backstop.
+    # Watchless/expired-channel connections keep the every-tick cadence. No connection is ever
+    # dropped from sync. Evaluate only after the parallel sweep is stable in production.
+    webhook-fresh-gating-enabled: ${CALENDAR_SYNC_WEBHOOK_FRESH_GATING_ENABLED:false}
+    # Backstop poll interval for fresh-webhook connections: they re-enter the due set once
+    # lastSyncedAt is older than this.
+    webhook-fresh-backstop: ${CALENDAR_SYNC_WEBHOOK_FRESH_BACKSTOP:PT15M}
     incremental:
       enabled: ${CALENDAR_SYNC_INCREMENTAL_ENABLED:true}
       shadow-mode: ${CALENDAR_SYNC_INCREMENTAL_SHADOW_MODE:false}

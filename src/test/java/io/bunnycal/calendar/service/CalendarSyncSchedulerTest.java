@@ -19,6 +19,7 @@ import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.state.SyncSourceAttribution;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -244,6 +245,178 @@ class CalendarSyncSchedulerTest {
         assertThat(meterRegistry.counter("calendar.sync.concurrency.deferred.total",
                         "provider", "google").count())
                 .isGreaterThanOrEqualTo(1d);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 4 parallel sweep (calendar.sync.parallel-enabled=true)
+    // ---------------------------------------------------------------------------
+
+    @Test
+    void parallelSync_processesAllDueConnections() {
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection b = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection c = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+
+        scheduler = parallelScheduler(concurrencyGate, 2, 100, 4, 150L, Duration.ofSeconds(25));
+
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(a, b))
+                .thenReturn(List.of(c))
+                .thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        scheduler.sync();
+
+        verify(syncClient, times(3)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
+        verify(connectionWriteService, times(3)).markActive(any(), any(), any(), any());
+    }
+
+    @Test
+    void parallelSync_saturatedProviderDoesNotStarveOther() throws Exception {
+        // Google gate has zero free permits (consumed below); Microsoft has capacity. The
+        // Microsoft connection must still be processed; the Google one is deferred, not blocked.
+        ProviderConcurrencyGate gate = new ProviderConcurrencyGate(meterRegistry, 1, 1);
+        gate.tryAcquire(CalendarProviderType.GOOGLE); // consume Google's only permit
+
+        ExternalCalendarSyncClient googleClient = org.mockito.Mockito.mock(ExternalCalendarSyncClient.class);
+        ExternalCalendarSyncClient microsoftClient = org.mockito.Mockito.mock(ExternalCalendarSyncClient.class);
+        lenient().when(googleClient.provider()).thenReturn(CalendarProviderType.GOOGLE);
+        lenient().when(microsoftClient.provider()).thenReturn(CalendarProviderType.MICROSOFT);
+        when(microsoftClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        CalendarSyncClientRegistry registry = new CalendarSyncClientRegistry(List.of(googleClient, microsoftClient));
+        scheduler = new CalendarSyncScheduler(
+                connectionRepository, ingestionService, registry,
+                slotCacheVersionService, connectionWriteService,
+                gate, mockTxManager(), meterRegistry,
+                10, 10, true, 4, 100L, Duration.ofSeconds(25),
+                false, Duration.ofMinutes(15));
+
+        CalendarConnection googleConn = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        CalendarConnection microsoftConn = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        microsoftConn.setProvider(CalendarProviderType.MICROSOFT);
+
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(googleConn, microsoftConn))
+                .thenReturn(List.of());
+
+        scheduler.sync();
+
+        // Microsoft processed despite Google being saturated (no starvation).
+        verify(microsoftClient, times(1)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
+        verify(googleClient, never()).fetchIncremental(any(), any());
+        assertThat(meterRegistry.counter("calendar.sync.concurrency.deferred.total", "provider", "google").count())
+                .isGreaterThanOrEqualTo(1d);
+    }
+
+    @Test
+    void parallelSync_deadlineStopsSubmittingButDrainsInflight() throws Exception {
+        // A slow provider call plus a tiny sweep-max-runtime: the sweep must stop fetching
+        // further pages once the deadline passes, record the deadline-hit metric, and still
+        // return (joining in-flight work). Unprocessed connections remain eligible next tick.
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+
+        scheduler = parallelScheduler(concurrencyGate, 1, 100, 2,
+                150L, Duration.ofMillis(50)); // 50ms deadline
+
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(a))
+                // Second page would be fetched only if the deadline hadn't passed.
+                .thenReturn(List.of(connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE)))
+                .thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenAnswer(inv -> {
+                    Thread.sleep(120); // exceed the 50ms deadline while in-flight
+                    return new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental");
+                });
+
+        scheduler.sync();
+
+        // The first connection's in-flight call is drained (grace window) and commits.
+        verify(syncClient, times(1)).fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC));
+        assertThat(meterRegistry.counter("calendar.sync.sweep.deadline_hit.total").count())
+                .isGreaterThanOrEqualTo(1d);
+    }
+
+    @Test
+    void parallelSync_emptyDueQueue_doesNothing() {
+        scheduler = parallelScheduler(concurrencyGate, 100, 2000, 8, 150L, Duration.ofSeconds(25));
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class))).thenReturn(List.of());
+
+        scheduler.sync();
+
+        verify(syncClient, never()).fetchIncremental(any(), any());
+        verify(connectionWriteService, never()).markActive(any(), any(), any(), any());
+    }
+
+    private CalendarSyncScheduler parallelScheduler(ProviderConcurrencyGate gate, int batchSize,
+                                                    int maxPerTick, int parallelism,
+                                                    long acquireTimeoutMs, Duration sweepMaxRuntime) {
+        return new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                gate, mockTxManager(), meterRegistry,
+                batchSize, maxPerTick,
+                true, parallelism, acquireTimeoutMs, sweepMaxRuntime,
+                false, Duration.ofMinutes(15));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Phase 4 webhook-fresh gating (calendar.sync.webhook-fresh-gating-enabled=true)
+    // ---------------------------------------------------------------------------
+
+    @Test
+    void gatingDisabled_usesEveryTickDueQuery() {
+        // Default scheduler (gating off) must use the original findDueForSyncBatch and never
+        // the gated variant.
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        when(connectionRepository.findDueForSyncBatch(any(), any(Pageable.class)))
+                .thenReturn(List.of(a))
+                .thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        scheduler.sync();
+
+        verify(connectionRepository, org.mockito.Mockito.atLeastOnce())
+                .findDueForSyncBatch(any(), any(Pageable.class));
+        verify(connectionRepository, never())
+                .findDueForSyncBatchGated(any(), any(), any(Pageable.class));
+    }
+
+    @Test
+    void gatingEnabled_usesGatedDueQueryWithBackstopThreshold() {
+        CalendarSyncScheduler gated = new CalendarSyncScheduler(
+                connectionRepository, ingestionService,
+                new CalendarSyncClientRegistry(List.of(syncClient)),
+                slotCacheVersionService, connectionWriteService,
+                concurrencyGate, mockTxManager(), meterRegistry,
+                100, 2000,
+                false, 8, 150L, Duration.ofSeconds(25),
+                true, Duration.ofMinutes(15)); // gating ON, 15-min backstop
+
+        CalendarConnection a = connection(UUID.randomUUID(), UUID.randomUUID(), CalendarConnectionStatus.ACTIVE);
+        when(connectionRepository.findDueForSyncBatchGated(any(), any(), any(Pageable.class)))
+                .thenReturn(List.of(a))
+                .thenReturn(List.of());
+        when(syncClient.fetchIncremental(any(), eq(SyncSourceAttribution.PULL_SYNC)))
+                .thenReturn(new ExternalCalendarSyncClient.SyncBatch(List.of(), "cursor", false, false, "incremental"));
+
+        gated.sync();
+
+        // The gated query is used; the every-tick query is not. The backstop threshold passed
+        // must be ~15 min before "now" — assert it is strictly in the past relative to the
+        // now-argument (same call), which is what the backstop subtraction guarantees.
+        org.mockito.ArgumentCaptor<Instant> nowCaptor = org.mockito.ArgumentCaptor.forClass(Instant.class);
+        org.mockito.ArgumentCaptor<Instant> thresholdCaptor = org.mockito.ArgumentCaptor.forClass(Instant.class);
+        verify(connectionRepository, org.mockito.Mockito.atLeastOnce())
+                .findDueForSyncBatchGated(nowCaptor.capture(), thresholdCaptor.capture(), any(Pageable.class));
+        verify(connectionRepository, never()).findDueForSyncBatch(any(), any(Pageable.class));
+        assertThat(thresholdCaptor.getValue())
+                .isEqualTo(nowCaptor.getValue().minus(Duration.ofMinutes(15)));
     }
 
     private PlatformTransactionManager mockTxManager() {
