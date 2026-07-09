@@ -363,6 +363,7 @@ public class CalendarConnectionWriteService {
         target.setUserId(source.getUserId());
         target.setProvider(source.getProvider());
         target.setProviderUserId(source.getProviderUserId());
+        target.setAccountEmail(source.getAccountEmail());
         target.setRefreshTokenCiphertext(source.getRefreshTokenCiphertext());
         target.setLastTokenExpiresAt(source.getLastTokenExpiresAt());
         List<String> scopes = source.getScopes();

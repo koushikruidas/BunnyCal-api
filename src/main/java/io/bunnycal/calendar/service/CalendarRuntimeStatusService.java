@@ -200,9 +200,20 @@ public class CalendarRuntimeStatusService {
         String displayName = connection.getProviderUserId();
         String email = connection.getProviderUserId();
         if (connection.getProvider() == CalendarProviderType.GOOGLE) {
+            // The connected Google account is always this app's login identity, so the
+            // app's own User record is authoritative for the display name/email.
             Optional<User> user = userRepository.findById(connection.getUserId());
             displayName = user.map(User::getName).orElse(displayName);
             email = user.map(User::getEmail).orElse(email);
+        } else if (connection.getProvider() == CalendarProviderType.MICROSOFT
+                && connection.getAccountEmail() != null
+                && !connection.getAccountEmail().isBlank()) {
+            // Microsoft connections are linked calendars, not the login identity, and can be
+            // a different account entirely — use the email captured from Graph at connect
+            // time. Falls back to providerUserId (an opaque puid/oid) only for connections
+            // made before this field existed.
+            displayName = connection.getAccountEmail();
+            email = connection.getAccountEmail();
         }
         return new CalendarRuntimeStatusResponse.ConnectionStatus(
                 connection.getId() == null ? null : connection.getId().toString(),

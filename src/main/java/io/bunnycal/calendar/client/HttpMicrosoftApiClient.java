@@ -186,6 +186,24 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     }
 
     @Override
+    public String fetchAccountEmail(String accessToken) {
+        try {
+            ResponseEntity<Map> response = graphClient.get()
+                    .uri("/v1.0/me")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                    .retrieve()
+                    .toEntity(Map.class);
+            Map<?, ?> body = response.getBody();
+            // "mail" is null for some consumer/guest accounts; userPrincipalName is the
+            // sign-in identifier and is effectively always an email for both MSA and Entra.
+            String mail = asString(body, "mail");
+            return (mail != null && !mail.isBlank()) ? mail : asString(body, "userPrincipalName");
+        } catch (RestClientException ex) {
+            throw classify(ex);
+        }
+    }
+
+    @Override
     public List<ProviderCalendarInventoryEntry> listCalendars(String accessToken) {
         try {
             ResponseEntity<Map> response = graphClient.get()

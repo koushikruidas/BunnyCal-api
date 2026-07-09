@@ -39,6 +39,17 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "provider_user_id", nullable = false, length = 255)
     private String providerUserId;
 
+    /**
+     * Display email for this specific connected account, captured from the provider at
+     * connect-time. Unlike {@link #providerUserId} (an opaque id used for account
+     * classification — see {@code MicrosoftAccountClassifier}), this is the human-readable
+     * address shown in the UI. Null for Google connections, which resolve their email via
+     * the app's own User table instead (the connected Google account is always the login
+     * identity there).
+     */
+    @Column(name = "account_email", length = 255)
+    private String accountEmail;
+
     @Column(name = "refresh_token_ciphertext", nullable = false, length = 4096)
     private String refreshTokenCiphertext;
 
@@ -111,6 +122,8 @@ public class CalendarConnection extends BaseEntity {
     public void setProvider(CalendarProviderType provider) { this.provider = provider; }
     public String getProviderUserId() { return providerUserId; }
     public void setProviderUserId(String providerUserId) { this.providerUserId = providerUserId; }
+    public String getAccountEmail() { return accountEmail; }
+    public void setAccountEmail(String accountEmail) { this.accountEmail = accountEmail; }
     public String getRefreshTokenCiphertext() { return refreshTokenCiphertext; }
     public void setRefreshTokenCiphertext(String refreshTokenCiphertext) { this.refreshTokenCiphertext = refreshTokenCiphertext; }
     public Instant getLastTokenExpiresAt() { return lastTokenExpiresAt; }

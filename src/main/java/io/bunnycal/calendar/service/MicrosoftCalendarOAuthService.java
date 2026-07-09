@@ -115,6 +115,14 @@ public class MicrosoftCalendarOAuthService {
         if (providerUserId == null || providerUserId.isBlank()) {
             throw new IllegalArgumentException("Provider user id missing");
         }
+        // Best-effort: the UI falls back to displaying providerUserId if this stays null,
+        // so a failure or absence here must not block the connection itself.
+        String accountEmail;
+        try {
+            accountEmail = microsoftApiClient.fetchAccountEmail(token.accessToken());
+        } catch (RuntimeException ex) {
+            accountEmail = null;
+        }
 
         CalendarConnection base = existing.orElse(null);
         CalendarConnection connection = base == null ? new CalendarConnection() : copyForUpdate(base);
@@ -130,6 +138,9 @@ public class MicrosoftCalendarOAuthService {
         connection.setUserId(userId);
         connection.setProvider(MICROSOFT_PROVIDER);
         connection.setProviderUserId(providerUserId);
+        if (accountEmail != null && !accountEmail.isBlank()) {
+            connection.setAccountEmail(accountEmail);
+        }
         connection.setRefreshTokenCiphertext(refreshTokenCiphertext);
         connection.setLastTokenExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
         connection.setScopes(properties.getScopes());
@@ -286,6 +297,7 @@ public class MicrosoftCalendarOAuthService {
         copy.setUserId(existing.getUserId());
         copy.setProvider(existing.getProvider());
         copy.setProviderUserId(existing.getProviderUserId());
+        copy.setAccountEmail(existing.getAccountEmail());
         copy.setRefreshTokenCiphertext(existing.getRefreshTokenCiphertext());
         copy.setLastTokenExpiresAt(existing.getLastTokenExpiresAt());
         copy.setScopes(existing.getScopes());
