@@ -7,6 +7,10 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import io.bunnycal.calendar.config.GoogleOAuthProperties;
 import io.bunnycal.calendar.config.MicrosoftOAuthProperties;
@@ -35,8 +39,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class CalendarIntegrationControllerTest {
     @Mock
@@ -235,6 +242,33 @@ class CalendarIntegrationControllerTest {
         assertEquals(true, body.isSuccess());
         assertNotNull(body.getData().get("providerCatalog"));
         assertNotNull(body.getData().get("authority"));
+    }
+
+    /**
+     * Graph sends the subscription handshake as POST ?validationToken=… with a text/plain body.
+     * Must run through MockMvc: the regression was in request mapping / content negotiation, which
+     * a direct controller-method call bypasses entirely.
+     */
+    @Test
+    void microsoftWebhook_postValidationHandshake_echoesTokenAsPlainText() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mockMvc.perform(post("/integrations/calendar/webhooks/microsoft")
+                        .param("validationToken", "tok-123")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content(""))
+                .andExpect(status().isOk())
+                .andExpect(content().string("tok-123"));
+    }
+
+    @Test
+    void microsoftWebhook_getValidationHandshake_echoesToken() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mockMvc.perform(get("/integrations/calendar/webhooks/microsoft")
+                        .param("validationToken", "tok-456"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("tok-456"));
     }
 
     @Test

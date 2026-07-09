@@ -63,12 +63,14 @@ public class CalendarEventIngestionService {
         if (connectionId == null) {
             throw new IllegalArgumentException("connectionId is required");
         }
-        log.info("calendar_event_ingestion_lookup connectionId={} incomingCount={}",
+        log.debug("calendar_event_ingestion_lookup connectionId={} incomingCount={}",
                 connectionId, incomingEvents == null ? 0 : incomingEvents.size());
         CalendarConnection connection = connectionRepository.findById(connectionId)
                 .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
 
         boolean changed = false;
+        int recomputed = 0;
+        int skipped = 0;
         for (IncomingCalendarEvent incoming : incomingEvents) {
             validate(incoming);
             MDC.put("externalEventId", incoming.externalEventId());
@@ -77,9 +79,10 @@ public class CalendarEventIngestionService {
                         connectionId,
                         connection.getProvider().name(),
                         incoming);
-                log.info("provider_event_filter_decision provider={} connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} apply={}",
+                log.debug("provider_event_filter_decision provider={} connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} apply={}",
                         connection.getProvider().name(), connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(), apply);
                 if (!apply) {
+                    skipped++;
                     continue;
                 }
                 CalendarEvent event = eventRepository
@@ -115,7 +118,8 @@ public class CalendarEventIngestionService {
                 }
                 event.setBlocksAvailability(!isSessionProjection(connection.getProvider().name(), incoming.externalEventId()));
                 eventRepository.save(event);
-                log.info("calendar_event_ingestion_upsert connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} source={}",
+                // Idempotent write on every sweep; external_event_updated/deleted below carry real changes.
+                log.debug("calendar_event_ingestion_upsert connectionId={} externalEventId={} startsAt={} endsAt={} cancelled={} source={}",
                         connectionId, incoming.externalEventId(), incoming.startsAt(), incoming.endsAt(), incoming.cancelled(),
                         sourceAttribution == null ? "unknown" : sourceAttribution.name());
                 if (existed && (timeWindowChanged(previousStartsAt, previousEndsAt, incoming.startsAt(), incoming.endsAt())
@@ -169,7 +173,8 @@ public class CalendarEventIngestionService {
                                 "unknown",
                                 safeMdc("terminalIntentEpoch")));
                 changed = true;
-                log.info("projection_recomputed connectionId={} provider={} externalEventId={} syncMode={}",
+                recomputed++;
+                log.debug("projection_recomputed connectionId={} provider={} externalEventId={} syncMode={}",
                         connectionId,
                         connection.getProvider().name().toLowerCase(),
                         incoming.externalEventId(),
@@ -181,6 +186,28 @@ public class CalendarEventIngestionService {
 
         if (changed) {
             slotCacheVersionService.bumpVersionAfterCommit(connection.getUserId());
+        }
+
+        // One line per connection per sweep. The steady state is a no-op re-observation of every
+        // event, so stay silent unless something actually changed; per-event detail is at DEBUG.
+        int received = incomingEvents == null ? 0 : incomingEvents.size();
+        if (changed) {
+            log.info("calendar_events_ingested connectionId={} provider={} received={} changed={} unchanged={} skipped={} source={}",
+                    connectionId,
+                    connection.getProvider().name().toLowerCase(),
+                    received,
+                    recomputed,
+                    received - recomputed - skipped,
+                    skipped,
+                    sourceAttribution == null ? "unknown" : sourceAttribution.name());
+        } else {
+            log.debug("calendar_events_ingested connectionId={} provider={} received={} changed=0 unchanged={} skipped={} source={}",
+                    connectionId,
+                    connection.getProvider().name().toLowerCase(),
+                    received,
+                    received - skipped,
+                    skipped,
+                    sourceAttribution == null ? "unknown" : sourceAttribution.name());
         }
 
         connectionWriteService.updateLastSyncedAt(connection.getId(), Instant.now(), "event_ingestion_upsert");

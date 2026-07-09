@@ -264,6 +264,21 @@ public class CalendarIntegrationController {
         return ResponseEntity.ok(validationToken);
     }
 
+    /**
+     * Graph performs the subscription handshake as a POST carrying {@code validationToken} as a
+     * query param with a {@code text/plain} body. Mapping it on {@code params} keeps it ahead of
+     * the notification handler, whose {@code @RequestBody} would otherwise force JSON negotiation
+     * and answer the handshake with 415.
+     */
+    @PostMapping(value = "/webhooks/microsoft", params = "validationToken", produces = "text/plain")
+    public ResponseEntity<String> verifyMicrosoftWebhookPost(
+            @RequestParam("validationToken") String validationToken) {
+        if (validationToken.isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "validationToken is required.");
+        }
+        return ResponseEntity.ok(validationToken);
+    }
+
     @PostMapping("/webhooks/microsoft")
     public ResponseEntity<ApiResponse<Void>> ingestMicrosoftWebhook(
             @RequestHeader(value = "X-Webhook-Delivery-Id", required = false) String deliveryId,

@@ -145,7 +145,8 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
         String deltaCursor = forceBootstrap ? null : (cursorRow == null ? null : cursorRow.getDeltaCursor());
         boolean hasCursor = deltaCursor != null && !deltaCursor.isBlank();
 
-        log.info("microsoft_calendar_sync_start connectionId={} calendarId={} hasCursor={}",
+        // microsoft_calendar_delta_complete reports the same sync with its outcome.
+        log.debug("microsoft_calendar_sync_start connectionId={} calendarId={} hasCursor={}",
                 connection.getId(), calendarId, hasCursor);
 
         Instant startedAt = Instant.now();

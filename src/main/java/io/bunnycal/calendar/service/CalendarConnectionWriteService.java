@@ -338,7 +338,7 @@ public class CalendarConnectionWriteService {
         OptimisticLockingFailureException lastConflict = null;
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
-                log.info("calendar_connection_lookup context={} connectionId={} attempt={}",
+                log.debug("calendar_connection_lookup context={} connectionId={} attempt={}",
                         context, connectionId, attempt);
                 CalendarConnection latest = repository.findById(connectionId)
                         .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
