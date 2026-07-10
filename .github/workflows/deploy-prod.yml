@@ -1,16 +1,51 @@
 name: deploy-prod
 
 on:
+  workflow_run:
+    workflows: [ci-image]
+    branches: [main]
+    types: [completed]
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Docker image tag (e.g. sha-abc123...)"
+        description: "Immutable Docker image tag for a rollback (e.g. sha-abc1234)"
         required: true
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    environment: production
     runs-on: ubuntu-latest
     steps:
+      - name: Select validated image tag
+        id: image
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            tag="sha-${BUILD_SHA:0:7}"
+          else
+            tag="$REQUESTED_TAG"
+          fi
+          [[ "$tag" =~ ^sha-[0-9a-f]{7,40}$ ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare production environment file
+        id: production-env
+        env:
+          PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+        run: |
+          test -n "$PRODUCTION_ENV_FILE"
+          encoded="$(printf '%s' "$PRODUCTION_ENV_FILE" | base64 | tr -d '\n')"
+          echo "content=$encoded" >> "$GITHUB_OUTPUT"
+
       - name: Deploy on Hetzner VM
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -20,9 +55,21 @@ jobs:
           script: |
             set -euo pipefail
             cd ${{ secrets.HETZNER_DEPLOY_PATH }}
-            sed -i.bak "s|^BUNNYCAL_IMAGE=.*|BUNNYCAL_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/bunnycal-api:${{ github.event.inputs.image_tag }}|" .env
-            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}"
-            docker compose pull bunnycal-api
-            docker compose up -d
-            sleep 10
-            curl -fsS https://${{ secrets.APP_DOMAIN }}/actuator/health >/dev/null
+            printf '%s' '${{ steps.production-env.outputs.content }}' | base64 --decode > .env.next
+            chmod 600 .env.next
+            mv .env.next .env
+            image="${{ secrets.DOCKERHUB_USERNAME }}/bunnycal-api:${{ steps.image.outputs.tag }}"
+            if grep -q '^BUNNYCAL_IMAGE=' .env; then
+              sed -i.bak "s|^BUNNYCAL_IMAGE=.*|BUNNYCAL_IMAGE=$image|" .env
+            else
+              printf '\nBUNNYCAL_IMAGE=%s\n' "$image" >> .env
+            fi
+            docker compose --env-file .env -f docker-compose.yaml config -q
+            printf '%s' '${{ secrets.DOCKERHUB_TOKEN }}' | docker login --username '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+            docker compose --env-file .env -f docker-compose.yaml pull bunnycal-api
+            docker compose --env-file .env -f docker-compose.yaml up -d --no-deps --wait bunnycal-api
+            for attempt in $(seq 1 12); do
+              curl -fsS https://${{ secrets.APP_DOMAIN }}/actuator/health >/dev/null && exit 0
+              sleep 5
+            done
+            exit 1
