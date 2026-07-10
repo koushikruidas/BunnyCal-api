@@ -3,6 +3,8 @@ package io.bunnycal.team.controller;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.team.dto.BulkInviteMembersRequest;
+import io.bunnycal.team.dto.BulkInviteMembersResponse;
 import io.bunnycal.team.dto.CreateTeamRequest;
 import io.bunnycal.team.dto.InviteMemberRequest;
 import io.bunnycal.team.dto.SetupStatusResponse;
@@ -100,6 +102,14 @@ public class TeamController {
         return ResponseEntity.ok(ApiResponse.success(teamService.inviteMember(userId, teamId, request)));
     }
 
+    @PostMapping("/{teamId}/invitations/bulk")
+    public ResponseEntity<ApiResponse<BulkInviteMembersResponse>> inviteBulk(Authentication authentication,
+                                                                            @PathVariable UUID teamId,
+                                                                            @RequestBody BulkInviteMembersRequest request) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.inviteMembers(userId, teamId, request)));
+    }
+
     @GetMapping("/{teamId}/invitations")
     public ResponseEntity<ApiResponse<List<TeamInvitationResponse>>> listInvitations(Authentication authentication,
                                                                                     @PathVariable UUID teamId) {
@@ -114,6 +124,14 @@ public class TeamController {
         UUID userId = extractUserId(authentication);
         teamService.revokeInvitation(userId, teamId, invitationId);
         return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    @PostMapping("/{teamId}/invitations/{invitationId}/resend")
+    public ResponseEntity<ApiResponse<TeamInvitationResponse>> resendInvitation(Authentication authentication,
+                                                                               @PathVariable UUID teamId,
+                                                                               @PathVariable UUID invitationId) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(teamService.resendInvitation(userId, teamId, invitationId)));
     }
 
     // ── Team readiness summary ────────────────────────────────────────────────
