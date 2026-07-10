@@ -68,8 +68,14 @@ jobs:
             printf '%s' '${{ secrets.DOCKERHUB_TOKEN }}' | docker login --username '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
             docker compose --env-file .env -f docker-compose.yaml pull bunnycal-api
             docker compose --env-file .env -f docker-compose.yaml up -d --no-deps --wait bunnycal-api
+            healthy=0
             for attempt in $(seq 1 12); do
-              curl -fsS https://${{ secrets.APP_DOMAIN }}/actuator/health >/dev/null && exit 0
+              if curl -fsS https://${{ secrets.APP_DOMAIN }}/actuator/health >/dev/null; then
+                healthy=1
+                break
+              fi
               sleep 5
             done
-            exit 1
+            [ "$healthy" -eq 1 ] || exit 1
+            # Preserve active/recent rollback images; cleanup never affects deployment success.
+            docker image prune -af --filter "until=168h" || true
