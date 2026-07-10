@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -17,8 +18,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -110,6 +113,9 @@ class SlotCacheServiceTest {
         started.await(2, TimeUnit.SECONDS);
         Future<List<SlotGenerationEngine.SlotUtc>> f2 = executor.submit(task);
 
+        // The second task must be waiting on the shared future before the first
+        // compute is released. Submission alone is scheduler-dependent on CI.
+        assertTrue(awaitSecondCaller(2, TimeUnit.SECONDS));
         release.countDown();
 
         List<SlotGenerationEngine.SlotUtc> r1 = f1.get(2, TimeUnit.SECONDS);
@@ -120,6 +126,22 @@ class SlotCacheServiceTest {
         assertEquals(1, computeCalls.get());
         assertEquals(r1, r2);
         verify(valueOperations, times(1)).set(any(String.class), any(String.class), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean awaitSecondCaller(long timeout, TimeUnit unit) throws Exception {
+        var field = SlotCacheService.class.getDeclaredField("inFlight");
+        field.setAccessible(true);
+        Map<String, CompletableFuture<List<SlotGenerationEngine.SlotUtc>>> inFlight =
+                (Map<String, CompletableFuture<List<SlotGenerationEngine.SlotUtc>>>) field.get(slotCacheService);
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (inFlight.values().stream().anyMatch(future -> future.getNumberOfDependents() > 0)) {
+                return true;
+            }
+            Thread.sleep(10);
+        }
+        return false;
     }
 
     @Test
