@@ -83,7 +83,7 @@ dependencyManagement {
 tasks.named('test') {
     useJUnitPlatform()
     maxHeapSize = '2g'
-    forkEvery = 500
+    forkEvery = 800
 
     testLogging {
         events "passed", "failed", "skipped"
