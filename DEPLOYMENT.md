@@ -39,8 +39,17 @@ is a separate manual step (no CD in this workflow yet).
   (`banical-cals/bunnycal-api`) — change it there if the final org name differs.
 
 ## 4) Production deployment
-- Trigger `deploy-prod` workflow manually and provide image tag (example: `sha-<commit>`).
-- Required GitHub secrets:
+Every successful `ci-image` run on `main` deploys its immutable short-SHA image
+to production. Protect the GitHub `production` environment with required
+reviewers if releases need an approval gate. A manual `deploy-prod` dispatch
+accepts a SHA tag only and is reserved for rollbacks.
+
+The workflow pulls and recreates only `bunnycal-api`; it does not run `docker
+compose down`, so Postgres, Redis, Caddy, networks, and volumes remain online.
+It validates Compose configuration and the public health endpoint before
+reporting success.
+
+Required GitHub secrets:
   - `HETZNER_HOST`
   - `HETZNER_USER`
   - `HETZNER_SSH_KEY`
@@ -48,8 +57,14 @@ is a separate manual step (no CD in this workflow yet).
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
   - `APP_DOMAIN`
+  - `PRODUCTION_ENV_FILE` — complete contents of the production `.env` file.
+    Store this as a multi-line secret in the GitHub `production` environment,
+    not in repository secrets.
 
-The workflow updates `BUNNYCAL_IMAGE` in VM `.env`, pulls the image, restarts compose services, then verifies the health endpoint.
+`PRODUCTION_ENV_FILE` is the production configuration source of truth. When a
+new secret or setting is added to local `.env.prod`, update this one GitHub
+environment secret; the deployment writes it atomically to the VM before it
+sets `BUNNYCAL_IMAGE`. Never commit `.env.prod` or the VM `.env`.
 
 ## 5) Production hardening notes
 - `.env` is the single source of truth and is git-ignored. Never commit it.
