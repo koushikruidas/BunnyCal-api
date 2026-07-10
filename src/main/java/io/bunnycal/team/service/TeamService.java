@@ -20,6 +20,8 @@ import io.bunnycal.team.domain.Team;
 import io.bunnycal.team.domain.TeamInvitation;
 import io.bunnycal.team.domain.TeamMember;
 import io.bunnycal.team.domain.TeamRole;
+import io.bunnycal.team.dto.BulkInviteMembersRequest;
+import io.bunnycal.team.dto.BulkInviteMembersResponse;
 import io.bunnycal.team.dto.CreateTeamRequest;
 import io.bunnycal.team.dto.InviteMemberRequest;
 import io.bunnycal.team.dto.TeamInvitationResponse;
@@ -39,9 +41,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -189,11 +193,67 @@ public class TeamService {
         if (request == null || request.email() == null || request.email().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Invitation email is required.");
         }
-        String email = request.email().trim().toLowerCase(Locale.ROOT);
-        TeamRole role = request.role() != null ? request.role() : TeamRole.MEMBER;
+        TeamRole role = normalizeInviteRole(request.role());
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+        User inviter = userRepository.findById(actingUserId).orElse(null);
+
+        return toInvitationResponse(
+                createInvitation(actingUserId, team, inviter, request.email(), role));
+    }
+
+    /**
+     * Invites several addresses in one round trip. Each address is independent: an already-pending
+     * or already-member address is reported in {@code failed} while the rest are still invited.
+     * Only business rejections are collected — an infrastructure failure still rolls the batch back.
+     */
+    @Transactional
+    public BulkInviteMembersResponse inviteMembers(UUID actingUserId, UUID teamId, BulkInviteMembersRequest request) {
+        requireOwnerOrAdmin(actingUserId, teamId);
+        if (request == null || request.emails() == null || request.emails().isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "At least one invitation email is required.");
+        }
+        TeamRole role = normalizeInviteRole(request.role());
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+        User inviter = userRepository.findById(actingUserId).orElse(null);
+
+        List<TeamInvitationResponse> sent = new ArrayList<>();
+        List<BulkInviteMembersResponse.FailedInvite> failed = new ArrayList<>();
+
+        // Two identical addresses in one batch would both clear the pre-flight check and then
+        // collide on the partial unique index, so collapse them before touching the database.
+        Set<String> seen = new HashSet<>();
+        for (String raw : request.emails()) {
+            if (raw == null || raw.isBlank()) continue;
+            String email = raw.trim();
+            if (!seen.add(email.toLowerCase(Locale.ROOT))) continue;
+            try {
+                sent.add(toInvitationResponse(createInvitation(actingUserId, team, inviter, email, role)));
+            } catch (CustomException ex) {
+                failed.add(new BulkInviteMembersResponse.FailedInvite(
+                        email, ex.getErrorCode().name(), ex.getMessage()));
+            }
+        }
+
+        if (sent.isEmpty() && failed.isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "At least one invitation email is required.");
+        }
+        return new BulkInviteMembersResponse(sent, failed);
+    }
+
+    private static TeamRole normalizeInviteRole(TeamRole requested) {
+        TeamRole role = requested != null ? requested : TeamRole.MEMBER;
         if (role == TeamRole.OWNER) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Cannot invite a member as OWNER.");
         }
+        return role;
+    }
+
+    /** Validates one address against the team and persists a PENDING invitation for it. */
+    private TeamInvitation createInvitation(UUID actingUserId, Team team, User inviter, String rawEmail, TeamRole role) {
+        UUID teamId = team.getId();
+        String email = rawEmail.trim().toLowerCase(Locale.ROOT);
 
         // If the invitee is already an active member, reject.
         userRepository.findByEmail(email).ifPresent(existing -> {
@@ -208,10 +268,6 @@ public class TeamService {
                 .ifPresent(existing -> {
                     throw new CustomException(ErrorCode.TEAM_INVITATION_ALREADY_PENDING);
                 });
-
-        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
-                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
-        User inviter = userRepository.findById(actingUserId).orElse(null);
 
         Instant now = timeSource.now();
         TeamInvitation invitation = teamInvitationRepository.save(TeamInvitation.builder()
@@ -230,7 +286,7 @@ public class TeamService {
                 "team_member_invite_sent hostId={} teamId={} teamName=\"{}\" inviteId={} inviteeEmail={} role={}",
                 actingUserId, team.getId(), team.getName(), invitation.getId(), invitation.getInvitedEmail(), invitation.getRole());
 
-        return toInvitationResponse(invitation);
+        return invitation;
     }
 
     @Transactional(readOnly = true)
@@ -351,6 +407,39 @@ public class TeamService {
             User actor = userRepository.findById(actingUserId).orElse(null);
             publishInvitationRevokedEvent(invitation, team, actor);
         }
+    }
+
+    /**
+     * Re-sends the invitation email for a still-pending invitation. The token is preserved so
+     * any link already in the invitee's inbox keeps working; the expiry window restarts from now.
+     */
+    @Transactional
+    public TeamInvitationResponse resendInvitation(UUID actingUserId, UUID teamId, UUID invitationId) {
+        requireOwnerOrAdmin(actingUserId, teamId);
+        TeamInvitation invitation = teamInvitationRepository.findByIdForUpdate(invitationId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Invitation not found."));
+        if (!invitation.getTeamId().equals(teamId)) {
+            throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Invitation not found.");
+        }
+        if (invitation.getStatus() != InvitationStatus.PENDING) {
+            throw new CustomException(ErrorCode.TEAM_INVITATION_INVALID,
+                    "Only a pending invitation can be resent.");
+        }
+
+        Team team = teamRepository.findByIdAndDeletedAtIsNull(teamId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Team not found."));
+        User inviter = userRepository.findById(actingUserId).orElse(null);
+
+        invitation.setExpiresAt(timeSource.now().plus(INVITATION_TTL));
+        teamInvitationRepository.save(invitation);
+
+        publishInvitationCreatedEvent(invitation, team, inviter);
+        OpsLoggers.HOST.info(
+                "team_member_invite_resent hostId={} teamId={} teamName=\"{}\" inviteId={} inviteeEmail={} role={}",
+                actingUserId, team.getId(), team.getName(), invitation.getId(),
+                invitation.getInvitedEmail(), invitation.getRole());
+
+        return toInvitationResponse(invitation);
     }
 
     // ── Team deletion ─────────────────────────────────────────────────────────
