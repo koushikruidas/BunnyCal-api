@@ -66,7 +66,17 @@ new secret or setting is added to local `.env.prod`, update this one GitHub
 environment secret; the deployment writes it atomically to the VM before it
 sets `BUNNYCAL_IMAGE`. Never commit `.env.prod` or the VM `.env`.
 
-## 5) Production hardening notes
+## 5) Image retention
+- After each healthy deployment, the VM removes Docker images that are unused
+  for more than seven days. The image used by a running container is never
+  pruned.
+- `.github/workflows/cleanup-dockerhub.yml` runs weekly and keeps the newest
+  ten `sha-*` tags in Docker Hub. It never deletes `latest` or semantic version
+  tags. A manual dispatch defaults to dry-run mode so deletion candidates can
+  be reviewed first.
+- The Docker Hub token must have permission to delete repository tags.
+
+## 6) Production hardening notes
 - `.env` is the single source of truth and is git-ignored. Never commit it.
 - The `prod` Spring profile fails fast: it refuses to boot if `JWT_SECRET`,
   `CALENDAR_WEBHOOK_SHARED_SECRET`, `CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64`,
@@ -81,12 +91,12 @@ sets `BUNNYCAL_IMAGE`. Never commit `.env.prod` or the VM `.env`.
   - `ssh -L 9090:127.0.0.1:9090 <user>@<vm>` then open http://localhost:9090
   - `ssh -L 3000:127.0.0.1:3000 <user>@<vm>` then open http://localhost:3000
 
-## 6) Secret rotation
+## 7) Secret rotation
 The OAuth (Google/Microsoft/Zoom) and AWS SES credentials currently in `.env`
 were migrated from a local developer machine. Rotate them before/at go-live and
 update `.env` on the VM. After rotating, restart with `docker compose up -d`.
 
-## 7) OAuth provider callback URLs to register
+## 8) OAuth provider callback URLs to register
 Ensure each provider's console has the production redirect URI whitelisted:
 - Google:    `https://api.bunnycal.io/integrations/calendar/google/callback`
 - Microsoft: `https://api.bunnycal.io/integrations/calendar/microsoft/callback`

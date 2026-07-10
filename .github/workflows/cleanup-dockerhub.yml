@@ -1,0 +1,63 @@
+name: cleanup-dockerhub
+
+on:
+  schedule:
+    - cron: "23 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List candidates without deleting tags"
+        type: boolean
+        default: true
+
+concurrency:
+  group: dockerhub-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup-sha-tags:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAMESPACE: koushikruidas
+      IMAGE_REPOSITORY: bunnycal-api
+      KEEP_SHA_TAGS: "10"
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Delete old immutable SHA tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          auth_response="$(curl -fsS -X POST \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -cn --arg identifier "$DOCKERHUB_USERNAME" --arg secret "$DOCKERHUB_TOKEN" '{identifier: $identifier, secret: $secret}')" \
+            https://hub.docker.com/v2/auth/token)"
+          access_token="$(jq -r '.access_token // empty' <<<"$auth_response")"
+          test -n "$access_token"
+
+          tags_file="$(mktemp)"
+          trap 'rm -f "$tags_file"' EXIT
+          next_url="https://hub.docker.com/v2/namespaces/${IMAGE_NAMESPACE}/repositories/${IMAGE_REPOSITORY}/tags?page_size=100"
+          while [ -n "$next_url" ] && [ "$next_url" != "null" ]; do
+            page="$(curl -fsS -H "Authorization: Bearer $access_token" "$next_url")"
+            jq -r '.results[] | select(.name | test("^sha-[0-9a-f]{7,40}$")) | [.name, .last_updated] | @tsv' <<<"$page" >> "$tags_file"
+            next_url="$(jq -r '.next // empty' <<<"$page")"
+          done
+
+          mapfile -t sha_tags < <(sort -t $'\t' -k2,2r "$tags_file" | cut -f1)
+          if [ "${#sha_tags[@]}" -le "$KEEP_SHA_TAGS" ]; then
+            echo "Keeping all ${#sha_tags[@]} SHA tags."
+            exit 0
+          fi
+
+          for tag in "${sha_tags[@]:$KEEP_SHA_TAGS}"; do
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Would delete $tag"
+            else
+              echo "Deleting $tag"
+              curl -fsS -X DELETE \
+                -H "Authorization: Bearer $access_token" \
+                "https://hub.docker.com/v2/namespaces/${IMAGE_NAMESPACE}/repositories/${IMAGE_REPOSITORY}/tags/${tag}"
+            fi
+          done
