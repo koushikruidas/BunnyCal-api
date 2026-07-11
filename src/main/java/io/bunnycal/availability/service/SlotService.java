@@ -129,6 +129,19 @@ public class SlotService {
         this.entitlementService = entitlementService;
     }
 
+    /**
+     * The weekdays this host has working hours on. The public booking calendar needs these to grey
+     * out the days the host does not work — it used to assume Mon–Fri, so it blocked a Saturday the
+     * host had enabled and offered a weekday they had turned off. A day may carry several rules
+     * (a morning and an afternoon block, say), hence distinct.
+     */
+    public List<DayOfWeek> availableDaysFor(UUID userId) {
+        return availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId).stream()
+                .map(AvailabilityRule::getDayOfWeek)
+                .distinct()
+                .toList();
+    }
+
     public SlotResponse getSlots(SlotRequest request) {
         // 1. Validate request.
         if (request == null

@@ -14,6 +14,13 @@ public record PublicEventInfoResponse(
         String hostAvatarUrl,
         EventKind kind,
         boolean published,
-        List<PublicParticipantInfo> participants
+        List<PublicParticipantInfo> participants,
+        /**
+         * Weekdays the host actually works, as DayOfWeek names ("MONDAY"…"SUNDAY"). The booking
+         * calendar used to assume Mon–Fri, so it greyed out a host's Saturday even when they had
+         * enabled it, and offered a weekday they had turned off. Only the days are exposed, not
+         * the hours.
+         */
+        List<String> availableDays
 ) {
 }
