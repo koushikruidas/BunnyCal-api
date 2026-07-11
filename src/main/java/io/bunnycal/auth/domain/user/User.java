@@ -54,6 +54,17 @@ public class User extends BaseEntity {
     @Column(nullable = false, length = 50)
     private String timezone;
 
+    /**
+     * True while {@link #timezone} is one we inferred rather than one the host chose. Signup
+     * happens over an OAuth redirect and cannot see the browser's zone, so new accounts start on
+     * UTC with this set; the first authenticated request carrying an X-Timezone header adopts the
+     * real zone. Saving a timezone in Settings clears this, so a deliberate choice is never
+     * overwritten — not when the host travels, and not when they sign in from another machine.
+     */
+    @Builder.Default
+    @Column(name = "timezone_auto", nullable = false)
+    private boolean timezoneAuto = false;
+
     @Column(name = "deletion_requested_at")
     private Instant deletionRequestedAt;
 

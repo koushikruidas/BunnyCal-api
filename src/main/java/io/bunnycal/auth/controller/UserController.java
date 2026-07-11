@@ -61,6 +61,7 @@ public class UserController {
                     return new CustomException(ErrorCode.UNAUTHORIZED, "Session references a deleted account. Please sign in again.");
                 });
         accountAccessGuard.requireAccessible(user, userId, "GET:/api/me");
+        user = timeZoneService.adoptDetectedTimezone(user, timezoneHeader);
 
         UserDto dto = UserDto.from(user, profileAvatarService.resolveProfileImageUrl(user));
         dto.setSubscription(subscriptionStateService.resolve(userId));

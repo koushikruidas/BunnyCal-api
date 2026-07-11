@@ -3,6 +3,7 @@ package io.bunnycal.auth.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -16,6 +17,7 @@ import io.bunnycal.auth.account.DeletedAccountTombstoneRepository;
 import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.service.DefaultAvailabilityService;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -44,6 +46,9 @@ class IdentityLinkingServiceImplTest {
     @Mock
     private ProfileAvatarService profileAvatarService;
 
+    @Mock
+    private DefaultAvailabilityService defaultAvailabilityService;
+
     private IdentityLinkingServiceImpl identityLinkingService;
 
     @BeforeEach
@@ -52,8 +57,9 @@ class IdentityLinkingServiceImplTest {
                 userRepository,
                 authIdentityRepository,
                 deletedAccountTombstoneRepository,
-                new UserTimezoneServiceImpl(new TimezoneService()),
-                profileAvatarService
+                new UserTimezoneServiceImpl(new TimezoneService(), userRepository),
+                profileAvatarService,
+                defaultAvailabilityService
         );
         lenient().when(deletedAccountTombstoneRepository.findByProviderAndProviderUserId(any(), any()))
                 .thenReturn(Optional.empty());
@@ -153,13 +159,45 @@ class IdentityLinkingServiceImplTest {
         assertEquals("new.user@example.com", result.getEmail());
         assertEquals("New User", result.getName());
         assertEquals("https://images.example.com/new-user.png", result.getProfileImage());
+        // Signup rides an OAuth redirect and cannot see the browser's zone, so it starts on UTC —
+        // but flagged as inferred, so the first /api/me carrying X-Timezone adopts the real one.
         assertEquals("UTC", result.getTimezone());
+
+        ArgumentCaptor<User> userCaptor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(userCaptor.capture());
+        assertTrue(userCaptor.getValue().isTimezoneAuto(), "new account's timezone is inferred, not chosen");
+
+        // The dashboard has always shown Mon–Fri 9–5 for a new host; seed it so that is actually true.
+        verify(defaultAvailabilityService).seedFor(result.getId());
 
         ArgumentCaptor<AuthIdentity> identityCaptor = ArgumentCaptor.forClass(AuthIdentity.class);
         verify(authIdentityRepository).save(identityCaptor.capture());
         assertEquals(result.getId(), identityCaptor.getValue().getUser().getId());
         assertEquals(AuthProvider.MICROSOFT, identityCaptor.getValue().getProvider());
         assertEquals("provider-789", identityCaptor.getValue().getProviderUserId());
+    }
+
+    /** A returning host must never have their existing hours reseeded. */
+    @Test
+    void shouldNotSeedAvailability_whenIdentityAlreadyExists() {
+        User existing = User.builder()
+                .id(UUID.randomUUID())
+                .email("existing@example.com")
+                .name("Existing")
+                .timezone("Asia/Kolkata")
+                .build();
+        AuthIdentity identity = AuthIdentity.builder()
+                .user(existing)
+                .provider(AuthProvider.GOOGLE)
+                .providerUserId("provider-existing")
+                .build();
+        when(authIdentityRepository.findByProviderAndProviderUserId(AuthProvider.GOOGLE, "provider-existing"))
+                .thenReturn(Optional.of(identity));
+
+        identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE, "provider-existing", "existing@example.com", "Existing", null);
+
+        verify(defaultAvailabilityService, never()).seedFor(any());
     }
 
     @Test

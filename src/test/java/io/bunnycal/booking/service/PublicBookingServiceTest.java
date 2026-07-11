@@ -226,6 +226,118 @@ class PublicBookingServiceTest {
         assertEquals(true, response.degraded());
     }
 
+    /**
+     * The production regression: an idle, healthy webhook-backed calendar. The sync scheduler stops
+     * polling a connection whose watch channel is live, so nothing ingests while the calendar is
+     * quiet and lastSyncedAt freezes. The old age-only check then flagged a perfectly fresh
+     * projection as stale within 120s, so the banner showed on essentially every public page.
+     */
+    @Test
+    void availability_liveWatchChannel_isFresh_evenWhenLastSyncedAtIsOld() {
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        // Far past the 120s SLA — but the watch channel is alive, so changes still arrive.
+        conn.setLastSyncedAt(Instant.now().minusSeconds(3600));
+        conn.setWebhookChannelId("chan-1");
+        conn.setWebhookChannelExpiresAt(Instant.now().plusSeconds(3600));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+
+        assertEquals(AvailabilityStatus.AVAILABLE, response.status());
+        assertEquals(false, response.degraded());
+    }
+
+    /** An expired watch channel delivers nothing, so freshness falls back to the age check. */
+    @Test
+    void availability_expiredWatchChannel_withOldLastSyncedAt_isStale() {
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        conn.setLastSyncedAt(Instant.now().minusSeconds(3600));
+        conn.setWebhookChannelId("chan-1");
+        conn.setWebhookChannelExpiresAt(Instant.now().minusSeconds(60)); // expired
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+
+        assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
+        assertEquals(true, response.degraded());
+    }
+
+    /** A live watch channel must not rescue a connection that has never ingested anything. */
+    @Test
+    void availability_liveWatchChannel_butNeverSynced_isStale() {
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.ACTIVE);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        // lastSyncedAt null: nothing has been ingested, so there is no projection to trust yet.
+        conn.setWebhookChannelId("chan-1");
+        conn.setWebhookChannelExpiresAt(Instant.now().plusSeconds(3600));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+
+        assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
+        assertEquals(true, response.degraded());
+    }
+
+    /** A live watch channel must not rescue a REVOKED connection — the projection is frozen. */
+    @Test
+    void availability_liveWatchChannel_butRevoked_isStale() {
+        Instant s1 = Instant.parse("2026-05-10T10:00:00Z");
+        Instant e1 = Instant.parse("2026-05-10T10:30:00Z");
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        CalendarConnection conn = new CalendarConnection();
+        conn.setStatus(CalendarConnectionStatus.REVOKED);
+        conn.setProvider(CalendarProviderType.GOOGLE);
+        conn.setLastSyncedAt(Instant.now().minusSeconds(10));
+        conn.setWebhookChannelId("chan-1");
+        conn.setWebhookChannelExpiresAt(Instant.now().plusSeconds(3600));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.REVOKED))
+                .thenReturn(List.of(conn));
+        when(calendarConnectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(conn));
+        when(slotService.getSlots(org.mockito.ArgumentMatchers.any())).thenReturn(new SlotResponse(
+                userId, eventTypeId, LocalDate.of(2026, 5, 10), "UTC", 1L, Instant.now(), false,
+                List.of(new SlotDto("a", s1, e1))
+        ));
+
+        SlotResponse response = service.availability("koushik", "30min", LocalDate.of(2026, 5, 10));
+
+        assertEquals(AvailabilityStatus.STALE_CALENDAR_DATA, response.status());
+        assertEquals(true, response.degraded());
+    }
+
     @Test
     void availability_failedConnection_isExcludedFromActive_returnsCalendarNotConnected() {
         Instant s1 = Instant.parse("2026-05-10T10:00:00Z");

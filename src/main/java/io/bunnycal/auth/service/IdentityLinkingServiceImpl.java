@@ -2,6 +2,7 @@ package io.bunnycal.auth.service;
 
 import io.bunnycal.auth.account.DeletedAccountTombstoneRepository;
 import io.bunnycal.auth.avatar.ProfileAvatarService;
+import io.bunnycal.availability.service.DefaultAvailabilityService;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.UserStatus;
@@ -27,6 +28,7 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
     private final DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
     private final TimeZoneService userTimezoneServiceImpl;
     private final ProfileAvatarService profileAvatarService;
+    private final DefaultAvailabilityService defaultAvailabilityService;
 
     @Override
     @Transactional
@@ -64,12 +66,20 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
                     .username(buildUsername(email))
                     .name(name)
                     .profileImageUrl(imageUrl)
+                    // Signup rides an OAuth redirect, so the browser's zone is not available here.
+                    // Start on UTC but flag it as inferred, so the first authenticated request
+                    // carrying an X-Timezone header can adopt the host's real zone.
                     .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
+                    .timezoneAuto(true)
                     .status(UserStatus.ACTIVE)
                     .build());
             createIdentityIfAbsent(savedUser, provider, providerUserId);
+            defaultAvailabilityService.seedFor(savedUser.getId());
             return savedUser;
         } catch (DataIntegrityViolationException ex) {
+            // Lost a race to create this email: the account already exists, so it already has its
+            // own timezone and availability. Link the identity only — seeding here would clobber
+            // hours the existing host had set.
             User existingUser = userRepository.findByEmail(email).orElseThrow(() -> ex);
             createIdentityIfAbsent(existingUser, provider, providerUserId);
             return existingUser;

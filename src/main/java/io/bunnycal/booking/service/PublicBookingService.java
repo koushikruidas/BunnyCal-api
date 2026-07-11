@@ -285,7 +285,8 @@ public class PublicBookingService {
         // webhook ingestion model. Instead we classify the response by projection
         // freshness so the UI can flag a degraded view explicitly.
         Instant lastSyncedAt = connection.map(CalendarConnection::getLastSyncedAt).orElse(null);
-        boolean stale = isProjectionStale(status, lastSyncedAt);
+        boolean watchLive = connection.map(this::hasLiveWatchChannel).orElse(false);
+        boolean stale = isProjectionStale(connection.orElse(null));
         AvailabilityStatus responseStatus;
         if (base.status() == AvailabilityStatus.NO_ELIGIBLE_PARTICIPANTS) {
             // Preserve multi-participant readiness failure regardless of projection staleness.
@@ -297,15 +298,39 @@ public class PublicBookingService {
         } else {
             responseStatus = AvailabilityStatus.AVAILABLE;
         }
-        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={} lastSyncedAt={} stale={}",
+        log.info("availability_decision userId={} eventTypeId={} date={} connectionStatus={} decision={} version={} baseSlots={} lastSyncedAt={} watchLive={} stale={}",
                 target.userId(), target.eventTypeId(), date, status == null ? "MISSING" : status,
                 stale ? "PROJECTION_STALE" : "PROJECTION_FRESH",
-                base.version(), base.slots().size(), lastSyncedAt, stale);
+                base.version(), base.slots().size(), lastSyncedAt, watchLive, stale);
         return new SlotResponse(base.userId(), base.eventTypeId(), base.date(), base.timezone(),
                 base.version(), base.generatedAt(), stale || base.degraded(), base.slots(), responseStatus);
     }
 
-    private boolean isProjectionStale(CalendarConnectionStatus status, Instant lastSyncedAt) {
+    /**
+     * Is the DB-side calendar projection too old to trust?
+     *
+     * <p>{@code lastSyncedAt} only advances when events actually ingest, so it answers "when did
+     * the calendar last change?", not "are we still hearing about changes?". Those diverge for a
+     * webhook-backed connection: the sync scheduler deliberately stops polling a connection whose
+     * watch channel is live (see {@code CalendarConnectionRepository#findDueForSyncBatchGated}),
+     * so an idle calendar ingests nothing, {@code lastSyncedAt} freezes, and a purely time-based
+     * check declares a perfectly healthy connection stale — the steady state for most hosts, whose
+     * calendars are quiet for long stretches.
+     *
+     * <p>So ask the question the scheduler is already asking. While the watch channel is live and
+     * unexpired, changes arrive in real time and the projection is fresh no matter how long it has
+     * been quiet. The time-based SLA still applies to connections with no channel or an expired one,
+     * which really are only as fresh as their last poll.
+     *
+     * <p>A watch that stops delivering silently is caught by the backstop: the scheduler polls even
+     * webhook-fresh connections once {@code lastSyncedAt} passes {@code calendar.sync.webhook-fresh-backstop},
+     * and a failing poll flips the connection to FAILED/ERROR, which is stale here.
+     */
+    private boolean isProjectionStale(CalendarConnection connection) {
+        if (connection == null) {
+            return true;
+        }
+        CalendarConnectionStatus status = connection.getStatus();
         if (status == CalendarConnectionStatus.FAILED
                 || status == CalendarConnectionStatus.ERROR
                 || status == CalendarConnectionStatus.REVOKED) {
@@ -314,12 +339,24 @@ public class PublicBookingService {
             // of lastSyncedAt.
             return true;
         }
+        Instant lastSyncedAt = connection.getLastSyncedAt();
         if (lastSyncedAt == null) {
-            // Never synced — treat as stale. Webhook initial-fetch path sets this
-            // on first successful ingestion.
+            // Never synced — nothing has been ingested yet, so there is no projection to trust,
+            // whether or not a watch channel exists.
             return true;
         }
+        if (hasLiveWatchChannel(connection)) {
+            return false;
+        }
         return Duration.between(lastSyncedAt, Instant.now()).compareTo(projectionFreshnessSla) > 0;
+    }
+
+    /** A registered watch channel that has not expired — i.e. changes should still be delivered. */
+    private boolean hasLiveWatchChannel(CalendarConnection connection) {
+        String channelId = connection.getWebhookChannelId();
+        Instant expiresAt = connection.getWebhookChannelExpiresAt();
+        return channelId != null && !channelId.isBlank()
+                && expiresAt != null && expiresAt.isAfter(Instant.now());
     }
 
     @Transactional
