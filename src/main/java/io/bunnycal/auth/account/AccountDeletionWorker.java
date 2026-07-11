@@ -24,7 +24,6 @@ import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.service.SessionService;
 import io.bunnycal.team.repository.ParticipantSetupRequestRepository;
 import io.bunnycal.team.repository.TeamMemberRepository;
-import jakarta.persistence.EntityManager;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumSet;
@@ -35,7 +34,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -67,7 +65,6 @@ public class AccountDeletionWorker {
     private final AuthIdentityRepository authIdentityRepository;
     private final DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
     private final List<AccountDeletionProviderCleanupStrategy> cleanupStrategies;
-    private final EntityManager entityManager;
 
     @Value("${account.deletion.worker.batch-size:10}")
     private int batchSize;
@@ -84,40 +81,61 @@ public class AccountDeletionWorker {
         }
     }
 
-    @Transactional
+    /**
+     * Not itself transactional: each phase below (markRunning, the executeDeletion steps,
+     * finalizeDeletion) opens and commits its own transaction. Provider cleanup strategies
+     * (e.g. CalendarOAuthService.disconnectGoogle) write via REQUIRES_NEW sub-transactions
+     * that commit independently; wrapping this whole method in one transaction previously
+     * meant later steps could hold stale, pre-bump versions of rows those sub-transactions
+     * had already committed, causing an ObjectOptimisticLockingFailureException — which also
+     * poisoned the transaction so even the failure-recording save failed the same way,
+     * leaving jobs stuck in RUNNING forever. Committing each phase separately means every
+     * step always reads current DB state and a failure anywhere can still be recorded.
+     */
     protected void process(UUID jobId) {
-        AccountDeletionJob job = accountDeletionJobRepository.findById(jobId).orElse(null);
-        if (job == null || !EnumSet.of(AccountDeletionJobStatus.QUEUED, AccountDeletionJobStatus.FAILED).contains(job.getStatus())) {
+        AccountDeletionJob job = markRunning(jobId);
+        if (job == null) {
             return;
         }
+        log.info("ACCOUNT_DELETION_STARTED userId={} jobId={} attempt={}", job.getUserId(), job.getId(), job.getAttemptCount());
 
+        try {
+            executeDeletion(job.getUserId());
+            markCompleted(jobId);
+            log.info("ACCOUNT_DELETION_COMPLETED userId={} jobId={}", job.getUserId(), job.getId());
+        } catch (RuntimeException ex) {
+            log.warn("ACCOUNT_DELETION_FAILED userId={} jobId={} message={}", job.getUserId(), job.getId(), ex.getMessage(), ex);
+            markJobFailed(job.getId(), job.getAttemptCount(), ex);
+        }
+    }
+
+    @Transactional
+    protected AccountDeletionJob markRunning(UUID jobId) {
+        AccountDeletionJob job = accountDeletionJobRepository.findById(jobId).orElse(null);
+        if (job == null || !EnumSet.of(AccountDeletionJobStatus.QUEUED, AccountDeletionJobStatus.FAILED).contains(job.getStatus())) {
+            return null;
+        }
         job.setStatus(AccountDeletionJobStatus.RUNNING);
         job.setStartedAt(Instant.now());
         job.setAttemptCount(job.getAttemptCount() + 1);
         job.setNextAttemptAt(null);
         job.setLastErrorCode(null);
         job.setLastErrorMessage(null);
-        accountDeletionJobRepository.save(job);
-        log.info("ACCOUNT_DELETION_STARTED userId={} jobId={} attempt={}", job.getUserId(), job.getId(), job.getAttemptCount());
-
-        try {
-            executeDeletion(job.getUserId());
-            job.setStatus(AccountDeletionJobStatus.COMPLETED);
-            job.setCompletedAt(Instant.now());
-            accountDeletionJobRepository.save(job);
-            log.info("ACCOUNT_DELETION_COMPLETED userId={} jobId={}", job.getUserId(), job.getId());
-        } catch (RuntimeException ex) {
-            // The transaction backing this method may already be marked rollback-only (e.g. a
-            // stale-entity flush failure surfacing from a REQUIRES_NEW sub-transaction elsewhere
-            // in executeDeletion), in which case saving `job` here would throw the same error
-            // again and the job would be stuck in RUNNING forever. Record the failure in its own
-            // fresh transaction so a retry always gets scheduled.
-            log.warn("ACCOUNT_DELETION_FAILED userId={} jobId={} message={}", job.getUserId(), job.getId(), ex.getMessage(), ex);
-            markJobFailed(job.getId(), job.getAttemptCount(), ex);
-        }
+        return accountDeletionJobRepository.save(job);
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
+    protected void markCompleted(UUID jobId) {
+        AccountDeletionJob job = accountDeletionJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            return;
+        }
+        job.setStatus(AccountDeletionJobStatus.COMPLETED);
+        job.setCompletedAt(Instant.now());
+        accountDeletionJobRepository.save(job);
+    }
+
+    @Transactional
     protected void markJobFailed(UUID jobId, int attemptCount, RuntimeException ex) {
         AccountDeletionJob job = accountDeletionJobRepository.findById(jobId).orElse(null);
         if (job == null) {
@@ -166,16 +184,10 @@ public class AccountDeletionWorker {
                         userId, strategy.providerKey(), ex.getMessage(), ex);
             }
         }
-        // Provider cleanup strategies (e.g. CalendarOAuthService.disconnectGoogle) write via
-        // REQUIRES_NEW sub-transactions that commit independently of this method's own
-        // transaction. Those commits bump @Version columns (e.g. CalendarConnection) on rows
-        // this transaction's persistence context may already hold at the pre-bump version.
-        // Clearing here forces subsequent reads/bulk deletes to see current DB state instead of
-        // flushing a stale entity and failing with an ObjectOptimisticLockingFailureException.
-        entityManager.clear();
     }
 
-    private void deleteProviderRecords(UUID userId) {
+    @Transactional
+    protected void deleteProviderRecords(UUID userId) {
         List<UUID> connectionIds = calendarConnectionRepository.findByUserIdAndStatusNot(userId, CalendarConnectionStatus.DISCONNECTED)
                 .stream()
                 .map(CalendarConnection::getId)
@@ -188,7 +200,8 @@ public class AccountDeletionWorker {
         zoomConferencingConnectionRepository.deleteByUserId(userId);
     }
 
-    private void deleteUserOwnedObjects(UUID userId) {
+    @Transactional
+    protected void deleteUserOwnedObjects(UUID userId) {
         Instant deletedAt = Instant.now();
         availabilityRuleRepository.deleteByUserId(userId);
         availabilityOverrideRepository.deleteByUserId(userId);
