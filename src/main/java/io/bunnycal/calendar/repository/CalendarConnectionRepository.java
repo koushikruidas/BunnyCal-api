@@ -13,11 +13,30 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface CalendarConnectionRepository extends JpaRepository<CalendarConnection, UUID> {
-    Optional<CalendarConnection> findByUserIdAndProvider(UUID userId, CalendarProviderType provider);
+    /**
+     * All of a user's connections for a provider. A user may hold several accounts per provider
+     * (V118_0), so this cannot be an {@code Optional} — callers that need a single row must say
+     * which one they mean. Oldest first, so "the original account" is a stable choice.
+     */
+    java.util.List<CalendarConnection> findByUserIdAndProviderOrderByCreatedAtAsc(
+            UUID userId, CalendarProviderType provider);
 
-    Optional<CalendarConnection> findByUserIdAndProviderAndStatus(UUID userId,
-                                                                  CalendarProviderType provider,
-                                                                  CalendarConnectionStatus status);
+    java.util.List<CalendarConnection> findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+            UUID userId, CalendarProviderType provider, CalendarConnectionStatus status);
+
+    /**
+     * The identity finder: resolves the row for one specific external account.
+     *
+     * <p>Deliberately <b>status-agnostic</b>. Disconnect is a soft delete — it marks the row
+     * REVOKED and clears the token but keeps the row, and the row keeps its slot in the
+     * {@code (user_id, provider, provider_user_id)} unique index. Filtering to ACTIVE here would
+     * make a reconnect of a disconnected account try to INSERT a duplicate and blow up on the
+     * index; returning the revoked row instead lets the OAuth callback take the UPDATE path and
+     * reactivate it.
+     */
+    Optional<CalendarConnection> findByUserIdAndProviderAndProviderUserId(
+            UUID userId, CalendarProviderType provider, String providerUserId);
+
     java.util.List<CalendarConnection> findByUserIdAndStatus(UUID userId, CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByStatus(CalendarConnectionStatus status);
     java.util.List<CalendarConnection> findByProviderAndWebhookChannelExpiresAtBefore(
@@ -34,6 +53,22 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     java.util.List<CalendarConnection> findAllByScope(@Param("scope") String scope);
 
     java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
+
+    /**
+     * The user's chosen round-robin write-back target, if they have one. Guarded by a partial
+     * unique index on {@code (user_id) WHERE is_default_writeback}, so at most one row can match.
+     */
+    Optional<CalendarConnection> findByUserIdAndDefaultWritebackTrue(UUID userId);
+
+    /**
+     * Clears the default-writeback flag across a user's connections. Callers set the new default
+     * immediately afterwards; doing it in this order keeps the partial unique index satisfied at
+     * every point (the index forbids two TRUE rows, not zero).
+     */
+    @Modifying
+    @Query("update CalendarConnection c set c.defaultWriteback = false "
+            + "where c.userId = :userId and c.defaultWriteback = true")
+    void clearDefaultWritebackForUser(@Param("userId") UUID userId);
 
     java.util.List<CalendarConnection> findByUserIdAndStatusNot(UUID userId, CalendarConnectionStatus status);
 

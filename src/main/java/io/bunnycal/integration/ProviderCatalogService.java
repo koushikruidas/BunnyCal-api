@@ -114,8 +114,11 @@ public class ProviderCatalogService {
                                                           CalendarProviderType providerType,
                                                           ProviderAuthoritySummary authoritySummary) {
         String providerId = calendarProviderId(providerType);
-        Optional<CalendarConnection> connection = calendarConnectionRepository.findByUserIdAndProvider(userId, providerType);
-        String status = connection.map(c -> mapCalendarStatus(c.getStatus())).orElse("NOT_CONNECTED");
+        // A user may hold several accounts per provider; the provider tile shows one status, so
+        // collapse them the same way the OAuth services do (CONNECTED > ERROR > DISCONNECTED).
+        List<CalendarConnection> connections =
+                calendarConnectionRepository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, providerType);
+        String status = aggregateCalendarStatus(connections);
         boolean connected = "CONNECTED".equals(status);
         boolean actionRequired = "ERROR".equals(status);
         ProviderCapabilityFlags flags = switch (providerType) {
@@ -249,6 +252,33 @@ public class ProviderCatalogService {
 
     private String calendarProviderId(CalendarProviderType providerType) {
         return providerType == CalendarProviderType.MICROSOFT ? MICROSOFT : GOOGLE;
+    }
+
+    /**
+     * Collapses a user's connections for one provider into the single status the provider tile
+     * shows. One healthy account means the provider works, so CONNECTED wins; below that, a state
+     * the user can act on (ERROR, then PENDING) beats one they already chose (DISCONNECTED).
+     */
+    private static String aggregateCalendarStatus(List<CalendarConnection> connections) {
+        if (connections == null || connections.isEmpty()) {
+            return "NOT_CONNECTED";
+        }
+        boolean anyError = false;
+        boolean anyPending = false;
+        boolean anyDisconnected = false;
+        for (CalendarConnection connection : connections) {
+            switch (mapCalendarStatus(connection.getStatus())) {
+                case "CONNECTED" -> {
+                    return "CONNECTED";
+                }
+                case "ERROR" -> anyError = true;
+                case "PENDING" -> anyPending = true;
+                default -> anyDisconnected = true;
+            }
+        }
+        if (anyError) return "ERROR";
+        if (anyPending) return "PENDING";
+        return anyDisconnected ? "DISCONNECTED" : "NOT_CONNECTED";
     }
 
     private static String mapCalendarStatus(CalendarConnectionStatus status) {

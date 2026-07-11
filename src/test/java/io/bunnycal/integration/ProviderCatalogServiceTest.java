@@ -43,10 +43,10 @@ class ProviderCatalogServiceTest {
         google.setStatus(CalendarConnectionStatus.ACTIVE);
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(google));
-        when(connectionRepo.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.of(google));
-        when(connectionRepo.findByUserIdAndProvider(userId, CalendarProviderType.MICROSOFT))
-                .thenReturn(Optional.empty());
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(List.of(google));
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.MICROSOFT))
+                .thenReturn(List.of());
         when(zoom.status(userId)).thenReturn("NOT_CONNECTED");
 
         Map<String, ProviderDescriptor> conferencing = service.conferencingProviderSubset(userId);
@@ -69,7 +69,7 @@ class ProviderCatalogServiceTest {
         UUID userId = UUID.randomUUID();
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of());
-        when(connectionRepo.findByUserIdAndProvider(any(), any())).thenReturn(Optional.empty());
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
         when(zoom.status(userId)).thenReturn("NOT_CONNECTED");
 
         ProviderDescriptor meet = service.conferencingProviderSubset(userId).get("google_meet");
@@ -89,10 +89,10 @@ class ProviderCatalogServiceTest {
         ms.setStatus(CalendarConnectionStatus.ACTIVE);
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(ms));
-        when(connectionRepo.findByUserIdAndProvider(userId, CalendarProviderType.MICROSOFT))
-                .thenReturn(Optional.of(ms));
-        when(connectionRepo.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
-                .thenReturn(Optional.empty());
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.MICROSOFT))
+                .thenReturn(List.of(ms));
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(List.of());
         when(zoom.status(userId)).thenReturn("NOT_CONNECTED");
 
         ProviderDescriptor teams = service.conferencingProviderSubset(userId).get("microsoft_teams");
@@ -108,7 +108,7 @@ class ProviderCatalogServiceTest {
         UUID userId = UUID.randomUUID();
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of());
-        when(connectionRepo.findByUserIdAndProvider(any(), any())).thenReturn(Optional.empty());
+        when(connectionRepo.findByUserIdAndProviderOrderByCreatedAtAsc(any(), any())).thenReturn(List.of());
         when(zoom.status(userId)).thenReturn("CONNECTED");
 
         ProviderDescriptor zoomDescriptor = service.conferencingProviderSubset(userId).get("zoom");

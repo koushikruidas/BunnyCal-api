@@ -357,11 +357,13 @@ public class EventTypeParticipantService {
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
 
             // Teams capability: requires an active Microsoft work/school (Entra) account.
-            // Consumer MSA accounts (Outlook.com) cannot host native Teams meetings.
+            // Consumer MSA accounts (Outlook.com) cannot host native Teams meetings. A user may
+            // hold several Microsoft accounts, so any one work/school account is enough.
             boolean supportsNativeTeams = calendarConnectionRepository
-                    .findByUserIdAndProviderAndStatus(uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                    .filter(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn))
-                    .isPresent();
+                    .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
+                    .stream()
+                    .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn));
 
             String displayName = u != null ? u.getName() : null;
             out.add(new EventTypeParticipantResponse(
@@ -441,8 +443,8 @@ public class EventTypeParticipantService {
 
         if (conferencing == ConferencingProviderType.GOOGLE_MEET) {
             boolean anyGoogle = participantIds.stream().anyMatch(uid ->
-                    calendarConnectionRepository.findByUserIdAndProviderAndStatus(
-                            uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE).isPresent());
+                    !calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                            uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE).isEmpty());
             if (!anyGoogle) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         "Google Meet requires at least one participant with an active Google Calendar connection.");
@@ -452,10 +454,10 @@ public class EventTypeParticipantService {
 
         if (conferencing == ConferencingProviderType.MICROSOFT_TEAMS) {
             boolean anyTeamsCapable = participantIds.stream().anyMatch(uid ->
-                    calendarConnectionRepository.findByUserIdAndProviderAndStatus(
+                    calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
                             uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                            .filter(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn))
-                            .isPresent());
+                            .stream()
+                            .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn)));
             if (!anyTeamsCapable) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         "Microsoft Teams requires at least one participant with a Microsoft 365 work or school account.");

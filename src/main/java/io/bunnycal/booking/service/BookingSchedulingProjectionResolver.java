@@ -8,6 +8,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.common.logging.OpsLoggers;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -53,18 +54,57 @@ public class BookingSchedulingProjectionResolver {
         return new SchedulingProjection(connection.getProvider(), connection.getId(), calendarId);
     }
 
+    /**
+     * Picks which of a participant's connections a round-robin booking is written back to.
+     *
+     * <p>Round-robin has no per-event-type projection triple — the host is only known at booking
+     * time — so with several connections per provider the target has to be chosen here. In
+     * preference order: the participant's designated default write-back connection, then the one
+     * that owns a selected (or primary) calendar so this agrees with
+     * {@link #resolveParticipantCalendarId}, then the oldest. The last case is genuinely ambiguous
+     * and is logged rather than silently resolved.
+     */
     private Optional<CalendarConnection> resolveParticipantConnection(UUID participantUserId,
                                                                       @Nullable CalendarProviderType preferredProvider) {
         if (preferredProvider != null) {
-            Optional<CalendarConnection> matching = connectionRepository
-                    .findByUserIdAndProviderAndStatus(participantUserId, preferredProvider, CalendarConnectionStatus.ACTIVE);
-            if (matching.isPresent()) {
-                return matching;
+            List<CalendarConnection> matching = connectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                    participantUserId, preferredProvider, CalendarConnectionStatus.ACTIVE);
+            if (!matching.isEmpty()) {
+                return Optional.of(pickWritebackConnection(participantUserId, matching, preferredProvider));
             }
         }
-        return connectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(participantUserId, CalendarConnectionStatus.ACTIVE)
-                .stream()
+        List<CalendarConnection> any = connectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
+                participantUserId, CalendarConnectionStatus.ACTIVE);
+        if (any.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(pickWritebackConnection(participantUserId, any, null));
+    }
+
+    private CalendarConnection pickWritebackConnection(UUID participantUserId,
+                                                       List<CalendarConnection> candidates,
+                                                       @Nullable CalendarProviderType preferredProvider) {
+        if (candidates.size() == 1) {
+            return candidates.get(0);
+        }
+        Optional<CalendarConnection> designated = candidates.stream()
+                .filter(CalendarConnection::isDefaultWriteback)
                 .findFirst();
+        if (designated.isPresent()) {
+            return designated.get();
+        }
+        Optional<CalendarConnection> withSelectedCalendar = candidates.stream()
+                .filter(c -> inventoryRepository.findByConnectionIdAndSelectedTrue(c.getId()).isPresent())
+                .findFirst();
+        if (withSelectedCalendar.isPresent()) {
+            return withSelectedCalendar.get();
+        }
+        CalendarConnection fallback = candidates.get(0);
+        OpsLoggers.HOST.warn(
+                "round_robin_ambiguous_writeback hostId={} provider={} candidateCount={} chosenConnectionId={} "
+                        + "reason=no_default_and_no_selected_calendar",
+                participantUserId, preferredProvider, candidates.size(), fallback.getId());
+        return fallback;
     }
 
     @Nullable

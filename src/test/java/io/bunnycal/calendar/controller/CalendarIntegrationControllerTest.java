@@ -16,6 +16,7 @@ import io.bunnycal.calendar.config.GoogleOAuthProperties;
 import io.bunnycal.calendar.config.MicrosoftOAuthProperties;
 import io.bunnycal.calendar.auth.OAuthStateException;
 import io.bunnycal.calendar.replay.WebhookDeliveryMetadata;
+import io.bunnycal.calendar.service.CalendarConnectionManagementService;
 import io.bunnycal.calendar.service.CalendarWebhookAuthService;
 import io.bunnycal.calendar.service.CalendarOAuthService;
 import io.bunnycal.calendar.service.MicrosoftCalendarOAuthService;
@@ -58,6 +59,8 @@ class CalendarIntegrationControllerTest {
     private ProviderCatalogService providerCatalogService;
     @Mock
     private CalendarRuntimeStatusService calendarRuntimeStatusService;
+    @Mock
+    private CalendarConnectionManagementService connectionManagementService;
 
     private CalendarIntegrationController controller;
     private GoogleOAuthProperties properties;
@@ -86,6 +89,7 @@ class CalendarIntegrationControllerTest {
                 capabilityRegistry,
                 providerCatalogService,
                 calendarRuntimeStatusService,
+                connectionManagementService,
                 meterRegistry,
                 "secret");
     }

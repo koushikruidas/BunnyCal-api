@@ -18,6 +18,8 @@ public record CalendarRuntimeStatusResponse(
             String email,
             String status,
             boolean actionRequired,
+            /** True on the connection round-robin bookings are written back to. At most one per user. */
+            boolean defaultWriteback,
             Capabilities capabilities,
             Roles roles,
             @JsonInclude(JsonInclude.Include.NON_NULL) Account account,

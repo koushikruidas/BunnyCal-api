@@ -197,23 +197,21 @@ public class CalendarRuntimeStatusService {
                         selection.isProjection(connection.getId(), c.getExternalCalendarId())
                 ))
                 .toList();
+        // A connection is a linked account, not necessarily the login identity — a user can
+        // connect several accounts per provider. The email captured at connect-time is what
+        // distinguishes them in the UI, so it is authoritative wherever we have it. Falling back
+        // to the login user's email is only correct for pre-V118_0 rows connected before the
+        // email was captured, and only for a user's *first* Google connection; the migration
+        // backfills those, so in practice the fallback should never fire.
         String displayName = connection.getProviderUserId();
         String email = connection.getProviderUserId();
-        if (connection.getProvider() == CalendarProviderType.GOOGLE) {
-            // The connected Google account is always this app's login identity, so the
-            // app's own User record is authoritative for the display name/email.
+        if (connection.getAccountEmail() != null && !connection.getAccountEmail().isBlank()) {
+            displayName = connection.getAccountEmail();
+            email = connection.getAccountEmail();
+        } else if (connection.getProvider() == CalendarProviderType.GOOGLE) {
             Optional<User> user = userRepository.findById(connection.getUserId());
             displayName = user.map(User::getName).orElse(displayName);
             email = user.map(User::getEmail).orElse(email);
-        } else if (connection.getProvider() == CalendarProviderType.MICROSOFT
-                && connection.getAccountEmail() != null
-                && !connection.getAccountEmail().isBlank()) {
-            // Microsoft connections are linked calendars, not the login identity, and can be
-            // a different account entirely — use the email captured from Graph at connect
-            // time. Falls back to providerUserId (an opaque puid/oid) only for connections
-            // made before this field existed.
-            displayName = connection.getAccountEmail();
-            email = connection.getAccountEmail();
         }
         return new CalendarRuntimeStatusResponse.ConnectionStatus(
                 connection.getId() == null ? null : connection.getId().toString(),
@@ -222,6 +220,7 @@ public class CalendarRuntimeStatusService {
                 email,
                 mapCalendarStatus(connection.getStatus()),
                 isActionRequired(connection.getStatus()),
+                connection.isDefaultWriteback(),
                 capabilityView,
                 roles,
                 toAccountMetadata(connection),

@@ -20,7 +20,8 @@ import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "calendar_connections", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_calendar_connections_user_provider", columnNames = {"user_id", "provider"})
+        @UniqueConstraint(name = "ux_calendar_user_provider_account",
+                columnNames = {"user_id", "provider", "provider_user_id"})
 })
 public class CalendarConnection extends BaseEntity {
 
@@ -43,9 +44,9 @@ public class CalendarConnection extends BaseEntity {
      * Display email for this specific connected account, captured from the provider at
      * connect-time. Unlike {@link #providerUserId} (an opaque id used for account
      * classification — see {@code MicrosoftAccountClassifier}), this is the human-readable
-     * address shown in the UI. Null for Google connections, which resolve their email via
-     * the app's own User table instead (the connected Google account is always the login
-     * identity there).
+     * address shown in the UI. Populated for both providers: a user can connect several
+     * accounts per provider, so the connected account is no longer necessarily the login
+     * identity and the email cannot be resolved from the User table.
      */
     @Column(name = "account_email", length = 255)
     private String accountEmail;
@@ -111,6 +112,14 @@ public class CalendarConnection extends BaseEntity {
     @Column(name = "quarantined_until")
     private Instant quarantinedUntil;
 
+    /**
+     * The connection round-robin bookings are written back to. Round-robin has no per-event-type
+     * projection triple to consult, so once a host holds several connections the target would
+     * otherwise be arbitrary. At most one per user (partial unique index).
+     */
+    @Column(name = "is_default_writeback", nullable = false)
+    private boolean defaultWriteback = false;
+
     @Version
     @Column(nullable = false)
     private long version;
@@ -160,6 +169,8 @@ public class CalendarConnection extends BaseEntity {
     public void setNextRetryAt(Instant nextRetryAt) { this.nextRetryAt = nextRetryAt; }
     public Instant getQuarantinedUntil() { return quarantinedUntil; }
     public void setQuarantinedUntil(Instant quarantinedUntil) { this.quarantinedUntil = quarantinedUntil; }
+    public boolean isDefaultWriteback() { return defaultWriteback; }
+    public void setDefaultWriteback(boolean defaultWriteback) { this.defaultWriteback = defaultWriteback; }
     public long getVersion() { return version; }
     public void setVersion(long version) { this.version = version; }
 }

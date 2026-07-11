@@ -213,13 +213,21 @@ public class GoogleCalendarProviderClient implements CalendarProviderClient {
                     .orElseThrow(() -> new CalendarClientException(404, "scheduling connection not found"));
         }
         CalendarProviderType providerType = providerType(provider);
-        return connectionRepository.findByUserIdAndProviderAndStatus(userId, providerType, CalendarConnectionStatus.ACTIVE)
+        // Only reached when no scheduling connection was recorded on the booking (legacy rows).
+        // A user may hold several accounts per provider; the oldest active one is the closest
+        // stand-in for "the account this booking was written to" that we can recover after the fact.
+        return connectionRepository
+                .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(userId, providerType, CalendarConnectionStatus.ACTIVE)
+                .stream()
+                .findFirst()
                 .orElseThrow(() -> new CalendarClientException(404, "active calendar connection not found"));
     }
 
     private CalendarConnection resolveAnyConnection(UUID userId, String provider) {
         CalendarProviderType providerType = providerType(provider);
-        return connectionRepository.findByUserIdAndProvider(userId, providerType)
+        return connectionRepository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, providerType)
+                .stream()
+                .findFirst()
                 .orElseThrow(() -> new CalendarClientException(404, "calendar connection not found"));
     }
 

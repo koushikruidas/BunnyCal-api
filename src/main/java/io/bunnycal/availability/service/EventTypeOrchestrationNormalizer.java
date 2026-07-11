@@ -118,8 +118,10 @@ public class EventTypeOrchestrationNormalizer {
     }
 
     /**
-     * Sync/mirror connection = oldest active connection by creation time.
-     * Derived independently of availabilityCalendars ordering — availability is free/busy semantics only.
+     * The projection destination is the triple explicitly stored on the event type — there is no
+     * fallback resolution from the user's connections, which matters now that a user can hold
+     * several accounts per provider and "their calendar" is no longer a single thing. Derived
+     * independently of availabilityCalendars, which carries free/busy semantics only.
      */
     private ProjectionDestination projectionDestinationFromExisting(EventType existingEventType, boolean allowMissing) {
         if (existingEventType == null
@@ -143,18 +145,25 @@ public class EventTypeOrchestrationNormalizer {
         if (raw == null || raw.isEmpty()) {
             return List.of();
         }
-        LinkedHashSet<UUID> dedup = new LinkedHashSet<>();
+        // Dedup on the (connection, calendar) pair, not the connection alone: one account can
+        // contribute several calendars to availability, and keying on connectionId would silently
+        // drop every calendar after the first. A null externalCalendarId is a whole-connection
+        // binding, and still dedups per connection.
+        LinkedHashSet<CalendarBindingKey> dedup = new LinkedHashSet<>();
         List<AvailabilityBinding> bindings = new ArrayList<>();
         for (CreateEventTypeRequest.AvailabilityCalendarRequest entry : raw) {
             UUID connectionId = parseConnectionId(entry);
-            if (connectionId == null || !dedup.add(connectionId)) {
+            if (connectionId == null) {
+                continue;
+            }
+            String externalCalendarId = trimToNull(entry.externalCalendarId());
+            if (!dedup.add(new CalendarBindingKey(connectionId, externalCalendarId))) {
                 continue;
             }
             CalendarConnection connection = calendarConnectionRepository.findById(connectionId)
                     .filter(c -> userId.equals(c.getUserId()))
                     .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
                     .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "availability calendar connection is invalid."));
-            String externalCalendarId = trimToNull(entry.externalCalendarId());
             if (externalCalendarId != null
                     && (isUuidShaped(externalCalendarId)
                     || connection.getId().toString().equalsIgnoreCase(externalCalendarId))) {
@@ -165,6 +174,8 @@ public class EventTypeOrchestrationNormalizer {
         }
         return List.copyOf(bindings);
     }
+
+    private record CalendarBindingKey(UUID connectionId, String externalCalendarId) {}
 
     private static UUID parseConnectionId(CreateEventTypeRequest.AvailabilityCalendarRequest entry) {
         if (entry == null || entry.connectionId() == null || entry.connectionId().isBlank()) {
