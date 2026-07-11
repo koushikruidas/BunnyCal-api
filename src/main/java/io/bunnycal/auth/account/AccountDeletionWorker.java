@@ -24,6 +24,7 @@ import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.service.SessionService;
 import io.bunnycal.team.repository.ParticipantSetupRequestRepository;
 import io.bunnycal.team.repository.TeamMemberRepository;
+import jakarta.persistence.EntityManager;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumSet;
@@ -34,6 +35,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -65,6 +67,7 @@ public class AccountDeletionWorker {
     private final AuthIdentityRepository authIdentityRepository;
     private final DeletedAccountTombstoneRepository deletedAccountTombstoneRepository;
     private final List<AccountDeletionProviderCleanupStrategy> cleanupStrategies;
+    private final EntityManager entityManager;
 
     @Value("${account.deletion.worker.batch-size:10}")
     private int batchSize;
@@ -104,13 +107,27 @@ public class AccountDeletionWorker {
             accountDeletionJobRepository.save(job);
             log.info("ACCOUNT_DELETION_COMPLETED userId={} jobId={}", job.getUserId(), job.getId());
         } catch (RuntimeException ex) {
-            job.setStatus(AccountDeletionJobStatus.FAILED);
-            job.setLastErrorCode(ex.getClass().getSimpleName());
-            job.setLastErrorMessage(truncate(ex.getMessage()));
-            job.setNextAttemptAt(Instant.now().plus(Duration.ofMinutes(Math.min(30, Math.max(1, job.getAttemptCount())))));
-            accountDeletionJobRepository.save(job);
+            // The transaction backing this method may already be marked rollback-only (e.g. a
+            // stale-entity flush failure surfacing from a REQUIRES_NEW sub-transaction elsewhere
+            // in executeDeletion), in which case saving `job` here would throw the same error
+            // again and the job would be stuck in RUNNING forever. Record the failure in its own
+            // fresh transaction so a retry always gets scheduled.
             log.warn("ACCOUNT_DELETION_FAILED userId={} jobId={} message={}", job.getUserId(), job.getId(), ex.getMessage(), ex);
+            markJobFailed(job.getId(), job.getAttemptCount(), ex);
         }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    protected void markJobFailed(UUID jobId, int attemptCount, RuntimeException ex) {
+        AccountDeletionJob job = accountDeletionJobRepository.findById(jobId).orElse(null);
+        if (job == null) {
+            return;
+        }
+        job.setStatus(AccountDeletionJobStatus.FAILED);
+        job.setLastErrorCode(ex.getClass().getSimpleName());
+        job.setLastErrorMessage(truncate(ex.getMessage()));
+        job.setNextAttemptAt(Instant.now().plus(Duration.ofMinutes(Math.min(30, Math.max(1, attemptCount)))));
+        accountDeletionJobRepository.save(job);
     }
 
     private void executeDeletion(UUID userId) {
@@ -149,6 +166,13 @@ public class AccountDeletionWorker {
                         userId, strategy.providerKey(), ex.getMessage(), ex);
             }
         }
+        // Provider cleanup strategies (e.g. CalendarOAuthService.disconnectGoogle) write via
+        // REQUIRES_NEW sub-transactions that commit independently of this method's own
+        // transaction. Those commits bump @Version columns (e.g. CalendarConnection) on rows
+        // this transaction's persistence context may already hold at the pre-bump version.
+        // Clearing here forces subsequent reads/bulk deletes to see current DB state instead of
+        // flushing a stale entity and failing with an ObjectOptimisticLockingFailureException.
+        entityManager.clear();
     }
 
     private void deleteProviderRecords(UUID userId) {
