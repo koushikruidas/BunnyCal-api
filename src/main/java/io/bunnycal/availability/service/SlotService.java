@@ -129,6 +129,19 @@ public class SlotService {
         this.entitlementService = entitlementService;
     }
 
+    /**
+     * The weekdays this host has working hours on. The public booking calendar needs these to grey
+     * out the days the host does not work — it used to assume Mon–Fri, so it blocked a Saturday the
+     * host had enabled and offered a weekday they had turned off. A day may carry several rules
+     * (a morning and an afternoon block, say), hence distinct.
+     */
+    public List<DayOfWeek> availableDaysFor(UUID userId) {
+        return availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId).stream()
+                .map(AvailabilityRule::getDayOfWeek)
+                .distinct()
+                .toList();
+    }
+
     public SlotResponse getSlots(SlotRequest request) {
         // 1. Validate request.
         if (request == null
@@ -262,10 +275,17 @@ public class SlotService {
         //     windows (restrictToFilter=true) -- host availability is only an upper
         //     bound, never the slot source. No windows on the day => no slots.
         //   * Demand-driven (ONE_ON_ONE/ROUND_ROBIN/COLLECTIVE): the event's OWN
-        //     availability-filter windows narrow the host's availability. Empty =>
-        //     full host availability (restrictToFilter=false).
-        boolean restrictToFilter = eventType.getKind() == EventKind.GROUP;
-        List<BookingWindow> eventAvailabilityFilter = restrictToFilter
+        //     availability-filter windows narrow the host's availability.
+        //
+        // "Has a filter" is a property of the EVENT, not of the queried day. A demand-driven
+        // event with windows on Mon-Fri and none on Saturday is closed on Saturday -- that
+        // absence IS the narrowing. Deciding restrictToFilter from the day's windows alone
+        // would make "no windows today" indistinguishable from "no filter at all" and hand
+        // back the host's full availability on exactly the days the host meant to exclude.
+        boolean hasEventFilter = eventType.getKind() != EventKind.GROUP
+                && eventAvailabilityWindowRepository.existsByEventTypeId(eventType.getId());
+        boolean restrictToFilter = eventType.getKind() == EventKind.GROUP || hasEventFilter;
+        List<BookingWindow> eventAvailabilityFilter = eventType.getKind() == EventKind.GROUP
                 ? buildGroupReservationCandidateWindows(host, eventType, date)
                 : buildEventAvailabilityFilter(host, eventType, date);
 
@@ -360,8 +380,11 @@ public class SlotService {
      *
      * Only demand-driven event types (ONE_ON_ONE, ROUND_ROBIN, COLLECTIVE) carry a
      * filter; GROUP reserves time via {@link GroupEventReservationWindow} instead and
-     * never filters its own availability. An empty result means "no filter" -- the
-     * event sees the host's full availability.
+     * never filters its own availability.
+     *
+     * An empty result here means only "no window on THIS day". The caller decides what that
+     * implies: with no filter anywhere on the event it means no restriction, but on an event
+     * that does have a filter it means the event is closed today (restrictToFilter=true).
      */
     private List<BookingWindow> buildEventAvailabilityFilter(User host,
                                                              EventType eventType,

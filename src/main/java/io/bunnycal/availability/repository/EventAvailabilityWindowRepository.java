@@ -17,6 +17,14 @@ public interface EventAvailabilityWindowRepository
 
     List<EventAvailabilityWindow> findByEventTypeId(UUID eventTypeId);
 
+    /**
+     * Whether this event carries an availability filter at all — as opposed to carrying one
+     * that simply has no window on the day being queried, which means the event is closed
+     * that day. The two cases must not be conflated: no filter grants the host's full
+     * availability, while a filter without today's window grants nothing.
+     */
+    boolean existsByEventTypeId(UUID eventTypeId);
+
     void deleteByEventTypeId(UUID eventTypeId);
 
     /**

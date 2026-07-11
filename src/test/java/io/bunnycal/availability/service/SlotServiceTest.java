@@ -592,4 +592,55 @@ class SlotServiceTest {
         // And atMost(0) version reads.
         verify(slotCacheVersionService, atMost(0)).getCurrentVersion(any());
     }
+
+    /**
+     * The public booking calendar hardcoded Mon–Fri, so it blocked a Saturday the host had enabled.
+     * availableDaysFor must report whatever the host actually set, weekend included.
+     */
+    @Test
+    void availableDaysFor_includesWeekendWhenTheHostWorksIt() {
+        UUID hostId = UUID.randomUUID();
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(hostId))
+                .thenReturn(List.of(
+                        rule(hostId, DayOfWeek.SATURDAY),
+                        rule(hostId, DayOfWeek.SUNDAY)));
+
+        assertEquals(List.of(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY), slotService.availableDaysFor(hostId));
+    }
+
+    /** A day the host has turned off must not appear, so the calendar can grey it out. */
+    @Test
+    void availableDaysFor_omitsDaysTheHostDisabled() {
+        UUID hostId = UUID.randomUUID();
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(hostId))
+                .thenReturn(List.of(
+                        rule(hostId, DayOfWeek.MONDAY),
+                        rule(hostId, DayOfWeek.WEDNESDAY)));
+
+        List<DayOfWeek> days = slotService.availableDaysFor(hostId);
+
+        assertEquals(List.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY), days);
+        assertFalse(days.contains(DayOfWeek.TUESDAY), "Tuesday is disabled and must not be offered");
+    }
+
+    /** A day split into a morning and an afternoon block is still one day. */
+    @Test
+    void availableDaysFor_deduplicatesMultipleRulesOnOneDay() {
+        UUID hostId = UUID.randomUUID();
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(hostId))
+                .thenReturn(List.of(
+                        rule(hostId, DayOfWeek.SATURDAY),
+                        rule(hostId, DayOfWeek.SATURDAY)));
+
+        assertEquals(List.of(DayOfWeek.SATURDAY), slotService.availableDaysFor(hostId));
+    }
+
+    private static AvailabilityRule rule(UUID userId, DayOfWeek day) {
+        return AvailabilityRule.builder()
+                .userId(userId)
+                .dayOfWeek(day)
+                .startTime(LocalTime.of(9, 0))
+                .endTime(LocalTime.of(17, 0))
+                .build();
+    }
 }

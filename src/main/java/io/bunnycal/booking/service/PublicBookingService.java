@@ -239,6 +239,12 @@ public class PublicBookingService {
                     .filter(p -> p.name() != null)
                     .toList();
         }
+        // Which weekdays the host works, so the calendar can grey out the rest instead of assuming
+        // Mon–Fri.
+        List<String> availableDays = slotService.availableDaysFor(target.userId()).stream()
+                .map(Enum::name)
+                .toList();
+
         return new PublicEventInfoResponse(
                 target.eventName(),
                 target.duration().toMinutes(),
@@ -250,7 +256,8 @@ public class PublicBookingService {
                 target.hostAvatarUrl(),
                 eventType.getKind(),
                 eventType.isPublished(),
-                participants
+                participants,
+                availableDays
         );
     }
 
