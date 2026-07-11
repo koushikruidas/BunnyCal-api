@@ -1030,7 +1030,7 @@ class BookingNotificationServiceTest {
         // calendarConnectionRepository must never be consulted — suppression checks are
         // not valid for collective participants
         verify(calendarConnectionRepository, org.mockito.Mockito.never())
-                .findByUserIdAndProviderAndStatus(any(), any(), any());
+                .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(any(), any(), any());
     }
 
     @Test
@@ -1078,7 +1078,7 @@ class BookingNotificationServiceTest {
         assertTrue(toAddresses.stream().anyMatch(t -> t.contains("guest@example.com")),
                 "Guest must receive ICS email");
         verify(calendarConnectionRepository, org.mockito.Mockito.never())
-                .findByUserIdAndProviderAndStatus(any(), any(), any());
+                .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(any(), any(), any());
     }
 
     @Test
@@ -1129,7 +1129,7 @@ class BookingNotificationServiceTest {
         assertTrue(toAddresses.stream().anyMatch(t -> t.contains("bob@outlook.com")),
                 "MSA-connected Bob must receive CANCEL ICS");
         verify(calendarConnectionRepository, org.mockito.Mockito.never())
-                .findByUserIdAndProviderAndStatus(any(), any(), any());
+                .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(any(), any(), any());
     }
 
     @Test
@@ -1156,8 +1156,8 @@ class BookingNotificationServiceTest {
                         .name("Team Sync").slug("team-sync").userId(ownerId).build()));
         when(bookingAssignmentRepository.findAllByBookingId(bookingId)).thenReturn(List.of(assignAlice));
         when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
-        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(any(), any(), any()))
-                .thenReturn(Optional.empty());
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(any(), any(), any()))
+                .thenReturn(List.of());
         when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("alice@example.com"));
         // deduplicate collapses to one entry
@@ -1197,8 +1197,8 @@ class BookingNotificationServiceTest {
                         .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build()));
         when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
         when(userRepository.findById(bobId)).thenReturn(Optional.of(bob));
-        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatus(any(), any(), any()))
-                .thenReturn(Optional.empty());
+        lenient().when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(any(), any(), any()))
+                .thenReturn(List.of());
         when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
         when(recipientResolver.resolveHostRecipient(bob)).thenReturn(Optional.of("bob@example.com"));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));

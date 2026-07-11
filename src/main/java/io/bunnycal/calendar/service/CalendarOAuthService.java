@@ -114,10 +114,6 @@ public class CalendarOAuthService {
         log.info("oauth_state_resolution stateRef={} resolvedUserId={} source={} returnTo={} bookingSessionIdPresent={}",
                 stateRef, userId, payload.source(), payload.returnTo(), payload.bookingSessionId() != null);
         log.info("calendar_connection_lookup_by_user provider={} userId={}", GOOGLE_PROVIDER, userId);
-        Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
-        // Enforce the per-plan connected-calendar limit before doing any provider work. Re-auth
-        // of an already-connected Google account (existing present) is always allowed.
-        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
         OAuthTokenExchangeResult token = googleApiClient.exchangeCodeForToken(
                 code,
                 properties.getRedirectUri(),
@@ -132,12 +128,23 @@ public class CalendarOAuthService {
             throw new IllegalArgumentException("Provider user id missing");
         }
 
+        // The row is keyed by the external ACCOUNT, not just the provider — a user may connect
+        // several Google accounts. Which account this is only becomes known after the token
+        // exchange, so both the lookup and the plan-limit decision have to follow it. Empty means
+        // a net-new account (INSERT); present means re-auth or reconnect of one we already hold
+        // (UPDATE), including a REVOKED row, which the finder deliberately still returns.
+        Optional<CalendarConnection> existing =
+                repository.findByUserIdAndProviderAndProviderUserId(userId, GOOGLE_PROVIDER, providerUserId);
+        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
+
         CalendarConnection base = existing.orElse(null);
         CalendarConnection connection = base == null ? new CalendarConnection() : copyForUpdate(base);
         String refreshTokenCiphertext;
         if (token.refreshToken() != null && !token.refreshToken().isBlank()) {
             refreshTokenCiphertext = tokenCipher.encrypt(token.refreshToken());
         } else if (base != null && base.getRefreshTokenCiphertext() != null && !base.getRefreshTokenCiphertext().isBlank()) {
+            // Google omits refresh_token on re-consent. Carrying the stored one forward is only
+            // safe because `base` is now guaranteed to be the same external account.
             refreshTokenCiphertext = base.getRefreshTokenCiphertext();
         } else {
             throw new IllegalArgumentException("Refresh token missing from provider response");
@@ -146,12 +153,22 @@ public class CalendarOAuthService {
         connection.setUserId(userId);
         connection.setProvider(GOOGLE_PROVIDER);
         connection.setProviderUserId(providerUserId);
+        String accountEmail = fetchGoogleAccountEmail(token.accessToken());
+        if (accountEmail != null && !accountEmail.isBlank()) {
+            connection.setAccountEmail(accountEmail);
+        }
         connection.setRefreshTokenCiphertext(refreshTokenCiphertext);
         connection.setLastTokenExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
         connection.setScopes(properties.getScopes());
+        // Reactivates a REVOKED row on reconnect, as well as clearing any prior error.
         connection.setStatus(CalendarConnectionStatus.SYNCING);
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
+        // First connection for this user becomes the round-robin write-back target; later ones
+        // do not steal it. Users can re-point it from the Integrations page.
+        if (base == null && repository.findByUserIdAndDefaultWritebackTrue(userId).isEmpty()) {
+            connection.setDefaultWriteback(true);
+        }
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
@@ -203,13 +220,14 @@ public class CalendarOAuthService {
         return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
+    /**
+     * The user's aggregate Google status. With several accounts connected, the provider as a whole
+     * is CONNECTED if any one of them is live; only if none are do we report the best of what is
+     * left (an error state beats a clean disconnect, so the user is told there is something to fix).
+     */
     @Transactional(readOnly = true)
     public String googleConnectionStatus(UUID userId) {
-        Optional<CalendarConnection> connection = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
-        if (connection.isEmpty()) {
-            return "NOT_CONNECTED";
-        }
-        return mapPublicConnectionStatus(connection.get().getStatus());
+        return aggregateConnectionStatus(repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, GOOGLE_PROVIDER));
     }
 
     @Transactional(readOnly = true)
@@ -222,13 +240,26 @@ public class CalendarOAuthService {
                 .map(CalendarConnection::getId);
     }
 
+    /**
+     * Disconnects every Google account the user has connected. Kept for the provider-scoped
+     * {@code DELETE /integrations/calendar/google} route; the per-account route calls
+     * {@link #disconnectConnection(CalendarConnection)} directly.
+     */
     @Transactional
     public void disconnectGoogle(UUID userId) {
-        Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, GOOGLE_PROVIDER);
-        if (existing.isEmpty()) {
-            return;
+        for (CalendarConnection connection
+                : repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, GOOGLE_PROVIDER)) {
+            disconnectConnection(connection);
         }
-        CalendarConnection connection = existing.get();
+    }
+
+    /**
+     * Revokes one Google connection. Callers are responsible for the ownership check and for
+     * promoting a new default write-back target if this row held the flag.
+     */
+    @Transactional
+    public void disconnectConnection(CalendarConnection connection) {
+        UUID userId = connection.getUserId();
         boolean hasCiphertext = connection.getRefreshTokenCiphertext() != null
                 && !connection.getRefreshTokenCiphertext().isBlank();
 
@@ -275,8 +306,62 @@ public class CalendarOAuthService {
                 userId, connection.getId(), GOOGLE_PROVIDER, "USER_INITIATED");
     }
 
+    /**
+     * The connected Google account's email address, for display in the Integrations page.
+     *
+     * <p>Read off the primary entry of the calendar list rather than from an identity endpoint:
+     * for Google, the primary calendar's id <em>is</em> the account email, and {@code
+     * calendar.readonly} (already granted) covers it. Adding a {@code userinfo.email} scope would
+     * force every existing user through re-consent for information we can already see.
+     *
+     * <p>Best-effort — the UI falls back to {@code providerUserId}, so a failure here must not
+     * fail the connect.
+     */
+    private String fetchGoogleAccountEmail(String accessToken) {
+        try {
+            return googleApiClient.listCalendars(accessToken).stream()
+                    .filter(entry -> entry != null && entry.primary())
+                    .map(entry -> entry.externalCalendarId())
+                    .filter(id -> id != null && id.contains("@"))
+                    .findFirst()
+                    .orElse(null);
+        } catch (RuntimeException ex) {
+            log.warn("google_account_email_lookup_failed", ex);
+            return null;
+        }
+    }
+
     private static String enc(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Collapses a user's connections for one provider into the single provider-level status the
+     * Integrations page shows. CONNECTED wins over ERROR wins over DISCONNECTED: one healthy
+     * account means the provider works, and a broken account is worth surfacing over a
+     * deliberately-removed one.
+     */
+    static String aggregateConnectionStatus(java.util.List<CalendarConnection> connections) {
+        if (connections == null || connections.isEmpty()) {
+            return "NOT_CONNECTED";
+        }
+        boolean anyDisconnected = false;
+        boolean anyError = false;
+        for (CalendarConnection connection : connections) {
+            String status = mapPublicConnectionStatus(connection.getStatus());
+            if ("CONNECTED".equals(status)) {
+                return "CONNECTED";
+            }
+            if ("ERROR".equals(status)) {
+                anyError = true;
+            } else {
+                anyDisconnected = true;
+            }
+        }
+        if (anyError) {
+            return "ERROR";
+        }
+        return anyDisconnected ? "DISCONNECTED" : "NOT_CONNECTED";
     }
 
     private static String mapPublicConnectionStatus(CalendarConnectionStatus status) {
@@ -301,6 +386,8 @@ public class CalendarOAuthService {
         copy.setUserId(existing.getUserId());
         copy.setProvider(existing.getProvider());
         copy.setProviderUserId(existing.getProviderUserId());
+        copy.setAccountEmail(existing.getAccountEmail());
+        copy.setDefaultWriteback(existing.isDefaultWriteback());
         copy.setRefreshTokenCiphertext(existing.getRefreshTokenCiphertext());
         copy.setLastTokenExpiresAt(existing.getLastTokenExpiresAt());
         copy.setScopes(existing.getScopes());

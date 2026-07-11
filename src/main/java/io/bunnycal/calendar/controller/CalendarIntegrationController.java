@@ -1,5 +1,6 @@
 package io.bunnycal.calendar.controller;
 
+import io.bunnycal.calendar.service.CalendarConnectionManagementService;
 import io.bunnycal.calendar.service.CalendarOAuthService;
 import io.bunnycal.calendar.service.MicrosoftCalendarOAuthService;
 import io.bunnycal.calendar.service.CalendarWebhookAuthService;
@@ -60,6 +61,7 @@ public class CalendarIntegrationController {
     private final ProviderCapabilityRegistry capabilityRegistry;
     private final ProviderCatalogService providerCatalogService;
     private final CalendarRuntimeStatusService calendarRuntimeStatusService;
+    private final CalendarConnectionManagementService connectionManagementService;
     private final MeterRegistry meterRegistry;
 
     public CalendarIntegrationController(CalendarOAuthService oauthService,
@@ -71,6 +73,7 @@ public class CalendarIntegrationController {
                                          ProviderCapabilityRegistry capabilityRegistry,
                                          ProviderCatalogService providerCatalogService,
                                          CalendarRuntimeStatusService calendarRuntimeStatusService,
+                                         CalendarConnectionManagementService connectionManagementService,
                                          MeterRegistry meterRegistry,
                                          @Value("${calendar.webhook.shared-secret:}") String webhookSharedSecret) {
         this.oauthService = oauthService;
@@ -82,6 +85,7 @@ public class CalendarIntegrationController {
         this.capabilityRegistry = capabilityRegistry;
         this.providerCatalogService = providerCatalogService;
         this.calendarRuntimeStatusService = calendarRuntimeStatusService;
+        this.connectionManagementService = connectionManagementService;
         this.meterRegistry = meterRegistry;
         this.webhookSharedSecret = webhookSharedSecret;
     }
@@ -146,6 +150,25 @@ public class CalendarIntegrationController {
     public ResponseEntity<ApiResponse<CalendarRuntimeStatusResponse>> status(Authentication authentication) {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(calendarRuntimeStatusService.runtimeStatus(userId)));
+    }
+
+    /**
+     * Disconnects one specific connected account. The provider-scoped route below cannot express
+     * this once a user holds several accounts for the same provider — it would revoke all of them.
+     */
+    @DeleteMapping("/connections/{connectionId}")
+    public ResponseEntity<ApiResponse<Void>> disconnectConnection(@PathVariable("connectionId") UUID connectionId,
+                                                                  Authentication authentication) {
+        connectionManagementService.disconnect(extractUserId(authentication), connectionId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    /** Re-points round-robin write-back at a specific connected account. */
+    @PostMapping("/connections/{connectionId}/default-writeback")
+    public ResponseEntity<ApiResponse<Void>> setDefaultWriteback(@PathVariable("connectionId") UUID connectionId,
+                                                                 Authentication authentication) {
+        connectionManagementService.setDefaultWriteback(extractUserId(authentication), connectionId);
+        return ResponseEntity.ok(ApiResponse.success(null));
     }
 
     @DeleteMapping("/{provider}")

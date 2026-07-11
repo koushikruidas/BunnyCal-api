@@ -45,6 +45,7 @@ class EventTypeDeleteGuardTest {
     @Mock private BookingExperienceRepository experienceRepository;
     @Mock private io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     @Mock private GroupEventReservationWindowRepository reservationWindowRepository;
+    @Mock private io.bunnycal.availability.repository.EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
 
     private final TimeSource timeSource = () -> Instant.parse("2026-06-24T12:00:00Z");
 
@@ -66,7 +67,8 @@ class EventTypeDeleteGuardTest {
                 timeSource,
                 experienceRepository,
                 entitlementService,
-                reservationWindowRepository);
+                reservationWindowRepository,
+                eventAvailabilityWindowRepository);
     }
 
     private EventType ownedEventType() {

@@ -140,9 +140,14 @@ public class ParticipantEligibilityService {
      * Returns the provider name of the user's first ACTIVE calendar connection, or
      * {@code null} if none exist. Used for display-only hints in the UI.
      */
+    /**
+     * Display-only: which provider to show against a participant who has a calendar. A user may
+     * hold several connections, so this reports their oldest — ordered rather than arbitrary, so
+     * the label does not flip between requests.
+     */
     public String activeCalendarProvider(UUID userId) {
         return calendarConnectionRepository
-                .findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE)
+                .findByUserIdAndStatusOrderByCreatedAtAsc(userId, CalendarConnectionStatus.ACTIVE)
                 .stream()
                 .findFirst()
                 .map(c -> c.getProvider() != null ? c.getProvider().name() : null)

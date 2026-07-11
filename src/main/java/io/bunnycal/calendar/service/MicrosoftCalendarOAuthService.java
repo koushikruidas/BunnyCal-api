@@ -97,10 +97,6 @@ public class MicrosoftCalendarOAuthService {
         if (userId == null) {
             throw new OAuthStateException(OAuthStateException.Reason.MISSING_USER, "OAuth state missing userId");
         }
-        Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, MICROSOFT_PROVIDER);
-        // Enforce the per-plan connected-calendar limit before any provider work. Re-auth of an
-        // already-connected Microsoft account (existing present) is always allowed.
-        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
         OAuthTokenExchangeResult token = microsoftApiClient.exchangeCodeForToken(
                 code,
                 properties.getRedirectUri(),
@@ -124,12 +120,23 @@ public class MicrosoftCalendarOAuthService {
             accountEmail = null;
         }
 
+        // The row is keyed by the external ACCOUNT, not just the provider — a user may connect
+        // several Microsoft accounts. Which account this is only becomes known after the token
+        // exchange, so both the lookup and the plan-limit decision have to follow it. Empty means
+        // a net-new account (INSERT); present means re-auth or reconnect of one we already hold
+        // (UPDATE), including a REVOKED row, which the finder deliberately still returns.
+        Optional<CalendarConnection> existing =
+                repository.findByUserIdAndProviderAndProviderUserId(userId, MICROSOFT_PROVIDER, providerUserId);
+        connectionLimitGuard.requireCanConnect(userId, existing.isEmpty());
+
         CalendarConnection base = existing.orElse(null);
         CalendarConnection connection = base == null ? new CalendarConnection() : copyForUpdate(base);
         String refreshTokenCiphertext;
         if (token.refreshToken() != null && !token.refreshToken().isBlank()) {
             refreshTokenCiphertext = tokenCipher.encrypt(token.refreshToken());
         } else if (base != null && base.getRefreshTokenCiphertext() != null && !base.getRefreshTokenCiphertext().isBlank()) {
+            // Safe to carry forward only because `base` is guaranteed to be the same external
+            // account — the finder keys on provider_user_id.
             refreshTokenCiphertext = base.getRefreshTokenCiphertext();
         } else {
             throw new IllegalArgumentException("Refresh token missing from provider response");
@@ -144,9 +151,15 @@ public class MicrosoftCalendarOAuthService {
         connection.setRefreshTokenCiphertext(refreshTokenCiphertext);
         connection.setLastTokenExpiresAt(token.expiresAt().isBefore(Instant.now()) ? Instant.now().plusSeconds(300) : token.expiresAt());
         connection.setScopes(properties.getScopes());
+        // Reactivates a REVOKED row on reconnect, as well as clearing any prior error.
         connection.setStatus(CalendarConnectionStatus.SYNCING);
         connection.setLastErrorCode(null);
         connection.setLastErrorAt(null);
+        // First connection for this user becomes the round-robin write-back target; later ones
+        // do not steal it. Users can re-point it from the Integrations page.
+        if (base == null && repository.findByUserIdAndDefaultWritebackTrue(userId).isEmpty()) {
+            connection.setDefaultWriteback(true);
+        }
         CalendarConnection saved = connectionWriteService.saveSnapshot(connection, "oauth_callback_initial");
 
         try {
@@ -182,22 +195,33 @@ public class MicrosoftCalendarOAuthService {
         return new CalendarOAuthService.OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
     }
 
+    /** Aggregate Microsoft status across every account the user has connected. */
     @Transactional(readOnly = true)
     public String microsoftConnectionStatus(UUID userId) {
-        Optional<CalendarConnection> connection = repository.findByUserIdAndProvider(userId, MICROSOFT_PROVIDER);
-        if (connection.isEmpty()) {
-            return "NOT_CONNECTED";
-        }
-        return mapPublicConnectionStatus(connection.get().getStatus());
+        return CalendarOAuthService.aggregateConnectionStatus(
+                repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, MICROSOFT_PROVIDER));
     }
 
+    /**
+     * Disconnects every Microsoft account the user has connected. Kept for the provider-scoped
+     * {@code DELETE /integrations/calendar/microsoft} route; the per-account route calls
+     * {@link #disconnectConnection(CalendarConnection)} directly.
+     */
     @Transactional
     public void disconnectMicrosoft(UUID userId) {
-        Optional<CalendarConnection> existing = repository.findByUserIdAndProvider(userId, MICROSOFT_PROVIDER);
-        if (existing.isEmpty()) {
-            return;
+        for (CalendarConnection connection
+                : repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, MICROSOFT_PROVIDER)) {
+            disconnectConnection(connection);
         }
-        CalendarConnection connection = existing.get();
+    }
+
+    /**
+     * Revokes one Microsoft connection. Callers are responsible for the ownership check and for
+     * promoting a new default write-back target if this row held the flag.
+     */
+    @Transactional
+    public void disconnectConnection(CalendarConnection connection) {
+        UUID userId = connection.getUserId();
         boolean hasCiphertext = connection.getRefreshTokenCiphertext() != null
                 && !connection.getRefreshTokenCiphertext().isBlank();
 
@@ -275,16 +299,6 @@ public class MicrosoftCalendarOAuthService {
         return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
-    private static String mapPublicConnectionStatus(CalendarConnectionStatus status) {
-        if (status == CalendarConnectionStatus.ACTIVE) {
-            return "CONNECTED";
-        }
-        if (status == CalendarConnectionStatus.REVOKED || status == CalendarConnectionStatus.DISCONNECTED) {
-            return "DISCONNECTED";
-        }
-        return "ERROR";
-    }
-
     private static CalendarConnection copyForUpdate(CalendarConnection existing) {
         CalendarConnection copy = new CalendarConnection();
         try {
@@ -298,6 +312,7 @@ public class MicrosoftCalendarOAuthService {
         copy.setProvider(existing.getProvider());
         copy.setProviderUserId(existing.getProviderUserId());
         copy.setAccountEmail(existing.getAccountEmail());
+        copy.setDefaultWriteback(existing.isDefaultWriteback());
         copy.setRefreshTokenCiphertext(existing.getRefreshTokenCiphertext());
         copy.setLastTokenExpiresAt(existing.getLastTokenExpiresAt());
         copy.setScopes(existing.getScopes());

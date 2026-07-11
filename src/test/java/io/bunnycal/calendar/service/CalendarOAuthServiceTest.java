@@ -122,7 +122,8 @@ class CalendarOAuthServiceTest {
         when(googleApiClient.exchangeCodeForToken("code", "http://localhost/callback", "cid", "csecret"))
                 .thenReturn(new OAuthTokenExchangeResult("access-1", "refresh-1", Instant.now().plusSeconds(3600)));
         when(googleApiClient.fetchProviderUserId("access-1")).thenReturn("sub-1");
-        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.empty());
+        when(repository.findByUserIdAndProviderAndProviderUserId(userId, CalendarProviderType.GOOGLE, "sub-1"))
+                .thenReturn(Optional.empty());
         when(tokenCipher.encrypt("refresh-1")).thenReturn("enc-refresh");
 
         service.handleGoogleCallback("code", state);
@@ -146,13 +147,20 @@ class CalendarOAuthServiceTest {
         assertThrows(OAuthStateException.class, () -> service.handleGoogleCallback("code", "bad-state"));
     }
 
+    /**
+     * Google omits refresh_token on re-consent, so the stored one has to be carried forward. That
+     * is only safe because the lookup keys on providerUserId — the row we carry it from is
+     * guaranteed to be the same external account.
+     */
     @Test
     void callbackWithoutRefreshToken_reusesExistingCiphertext() {
         UUID userId = UUID.randomUUID();
         String state = stateService.generate(userId);
         CalendarConnection existing = new CalendarConnection();
+        existing.setProviderUserId("sub-2");
         existing.setRefreshTokenCiphertext("existing-cipher");
-        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(existing));
+        when(repository.findByUserIdAndProviderAndProviderUserId(userId, CalendarProviderType.GOOGLE, "sub-2"))
+                .thenReturn(Optional.of(existing));
         when(googleApiClient.exchangeCodeForToken("code", "http://localhost/callback", "cid", "csecret"))
                 .thenReturn(new OAuthTokenExchangeResult("access-2", null, Instant.now().plusSeconds(1800)));
         when(googleApiClient.fetchProviderUserId("access-2")).thenReturn("sub-2");
@@ -165,15 +173,45 @@ class CalendarOAuthServiceTest {
         assertEquals("existing-cipher", saved.getRefreshTokenCiphertext());
     }
 
+    /**
+     * The regression test for the bug this whole change exists to fix: connecting a second Google
+     * account used to overwrite the first row in place, and — because Google omits refresh_token on
+     * re-consent — could leave account A's token attached to account B's identity. A different
+     * providerUserId must now produce a brand-new row.
+     */
+    @Test
+    void callbackForDifferentAccount_insertsSecondConnectionInsteadOfOverwriting() {
+        UUID userId = UUID.randomUUID();
+        String state = stateService.generate(userId);
+        when(repository.findByUserIdAndProviderAndProviderUserId(userId, CalendarProviderType.GOOGLE, "sub-second"))
+                .thenReturn(Optional.empty());
+        when(googleApiClient.exchangeCodeForToken("code", "http://localhost/callback", "cid", "csecret"))
+                .thenReturn(new OAuthTokenExchangeResult("access-9", "refresh-9", Instant.now().plusSeconds(3600)));
+        when(googleApiClient.fetchProviderUserId("access-9")).thenReturn("sub-second");
+        when(tokenCipher.encrypt("refresh-9")).thenReturn("enc-refresh-9");
+
+        service.handleGoogleCallback("code", state);
+
+        ArgumentCaptor<CalendarConnection> captor = ArgumentCaptor.forClass(CalendarConnection.class);
+        verify(connectionWriteService, atLeastOnce()).saveSnapshot(captor.capture(), any());
+        CalendarConnection saved = captor.getAllValues().get(captor.getAllValues().size() - 1);
+        // A null id is what makes this an INSERT rather than an UPDATE of the first account's row.
+        assertNull(saved.getId());
+        assertEquals("sub-second", saved.getProviderUserId());
+        assertEquals("enc-refresh-9", saved.getRefreshTokenCiphertext());
+    }
+
     @Test
     void statusMapsConnectionState() {
         UUID userId = UUID.randomUUID();
-        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.empty());
+        when(repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(List.of());
         assertEquals("NOT_CONNECTED", service.googleConnectionStatus(userId));
 
         CalendarConnection conn = new CalendarConnection();
         conn.setStatus(CalendarConnectionStatus.ACTIVE);
-        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE)).thenReturn(Optional.of(conn));
+        when(repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(List.of(conn));
         assertEquals("CONNECTED", service.googleConnectionStatus(userId));
 
         conn.setStatus(CalendarConnectionStatus.REVOKED);
@@ -186,6 +224,20 @@ class CalendarOAuthServiceTest {
         assertEquals("ERROR", service.googleConnectionStatus(userId));
     }
 
+    /** One healthy account means the provider works, even if another is broken. */
+    @Test
+    void statusIsConnectedWhenAnyAccountIsActive() {
+        UUID userId = UUID.randomUUID();
+        CalendarConnection broken = new CalendarConnection();
+        broken.setStatus(CalendarConnectionStatus.ERROR);
+        CalendarConnection healthy = new CalendarConnection();
+        healthy.setStatus(CalendarConnectionStatus.ACTIVE);
+        when(repository.findByUserIdAndProviderOrderByCreatedAtAsc(userId, CalendarProviderType.GOOGLE))
+                .thenReturn(List.of(broken, healthy));
+
+        assertEquals("CONNECTED", service.googleConnectionStatus(userId));
+    }
+
     @Test
     void callback_whenWriterFails_propagatesException() {
         UUID userId = UUID.randomUUID();
@@ -193,9 +245,10 @@ class CalendarOAuthServiceTest {
         CalendarConnection existing = new CalendarConnection();
         existing.setUserId(userId);
         existing.setProvider(CalendarProviderType.GOOGLE);
+        existing.setProviderUserId("sub-2");
         existing.setRefreshTokenCiphertext("existing-cipher");
 
-        when(repository.findByUserIdAndProvider(userId, CalendarProviderType.GOOGLE))
+        when(repository.findByUserIdAndProviderAndProviderUserId(userId, CalendarProviderType.GOOGLE, "sub-2"))
                 .thenReturn(Optional.of(existing));
         when(googleApiClient.exchangeCodeForToken("code", "http://localhost/callback", "cid", "csecret"))
                 .thenReturn(new OAuthTokenExchangeResult("access-2", "refresh-2", Instant.now().plusSeconds(1800)));
