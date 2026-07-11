@@ -12,6 +12,7 @@ import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
+import io.bunnycal.availability.repository.EventAvailabilityWindowRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.billing.entitlement.EntitlementService;
@@ -45,6 +46,7 @@ public class EventTypeService {
     private final BookingExperienceRepository experienceRepository;
     private final EntitlementService entitlementService;
     private final GroupEventReservationWindowRepository reservationWindowRepository;
+    private final EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
 
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
@@ -56,7 +58,8 @@ public class EventTypeService {
                             TimeSource timeSource,
                             BookingExperienceRepository experienceRepository,
                             EntitlementService entitlementService,
-                            GroupEventReservationWindowRepository reservationWindowRepository) {
+                            GroupEventReservationWindowRepository reservationWindowRepository,
+                            EventAvailabilityWindowRepository eventAvailabilityWindowRepository) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -68,6 +71,7 @@ public class EventTypeService {
         this.experienceRepository = experienceRepository;
         this.entitlementService = entitlementService;
         this.reservationWindowRepository = reservationWindowRepository;
+        this.eventAvailabilityWindowRepository = eventAvailabilityWindowRepository;
     }
 
 
@@ -319,8 +323,26 @@ public class EventTypeService {
                 groupSeriesBounds.endDate(),
                 availability,
                 conference,
-                projectionDestination
+                projectionDestination,
+                summarizeAvailabilityWindows(eventType)
         );
+    }
+
+    /**
+     * The event's own availability-filter windows. Empty for GROUP (which reserves time via
+     * its reservation windows instead) and for any event that simply inherits the host's
+     * availability — in both cases the dashboard falls back to showing the host's hours.
+     */
+    private List<EventTypeSummaryResponse.AvailabilityWindowResponse> summarizeAvailabilityWindows(EventType eventType) {
+        if (eventType.getKind() == EventKind.GROUP) {
+            return List.of();
+        }
+        return eventAvailabilityWindowRepository.findByEventTypeId(eventType.getId()).stream()
+                .map(window -> new EventTypeSummaryResponse.AvailabilityWindowResponse(
+                        window.getDayOfWeek().name(),
+                        window.getStartTime().toString(),
+                        window.getEndTime().toString()))
+                .toList();
     }
 
     private GroupSeriesBounds summarizeGroupSeriesBounds(UUID eventTypeId) {
