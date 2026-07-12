@@ -59,6 +59,16 @@ spring:
     port: 587
     username: ${AWS_SES_SMTP_USERNAME}
     password: ${AWS_SES_SMTP_PASSWORD}
+    properties:
+      # JavaMail defaults every one of these to infinity. Without them an unreachable SES
+      # holds the sending thread on a TCP connect until the OS gives up (~45s observed), and
+      # because the send runs inside the outbox transaction it pins a Hikari connection for
+      # that entire time — long enough to trip leak detection at 30s and, with enough
+      # concurrent failures, to exhaust the pool and stall the whole application on a mail
+      # outage. Bound them so a dead mail host degrades to a retried outbox event, nothing more.
+      mail.smtp.connectiontimeout: ${MAIL_SMTP_CONNECT_TIMEOUT_MS:10000}
+      mail.smtp.timeout: ${MAIL_SMTP_READ_TIMEOUT_MS:10000}
+      mail.smtp.writetimeout: ${MAIL_SMTP_WRITE_TIMEOUT_MS:10000}
 
   docker:
     compose:
