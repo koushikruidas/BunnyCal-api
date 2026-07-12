@@ -1,6 +1,7 @@
 package io.bunnycal.calendar.service;
 
 import io.bunnycal.calendar.auth.TokenRefresher;
+import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.client.MicrosoftApiClient;
 import io.bunnycal.calendar.config.CalendarWebhookProperties;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -123,6 +124,31 @@ public class MicrosoftWatchChannelRenewalScheduler {
                 }
             } catch (RuntimeException ex) {
                 meterRegistry.counter("webhook_renewal_attempts_total", "provider", "microsoft", "outcome", "failure").increment();
+
+                // Graph subscriptions do not live forever: once one lapses, Graph garbage-collects
+                // it and every PATCH against that id answers 404 ResourceNotFound. Because
+                // renewOrCreate branches on "do we have a subscription id?", a dead id keeps
+                // selecting the renew path, so the connection retries the same doomed call on every
+                // sweep and never recovers (seen in production at failureCount=73). Forget the id so
+                // the next sweep takes the create branch and heals itself.
+                //
+                // Scoped to 404 deliberately. A network blip surfaces as 503 and the subscription is
+                // very likely still alive — clearing the id there would orphan it at Graph and leak
+                // a subscription on every transient failure.
+                if (isSubscriptionGone(ex)) {
+                    try {
+                        connectionWriteService.updateWebhookChannel(
+                                connection.getId(), null, null, null, "microsoft_watch_subscription_gone");
+                        meterRegistry.counter("calendar.watch.subscription_gone.total",
+                                "provider", "microsoft").increment();
+                        log.warn("microsoft_watch_subscription_gone connectionId={} userId={} subscriptionId={} action=cleared_for_recreate",
+                                connection.getId(), connection.getUserId(), connection.getWebhookChannelId());
+                    } catch (RuntimeException clearEx) {
+                        log.warn("microsoft_watch_subscription_clear_failed connectionId={}",
+                                connection.getId(), clearEx);
+                    }
+                }
+
                 try {
                     connectionWriteService.recordWatchRenewalFailure(
                             connection.getId(), Instant.now(), "microsoft_watch_renewal_failure");
@@ -135,6 +161,17 @@ public class MicrosoftWatchChannelRenewalScheduler {
                         connection.getWatchRenewalFailureCount() + 1, ex);
             }
         }
+    }
+
+    /**
+     * True when Graph says the subscription we tried to renew no longer exists.
+     *
+     * <p>Keyed on the 404 status rather than the message body: a transient network failure is
+     * classified as 503 and must NOT be treated as "gone", or we would drop a live subscription id
+     * and leak an orphaned subscription at Graph on every blip.
+     */
+    private static boolean isSubscriptionGone(RuntimeException ex) {
+        return ex instanceof CalendarClientException calendarEx && calendarEx.getStatusCode() == 404;
     }
 
     private MicrosoftApiClient.WebhookSubscription renewOrCreate(String accessToken, CalendarConnection connection) {
