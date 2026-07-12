@@ -13,6 +13,7 @@ import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -22,6 +23,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class IdentityLinkingServiceImpl implements IdentityLinkingService {
+
+    /** Beyond this many "name-2, name-3, …" collisions, fall back to a random suffix. */
+    private static final int MAX_USERNAME_SUFFIX = 50;
+
+    /** Attempts to survive another signup taking our chosen username mid-insert. */
+    private static final int USERNAME_RACE_RETRIES = 3;
 
     private final UserRepository userRepository;
     private final AuthIdentityRepository authIdentityRepository;
@@ -60,30 +67,44 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
     }
 
     private User createUserAndIdentity(AuthProvider provider, String providerUserId, String email, String name, String imageUrl) {
-        try {
-            User savedUser = userRepository.save(User.builder()
-                    .email(email)
-                    .username(buildUsername(email))
-                    .name(name)
-                    .profileImageUrl(imageUrl)
-                    // Signup rides an OAuth redirect, so the browser's zone is not available here.
-                    // Start on UTC but flag it as inferred, so the first authenticated request
-                    // carrying an X-Timezone header can adopt the host's real zone.
-                    .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
-                    .timezoneAuto(true)
-                    .status(UserStatus.ACTIVE)
-                    .build());
-            createIdentityIfAbsent(savedUser, provider, providerUserId);
-            defaultAvailabilityService.seedFor(savedUser.getId());
-            return savedUser;
-        } catch (DataIntegrityViolationException ex) {
-            // Lost a race to create this email: the account already exists, so it already has its
-            // own timezone and availability. Link the identity only — seeding here would clobber
-            // hours the existing host had set.
-            User existingUser = userRepository.findByEmail(email).orElseThrow(() -> ex);
-            createIdentityIfAbsent(existingUser, provider, providerUserId);
-            return existingUser;
+        // A unique-constraint violation here can mean two opposite things, so each attempt has to
+        // work out which. Retried because a *username* clash is now genuinely reachable: clean
+        // usernames mean "koushik@gmail.com" and "koushik@outlook.com" both want "koushik", and one
+        // can take it between our availability check and our insert.
+        for (int attempt = 0; attempt < USERNAME_RACE_RETRIES; attempt++) {
+            try {
+                User savedUser = userRepository.save(User.builder()
+                        .email(email)
+                        .username(buildUsername(email))
+                        .name(name)
+                        .profileImageUrl(imageUrl)
+                        // Signup rides an OAuth redirect, so the browser's zone is not available here.
+                        // Start on UTC but flag it as inferred, so the first authenticated request
+                        // carrying an X-Timezone header can adopt the host's real zone.
+                        .timezone(userTimezoneServiceImpl.timezoneForCreate(null))
+                        .timezoneAuto(true)
+                        .status(UserStatus.ACTIVE)
+                        .build());
+                createIdentityIfAbsent(savedUser, provider, providerUserId);
+                defaultAvailabilityService.seedFor(savedUser.getId());
+                return savedUser;
+            } catch (DataIntegrityViolationException ex) {
+                // Email clash: we lost a race to create this account. It already exists, with its
+                // own timezone and availability — link the identity only, since seeding would
+                // clobber hours the existing host had set.
+                Optional<User> existingUser = userRepository.findByEmail(email);
+                if (existingUser.isPresent()) {
+                    createIdentityIfAbsent(existingUser.get(), provider, providerUserId);
+                    return existingUser.get();
+                }
+                // Otherwise it was the username: this account is still ours to create, so loop and
+                // let buildUsername pick the next free name.
+                if (attempt == USERNAME_RACE_RETRIES - 1) {
+                    throw ex;
+                }
+            }
         }
+        throw new IllegalStateException("Unreachable: user creation retry loop exhausted");
     }
 
     private void createIdentityIfAbsent(User user, AuthProvider provider, String providerUserId) {
@@ -116,12 +137,31 @@ public class IdentityLinkingServiceImpl implements IdentityLinkingService {
         return name.trim();
     }
 
-    private static String buildUsername(String email) {
-        String local = email.split("@")[0].toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "");
-        if (local.isBlank()) {
-            local = "user";
+    /**
+     * The username is the public booking-link segment ({@code bunnycal.io/{username}/{event}}), so
+     * it should read as the person's name, not carry a random tail. A suffix is only appended when
+     * the clean form is already taken — two people can genuinely both be "koushik".
+     *
+     * <p>Existing users keep whatever username they already have: it is the public lookup key, and
+     * rewriting it would 404 every link they have already shared.
+     */
+    private String buildUsername(String email) {
+        String base = email.split("@")[0].toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9._-]", "");
+        if (base.isBlank()) {
+            base = "user";
         }
-        return local + "-" + UUID.randomUUID().toString().substring(0, 8);
+        if (!userRepository.existsByUsername(base)) {
+            return base;
+        }
+        // Walk the numeric suffixes before falling back to randomness, so the common collision
+        // still produces a readable link.
+        for (int suffix = 2; suffix <= MAX_USERNAME_SUFFIX; suffix++) {
+            String candidate = base + "-" + suffix;
+            if (!userRepository.existsByUsername(candidate)) {
+                return candidate;
+            }
+        }
+        return base + "-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     private void maybeUpdateProfileImage(User user, String imageUrl) {

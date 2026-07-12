@@ -19,7 +19,6 @@ import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.logging.OpsLogSupport;
@@ -32,6 +31,11 @@ import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +56,13 @@ import org.springframework.stereotype.Service;
 @ConditionalOnProperty(name = "booking.notifications.enabled", havingValue = "true")
 public class BookingNotificationService {
     private static final Logger log = LoggerFactory.getLogger(BookingNotificationService.class);
+
+    /** "Sunday, 12 July 2026" */
+    private static final DateTimeFormatter WHEN_DATE =
+            DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.ENGLISH);
+    /** "13:30" */
+    private static final DateTimeFormatter WHEN_TIME =
+            DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH);
 
     private static final Set<String> SUPPORTED_EVENTS = Set.of(
             "BOOKING_CONFIRMED",
@@ -216,18 +227,43 @@ public class BookingNotificationService {
                     (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
-        } else {
-            // Suppress only when this recipient IS the projection owner — the Calendar API
-            // already wrote the event directly to their calendar, so sending an ICS email
-            // on top would create a duplicate entry.  We determine ownership from the
-            // booking_ownership record (set immutably at booking time) rather than from
-            // calendar connectivity alone: a user may have a Google account without being
-            // the projection owner, and must then still receive the ICS.
-            String suppressReason = resolveSuppressionReason(booking.getHostId(), ownership);
-            if (suppressReason != null) {
-                log.info("booking_notification_host_recipient_suppressed bookingId={} hostId={} eventType={} reason={} hostEmail={}",
-                        booking.getId(), booking.getHostId(), event.getEventType(), suppressReason, hostRecipient.get());
-                hostRecipient = Optional.empty();
+        }
+        // The projection owner still gets an email — they just must not get a calendar part with
+        // it. The Calendar API already wrote the event onto their calendar, so an iTIP REQUEST on
+        // top would land a second, identical entry. Dropping them from the recipient list entirely
+        // (the previous behaviour) meant the host was never told a booking had happened at all.
+        // Ownership comes from the immutable booking_ownership record, not from calendar
+        // connectivity: a user may hold an active connection without being the projection owner
+        // (a non-assigned RR participant, a COLLECTIVE member) and must then receive the full ICS.
+        String icsSuppressionReason = hostRecipient.isPresent()
+                ? resolveSuppressionReason(booking.getHostId(), ownership)
+                : null;
+        String icsSuppressedRecipient = null;
+        if (icsSuppressionReason != null) {
+            // Send it to the mailbox that owns the calendar we wrote to, not to the login identity.
+            // With multi-account calendars these are routinely different: a host can sign in as
+            // alice@gmail while the booking projects to their work@company calendar. The whole
+            // point of this mail is "the event is on your calendar" — it belongs in the inbox of
+            // the account whose calendar that is. Falls back to the login email for pre-V118_0
+            // rows that never captured an account_email.
+            String writebackEmail = resolveProjectionOwnerEmail(ownership).orElse(hostRecipient.get());
+            if (!sameRecipient(writebackEmail, hostRecipient.get())) {
+                log.info("booking_notification_host_recipient_redirected_to_writeback bookingId={} hostId={} loginEmail={} writebackEmail={}",
+                        booking.getId(), booking.getHostId(), hostRecipient.get(), writebackEmail);
+                hostRecipient = Optional.of(writebackEmail);
+            }
+
+            // When the host booked their own event, one address is both host and guest and the two
+            // roles collapse to a single recipient. The guest half still needs the invite, so the
+            // ICS wins — and there is nothing to duplicate anyway, since the projection owner's
+            // calendar entry comes from the API write either way.
+            if (sameRecipient(hostRecipient.get(), attendee.orElse(null))) {
+                log.info("booking_notification_host_ics_suppression_skipped_self_booking bookingId={} hostId={} eventType={}",
+                        booking.getId(), booking.getHostId(), event.getEventType());
+            } else {
+                icsSuppressedRecipient = hostRecipient.get();
+                log.info("booking_notification_host_ics_suppressed bookingId={} hostId={} eventType={} reason={} hostEmail={}",
+                        booking.getId(), booking.getHostId(), event.getEventType(), icsSuppressionReason, hostRecipient.get());
             }
         }
 
@@ -264,6 +300,11 @@ public class BookingNotificationService {
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
                 && eventTypeSlug != null && !eventTypeSlug.isBlank();
+        // The body carried no date or time. Every other recipient gets an ICS and their mail client
+        // renders the time from that; the projection owner gets no calendar part, so for them the
+        // mail announced a meeting without ever saying when. Render it in the host's own zone.
+        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
+                host == null ? null : host.getTimezone());
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String standaloneIcs = "CANCEL".equals(eventMethod)
                 ? icsInviteGenerator.buildStandaloneCancel(
@@ -356,13 +397,19 @@ public class BookingNotificationService {
                             calendarOrganizerEmail,
                             clientType);
                 }
-                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink, conferenceDetails,
-                        booking.getId(), description);
+                // The projection owner gets the notification without a calendar part: the event is
+                // already on their calendar from the API write, and attaching an iTIP REQUEST on
+                // top is what made Outlook add a second copy. Everyone else gets the full invite.
+                boolean withIcs = !sameRecipient(recipient, icsSuppressedRecipient);
+                sendMail(recipient, summary, event.getEventType(),
+                        withIcs ? standaloneIcs : null,
+                        withIcs ? eventMethod : null,
+                        manageLink, conferenceDetails, booking.getId(), description, when);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
-                        event.getId(), booking.getId(), recipient, role, event.getEventType(), true);
+                        event.getId(), booking.getId(), recipient, role, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
                         "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
-                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), role, event.getEventType(), true,
+                        booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), role, event.getEventType(), withIcs,
                         conferenceDetails == null ? "NONE" : conferenceDetails.provider());
                 log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
                         booking.getId(),
@@ -406,6 +453,10 @@ public class BookingNotificationService {
         List<BookingAssignment> assignments = bookingAssignmentRepository.findAllByBookingId(booking.getId());
         List<IcsInviteGenerator.CollectiveHost> icsHosts = new ArrayList<>();
         List<String> participantRecipients = new ArrayList<>();
+        // The projection owner is still notified — they just receive the mail without a calendar
+        // part, because the API write already put the event on their calendar. Holder, not a plain
+        // local, because it is assigned from inside the lambda below.
+        String[] icsSuppressedHolder = new String[1];
         for (BookingAssignment assignment : assignments) {
             userRepository.findById(assignment.getParticipantUserId()).ifPresent(participant -> {
                 Optional<String> participantRecipient = recipientResolver.resolveHostRecipient(participant);
@@ -414,13 +465,24 @@ public class BookingNotificationService {
                             booking.getId(), participant.getId(), event.getEventType());
                 } else {
                     // The projection owner (event owner) has the booking written directly to their
-                    // calendar by the sync pipeline — suppress their ICS to avoid a duplicate entry.
-                    // Non-owner participants have no direct projection and must always receive ICS.
+                    // calendar by the sync pipeline — omit their calendar part to avoid a duplicate
+                    // entry, but still send them the notification. Non-owner participants have no
+                    // direct projection and must always receive the full ICS.
                     String suppressReason = participant.getId().equals(booking.getHostId())
                             ? resolveSuppressionReason(booking.getHostId(), ownership)
                             : null;
                     if (suppressReason != null) {
-                        log.info("booking_notification_collective_owner_suppressed bookingId={} participantId={} reason={}",
+                        // Deliver to the mailbox that owns the calendar we wrote to, not to the
+                        // login identity — with multi-account calendars they are often different.
+                        String recipient = resolveProjectionOwnerEmail(ownership)
+                                .orElse(participantRecipient.get());
+                        if (!sameRecipient(recipient, participantRecipient.get())) {
+                            log.info("booking_notification_collective_owner_redirected_to_writeback bookingId={} participantId={} loginEmail={} writebackEmail={}",
+                                    booking.getId(), participant.getId(), participantRecipient.get(), recipient);
+                        }
+                        icsSuppressedHolder[0] = recipient;
+                        participantRecipients.add(recipient);
+                        log.info("booking_notification_collective_owner_ics_suppressed bookingId={} participantId={} reason={}",
                                 booking.getId(), participant.getId(), suppressReason);
                     } else {
                         participantRecipients.add(participantRecipient.get());
@@ -436,6 +498,15 @@ public class BookingNotificationService {
                     booking.getId(), event.getEventType());
         }
 
+        // If the projection owner is also the guest, the two roles collapse to one address and the
+        // guest half still needs the invite — the ICS wins.
+        String icsSuppressedRecipient = icsSuppressedHolder[0];
+        if (icsSuppressedRecipient != null && sameRecipient(icsSuppressedRecipient, attendee.orElse(null))) {
+            log.info("booking_notification_collective_ics_suppression_skipped_self_booking bookingId={} eventType={}",
+                    booking.getId(), event.getEventType());
+            icsSuppressedRecipient = null;
+        }
+
         List<String> candidateRecipients = new ArrayList<>(participantRecipients);
         attendee.ifPresent(candidateRecipients::add);
         List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
@@ -448,6 +519,10 @@ public class BookingNotificationService {
                 booking.getId(), event.getId(), event.getEventType(),
                 icsHosts.size(), attendee.isPresent(), recipients.size());
 
+        // See formatWhen: the body carried no date or time, which only shows on the mail that has
+        // no ICS to render it from — the projection owner's.
+        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
+                userRepository.findById(booking.getHostId()).map(User::getTimezone).orElse(null));
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String attendeeName = booking.getGuestName();
         String attendeeEmail = attendee.orElse(null);
@@ -499,14 +574,19 @@ public class BookingNotificationService {
                 continue;
             }
             try {
-                sendMail(recipient, summary, event.getEventType(), standaloneIcs, eventMethod, manageLink,
-                        conferenceDetails, booking.getId(), description);
+                // The projection owner is notified without a calendar part — the API write already
+                // put the event on their calendar; attaching an iTIP REQUEST would add a second one.
+                boolean withIcs = !sameRecipient(recipient, icsSuppressedRecipient);
+                sendMail(recipient, summary, event.getEventType(),
+                        withIcs ? standaloneIcs : null,
+                        withIcs ? eventMethod : null,
+                        manageLink, conferenceDetails, booking.getId(), description, when);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
-                        event.getId(), booking.getId(), recipient, event.getEventType(), true);
+                        event.getId(), booking.getId(), recipient, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
                         "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
                         booking.getId(), event.getId(), OpsLogSupport.maskEmail(recipient), "PARTICIPANT", event.getEventType(),
-                        true, conferenceDetails == null ? "NONE" : conferenceDetails.provider());
+                        withIcs, conferenceDetails == null ? "NONE" : conferenceDetails.provider());
             } catch (Exception ex) {
                 notificationSendDedupService.release(event.getId(), recipient, event.getEventType());
                 log.warn("booking_notification_send_failed_retryable eventId={} bookingId={} recipient={} eventType={} message={}",
@@ -528,16 +608,20 @@ public class BookingNotificationService {
                           String manageLink,
                           ConferenceDetails conferenceDetails,
                           UUID bookingId,
-                          String submissionDescription) throws Exception {
+                          String submissionDescription,
+                          @org.springframework.lang.Nullable String when) throws Exception {
         var message = mailSender.createMimeMessage();
-        // We must construct the MIME tree manually because the auto-rendering
-        // contract that Outlook and Gmail honour requires a specific shape:
-        // top-level multipart/mixed wrapping (a) a multipart/alternative
-        // containing text/plain + inline text/calendar; method=REQUEST and
-        // (b) an invite.ics attachment as a fallback for clients that only
-        // recognise the attachment form. MimeMessageHelper.addAttachment
-        // alone collapses the calendar part to attachment-only, which is
-        // why Outlook previously demanded a manual "Add to calendar" flow.
+        // We must construct the MIME tree manually because the auto-rendering contract that
+        // Outlook and Gmail honour requires a specific shape: multipart/alternative containing
+        // text/plain + an INLINE text/calendar; method=REQUEST. MimeMessageHelper.addAttachment
+        // alone collapses the calendar part to attachment-only, which is why Outlook previously
+        // demanded a manual "Add to calendar" flow.
+        //
+        // The calendar payload is carried exactly ONCE. It used to be sent twice — inline *and*
+        // as an invite.ics attachment, both with method=REQUEST and the same UID — on the theory
+        // that the attachment was an inert fallback for clients that only read attachments. It is
+        // not inert: Outlook honours the inline REQUEST and auto-processes the attached one too,
+        // landing two identical events on the calendar. Gmail hid the bug by de-duplicating on UID.
         var helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
         // Align the SMTP From with the iTIP ORGANIZER identity used inside the ICS.
         // Outlook treats a REQUEST whose From differs from the ORGANIZER mailbox as a
@@ -559,7 +643,7 @@ public class BookingNotificationService {
             message.setHeader("X-MS-OLK-FORCEINSPECTOROPEN", "TRUE");
         }
 
-        String textBody = body(summary, eventType, manageLink, conferenceDetails, submissionDescription);
+        String textBody = body(summary, eventType, manageLink, conferenceDetails, submissionDescription, when);
 
         if (ics != null && method != null) {
             MimeBodyPart textPart = new MimeBodyPart();
@@ -577,21 +661,7 @@ public class BookingNotificationService {
             alternative.addBodyPart(textPart);
             alternative.addBodyPart(calendarInline);
 
-            MimeBodyPart alternativeWrapper = new MimeBodyPart();
-            alternativeWrapper.setContent(alternative);
-
-            MimeBodyPart icsAttachment = new MimeBodyPart();
-            icsAttachment.setContent(ics, "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setFileName("invite.ics");
-            icsAttachment.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Disposition", "attachment; filename=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Transfer-Encoding", "8bit");
-
-            MimeMultipart mixed = new MimeMultipart("mixed");
-            mixed.addBodyPart(alternativeWrapper);
-            mixed.addBodyPart(icsAttachment);
-
-            message.setContent(mixed);
+            message.setContent(alternative);
         } else {
             helper.setText(textBody, false);
         }
@@ -790,17 +860,41 @@ public class BookingNotificationService {
         return lifecycleText;
     }
 
-    private static String body(String summary, String eventType, String manageLink, ConferenceDetails conferenceDetails) {
-        return body(summary, eventType, manageLink, conferenceDetails, null);
+    /**
+     * Renders the meeting time for the plain-text body.
+     *
+     * <p>The body never carried a date or time. Nobody noticed, because every recipient also got an
+     * ICS and their mail client rendered the time from that. The projection owner is the one
+     * recipient who gets no calendar part — so for them the mail said a meeting was confirmed
+     * without ever saying when.
+     *
+     * <p>Rendered in the recipient's own zone, falling back to UTC when the host has none set.
+     */
+    private static String formatWhen(Instant start, Instant end, @org.springframework.lang.Nullable String timezone) {
+        ZoneId zone;
+        try {
+            zone = (timezone == null || timezone.isBlank()) ? ZoneOffset.UTC : ZoneId.of(timezone);
+        } catch (RuntimeException ex) {
+            zone = ZoneOffset.UTC;
+        }
+        ZonedDateTime from = start.atZone(zone);
+        ZonedDateTime to = end.atZone(zone);
+        // e.g. "Sunday, 12 July 2026, 13:30–14:00 (Asia/Kolkata)"
+        return WHEN_DATE.format(from) + ", " + WHEN_TIME.format(from) + "–" + WHEN_TIME.format(to)
+                + " (" + zone.getId() + ")";
     }
 
     private static String body(String summary,
                                String eventType,
                                String manageLink,
                                ConferenceDetails conferenceDetails,
-                               String submissionDescription) {
+                               String submissionDescription,
+                               @org.springframework.lang.Nullable String when) {
         String base = body(summary, eventType);
         StringBuilder builder = new StringBuilder(base);
+        if (when != null && !when.isBlank()) {
+            builder.append("\nWhen: ").append(when);
+        }
         if (submissionDescription != null && !submissionDescription.isBlank()) {
             builder.append("\n\n").append(submissionDescription.trim());
         }
@@ -833,24 +927,63 @@ public class BookingNotificationService {
     }
 
     /**
+     * The mailbox that owns the calendar this booking was written to.
+     *
+     * <p>Read from the projection connection recorded on {@code booking_ownership}, so it is
+     * whatever the scheduling resolver actually chose — the event type's configured write-back
+     * calendar for a 1:1/group/collective, and the assigned participant's default write-back
+     * calendar for a round robin. No special-casing per event kind is needed here: ownership is the
+     * record of where the event really went.
+     *
+     * <p>Empty when the connection predates V118_0 and never captured an account_email; callers
+     * fall back to the login identity, which was the only address available then anyway.
+     */
+    private Optional<String> resolveProjectionOwnerEmail(@org.springframework.lang.Nullable BookingOwnership ownership) {
+        if (ownership == null || ownership.getProjectionConnectionId() == null) {
+            return Optional.empty();
+        }
+        return calendarConnectionRepository.findById(ownership.getProjectionConnectionId())
+                .map(CalendarConnection::getAccountEmail)
+                .map(deliverabilityPolicy::normalize)
+                .filter(deliverabilityPolicy::isDeliverable);
+    }
+
+    /**
+     * Email addresses are compared case-insensitively and whitespace-trimmed. The recipient list
+     * has already been normalised by {@code NotificationRecipientResolver.deduplicate}, but the
+     * address we hold the suppression decision against comes straight from the resolver, so the
+     * two are compared on their own terms rather than assuming an identical rendering.
+     */
+    private static boolean sameRecipient(@org.springframework.lang.Nullable String a,
+                                         @org.springframework.lang.Nullable String b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        return a.trim().equalsIgnoreCase(b.trim());
+    }
+
+    /**
      * Returns the suppression reason string if the host/participant's ICS email must be
      * suppressed, or {@code null} if they must receive it.
      *
-     * <p>Suppression is valid only when the recipient IS the projection owner — the Calendar
-     * API already wrote the event directly to their calendar, so an additional ICS email
-     * would create a visible duplicate entry.
+     * <p>The rule is provider-agnostic: <b>the projection owner never receives an ICS.</b> The
+     * Calendar API has already written the event directly onto their calendar, so an iTIP
+     * REQUEST on top of that lands a second, identical entry. Both providers auto-process an
+     * inbound REQUEST — Gmail imports it, and Outlook does too (for consumer MSA <em>and</em>
+     * Entra work/school alike). Neither is a special case; the duplicate is caused by the API
+     * write, not by the mailbox type.
+     *
+     * <p>This is safe because the API write is deliberately silent: Google is called with
+     * {@code sendUpdates=none} and Graph with {@code responseRequested=false}, so the providers
+     * send no invitations of their own. BunnyCal is the sole invite sender — the ICS email is
+     * the one and only RSVP mechanism, and it goes to everyone <em>except</em> the person whose
+     * calendar we already wrote to.
      *
      * <p>Ownership is determined from the immutable {@code booking_ownership} record (set at
      * booking time via {@code BookingOwnershipService.ensureOwnership}), not from calendar
-     * connectivity alone.  A user may have an active Google or Microsoft connection without
-     * being the projection owner (e.g., a non-assigned RR participant, a COLLECTIVE member),
-     * and must still receive the ICS email in that case.
-     *
-     * <p>For Google projection owners: Gmail auto-imports any iTIP REQUEST, producing a
-     * duplicate next to the Calendar-API-written event — suppress.
-     * For Microsoft projection owners: consumer MSA (personal Outlook.com) auto-processes
-     * the iTIP — suppress.  Entra work/school accounts are handled by Graph and do not
-     * reach this path.
+     * connectivity alone. A user may have an active Google or Microsoft connection without being
+     * the projection owner (e.g. a non-assigned RR participant, a COLLECTIVE member), and must
+     * still receive the ICS in that case.
      */
     @org.springframework.lang.Nullable
     private String resolveSuppressionReason(UUID hostId, @org.springframework.lang.Nullable BookingOwnership ownership) {
@@ -867,13 +1000,9 @@ public class BookingNotificationService {
         if (!hostId.equals(projectionConnection.getUserId())) {
             return null;
         }
-        if (projectionConnection.getProvider() == CalendarProviderType.GOOGLE) {
-            return "google_projection_owner";
-        }
-        if (projectionConnection.getProvider() == CalendarProviderType.MICROSOFT
-                && MicrosoftAccountClassifier.isConsumerMsa(projectionConnection)) {
-            return "ms_consumer_msa_projection_owner";
-        }
-        return null;
+        return switch (projectionConnection.getProvider()) {
+            case GOOGLE -> "google_projection_owner";
+            case MICROSOFT -> "microsoft_projection_owner";
+        };
     }
 }

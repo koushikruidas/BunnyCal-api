@@ -157,7 +157,7 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void microsoftConsumerMsaProjection_suppressesHostRecipientToAvoidDuplicateAutoImport() throws Exception {
+    void microsoftConsumerMsaProjection_notifiesHostWithoutCalendarPart() throws Exception {
         // The host's consumer MSA connection IS the projection target (confirmed via
         // booking_ownership). Outlook auto-processes the iTIP REQUEST, so the host must
         // NOT receive a redundant ICS email.
@@ -194,18 +194,249 @@ class BookingNotificationServiceTest {
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(consumerMsaConnection));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@outlook.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@outlook.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
-        verify(mailSender, times(1)).send(messageCaptor.capture());
-        MimeMessage onlyMsg = messageCaptor.getValue();
-        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
-        assertFalse(header(onlyMsg, "To").contains("host@outlook.com"));
+        // The host IS still notified — they simply get no calendar part, because the API write
+        // already put the event on their calendar. Only the guest's mail carries the invite.
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "host@outlook.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner must not receive a calendar part");
+        assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
+    }
+
+    /**
+     * The Entra (work/school) counterpart of the test above. This used to fall through the
+     * provider switch and send the host an ICS on top of the Graph-written event, landing two
+     * identical meetings on their calendar. Suppression is a property of BEING the projection
+     * owner, not of the mailbox type — the API write is what creates the duplicate.
+     */
+    @Test
+    void microsoftEntraProjection_notifiesHostWithoutCalendarPart() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@contoso.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection entraConnection = new CalendarConnection();
+        setConnectionId(entraConnection, projectionConnectionId);
+        entraConnection.setUserId(hostId);
+        entraConnection.setProvider(CalendarProviderType.MICROSOFT);
+        entraConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        // UUID-shaped oid — an Entra work/school account, not a 16-hex consumer puid.
+        entraConnection.setProviderUserId("6b3c1f2a-8d94-4e77-9c1b-0f5a2e7d4b61");
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.MICROSOFT);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call")
+                        .slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.MICROSOFT)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(entraConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@contoso.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@contoso.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "host@contoso.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner must not receive a calendar part");
+        assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
+    }
+
+    /**
+     * The "your event is on your calendar" mail must land in the inbox of the account that owns
+     * that calendar — not in the login identity's inbox.
+     *
+     * <p>With multi-account calendars the two are routinely different: a host signs in as
+     * alice@gmail.com while their event type projects to their work@company.com calendar. Sending
+     * the notice to the login address puts it in a mailbox that has no such event.
+     *
+     * <p>This also covers ROUND_ROBIN without needing a separate case: for a round robin the
+     * booking's hostId <em>is</em> the assigned participant (PublicBookingService reads it as
+     * {@code assignedParticipantId}), and the resolver records that participant's default
+     * write-back connection on booking_ownership. Reading account_email off the ownership record
+     * therefore yields the round-robin write-back mailbox by construction.
+     */
+    @Test
+    void projectionOwner_isNotifiedAtWritebackAccount_notTheLoginIdentity() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        // Signed in as one account…
+        User host = User.builder().id(hostId).name("Host Name").email("login@gmail.com")
+                .username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        // …but the booking is written to a different connected account's calendar.
+        CalendarConnection writebackConnection = new CalendarConnection();
+        setConnectionId(writebackConnection, projectionConnectionId);
+        writebackConnection.setUserId(hostId);
+        writebackConnection.setProvider(CalendarProviderType.GOOGLE);
+        writebackConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        writebackConnection.setProviderUserId("google-sub-writeback");
+        writebackConnection.setAccountEmail("writeback@company.com");
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(writebackConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("login@gmail.com"));
+        when(deliverabilityPolicy.normalize("writeback@company.com")).thenReturn("writeback@company.com");
+        when(deliverabilityPolicy.isDeliverable("writeback@company.com")).thenReturn(true);
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("writeback@company.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "writeback@company.com");
+        assertTrue(header(hostMsg, "To").contains("writeback@company.com"),
+                "notice must go to the calendar we actually wrote to");
+        assertFalse(hostMsg.getAllRecipients()[0].toString().contains("login@gmail.com"),
+                "notice must not go to the login identity");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner still gets no calendar part");
+    }
+
+    /**
+     * The plain-text body must state when the meeting is.
+     *
+     * <p>It never did. Nobody noticed, because every recipient also received an ICS and their mail
+     * client rendered the time from that. The projection owner is the one recipient who gets no
+     * calendar part — so their mail announced a confirmed meeting without ever saying when.
+     */
+    @Test
+    void projectionOwnerMail_statesTheMeetingTime() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com")
+                .username("host-user").timezone("Asia/Kolkata").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection projectionConnection = new CalendarConnection();
+        setConnectionId(projectionConnection, projectionConnectionId);
+        projectionConnection.setUserId(hostId);
+        projectionConnection.setProvider(CalendarProviderType.GOOGLE);
+        projectionConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        projectionConnection.setProviderUserId("google-sub");
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(projectionConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage ownerMsg = findByRecipient(messageCaptor.getAllValues(), "host@gmail.com");
+        assertFalse(hasIcsAttachment(ownerMsg), "precondition: the owner has no calendar part");
+
+        String body = textBody(ownerMsg);
+        assertTrue(body.contains("When:"), "owner's mail must state the meeting time; body was:\n" + body);
+        // Rendered in the host's own zone, not UTC.
+        assertTrue(body.contains("Asia/Kolkata"), "time must be in the host's zone; body was:\n" + body);
+    }
+
+    /** No account_email (a pre-V118_0 connection) must fall back to the login identity, not drop. */
+    @Test
+    void projectionOwnerWithoutAccountEmail_fallsBackToLoginIdentity() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("login@gmail.com")
+                .username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection legacyConnection = new CalendarConnection();
+        setConnectionId(legacyConnection, projectionConnectionId);
+        legacyConnection.setUserId(hostId);
+        legacyConnection.setProvider(CalendarProviderType.GOOGLE);
+        legacyConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        legacyConnection.setProviderUserId("google-sub-legacy");
+        legacyConnection.setAccountEmail(null); // never captured
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(legacyConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("login@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("login@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "login@gmail.com");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner still gets no calendar part");
     }
 
     @Test
-    void googleActiveConnection_suppressesHostRecipientToAvoidDuplicateAutoImport() throws Exception {
+    void googleActiveConnection_notifiesHostWithoutCalendarPart() throws Exception {
         // The host's Google connection IS the projection target (confirmed via booking_ownership).
         // Gmail auto-imports the iTIP REQUEST, so the host must NOT receive a redundant ICS email.
         UUID bookingId = UUID.randomUUID();
@@ -241,14 +472,15 @@ class BookingNotificationServiceTest {
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(googleConnection));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
-        verify(mailSender, times(1)).send(messageCaptor.capture());
-        MimeMessage onlyMsg = messageCaptor.getValue();
-        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
-        assertFalse(header(onlyMsg, "To").contains("host@gmail.com"));
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "host@gmail.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner must not receive a calendar part");
+        assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
     }
 
     @Test
@@ -347,7 +579,7 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void roundRobin_googleParticipant_suppressesHostIcsToPreventDuplicate() throws Exception {
+    void roundRobin_googleParticipant_notifiedWithoutCalendarPart() throws Exception {
         // RR booking: hostId = assigned participant (not event owner).
         // The participant's Google connection IS the projection target (confirmed via
         // booking_ownership). Gmail will auto-import the ICS, so the participant must
@@ -384,19 +616,21 @@ class BookingNotificationServiceTest {
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(participantGoogleConn));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(participant)).thenReturn(Optional.of("participant@gmail.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("participant@gmail.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
-        // Only the guest gets the email — participant suppressed (they are the projection owner)
-        verify(mailSender, times(1)).send(messageCaptor.capture());
-        MimeMessage onlyMsg = messageCaptor.getValue();
-        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
-        assertFalse(header(onlyMsg, "To").contains("participant@gmail.com"));
+        // The assigned participant IS the projection owner: they still get the email, but without
+        // a calendar part — the API write already put the event on their calendar.
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage ownerMsg = findByRecipient(messageCaptor.getAllValues(), "participant@gmail.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(ownerMsg), "projection owner must not receive a calendar part");
+        assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
     }
 
     @Test
-    void roundRobin_microsoftParticipant_suppressesHostIcsToPreventDuplicate() throws Exception {
+    void roundRobin_microsoftParticipant_notifiedWithoutCalendarPart() throws Exception {
         // RR booking: hostId = assigned participant. The participant's consumer MSA
         // connection IS the projection target (confirmed via booking_ownership). Outlook
         // auto-processes the iTIP, so the participant must NOT receive a redundant ICS email.
@@ -432,14 +666,18 @@ class BookingNotificationServiceTest {
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(participantMsaConn));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(participant)).thenReturn(Optional.of("participant@outlook.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("participant@outlook.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
-        verify(mailSender, times(1)).send(messageCaptor.capture());
-        MimeMessage onlyMsg = messageCaptor.getValue();
-        assertTrue(header(onlyMsg, "To").contains("guest@example.com"));
-        assertFalse(header(onlyMsg, "To").contains("participant@outlook.com"));
+        // The assigned participant IS the projection owner: still notified, but with no calendar
+        // part — the API write already put the event on their calendar.
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage ownerMsg = findByRecipient(messageCaptor.getAllValues(), "participant@outlook.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(ownerMsg), "projection owner must not receive a calendar part");
+        assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
     }
 
     @Test
@@ -540,7 +778,7 @@ class BookingNotificationServiceTest {
     }
 
     @Test
-    void roundRobin_projectionOwnerMayBeSuppressed() throws Exception {
+    void roundRobin_projectionOwner_notifiedWithoutCalendarPart() throws Exception {
         // The assigned participant IS the projection owner (connection userId matches hostId).
         // Their Google connection triggers suppression — only the guest gets the email.
         UUID bookingId = UUID.randomUUID();
@@ -574,14 +812,17 @@ class BookingNotificationServiceTest {
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(assignedConn));
         when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
         when(recipientResolver.resolveHostRecipient(assigned)).thenReturn(Optional.of("assigned@gmail.com"));
-        when(recipientResolver.deduplicate(any())).thenReturn(java.util.List.of("guest@example.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("assigned@gmail.com", "guest@example.com"));
 
         service.handleOutboxEvent(event);
 
-        verify(mailSender, times(1)).send(messageCaptor.capture());
-        assertFalse(header(messageCaptor.getValue(), "To").contains("assigned@gmail.com"),
-                "Projection owner must be suppressed (Calendar API wrote the event)");
-        assertTrue(header(messageCaptor.getValue(), "To").contains("guest@example.com"));
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage ownerMsg = findByRecipient(messageCaptor.getAllValues(), "assigned@gmail.com");
+        MimeMessage guestMsg = findByRecipient(messageCaptor.getAllValues(), "guest@example.com");
+        assertFalse(hasIcsAttachment(ownerMsg),
+                "Projection owner is notified, but carries no calendar part (Calendar API wrote the event)");
+        assertTrue(hasIcsAttachment(guestMsg));
     }
 
     @Test
@@ -716,10 +957,12 @@ class BookingNotificationServiceTest {
         assertTrue(unfold(hostInlineIcs).contains("METHOD:REQUEST"));
         assertTrue(unfold(attendeeInlineIcs).contains("METHOD:REQUEST"));
 
-        // The invite.ics file attachment is preserved as a fallback for clients
-        // that only recognise the attachment form.
-        assertTrue(hasIcsAttachment(hostMsg));
-        assertTrue(hasIcsAttachment(attendeeMsg));
+        // The invite must be carried EXACTLY ONCE. It was previously sent twice — inline and
+        // again as an invite.ics attachment, same UID, both method=REQUEST — and Outlook honoured
+        // both, landing two identical events on the calendar. Gmail masked it by de-duplicating
+        // on UID. One calendar part, no second copy.
+        assertEquals(1, countCalendarParts((MimeMultipart) hostMsg.getContent()));
+        assertEquals(1, countCalendarParts((MimeMultipart) attendeeMsg.getContent()));
     }
 
     @Test
@@ -889,6 +1132,14 @@ class BookingNotificationServiceTest {
                 String requestMime = rawMime(requestCaptor.getAllValues().get(0));
                 assertTrue(requestMime.contains("method=REQUEST"));
                 assertTrue(requestMime.toLowerCase(java.util.Locale.ROOT).contains("text/calendar"));
+                // The invite must be carried exactly once, for EVERY projection × conferencing
+                // combination. Two copies (inline + attachment, same UID) made Outlook create two
+                // identical events; Gmail masked it by de-duplicating on UID.
+                for (MimeMessage sent : requestCaptor.getAllValues()) {
+                    assertEquals(1, countCalendarParts((MimeMultipart) sent.getContent()),
+                            "duplicate calendar part for projection=" + projection
+                                    + " conferencing=" + conferenceProvider);
+                }
                 clearInvocations(mailSender);
 
                 service.handleOutboxEvent(outboxEvent(bookingId, "BOOKING_UPDATED"));
@@ -1272,7 +1523,7 @@ class BookingNotificationServiceTest {
         MimeMultipart multipart = (MimeMultipart) content;
         BodyPart hit = findIcsAttachmentPart(multipart);
         if (hit == null) {
-            throw new IllegalStateException("invite.ics attachment not found");
+            throw new IllegalStateException("text/calendar part not found");
         }
         return hit;
     }
@@ -1285,18 +1536,23 @@ class BookingNotificationServiceTest {
         return findIcsAttachmentPart(multipart) != null;
     }
 
+    /**
+     * Locates the single {@code text/calendar} part, wherever it sits in the tree.
+     *
+     * <p>Deliberately keyed on the content type rather than on {@code Content-Disposition:
+     * attachment}: the invite is carried once, INLINE inside the multipart/alternative, which is
+     * the form Outlook and Gmail auto-render. It used to also be duplicated as an invite.ics
+     * attachment, and Outlook imported both copies — one event per copy.
+     */
     private static BodyPart findIcsAttachmentPart(MimeMultipart multipart) throws Exception {
         for (int i = 0; i < multipart.getCount(); i++) {
             BodyPart part = multipart.getBodyPart(i);
-            String[] disposition = part.getHeader("Content-Disposition");
-            boolean isAttachment = disposition != null && disposition.length > 0
-                    && disposition[0] != null
-                    && disposition[0].toLowerCase(java.util.Locale.ROOT).contains("attachment");
-            if (isAttachment && "invite.ics".equalsIgnoreCase(part.getFileName())) {
+            String contentType = part.getContentType();
+            String lowered = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
+            if (lowered.startsWith("text/calendar")) {
                 return part;
             }
-            String contentType = part.getContentType();
-            if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).startsWith("multipart/")) {
+            if (lowered.startsWith("multipart/")) {
                 Object body = part.getContent();
                 if (body instanceof MimeMultipart nested) {
                     BodyPart nestedHit = findIcsAttachmentPart(nested);
@@ -1307,6 +1563,22 @@ class BookingNotificationServiceTest {
             }
         }
         return null;
+    }
+
+    /** Counts every {@code text/calendar} part in the tree — must always be exactly 1. */
+    private static int countCalendarParts(MimeMultipart multipart) throws Exception {
+        int found = 0;
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart part = multipart.getBodyPart(i);
+            String contentType = part.getContentType();
+            String lowered = contentType == null ? "" : contentType.toLowerCase(java.util.Locale.ROOT);
+            if (lowered.startsWith("text/calendar")) {
+                found++;
+            } else if (lowered.startsWith("multipart/") && part.getContent() instanceof MimeMultipart nested) {
+                found += countCalendarParts(nested);
+            }
+        }
+        return found;
     }
 
     private static String icsBody(MimeMessage message) throws Exception {

@@ -317,4 +317,88 @@ class IdentityLinkingServiceImplTest {
                 .timezone(timezone)
                 .build();
     }
+
+    /**
+     * The username is the public booking-link segment, so a new host should get a clean
+     * {@code bunnycal.io/koushik/...} rather than a random tail.
+     */
+    @Test
+    void shouldMintCleanUsername_whenNameIsFree() {
+        when(authIdentityRepository.findByProviderAndProviderUserId(any(), any())).thenReturn(Optional.empty());
+        when(userRepository.findByEmail("koushik@gmail.com")).thenReturn(Optional.empty());
+        when(userRepository.existsByUsername("koushik")).thenReturn(false);
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0, User.class));
+
+        identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE, "pid-1", "koushik@gmail.com", "Koushik", null);
+
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(captor.capture());
+        assertEquals("koushik", captor.getValue().getUsername());
+    }
+
+    /** Two people can genuinely both be "koushik"; the second gets a readable suffix, not a UUID. */
+    @Test
+    void shouldAppendNumericSuffix_whenNameIsTaken() {
+        when(authIdentityRepository.findByProviderAndProviderUserId(any(), any())).thenReturn(Optional.empty());
+        when(userRepository.findByEmail("koushik@outlook.com")).thenReturn(Optional.empty());
+        when(userRepository.existsByUsername("koushik")).thenReturn(true);
+        when(userRepository.existsByUsername("koushik-2")).thenReturn(false);
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0, User.class));
+
+        identityLinkingService.resolveOrCreateUser(
+                AuthProvider.MICROSOFT, "pid-2", "koushik@outlook.com", "Koushik", null);
+
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(captor.capture());
+        assertEquals("koushik-2", captor.getValue().getUsername());
+    }
+
+    /**
+     * Clean usernames make a username race reachable: another signup can take the name between our
+     * availability check and our insert. That must retry, not fail the signup — and it must not be
+     * mistaken for the email race, which means "this account already exists".
+     */
+    @Test
+    void shouldRetryWithNextName_whenUsernameIsTakenMidInsert() {
+        when(authIdentityRepository.findByProviderAndProviderUserId(any(), any())).thenReturn(Optional.empty());
+        when(userRepository.findByEmail("koushik@proton.me")).thenReturn(Optional.empty());
+        when(userRepository.existsByUsername("koushik"))
+                .thenReturn(false)   // free when we look…
+                .thenReturn(true);   // …taken by the time we retry
+        when(userRepository.existsByUsername("koushik-2")).thenReturn(false);
+        when(userRepository.save(any(User.class)))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("username taken"))
+                .thenAnswer(inv -> inv.getArgument(0, User.class));
+
+        UserDto result = identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE, "pid-3", "koushik@proton.me", "Koushik", null);
+
+        assertNotNull(result);
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertEquals("koushik-2", captor.getAllValues().get(1).getUsername());
+    }
+
+    /**
+     * The email race still has to behave as before: the account already exists, so link the
+     * identity to it rather than creating a second one (and never re-seed its availability).
+     */
+    @Test
+    void shouldLinkToExistingAccount_whenEmailRaceIsLost() {
+        User existing = user("koushik@gmail.com", "Koushik", "UTC");
+        when(authIdentityRepository.findByProviderAndProviderUserId(any(), any())).thenReturn(Optional.empty());
+        when(userRepository.findByEmail("koushik@gmail.com"))
+                .thenReturn(Optional.empty())      // absent when we decide to create…
+                .thenReturn(Optional.of(existing)); // …present once the race is lost
+        lenient().when(userRepository.existsByUsername(any())).thenReturn(false);
+        when(userRepository.save(any(User.class)))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("email taken"));
+
+        UserDto result = identityLinkingService.resolveOrCreateUser(
+                AuthProvider.GOOGLE, "pid-4", "koushik@gmail.com", "Koushik", null);
+
+        assertEquals(existing.getId(), result.getId());
+        verify(defaultAvailabilityService, never()).seedFor(any());
+    }
 }

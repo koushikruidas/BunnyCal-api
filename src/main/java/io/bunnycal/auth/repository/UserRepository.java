@@ -20,6 +20,8 @@ public interface UserRepository extends JpaRepository<User, UUID> {
 
     Optional<User> findByEmail(String email);
     Optional<User> findByUsername(String username);
+
+    boolean existsByUsername(String username);
     Optional<User> findByIdAndDeletionRequestedAtIsNull(UUID id);
 
     /** Admin user search by partial, case-insensitive email. */
