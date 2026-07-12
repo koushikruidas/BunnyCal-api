@@ -31,6 +31,11 @@ import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +56,13 @@ import org.springframework.stereotype.Service;
 @ConditionalOnProperty(name = "booking.notifications.enabled", havingValue = "true")
 public class BookingNotificationService {
     private static final Logger log = LoggerFactory.getLogger(BookingNotificationService.class);
+
+    /** "Sunday, 12 July 2026" */
+    private static final DateTimeFormatter WHEN_DATE =
+            DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", Locale.ENGLISH);
+    /** "13:30" */
+    private static final DateTimeFormatter WHEN_TIME =
+            DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH);
 
     private static final Set<String> SUPPORTED_EVENTS = Set.of(
             "BOOKING_CONFIRMED",
@@ -288,6 +300,11 @@ public class BookingNotificationService {
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
                 && eventTypeSlug != null && !eventTypeSlug.isBlank();
+        // The body carried no date or time. Every other recipient gets an ICS and their mail client
+        // renders the time from that; the projection owner gets no calendar part, so for them the
+        // mail announced a meeting without ever saying when. Render it in the host's own zone.
+        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
+                host == null ? null : host.getTimezone());
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String standaloneIcs = "CANCEL".equals(eventMethod)
                 ? icsInviteGenerator.buildStandaloneCancel(
@@ -387,7 +404,7 @@ public class BookingNotificationService {
                 sendMail(recipient, summary, event.getEventType(),
                         withIcs ? standaloneIcs : null,
                         withIcs ? eventMethod : null,
-                        manageLink, conferenceDetails, booking.getId(), description);
+                        manageLink, conferenceDetails, booking.getId(), description, when);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
@@ -502,6 +519,10 @@ public class BookingNotificationService {
                 booking.getId(), event.getId(), event.getEventType(),
                 icsHosts.size(), attendee.isPresent(), recipients.size());
 
+        // See formatWhen: the body carried no date or time, which only shows on the mail that has
+        // no ICS to render it from — the projection owner's.
+        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
+                userRepository.findById(booking.getHostId()).map(User::getTimezone).orElse(null));
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String attendeeName = booking.getGuestName();
         String attendeeEmail = attendee.orElse(null);
@@ -559,7 +580,7 @@ public class BookingNotificationService {
                 sendMail(recipient, summary, event.getEventType(),
                         withIcs ? standaloneIcs : null,
                         withIcs ? eventMethod : null,
-                        manageLink, conferenceDetails, booking.getId(), description);
+                        manageLink, conferenceDetails, booking.getId(), description, when);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
@@ -587,7 +608,8 @@ public class BookingNotificationService {
                           String manageLink,
                           ConferenceDetails conferenceDetails,
                           UUID bookingId,
-                          String submissionDescription) throws Exception {
+                          String submissionDescription,
+                          @org.springframework.lang.Nullable String when) throws Exception {
         var message = mailSender.createMimeMessage();
         // We must construct the MIME tree manually because the auto-rendering contract that
         // Outlook and Gmail honour requires a specific shape: multipart/alternative containing
@@ -621,7 +643,7 @@ public class BookingNotificationService {
             message.setHeader("X-MS-OLK-FORCEINSPECTOROPEN", "TRUE");
         }
 
-        String textBody = body(summary, eventType, manageLink, conferenceDetails, submissionDescription);
+        String textBody = body(summary, eventType, manageLink, conferenceDetails, submissionDescription, when);
 
         if (ics != null && method != null) {
             MimeBodyPart textPart = new MimeBodyPart();
@@ -838,17 +860,41 @@ public class BookingNotificationService {
         return lifecycleText;
     }
 
-    private static String body(String summary, String eventType, String manageLink, ConferenceDetails conferenceDetails) {
-        return body(summary, eventType, manageLink, conferenceDetails, null);
+    /**
+     * Renders the meeting time for the plain-text body.
+     *
+     * <p>The body never carried a date or time. Nobody noticed, because every recipient also got an
+     * ICS and their mail client rendered the time from that. The projection owner is the one
+     * recipient who gets no calendar part — so for them the mail said a meeting was confirmed
+     * without ever saying when.
+     *
+     * <p>Rendered in the recipient's own zone, falling back to UTC when the host has none set.
+     */
+    private static String formatWhen(Instant start, Instant end, @org.springframework.lang.Nullable String timezone) {
+        ZoneId zone;
+        try {
+            zone = (timezone == null || timezone.isBlank()) ? ZoneOffset.UTC : ZoneId.of(timezone);
+        } catch (RuntimeException ex) {
+            zone = ZoneOffset.UTC;
+        }
+        ZonedDateTime from = start.atZone(zone);
+        ZonedDateTime to = end.atZone(zone);
+        // e.g. "Sunday, 12 July 2026, 13:30–14:00 (Asia/Kolkata)"
+        return WHEN_DATE.format(from) + ", " + WHEN_TIME.format(from) + "–" + WHEN_TIME.format(to)
+                + " (" + zone.getId() + ")";
     }
 
     private static String body(String summary,
                                String eventType,
                                String manageLink,
                                ConferenceDetails conferenceDetails,
-                               String submissionDescription) {
+                               String submissionDescription,
+                               @org.springframework.lang.Nullable String when) {
         String base = body(summary, eventType);
         StringBuilder builder = new StringBuilder(base);
+        if (when != null && !when.isBlank()) {
+            builder.append("\nWhen: ").append(when);
+        }
         if (submissionDescription != null && !submissionDescription.isBlank()) {
             builder.append("\n\n").append(submissionDescription.trim());
         }

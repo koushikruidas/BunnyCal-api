@@ -329,6 +329,64 @@ class BookingNotificationServiceTest {
         assertFalse(hasIcsAttachment(hostMsg), "projection owner still gets no calendar part");
     }
 
+    /**
+     * The plain-text body must state when the meeting is.
+     *
+     * <p>It never did. Nobody noticed, because every recipient also received an ICS and their mail
+     * client rendered the time from that. The projection owner is the one recipient who gets no
+     * calendar part — so their mail announced a confirmed meeting without ever saying when.
+     */
+    @Test
+    void projectionOwnerMail_statesTheMeetingTime() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com")
+                .username("host-user").timezone("Asia/Kolkata").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection projectionConnection = new CalendarConnection();
+        setConnectionId(projectionConnection, projectionConnectionId);
+        projectionConnection.setUserId(hostId);
+        projectionConnection.setProvider(CalendarProviderType.GOOGLE);
+        projectionConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        projectionConnection.setProviderUserId("google-sub");
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(projectionConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage ownerMsg = findByRecipient(messageCaptor.getAllValues(), "host@gmail.com");
+        assertFalse(hasIcsAttachment(ownerMsg), "precondition: the owner has no calendar part");
+
+        String body = textBody(ownerMsg);
+        assertTrue(body.contains("When:"), "owner's mail must state the meeting time; body was:\n" + body);
+        // Rendered in the host's own zone, not UTC.
+        assertTrue(body.contains("Asia/Kolkata"), "time must be in the host's zone; body was:\n" + body);
+    }
+
     /** No account_email (a pre-V118_0 connection) must fall back to the login identity, not drop. */
     @Test
     void projectionOwnerWithoutAccountEmail_fallsBackToLoginIdentity() throws Exception {
