@@ -19,7 +19,6 @@ import io.bunnycal.booking.service.GuestCapabilityTokenService;
 import io.bunnycal.booking.service.TokenCreatorType;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.logging.OpsLogSupport;
@@ -530,14 +529,17 @@ public class BookingNotificationService {
                           UUID bookingId,
                           String submissionDescription) throws Exception {
         var message = mailSender.createMimeMessage();
-        // We must construct the MIME tree manually because the auto-rendering
-        // contract that Outlook and Gmail honour requires a specific shape:
-        // top-level multipart/mixed wrapping (a) a multipart/alternative
-        // containing text/plain + inline text/calendar; method=REQUEST and
-        // (b) an invite.ics attachment as a fallback for clients that only
-        // recognise the attachment form. MimeMessageHelper.addAttachment
-        // alone collapses the calendar part to attachment-only, which is
-        // why Outlook previously demanded a manual "Add to calendar" flow.
+        // We must construct the MIME tree manually because the auto-rendering contract that
+        // Outlook and Gmail honour requires a specific shape: multipart/alternative containing
+        // text/plain + an INLINE text/calendar; method=REQUEST. MimeMessageHelper.addAttachment
+        // alone collapses the calendar part to attachment-only, which is why Outlook previously
+        // demanded a manual "Add to calendar" flow.
+        //
+        // The calendar payload is carried exactly ONCE. It used to be sent twice — inline *and*
+        // as an invite.ics attachment, both with method=REQUEST and the same UID — on the theory
+        // that the attachment was an inert fallback for clients that only read attachments. It is
+        // not inert: Outlook honours the inline REQUEST and auto-processes the attached one too,
+        // landing two identical events on the calendar. Gmail hid the bug by de-duplicating on UID.
         var helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
         // Align the SMTP From with the iTIP ORGANIZER identity used inside the ICS.
         // Outlook treats a REQUEST whose From differs from the ORGANIZER mailbox as a
@@ -577,21 +579,7 @@ public class BookingNotificationService {
             alternative.addBodyPart(textPart);
             alternative.addBodyPart(calendarInline);
 
-            MimeBodyPart alternativeWrapper = new MimeBodyPart();
-            alternativeWrapper.setContent(alternative);
-
-            MimeBodyPart icsAttachment = new MimeBodyPart();
-            icsAttachment.setContent(ics, "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setFileName("invite.ics");
-            icsAttachment.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Disposition", "attachment; filename=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Transfer-Encoding", "8bit");
-
-            MimeMultipart mixed = new MimeMultipart("mixed");
-            mixed.addBodyPart(alternativeWrapper);
-            mixed.addBodyPart(icsAttachment);
-
-            message.setContent(mixed);
+            message.setContent(alternative);
         } else {
             helper.setText(textBody, false);
         }
@@ -836,21 +824,24 @@ public class BookingNotificationService {
      * Returns the suppression reason string if the host/participant's ICS email must be
      * suppressed, or {@code null} if they must receive it.
      *
-     * <p>Suppression is valid only when the recipient IS the projection owner — the Calendar
-     * API already wrote the event directly to their calendar, so an additional ICS email
-     * would create a visible duplicate entry.
+     * <p>The rule is provider-agnostic: <b>the projection owner never receives an ICS.</b> The
+     * Calendar API has already written the event directly onto their calendar, so an iTIP
+     * REQUEST on top of that lands a second, identical entry. Both providers auto-process an
+     * inbound REQUEST — Gmail imports it, and Outlook does too (for consumer MSA <em>and</em>
+     * Entra work/school alike). Neither is a special case; the duplicate is caused by the API
+     * write, not by the mailbox type.
+     *
+     * <p>This is safe because the API write is deliberately silent: Google is called with
+     * {@code sendUpdates=none} and Graph with {@code responseRequested=false}, so the providers
+     * send no invitations of their own. BunnyCal is the sole invite sender — the ICS email is
+     * the one and only RSVP mechanism, and it goes to everyone <em>except</em> the person whose
+     * calendar we already wrote to.
      *
      * <p>Ownership is determined from the immutable {@code booking_ownership} record (set at
      * booking time via {@code BookingOwnershipService.ensureOwnership}), not from calendar
-     * connectivity alone.  A user may have an active Google or Microsoft connection without
-     * being the projection owner (e.g., a non-assigned RR participant, a COLLECTIVE member),
-     * and must still receive the ICS email in that case.
-     *
-     * <p>For Google projection owners: Gmail auto-imports any iTIP REQUEST, producing a
-     * duplicate next to the Calendar-API-written event — suppress.
-     * For Microsoft projection owners: consumer MSA (personal Outlook.com) auto-processes
-     * the iTIP — suppress.  Entra work/school accounts are handled by Graph and do not
-     * reach this path.
+     * connectivity alone. A user may have an active Google or Microsoft connection without being
+     * the projection owner (e.g. a non-assigned RR participant, a COLLECTIVE member), and must
+     * still receive the ICS in that case.
      */
     @org.springframework.lang.Nullable
     private String resolveSuppressionReason(UUID hostId, @org.springframework.lang.Nullable BookingOwnership ownership) {
@@ -867,13 +858,9 @@ public class BookingNotificationService {
         if (!hostId.equals(projectionConnection.getUserId())) {
             return null;
         }
-        if (projectionConnection.getProvider() == CalendarProviderType.GOOGLE) {
-            return "google_projection_owner";
-        }
-        if (projectionConnection.getProvider() == CalendarProviderType.MICROSOFT
-                && MicrosoftAccountClassifier.isConsumerMsa(projectionConnection)) {
-            return "ms_consumer_msa_projection_owner";
-        }
-        return null;
+        return switch (projectionConnection.getProvider()) {
+            case GOOGLE -> "google_projection_owner";
+            case MICROSOFT -> "microsoft_projection_owner";
+        };
     }
 }
