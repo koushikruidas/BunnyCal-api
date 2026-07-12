@@ -180,12 +180,29 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         EventType eventType = booking != null ? bookingEventTypeResolver.requireForBooking(booking) : null;
         EventKind kind = eventType != null ? eventType.getKind() : null;
 
+        // Establish ownership BEFORE notifying. The notification decides whether to attach an ICS by
+        // asking booking_ownership "did we write this event onto the recipient's own calendar?" —
+        // and if the row does not exist yet, the answer is a silent "no" and the projection owner
+        // is sent an iTIP REQUEST on top of the calendar entry the sync job is about to create.
+        // Two identical events, which is exactly what Outlook hosts were seeing.
+        //
+        // Google Meet was escaping this by accident: it defers its notification to
+        // BOOKING_CONFIRMED_READY, which the sync worker only emits after the projection exists.
+        // Zoom, Teams, Custom URL and None do not defer, so they all notified against an ownership
+        // row that had not been written yet.
+        //
+        // ensureOwnership is idempotent, so resolving it up front costs nothing — resolveSchedulingConnection
+        // below calls it again and gets the same row.
+        String desiredAction = mapDesiredAction(event.getEventType());
+        if (desiredAction != null && booking != null && eventType != null) {
+            bookingOwnershipService.ensureOwnership(booking, eventType);
+        }
+
         boolean deferNotification = shouldDeferNotificationUntilProjection(event, eventType);
         if (bookingNotificationService != null && !deferNotification) {
             bookingNotificationService.handleOutboxEvent(event);
         }
 
-        String desiredAction = mapDesiredAction(event.getEventType());
         if (desiredAction != null) {
             UUID partitionKey = event.getPartitionKey();
             if (partitionKey == null) {
