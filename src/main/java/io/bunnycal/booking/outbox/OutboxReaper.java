@@ -31,14 +31,10 @@ public class OutboxReaper {
     private static final Logger log = LoggerFactory.getLogger(OutboxReaper.class);
 
     private final OutboxEventRepository outboxRepo;
-    private final ProcessedEventRepository processedEventRepo;
     private final TimeSource timeSource;
 
-    public OutboxReaper(OutboxEventRepository outboxRepo,
-                        ProcessedEventRepository processedEventRepo,
-                        TimeSource timeSource) {
+    public OutboxReaper(OutboxEventRepository outboxRepo, TimeSource timeSource) {
         this.outboxRepo = outboxRepo;
-        this.processedEventRepo = processedEventRepo;
         this.timeSource = timeSource;
     }
 
@@ -47,13 +43,6 @@ public class OutboxReaper {
     public void recoverStuck() {
         Instant now = timeSource.now();
         Instant cutoff = now.minus(OUTBOX_PROCESSING_TIMEOUT);
-
-        // Release the idempotency claims of the rows we are about to recover, BEFORE resetting
-        // their status — the query selects on status = PROCESSING, so it must see them unchanged.
-        // A worker that died between committing its claim and finishing the dispatch left a guard
-        // row for a send that never happened; without clearing it, the reclaimed event would find
-        // the guard, skip the dispatch, and the notification would be lost silently.
-        int releasedClaims = processedEventRepo.releaseStuckClaims(cutoff, OUTBOX_MAX_ATTEMPTS);
 
         int recovered = outboxRepo.recoverStuck(
                 OutboxEventStatus.PENDING,
@@ -66,8 +55,7 @@ public class OutboxReaper {
                 cutoff, OUTBOX_MAX_ATTEMPTS);
 
         if (recovered > 0 || failed > 0) {
-            log.warn("outbox.reaper recovered={} permanentlyFailed={} releasedClaims={}",
-                    recovered, failed, releasedClaims);
+            log.warn("outbox.reaper recovered={} permanentlyFailed={}", recovered, failed);
         }
     }
 }

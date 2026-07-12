@@ -102,59 +102,34 @@ public class OutboxWorker {
         return ids != null ? ids : List.of();
     }
 
-    /**
-     * Dispatch runs <b>outside</b> any transaction, deliberately.
-     *
-     * <p>It used to sit inside the same transaction as the {@code processed_events} guard, which
-     * meant a pooled Hikari connection was pinned for the whole of an external network call — an
-     * SMTP send to SES, an HTTP call to a calendar provider. When SES became unreachable that call
-     * blocked on TCP connect for ~45 seconds, holding the connection long enough to trip Hikari's
-     * 30s leak detector; with enough concurrent failures it would have drained the pool and stalled
-     * the entire application on what was only a mail outage. A DB connection must never be held
-     * across a call to a third party.
-     *
-     * <p>The split is safe because the row is already exclusively ours: {@code claimBatch} has
-     * atomically flipped it to PROCESSING via {@code FOR UPDATE SKIP LOCKED} and committed, and the
-     * reaper recovers rows stranded in PROCESSING by a crash. The two-guard contract is preserved:
-     *   <ul>
-     *     <li>Guard 1 — SKIP LOCKED in claimBatch stops two live workers racing for the same row.</li>
-     *     <li>Guard 2 — {@code processed_events} (ON CONFLICT DO NOTHING) is the real safety net:
-     *         after a crash and recovery, a row another worker already committed means we skip the
-     *         dispatch rather than send twice.</li>
-     *   </ul>
-     *
-     * <p>The one thing the old single-transaction shape gave us for free was that a failed dispatch
-     * rolled the guard row back, letting the event retry. Now that the guard commits before the
-     * dispatch, a failure has to remove it explicitly — see {@link #recordFailure} — or the event
-     * would be permanently marked processed and never retried.
-     */
     private void processOne(UUID id) {
         Timer.Sample sample = Timer.start(meterRegistry);
         try {
-            OutboxEvent event = requiresNew.execute(status -> {
-                OutboxEvent loaded = outboxRepo.findById(id).orElse(null);
-                if (loaded == null || loaded.getStatus().isTerminal()) return null;
+            requiresNew.execute(status -> {
+                OutboxEvent event = outboxRepo.findById(id).orElse(null);
+                if (event == null || event.getStatus().isTerminal()) return null;
 
                 // Single DB clock call — used for both lag recording and tryInsert.
                 Instant now = timeSource.now();
-                outboxLag.record(Duration.between(loaded.getCreatedAt(), now).toMillis());
+                outboxLag.record(Duration.between(event.getCreatedAt(), now).toMillis());
 
-                // Claim the event for dispatch. A zero return means another worker already
-                // processed it (crash recovery), so there is nothing to send.
-                return processedEventRepo.tryInsert(id, now) > 0 ? loaded : null;
-            });
+                // Two-guard contract:
+                //   Guard 1 — SKIP LOCKED in claimBatch: prevents two live workers
+                //             from racing to claim the same row at the same moment.
+                //   Guard 2 — processed_events (ON CONFLICT DO NOTHING): the true
+                //             safety net. Even after a crash+recovery, if another
+                //             worker already committed the processed_events row the
+                //             dispatch is skipped here. SKIP LOCKED is an optimisation;
+                //             processed_events is the correctness guarantee.
+                int inserted = processedEventRepo.tryInsert(id, now);
+                if (inserted > 0) {
+                    dispatcher.dispatch(event);
+                }
 
-            // No transaction, no pooled connection held — the slow part happens out here.
-            if (event != null) {
-                dispatcher.dispatch(event);
-            }
+                event.setStatus(OutboxEventStatus.PROCESSED);
+                outboxRepo.save(event);
 
-            requiresNew.execute(status -> {
-                OutboxEvent latest = outboxRepo.findById(id).orElse(null);
-                if (latest == null || latest.getStatus().isTerminal()) return null;
-                latest.setStatus(OutboxEventStatus.PROCESSED);
-                outboxRepo.save(latest);
-                log.debug("outbox.processed id={} type={}", id, latest.getEventType());
+                log.debug("outbox.processed id={} type={}", id, event.getEventType());
                 return null;
             });
 
@@ -183,9 +158,6 @@ public class OutboxWorker {
                     if ("Booking".equals(event.getAggregateType())) {
                         bookingFailedTotal.increment();
                     }
-                    // Deliberately keep the processed_events row on the terminal path. The event is
-                    // parked in the DLQ for a human, and leaving the guard in place means a manual
-                    // replay cannot silently double-send.
                 } else {
                     // RETRYING (not PENDING) — distinguishes "has failed at least once"
                     // from "fresh event". Enables observability queries like
@@ -196,12 +168,6 @@ public class OutboxWorker {
 
                     long delay = computeBackoffMillis(nextAttempt);
                     event.setNextAttemptAt(timeSource.now().plusMillis(delay));
-
-                    // The claim committed before the dispatch ran (it has to, so the dispatch does
-                    // not hold a DB connection across a network call), so it will not roll back on
-                    // its own. Release it, or the retry would find the guard row already present
-                    // and skip the send forever.
-                    processedEventRepo.release(id);
                 }
 
                 outboxRepo.save(event);
