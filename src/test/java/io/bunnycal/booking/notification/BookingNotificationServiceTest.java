@@ -260,6 +260,123 @@ class BookingNotificationServiceTest {
         assertTrue(hasIcsAttachment(guestMsg), "guest must receive the invite");
     }
 
+    /**
+     * The "your event is on your calendar" mail must land in the inbox of the account that owns
+     * that calendar — not in the login identity's inbox.
+     *
+     * <p>With multi-account calendars the two are routinely different: a host signs in as
+     * alice@gmail.com while their event type projects to their work@company.com calendar. Sending
+     * the notice to the login address puts it in a mailbox that has no such event.
+     *
+     * <p>This also covers ROUND_ROBIN without needing a separate case: for a round robin the
+     * booking's hostId <em>is</em> the assigned participant (PublicBookingService reads it as
+     * {@code assignedParticipantId}), and the resolver records that participant's default
+     * write-back connection on booking_ownership. Reading account_email off the ownership record
+     * therefore yields the round-robin write-back mailbox by construction.
+     */
+    @Test
+    void projectionOwner_isNotifiedAtWritebackAccount_notTheLoginIdentity() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        // Signed in as one account…
+        User host = User.builder().id(hostId).name("Host Name").email("login@gmail.com")
+                .username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        // …but the booking is written to a different connected account's calendar.
+        CalendarConnection writebackConnection = new CalendarConnection();
+        setConnectionId(writebackConnection, projectionConnectionId);
+        writebackConnection.setUserId(hostId);
+        writebackConnection.setProvider(CalendarProviderType.GOOGLE);
+        writebackConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        writebackConnection.setProviderUserId("google-sub-writeback");
+        writebackConnection.setAccountEmail("writeback@company.com");
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(writebackConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("login@gmail.com"));
+        when(deliverabilityPolicy.normalize("writeback@company.com")).thenReturn("writeback@company.com");
+        when(deliverabilityPolicy.isDeliverable("writeback@company.com")).thenReturn(true);
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("writeback@company.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "writeback@company.com");
+        assertTrue(header(hostMsg, "To").contains("writeback@company.com"),
+                "notice must go to the calendar we actually wrote to");
+        assertFalse(hostMsg.getAllRecipients()[0].toString().contains("login@gmail.com"),
+                "notice must not go to the login identity");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner still gets no calendar part");
+    }
+
+    /** No account_email (a pre-V118_0 connection) must fall back to the login identity, not drop. */
+    @Test
+    void projectionOwnerWithoutAccountEmail_fallsBackToLoginIdentity() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID projectionConnectionId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("login@gmail.com")
+                .username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        CalendarConnection legacyConnection = new CalendarConnection();
+        setConnectionId(legacyConnection, projectionConnectionId);
+        legacyConnection.setUserId(hostId);
+        legacyConnection.setProvider(CalendarProviderType.GOOGLE);
+        legacyConnection.setStatus(CalendarConnectionStatus.ACTIVE);
+        legacyConnection.setProviderUserId("google-sub-legacy");
+        legacyConnection.setAccountEmail(null); // never captured
+
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(projectionConnectionId);
+        ownership.setOwnershipState("RESOLVED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .projectionProvider(CalendarProviderType.GOOGLE)
+                        .projectionConnectionId(projectionConnectionId)
+                        .build()));
+        when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
+        when(calendarConnectionRepository.findById(projectionConnectionId))
+                .thenReturn(Optional.of(legacyConnection));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("login@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("login@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        MimeMessage hostMsg = findByRecipient(messageCaptor.getAllValues(), "login@gmail.com");
+        assertFalse(hasIcsAttachment(hostMsg), "projection owner still gets no calendar part");
+    }
+
     @Test
     void googleActiveConnection_notifiesHostWithoutCalendarPart() throws Exception {
         // The host's Google connection IS the projection target (confirmed via booking_ownership).

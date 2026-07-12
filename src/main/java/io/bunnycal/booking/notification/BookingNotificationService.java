@@ -228,6 +228,19 @@ public class BookingNotificationService {
                 : null;
         String icsSuppressedRecipient = null;
         if (icsSuppressionReason != null) {
+            // Send it to the mailbox that owns the calendar we wrote to, not to the login identity.
+            // With multi-account calendars these are routinely different: a host can sign in as
+            // alice@gmail while the booking projects to their work@company calendar. The whole
+            // point of this mail is "the event is on your calendar" — it belongs in the inbox of
+            // the account whose calendar that is. Falls back to the login email for pre-V118_0
+            // rows that never captured an account_email.
+            String writebackEmail = resolveProjectionOwnerEmail(ownership).orElse(hostRecipient.get());
+            if (!sameRecipient(writebackEmail, hostRecipient.get())) {
+                log.info("booking_notification_host_recipient_redirected_to_writeback bookingId={} hostId={} loginEmail={} writebackEmail={}",
+                        booking.getId(), booking.getHostId(), hostRecipient.get(), writebackEmail);
+                hostRecipient = Optional.of(writebackEmail);
+            }
+
             // When the host booked their own event, one address is both host and guest and the two
             // roles collapse to a single recipient. The guest half still needs the invite, so the
             // ICS wins — and there is nothing to duplicate anyway, since the projection owner's
@@ -442,11 +455,21 @@ public class BookingNotificationService {
                             ? resolveSuppressionReason(booking.getHostId(), ownership)
                             : null;
                     if (suppressReason != null) {
-                        icsSuppressedHolder[0] = participantRecipient.get();
+                        // Deliver to the mailbox that owns the calendar we wrote to, not to the
+                        // login identity — with multi-account calendars they are often different.
+                        String recipient = resolveProjectionOwnerEmail(ownership)
+                                .orElse(participantRecipient.get());
+                        if (!sameRecipient(recipient, participantRecipient.get())) {
+                            log.info("booking_notification_collective_owner_redirected_to_writeback bookingId={} participantId={} loginEmail={} writebackEmail={}",
+                                    booking.getId(), participant.getId(), participantRecipient.get(), recipient);
+                        }
+                        icsSuppressedHolder[0] = recipient;
+                        participantRecipients.add(recipient);
                         log.info("booking_notification_collective_owner_ics_suppressed bookingId={} participantId={} reason={}",
                                 booking.getId(), participant.getId(), suppressReason);
+                    } else {
+                        participantRecipients.add(participantRecipient.get());
                     }
-                    participantRecipients.add(participantRecipient.get());
                 }
                 icsHosts.add(new IcsInviteGenerator.CollectiveHost(participant.getName(), participant.getEmail()));
             });
@@ -855,6 +878,28 @@ public class BookingNotificationService {
                         bookingQuestionAnswerRepository == null
                                 ? java.util.List.of()
                                 : bookingQuestionAnswerRepository.findByBookingIdAndHostId(booking.getId(), booking.getHostId())));
+    }
+
+    /**
+     * The mailbox that owns the calendar this booking was written to.
+     *
+     * <p>Read from the projection connection recorded on {@code booking_ownership}, so it is
+     * whatever the scheduling resolver actually chose — the event type's configured write-back
+     * calendar for a 1:1/group/collective, and the assigned participant's default write-back
+     * calendar for a round robin. No special-casing per event kind is needed here: ownership is the
+     * record of where the event really went.
+     *
+     * <p>Empty when the connection predates V118_0 and never captured an account_email; callers
+     * fall back to the login identity, which was the only address available then anyway.
+     */
+    private Optional<String> resolveProjectionOwnerEmail(@org.springframework.lang.Nullable BookingOwnership ownership) {
+        if (ownership == null || ownership.getProjectionConnectionId() == null) {
+            return Optional.empty();
+        }
+        return calendarConnectionRepository.findById(ownership.getProjectionConnectionId())
+                .map(CalendarConnection::getAccountEmail)
+                .map(deliverabilityPolicy::normalize)
+                .filter(deliverabilityPolicy::isDeliverable);
     }
 
     /**
