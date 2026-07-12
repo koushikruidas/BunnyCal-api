@@ -84,6 +84,57 @@ class LoggingOutboxEventDispatcherTest {
                 new SimpleMeterRegistry());
     }
 
+    /**
+     * Ownership must exist before the notification is sent, for every conferencing provider.
+     *
+     * <p>BookingNotificationService decides whether to attach an ICS by asking booking_ownership
+     * "did we write this event onto the recipient's own calendar?". Notifying first meant the row
+     * did not exist yet, the answer came back a silent "no", and the projection owner was sent an
+     * iTIP REQUEST on top of the calendar entry the sync job was about to create — two identical
+     * events on their calendar.
+     *
+     * <p>Google Meet hid the bug by accident: it defers its notification to BOOKING_CONFIRMED_READY,
+     * which the sync worker only emits once the projection exists. Zoom, Teams, Custom URL and None
+     * do not defer, so they all notified against an ownership row that had not been written yet —
+     * which is why the reported duplicates were on a Zoom booking.
+     */
+    @Test
+    void dispatch_bookingConfirmed_establishesOwnershipBeforeNotifying() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Booking")
+                .aggregateId(bookingId)
+                .eventType("BOOKING_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+
+        Booking booking = Booking.builder().id(bookingId).hostId(hostId).eventTypeId(eventTypeId).build();
+        // ZOOM, not Google Meet: Meet defers its notification and so never exhibited the bug.
+        EventType zoomEventType = EventType.builder()
+                .id(eventTypeId).userId(hostId).name("Evening Snacks").slug("evening-snacks")
+                .duration(java.time.Duration.ofMinutes(30))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .conferencingProvider(io.bunnycal.common.enums.ConferencingProviderType.ZOOM)
+                .build();
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(java.util.Optional.of(booking));
+        when(bookingEventTypeResolver.requireForBooking(booking)).thenReturn(zoomEventType);
+
+        dispatcher.dispatch(event);
+
+        org.mockito.InOrder inOrder = org.mockito.Mockito.inOrder(
+                bookingOwnershipService, bookingNotificationService);
+        inOrder.verify(bookingOwnershipService)
+                .ensureOwnership(org.mockito.ArgumentMatchers.any(io.bunnycal.booking.domain.Booking.class),
+                        org.mockito.ArgumentMatchers.any());
+        inOrder.verify(bookingNotificationService).handleOutboxEvent(event);
+    }
+
     @Test
     void dispatch_bookingConfirmed_enqueuesSyncJob() {
         UUID bookingId = UUID.randomUUID();
