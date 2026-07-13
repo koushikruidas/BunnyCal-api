@@ -225,7 +225,7 @@ These are now entirely separate code paths with no shared state.
 ### SELECTED mode
 
 - Triggered when `availabilityCalendars` is non-empty at event-type creation
-- `EventTypeService.create` and `DraftOrganizerService.create` both stamp `SELECTED`
+- `EventTypeService.create` stamps `SELECTED`
 - `CalendarBusyTimeService` queries only the nominated `connectionId` set
 - Empty explicit selection (`SELECTED` + empty JSON) = no calendar blocking at all (intentional: guest can book any slot in the availability window)
 
@@ -240,30 +240,7 @@ These are now entirely separate code paths with no shared state.
 - Existing rows get `availability_mode = 'ALL_CONNECTED'` from the Flyway migration default
 - Behavior is identical to pre-migration: all active connections block slots
 
-### Gap — `DraftOrganizerService.update` does not update `availabilityMode`
-
-When a draft is updated with a new `availabilityCalendars` list, the
-`availabilityCalendarsJson` field is updated but `availabilityMode` is not
-recalculated. A draft created without availability calendars (mode=ALL_CONNECTED)
-that is later updated to add explicit calendars will have inconsistent state:
-`availabilityCalendarsJson` has entries but `availabilityMode = ALL_CONNECTED`,
-so slot computation ignores the explicit selection and uses all connections.
-
----
-
 ## 8. Remaining Runtime Inconsistencies
-
-### P1 — `DraftOrganizerService.update` does not sync `availabilityMode`
-
-**Severity:** Medium. Affects draft-based event-type editing flow only.
-
-**Fix:** In `DraftOrganizerService.update`, after computing `orchestration`, add:
-```java
-AvailabilityMode updatedMode = (request.availabilityCalendars() != null && !request.availabilityCalendars().isEmpty())
-        ? AvailabilityMode.SELECTED
-        : (orchestration.availabilityBindings().isEmpty() ? AvailabilityMode.ALL_CONNECTED : eventType.getAvailabilityMode());
-eventType.setAvailabilityMode(updatedMode);
-```
 
 ### P2 — Read model provider pinning uses `sync.provider.default` globally
 
@@ -332,8 +309,6 @@ from `PublicBookingService` and `LoggingOutboxEventDispatcher`. The key in
 ---
 
 ## 11. Recommended Next Backend Step
-
-**Fix P1 (DraftOrganizerService.update missing availabilityMode sync) — one-line fix, zero risk.**
 
 **Fix P2 (read model provider pinning) — requires stamping `scheduling_provider` on booking at dispatch time:**
 

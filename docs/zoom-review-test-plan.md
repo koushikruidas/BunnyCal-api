@@ -9,9 +9,13 @@
 | Item | Value |
 |---|---|
 | BunnyCal test account URL | https://bunnycal.io |
-| BunnyCal test login email | `zoom-review@bunnycal.io` *(create before submitting)* |
-| BunnyCal test password | `<set and paste here>` |
+| Login method | Click **Sign in with Google** and use the Google credentials below |
+| Google account email | `hotelregistar@gmail.com` |
+| Google account password | `Being12@12` |
 | Zoom account | Reviewer's own Zoom account (any Zoom user can authorize) |
+
+If Google asks for a passcode or another verification step, choose **"Try another
+way"** and sign in with the password.
 
 Notes for reviewers: BunnyCal is a single-role product (one user = one host). There is
 no second user role to test; invitees book via a public link without an account.

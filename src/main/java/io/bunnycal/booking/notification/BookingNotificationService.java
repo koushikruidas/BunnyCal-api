@@ -223,8 +223,7 @@ public class BookingNotificationService {
         Optional<String> hostRecipient = recipientResolver.resolveHostRecipient(host);
         if (hostRecipient.isEmpty()) {
             String normalizedHost = deliverabilityPolicy.normalize(host.getEmail());
-            String reason = normalizedHost == null ? "MISSING_OR_INVALID" :
-                    (deliverabilityPolicy.isSynthetic(normalizedHost) ? "SYNTHETIC_RECIPIENT_SKIPPED" : "UNDELIVERABLE");
+            String reason = normalizedHost == null ? "MISSING_OR_INVALID" : "UNDELIVERABLE";
             log.info("booking_notification_host_recipient_skipped bookingId={} hostId={} eventType={} reason={} hostEmail={}",
                     booking.getId(), booking.getHostId(), event.getEventType(), reason, normalizedHost);
         }

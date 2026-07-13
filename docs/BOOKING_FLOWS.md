@@ -23,14 +23,13 @@ Implementation-accurate backend flow documentation for the current booking syste
 ### Main architectural concepts
 - Booking write model is centered on `bookings` with state transitions and optimistic CAS updates (`version`) plus overlap enforcement in PostgreSQL.
 - Booking side effects are event-driven via transactional outbox (`outbox_events`) and processed asynchronously.
-- Public booking supports both normal users and draft-backed hosts through a single resolver abstraction.
+- Public booking resolves authenticated hosts and their published event types through a single resolver abstraction.
 - Calendar integration has two distinct paths:
   - Synchronous confirm-time creation for public confirm (in `PublicBookingService.ensureCalendarEventCreated`).
   - Async sync job pipeline triggered by outbox events (`LoggingOutboxEventDispatcher` -> `calendar_sync_jobs` -> sync workers).
 
 ### Booking ownership model
 - Booking row ownership uses `host_id` (UUID).
-- Public draft ownership resolves through shadow user/event IDs (`HostDraft.shadowUserId`, `shadowEventTypeId`) when public username is `d`.
 - Host identity for invites in providerless mode now uses application organizer identity (`booking.notifications.calendar-organizer-email/name`) and treats host+guest as attendees.
 
 ### Standalone vs connected calendar behavior
@@ -99,12 +98,6 @@ Directly implemented in: `BookingController`.
 
 Directly implemented in: `PublicBookingController`.
 
-### Draft endpoints (adjacent to public booking)
-- `/public/drafts` (`POST`, `GET`, `PUT`), `/api/drafts/{slug}/claim`.
-- Public booking itself is still on `/public/{username}/{eventTypeSlug}`; drafts route into this via username `d` + resolver.
-
----
-
 ## 3. Authenticated Booking Flow (Current Runtime)
 
 ### Create booking (`POST /api/bookings`)
@@ -145,9 +138,7 @@ Directly implemented in: `PublicBookingController`.
 
 ### Identity resolution
 - `PublicBookingService` resolves target through `PublicBookingTargetResolver`.
-- `DefaultPublicBookingTargetResolver` branches:
-  - `username == "d"`: lookup active non-expired `HostDraft` by slug; map to shadow user/event type.
-  - else: normal user by username + event type slug.
+- `DefaultPublicBookingTargetResolver` loads the host by username and the event type by slug.
 
 ### Availability (`GET /public/.../availability`)
 1. Resolve target user/event.
@@ -381,4 +372,3 @@ sequenceDiagram
 
 5. **Notification send failure handling is warn-only**
    - No DLQ/retry loop for email at notification layer (outbox event still processed).
-

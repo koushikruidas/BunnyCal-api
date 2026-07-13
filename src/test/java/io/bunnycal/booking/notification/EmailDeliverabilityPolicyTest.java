@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 
 class EmailDeliverabilityPolicyTest {
 
-    private final EmailDeliverabilityPolicy policy = new EmailDeliverabilityPolicy("draft.local,internal.local");
+    private final EmailDeliverabilityPolicy policy = new EmailDeliverabilityPolicy();
 
     @Test
     void normalize_trimsAndLowercases() {
@@ -22,14 +22,7 @@ class EmailDeliverabilityPolicyTest {
     }
 
     @Test
-    void isSynthetic_detectsConfiguredDomain() {
-        assertTrue(policy.isSynthetic("draft-123@draft.local"));
-        assertTrue(policy.isSynthetic("admin@internal.local"));
-    }
-
-    @Test
-    void isDeliverable_rejectsSyntheticAndMalformed() {
-        assertFalse(policy.isDeliverable("draft-123@draft.local"));
+    void isDeliverable_rejectsMalformed() {
         assertFalse(policy.isDeliverable("no-at-symbol"));
         assertFalse(policy.isDeliverable(" "));
     }
@@ -39,4 +32,3 @@ class EmailDeliverabilityPolicyTest {
         assertTrue(policy.isDeliverable("user@example.com"));
     }
 }
-

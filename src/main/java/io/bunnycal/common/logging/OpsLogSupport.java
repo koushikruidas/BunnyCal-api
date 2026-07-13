@@ -49,7 +49,6 @@ public final class OpsLogSupport {
         }
         return switch (reason) {
             case "MISSING_OR_INVALID", "UNDELIVERABLE" -> "NO_RECIPIENT";
-            case "SYNTHETIC_RECIPIENT_SKIPPED" -> "DELIVERY_DISABLED";
             case "duplicate" -> "DUPLICATE_SUPPRESSED";
             case "missing_event_id" -> "TEMPLATE_RESOLUTION_FAILED";
             default -> reason;

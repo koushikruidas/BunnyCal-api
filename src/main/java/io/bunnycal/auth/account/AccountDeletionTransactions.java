@@ -7,7 +7,6 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
-import io.bunnycal.booking.draft.repository.HostDraftRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
@@ -68,7 +67,6 @@ public class AccountDeletionTransactions {
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final AvailabilityOverrideRepository availabilityOverrideRepository;
     private final EventTypeRepository eventTypeRepository;
-    private final HostDraftRepository hostDraftRepository;
     private final BookingExperienceRepository bookingExperienceRepository;
     private final FormRepository formRepository;
     private final TeamMemberRepository teamMemberRepository;
@@ -138,7 +136,6 @@ public class AccountDeletionTransactions {
         bookingExperienceRepository.softDeleteByOwnerId(userId, deletedAt);
         formRepository.softDeleteByOwnerId(userId, deletedAt);
         eventTypeRepository.softDeleteByUserId(userId, deletedAt);
-        hostDraftRepository.deleteByClaimedOrShadowUserId(userId);
         participantSetupRequestRepository.deleteByOwnerOrTargetUserId(userId);
         teamMemberRepository.deleteByUserId(userId);
     }

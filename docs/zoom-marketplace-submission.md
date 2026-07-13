@@ -125,10 +125,10 @@ Retrieved from the Production tab review thread on 2026-07-02.
 | 2 | OAuth Allowlist: use FQDNs, delete localhost URLs | ✅ Dev redirect URL is now the FQDN `https://api.bunnycal.io/...`; decision pending on the `http://127.0.0.1:8080` allow-list entry (portal-sanctioned; see note below) |
 | 3 | Long Description: describe your company | ✅ Fixed — "About BunnyCal" paragraph added via manifest |
 | 4 | Redirect Localhost (same as #2) | ✅ Same fix |
-| 5 | Account Credentials: provide test account; MUST authorize with Production Client ID | ⏳ User: create `zoom-review@bunnycal.io` BunnyCal account; switch prod `.env` to Production credentials (`z74FJmlcSDG4AfuK2tzh2Q`) |
+| 5 | Account Credentials: provide test account; MUST authorize with Production Client ID | ✅ Done 2026-07-02 — reviewer Google account `hotelregistar@gmail.com` in test plan (login verified end-to-end); VM `.env` switched to Production credentials and verified live (connect flow carries `client_id=z74FJmlcSDG4AfuK2tzh2Q`) |
 | 6 | OAuth Scopes: remove unused scopes | ✅ Fixed — trimmed to the 4 used scopes; `meeting:read:meeting`, `user:read:email`, `zoomapp:inmeeting` removed |
 | 7 | Test Plan: step-by-step guide covering every scope — "Blocker to test" | ✅ Drafted in `docs/zoom-review-test-plan.md` — copy to Google Doc, link in release notes |
-| 8 | Free Account: add credit card OR complete compliance Google form | ⏳ User only — do this in Zoom billing or via their form |
+| 8 | Free Account: add credit card OR complete compliance Google form | ✅ Verified 2026-07-02 — credit card saved as Primary Payment Method in Zoom Billing Management |
 | 9 | Documentation URL must cover Adding / Usage / Removing (incl. deauthorization data handling) | ✅ `doc_url` now points to `https://bunnycal.io/docs/zoom`; page's Data Handling section expanded — deploy BunnyCal-web |
 
 **127.0.0.1 note:** the portal's own validation message explicitly permits
