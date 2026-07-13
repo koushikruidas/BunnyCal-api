@@ -46,8 +46,6 @@ Hard, undeniable observations from the code:
 7. **`CalendarConnection` is `UNIQUE(user_id, provider)`** (`V20_0`, `uk_calendar_connections_user_provider`). One Google account per user. Fine for individuals; collective scheduling across host pools will still work only because availability is per-host — but there is no model of "team calendar."
 8. **Notifications are 1-host + 1-guest.** `NotificationRecipientResolver.resolveHostRecipient(User host)` returns `Optional<String>`. `resolveAttendeeRecipient(Booking booking)` returns `Optional<String>` from `booking.getGuestEmail()`. There is no loop over attendees.
 9. **No teams/orgs/memberships exist anywhere.** A `grep -ri "team\|organization\|round.robin\|collective\|pool"` across `src/main/java` and `db/migration` returns zero matches. There is no foundation. Not even a placeholder table.
-10. **`HostDraft` is not a team primitive** — it's a pre-claim onboarding row for a future host (`shadow_user_id`, `claimed_user_id`). It does not generalize to host pools.
-
 ---
 
 ## 3. Critical Risks (Today, before any new feature)

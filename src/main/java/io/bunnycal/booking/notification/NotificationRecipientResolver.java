@@ -2,7 +2,6 @@ package io.bunnycal.booking.notification;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.booking.domain.Booking;
-import io.bunnycal.booking.draft.repository.HostDraftRepository;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -12,12 +11,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class NotificationRecipientResolver {
-    private final HostDraftRepository hostDraftRepository;
     private final EmailDeliverabilityPolicy policy;
 
-    public NotificationRecipientResolver(HostDraftRepository hostDraftRepository,
-                                         EmailDeliverabilityPolicy policy) {
-        this.hostDraftRepository = hostDraftRepository;
+    public NotificationRecipientResolver(EmailDeliverabilityPolicy policy) {
         this.policy = policy;
     }
 
@@ -29,9 +25,7 @@ public class NotificationRecipientResolver {
         if (policy.isDeliverable(hostEmail)) {
             return Optional.of(hostEmail);
         }
-        return hostDraftRepository.findFirstByShadowUserIdOrderByCreatedAtDesc(host.getId())
-                .map(d -> policy.normalize(d.getEmail()))
-                .filter(policy::isDeliverable);
+        return Optional.empty();
     }
 
     public Optional<String> resolveAttendeeRecipient(Booking booking) {
@@ -56,4 +50,3 @@ public class NotificationRecipientResolver {
         return new ArrayList<>(dedup);
     }
 }
-

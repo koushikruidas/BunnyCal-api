@@ -87,4 +87,3 @@ Migration `V59_0__event_projection_ownership_and_booking_ownership.sql`:
 ## Known Unresolved Ambiguity Cases
 
 - Historical bookings/event types lacking deterministic projection metadata remain flagged `AMBIGUOUS`.
-- Draft-host shadow event types can remain unresolved until explicit projection destination is supplied.
