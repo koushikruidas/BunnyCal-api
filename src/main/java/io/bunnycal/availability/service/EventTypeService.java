@@ -10,6 +10,7 @@ import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
+import io.bunnycal.availability.dto.UpdateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventAvailabilityWindowRepository;
@@ -135,6 +136,105 @@ public class EventTypeService {
                 userId, saved.getId(), saved.getKind(), saved.getName(), saved.getSlug(),
                 saved.getDuration().toMinutes(), saved.isPublished());
         return toSummary(saved, username);
+    }
+
+    /**
+     * Partial update. An absent field leaves the stored value alone.
+     *
+     * <p>This is the repair path that did not exist: an event type's booking calendar was written at
+     * creation and could not be changed by any route afterwards, so a wrong or stale calendar could
+     * only be fixed by deleting the event type and rebuilding it.
+     *
+     * <p>Bookings already made are untouched — {@code booking_ownership} records where each event was
+     * actually written and wins over the event type from then on, so changing the calendar here
+     * never relocates a meeting already sitting on someone's calendar. Only later bookings follow
+     * the new setting.
+     *
+     * <p>{@code kind} is immutable: it gates entitlements at creation, and every downstream
+     * assumption about who gets the calendar write is derived from it.
+     */
+    @Transactional
+    public EventTypeSummaryResponse update(UUID actingUserId, UUID eventTypeId, UpdateEventTypeRequest request) {
+        if (request == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "request body is required.");
+        }
+        EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        User user = sessionUserResolver.require(actingUserId, "PUT:/api/event-types");
+        validateUpdate(request);
+
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration =
+                orchestrationNormalizer.normalizeForDraftMutation(
+                        actingUserId,
+                        eventType,
+                        request.availabilityCalendars(),
+                        request.conference(),
+                        request.projectionDestination(),
+                        orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()));
+
+        if (request.name() != null) eventType.setName(request.name().trim());
+        if (request.description() != null) eventType.setDescription(trimToNull(request.description()));
+        if (request.location() != null) eventType.setLocation(trimToNull(request.location()));
+        if (request.durationMinutes() != null) eventType.setDuration(Duration.ofMinutes(request.durationMinutes()));
+        if (request.bufferBeforeMinutes() != null) eventType.setBufferBefore(Duration.ofMinutes(request.bufferBeforeMinutes()));
+        if (request.bufferAfterMinutes() != null) eventType.setBufferAfter(Duration.ofMinutes(request.bufferAfterMinutes()));
+        if (request.slotIntervalMinutes() != null) eventType.setSlotInterval(Duration.ofMinutes(request.slotIntervalMinutes()));
+        if (request.minNoticeMinutes() != null) eventType.setMinNotice(Duration.ofMinutes(request.minNoticeMinutes()));
+        if (request.maxAdvanceDays() != null) eventType.setMaxAdvance(Duration.ofDays(request.maxAdvanceDays()));
+        if (request.holdDurationMinutes() != null) eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
+
+        // Availability: an explicit list (even an empty one) replaces the selection; absent leaves it.
+        if (request.availabilityCalendars() != null) {
+            eventType.setAvailabilityCalendarsJson(
+                    orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()));
+            eventType.setAvailabilityMode(request.availabilityCalendars().isEmpty()
+                    ? AvailabilityMode.ALL_CONNECTED
+                    : AvailabilityMode.SELECTED);
+        }
+
+        // Booking calendar: a supplied destination re-pins it; an empty one unpins back to "use my
+        // default". normalizeForDraftMutation carries the stored triple forward when absent.
+        if (request.projectionDestination() != null) {
+            EventTypeOrchestrationNormalizer.ProjectionDestination proj = orchestration.projectionDestination();
+            eventType.setProjectionConnectionId(proj != null ? proj.connectionId() : null);
+            eventType.setProjectionCalendarId(proj != null ? proj.calendarId() : null);
+            eventType.setProjectionProvider(proj != null
+                    ? io.bunnycal.calendar.domain.CalendarProviderType.valueOf(proj.provider().toUpperCase(Locale.ROOT))
+                    : null);
+        }
+
+        if (request.conference() != null) {
+            eventType.setConferencingProvider(orchestration.conferencing().provider());
+            eventType.setCustomConferenceUrl(orchestration.conferencing().customUrl());
+        }
+
+        EventType saved = eventTypeRepository.save(eventType);
+        OpsLoggers.HOST.info(
+                "event_type_updated hostId={} eventTypeId={} eventTypeKind={} projectionCalendarId={} availabilityMode={}",
+                actingUserId, saved.getId(), saved.getKind(), saved.getProjectionCalendarId(), saved.getAvailabilityMode());
+        return toSummary(saved, ensureUsername(user));
+    }
+
+    private static void validateUpdate(UpdateEventTypeRequest request) {
+        if (request.name() != null && request.name().isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "name must not be blank.");
+        }
+        if (request.durationMinutes() != null && request.durationMinutes() <= 0) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "durationMinutes must be > 0.");
+        }
+        if (request.slotIntervalMinutes() != null && request.slotIntervalMinutes() <= 0) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotIntervalMinutes must be > 0.");
+        }
+        if (request.holdDurationMinutes() != null && request.holdDurationMinutes() <= 0) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "holdDurationMinutes must be > 0.");
+        }
+        if (isNegative(request.bufferBeforeMinutes()) || isNegative(request.bufferAfterMinutes())
+                || isNegative(request.minNoticeMinutes()) || isNegative(request.maxAdvanceDays())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "buffer/notice/advance values must not be negative.");
+        }
+    }
+
+    private static boolean isNegative(Integer value) {
+        return value != null && value < 0;
     }
 
     @Transactional

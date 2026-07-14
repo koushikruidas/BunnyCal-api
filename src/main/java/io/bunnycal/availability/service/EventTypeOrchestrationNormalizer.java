@@ -75,8 +75,11 @@ public class EventTypeOrchestrationNormalizer {
             );
         }
         ConferencingConfig conferencing = normalizeConference(effectiveConference);
+        // Absent destination: keep whatever the event type already had. Supplied: re-pin it — or, if
+        // it came through empty, unpin back to "use my default". Without the second case a host who
+        // pinned the wrong calendar could re-pin but never get back to the default.
         ProjectionDestination effectiveProjection = projectionDestination != null
-                ? normalizeProjectionDestination(userId, projectionDestination)
+                ? normalizeOptionalProjectionDestination(userId, projectionDestination)
                 : projectionDestinationFromExisting(existingEventType, true);
         EventKind kind = existingEventType != null ? existingEventType.getKind() : EventKind.ONE_ON_ONE;
         validateConferencingAgainstProjection(userId, kind, conferencing, effectiveProjection);

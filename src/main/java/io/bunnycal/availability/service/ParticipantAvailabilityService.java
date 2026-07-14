@@ -5,6 +5,8 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.engine.RecurrenceWindowFilter;
@@ -86,8 +88,9 @@ public class ParticipantAvailabilityService {
      * Computes the slot candidates contributed by {@code participantUserId} for the
      * given event type and date.
      *
-     * <p>All data is loaded scoped to the participant — rules, override, bookings,
-     * sessions, calendar busy — never the event type owner's data.
+     * <p>All data is loaded scoped to the participant — rules, override, bookings, sessions,
+     * calendar busy. The one thing read from the event type is the collective owner's own calendar
+     * selection, and only when the participant being computed <em>is</em> that owner (see step 10).
      *
      * @param participantUserId the participant whose availability is being computed
      * @param eventType the event type being queried (used for duration/interval/constraints)
@@ -176,12 +179,28 @@ public class ParticipantAvailabilityService {
             eventAvailabilityFilter.add(new BookingWindow(start, end));
         }
 
-        // 10. Calendar busy — participant's OWN connections, ALL_CONNECTED semantics
-        //     (empty bindings list). The event type's availabilityCalendarsJson / mode
-        //     is the owner's config and does NOT apply to participants.
+        // 10. Calendar busy — the participant's OWN connections.
+        //
+        //     The event type's availability selection is the OWNER's configuration: it names
+        //     connections only the owner holds, so it cannot be applied to anyone else. Other
+        //     participants are therefore evaluated with ALL_CONNECTED semantics (empty bindings) —
+        //     every calendar they have connected blocks their slots.
+        //
+        //     The collective owner is the exception: they sit on the meeting like any participant,
+        //     but the selection they made in the wizard is about their own calendars, so it applies
+        //     to them and to them alone. Without this the picker would be decorative — silently
+        //     ignored by the engine that generates the slots.
+        //
+        //     Round-robin never reaches this: its owner is not on the booking (the assigned member
+        //     is), and its wizard collects no availability selection.
+        boolean isCollectiveOwner = eventType.getKind() == EventKind.COLLECTIVE
+                && participantUserId.equals(eventType.getUserId());
+        List<AvailabilityBinding> bindings = isCollectiveOwner
+                ? orchestrationJsonCodec.resolveAvailabilityBindings(eventType)
+                : List.of();
         List<BusyInterval> canonicalBusy =
                 calendarBusyTimeService.busyIntervalsForDateCanonical(
-                        participantUserId, date, zoneId, List.of());
+                        participantUserId, date, zoneId, bindings);
         List<TimeInterval> calendarBusy = new ArrayList<>(canonicalBusy.size());
         for (BusyInterval interval : canonicalBusy) {
             calendarBusy.add(new TimeInterval(
