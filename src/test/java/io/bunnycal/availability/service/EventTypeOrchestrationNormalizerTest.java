@@ -1,6 +1,7 @@
 package io.bunnycal.availability.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
@@ -101,8 +102,12 @@ class EventTypeOrchestrationNormalizerTest {
         assertEquals(msConnId, normalized.availabilityBindings().get(1).connectionId());
     }
 
+    // An absent destination is now "use my default", resolved live at booking time — not an error.
+    // A host with one calendar is never shown the picker, and pinning the calendar we would have
+    // shown them binds the event type to a connection they never chose (and which changes id the
+    // moment they reconnect the account).
     @Test
-    void missingProjectionDestination_throwsValidationError() {
+    void missingProjectionDestination_meansUseMyDefault() {
         UUID userId = UUID.randomUUID();
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
@@ -112,7 +117,9 @@ class EventTypeOrchestrationNormalizerTest {
                 null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        EventTypeOrchestrationNormalizer.NormalizedOrchestration result = normalizer.normalize(userId, request);
+
+        assertNull(result.projectionDestination());
     }
 
     @Test
@@ -364,7 +371,7 @@ class EventTypeOrchestrationNormalizerTest {
     }
 
     @Test
-    void oneOnOne_withNullProjectionDestination_stillThrows() {
+    void oneOnOne_withNullProjectionDestination_resolvesToDefaultAtBookingTime() {
         UUID userId = UUID.randomUUID();
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
@@ -375,12 +382,55 @@ class EventTypeOrchestrationNormalizerTest {
                 EventKind.ONE_ON_ONE, null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request),
-                "ONE_ON_ONE events must still require projectionDestination");
+        assertNull(normalizer.normalize(userId, request).projectionDestination(),
+                "no pinned calendar — the booking resolves the host's default instead");
+    }
+
+    // Making the destination optional must not smuggle away the conferencing guardrail. With no
+    // pinned calendar the booking lands on the host's default connection, so the capability question
+    // is the same — just asked of the pool the default is drawn from. A host with no Google calendar
+    // at all cannot host a Meet link no matter which of their connections is chosen.
+    @Test
+    void nullProjection_withGoogleMeet_rejectsHostWithNoGoogleCalendar() {
+        UUID userId = UUID.randomUUID();
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of());
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Meet No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "meet",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "GOOGLE_MEET", null),
+                null,
+                EventKind.ONE_ON_ONE, null
+        );
+
+        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
     }
 
     @Test
-    void group_withNullProjectionDestination_stillThrows() {
+    void nullProjection_withGoogleMeet_allowsHostWhoHasAGoogleCalendar() {
+        UUID userId = UUID.randomUUID();
+        CalendarConnection google = new CalendarConnection();
+        google.setUserId(userId);
+        google.setProvider(CalendarProviderType.GOOGLE);
+        when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(google));
+
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Meet No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "meet",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "GOOGLE_MEET", null),
+                null,
+                EventKind.ONE_ON_ONE, null
+        );
+
+        assertNull(normalizer.normalize(userId, request).projectionDestination());
+    }
+
+    @Test
+    void group_withNullProjectionDestination_resolvesToDefaultAtBookingTime() {
         UUID userId = UUID.randomUUID();
 
         CreateEventTypeRequest request = new CreateEventTypeRequest(
@@ -391,8 +441,8 @@ class EventTypeOrchestrationNormalizerTest {
                 EventKind.GROUP, null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request),
-                "GROUP events must still require projectionDestination");
+        assertNull(normalizer.normalize(userId, request).projectionDestination(),
+                "no pinned calendar — the booking resolves the host's default instead");
     }
 
     private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {

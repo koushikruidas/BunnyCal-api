@@ -41,11 +41,17 @@ public class EventTypeOrchestrationNormalizer {
         ConferencingConfig conferencing = normalizeConference(request.conference());
 
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
+        // A null destination means "use my default", resolved live at booking time against the
+        // host's own connections. Round-robin can never carry one (the host is the assigned
+        // participant, known only at booking time); other kinds carry one only when the host was
+        // actually asked. A host with a single calendar is not shown the picker, and pinning the
+        // calendar we would have shown them would leave the event type bound to a connection they
+        // never chose — one that goes stale the moment they reconnect the account.
         ProjectionDestination projectionDestination = kind == EventKind.ROUND_ROBIN
                 ? null
-                : normalizeProjectionDestination(userId, request.projectionDestination());
+                : normalizeOptionalProjectionDestination(userId, request.projectionDestination());
 
-        validateConferencingAgainstProjection(conferencing, projectionDestination);
+        validateConferencingAgainstProjection(userId, kind, conferencing, projectionDestination);
         return new NormalizedOrchestration(projectionDestination, availabilityBindings, conferencing);
     }
 
@@ -72,7 +78,8 @@ public class EventTypeOrchestrationNormalizer {
         ProjectionDestination effectiveProjection = projectionDestination != null
                 ? normalizeProjectionDestination(userId, projectionDestination)
                 : projectionDestinationFromExisting(existingEventType, true);
-        validateConferencingAgainstProjection(conferencing, effectiveProjection);
+        EventKind kind = existingEventType != null ? existingEventType.getKind() : EventKind.ONE_ON_ONE;
+        validateConferencingAgainstProjection(userId, kind, conferencing, effectiveProjection);
         return new NormalizedOrchestration(effectiveProjection, availabilityBindings, conferencing);
     }
 
@@ -84,11 +91,28 @@ public class EventTypeOrchestrationNormalizer {
      * - MICROSOFT_TEAMS   -> projection provider must be microsoft and account must be M365
      * - ZOOM/CUSTOM_URL   -> projection provider can be google or microsoft
      */
-    private void validateConferencingAgainstProjection(ConferencingConfig conferencing,
+    private void validateConferencingAgainstProjection(UUID userId,
+                                                       EventKind kind,
+                                                       ConferencingConfig conferencing,
                                                        ProjectionDestination projection) {
-        if (conferencing == null || projection == null) return;
+        if (conferencing == null) return;
         ConferencingProviderType providerType = conferencing.provider();
         if (providerType == null || providerType == ConferencingProviderType.NONE || providerType == ConferencingProviderType.CUSTOM_URL) {
+            return;
+        }
+        if (projection == null) {
+            // Round-robin writes to the ASSIGNED PARTICIPANT's calendar, never the owner's, so the
+            // owner's own connections say nothing about whether a link can be created. Capability is
+            // a property of the participant pool and is enforced there
+            // (EventTypeParticipantService.validateConferencingForRoundRobinParticipants).
+            if (kind == EventKind.ROUND_ROBIN) {
+                return;
+            }
+            // No pinned calendar: the booking will land on the host's default connection, so the
+            // capability question is the same one asked of a pinned calendar — just asked of the
+            // pool the default is drawn from. Without this, making the destination optional would
+            // silently drop the Meet/Teams guardrail for every host who is not shown the picker.
+            validateConferencingAgainstDefaultConnections(userId, providerType);
             return;
         }
         if (providerType == ConferencingProviderType.GOOGLE_MEET
@@ -118,10 +142,47 @@ public class EventTypeOrchestrationNormalizer {
     }
 
     /**
-     * The projection destination is the triple explicitly stored on the event type — there is no
-     * fallback resolution from the user's connections, which matters now that a user can hold
-     * several accounts per provider and "their calendar" is no longer a single thing. Derived
-     * independently of availabilityCalendars, which carries free/busy semantics only.
+     * Capability check for a host who pinned no calendar: the booking will be written to their
+     * default connection, so they must hold a connection of the provider the conferencing type
+     * requires. Checks the whole pool rather than guessing which connection the resolver will pick —
+     * if no connection of that provider exists, no choice among them could satisfy the requirement.
+     */
+    private void validateConferencingAgainstDefaultConnections(UUID userId,
+                                                               ConferencingProviderType providerType) {
+        if (providerType == ConferencingProviderType.GOOGLE_MEET) {
+            boolean hasGoogle = !calendarConnectionRepository
+                    .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                            userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
+                    .isEmpty();
+            if (!hasGoogle) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Google Meet conferencing requires a connected Google Calendar.");
+            }
+            return;
+        }
+        if (providerType != ConferencingProviderType.MICROSOFT_TEAMS) {
+            return;
+        }
+        List<CalendarConnection> microsoft = calendarConnectionRepository
+                .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                        userId, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE);
+        if (microsoft.isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Microsoft Teams conferencing requires a connected Microsoft calendar.");
+        }
+        if (microsoft.stream().allMatch(MicrosoftAccountClassifier::isConsumerMsa)) {
+            meterRegistry.counter("event_type_validation_rejected_total",
+                    "reason", "ms_teams_on_consumer_msa").increment();
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Microsoft Teams conferencing requires a work or school Microsoft account; "
+                            + "a personal Outlook.com account cannot host a Teams link.");
+        }
+    }
+
+    /**
+     * The triple explicitly stored on the event type, or null when the host pinned no calendar and
+     * the booking should fall back to their default. Derived independently of availabilityCalendars,
+     * which carries free/busy semantics only.
      */
     private ProjectionDestination projectionDestinationFromExisting(EventType existingEventType, boolean allowMissing) {
         if (existingEventType == null
@@ -248,6 +309,21 @@ public class EventTypeOrchestrationNormalizer {
         } catch (IllegalArgumentException ex) {
             return false;
         }
+    }
+
+    /**
+     * Absent destination means "use my default" — resolved live at booking time. A supplied one is
+     * still validated in full: half-filled input is a client bug, not an opt-out.
+     */
+    private ProjectionDestination normalizeOptionalProjectionDestination(
+            UUID userId, CreateEventTypeRequest.ProjectionDestinationRequest projectionDestination) {
+        if (projectionDestination == null
+                || (trimToNull(projectionDestination.provider()) == null
+                    && trimToNull(projectionDestination.connectionId()) == null
+                    && trimToNull(projectionDestination.calendarId()) == null)) {
+            return null;
+        }
+        return normalizeProjectionDestination(userId, projectionDestination);
     }
 
     private ProjectionDestination normalizeProjectionDestination(UUID userId,

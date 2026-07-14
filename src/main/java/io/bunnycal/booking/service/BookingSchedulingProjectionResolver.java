@@ -27,15 +27,31 @@ public class BookingSchedulingProjectionResolver {
         this.inventoryRepository = inventoryRepository;
     }
 
+    /**
+     * Resolves the calendar a booking is written to.
+     *
+     * <p>An explicit projection triple on the event type pins the destination — the host chose a
+     * specific calendar for this event type. Its absence means "use my default", which is resolved
+     * live against {@code booking.hostId}'s own connections. Both cases are legitimate:
+     *
+     * <ul>
+     *   <li>ROUND_ROBIN never carries a triple — {@code hostId} is the assigned participant, only
+     *       known at booking time, and the owner cannot pick a calendar inside someone else's
+     *       provider account.</li>
+     *   <li>Other kinds carry one only if the host was actually asked. A host with a single calendar
+     *       is never shown the picker, so nothing is pinned and the default is used. Freezing the
+     *       calendar we would have shown them leaves the event type pinned to a connection they
+     *       never chose — and reconnecting an account mints a new connection id, so that pin can
+     *       silently go stale.</li>
+     * </ul>
+     */
     @Nullable
     public SchedulingProjection resolve(Booking booking, EventType eventType) {
-        if (eventType.getKind() != EventKind.ROUND_ROBIN) {
-            if (eventType.getProjectionProvider() == null
-                    || eventType.getProjectionConnectionId() == null
-                    || eventType.getProjectionCalendarId() == null
-                    || eventType.getProjectionCalendarId().isBlank()) {
-                return null;
-            }
+        if (eventType.getKind() != EventKind.ROUND_ROBIN
+                && eventType.getProjectionProvider() != null
+                && eventType.getProjectionConnectionId() != null
+                && eventType.getProjectionCalendarId() != null
+                && !eventType.getProjectionCalendarId().isBlank()) {
             return new SchedulingProjection(
                     eventType.getProjectionProvider(),
                     eventType.getProjectionConnectionId(),
@@ -55,12 +71,13 @@ public class BookingSchedulingProjectionResolver {
     }
 
     /**
-     * Picks which of a participant's connections a round-robin booking is written back to.
+     * Picks which of a user's connections a booking with no pinned calendar is written back to.
      *
-     * <p>Round-robin has no per-event-type projection triple — the host is only known at booking
-     * time — so with several connections per provider the target has to be chosen here. In
-     * preference order: the participant's designated default write-back connection, then the one
-     * that owns a selected (or primary) calendar so this agrees with
+     * <p>Reached when the event type names no destination: always for round-robin (the host is the
+     * assigned participant, known only at booking time), and for any other kind whose host was never
+     * shown the picker or chose to use their default. With several connections the target has to be
+     * chosen here. In preference order: the user's designated default write-back connection, then
+     * the one that owns a selected (or primary) calendar so this agrees with
      * {@link #resolveParticipantCalendarId}, then the oldest. The last case is genuinely ambiguous
      * and is logged rather than silently resolved.
      */
@@ -101,7 +118,7 @@ public class BookingSchedulingProjectionResolver {
         }
         CalendarConnection fallback = candidates.get(0);
         OpsLoggers.HOST.warn(
-                "round_robin_ambiguous_writeback hostId={} provider={} candidateCount={} chosenConnectionId={} "
+                "ambiguous_writeback_connection hostId={} provider={} candidateCount={} chosenConnectionId={} "
                         + "reason=no_default_and_no_selected_calendar",
                 participantUserId, preferredProvider, candidates.size(), fallback.getId());
         return fallback;

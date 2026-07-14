@@ -421,15 +421,18 @@ public class EventTypeParticipantService {
      * Validates that the chosen conferencing provider is compatible with the
      * given participant pool for a ROUND_ROBIN event type.
      *
-     * <p>For RR, there is no owner projection calendar; conferencing capability is
-     * derived from participant calendars. The rule is: at least one participant
-     * must be able to support the selected provider.
+     * <p>For RR there is no owner projection calendar: the meeting link is created from whichever
+     * participant the rotation assigns, on their own calendar. So <em>every</em> participant must be
+     * able to support the provider — "at least one can" is not enough, because the rotation does not
+     * assign to the capable one, it assigns to whoever is next. A Google Meet pool containing a
+     * member whose only calendar is Outlook produces a confirmed booking with no join link the first
+     * time that member comes up.
      *
      * <ul>
-     *   <li>GOOGLE_MEET   — at least one participant must have an active Google calendar.</li>
-     *   <li>MICROSOFT_TEAMS — at least one participant must have an active Microsoft calendar
-     *       that is a work/school (Entra) account, not a consumer MSA.</li>
-     *   <li>ZOOM / CUSTOM_URL / NONE — always allowed regardless of participant calendars.</li>
+     *   <li>GOOGLE_MEET     — every participant needs an active Google calendar.</li>
+     *   <li>MICROSOFT_TEAMS — every participant needs an active Microsoft calendar on a work/school
+     *       (Entra) account; a consumer MSA cannot host Teams.</li>
+     *   <li>ZOOM / CUSTOM_URL / NONE — no calendar requirement; the link is provider-independent.</li>
      * </ul>
      */
     private void validateConferencingForRoundRobinParticipants(
@@ -442,26 +445,45 @@ public class EventTypeParticipantService {
         }
 
         if (conferencing == ConferencingProviderType.GOOGLE_MEET) {
-            boolean anyGoogle = participantIds.stream().anyMatch(uid ->
-                    !calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE).isEmpty());
-            if (!anyGoogle) {
+            List<UUID> incapable = participantIds.stream()
+                    .filter(uid -> calendarConnectionRepository
+                            .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                                    uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
+                            .isEmpty())
+                    .toList();
+            if (!incapable.isEmpty()) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Google Meet requires at least one participant with an active Google Calendar connection.");
+                        "Google Meet requires every team member to have an active Google Calendar connection. "
+                                + describeIncapableParticipants(incapable) + " cannot host a Meet link.");
             }
             return;
         }
 
         if (conferencing == ConferencingProviderType.MICROSOFT_TEAMS) {
-            boolean anyTeamsCapable = participantIds.stream().anyMatch(uid ->
-                    calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
+            List<UUID> incapable = participantIds.stream()
+                    .filter(uid -> calendarConnectionRepository
+                            .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
+                                    uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
                             .stream()
-                            .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn)));
-            if (!anyTeamsCapable) {
+                            .noneMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn)))
+                    .toList();
+            if (!incapable.isEmpty()) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Microsoft Teams requires at least one participant with a Microsoft 365 work or school account.");
+                        "Microsoft Teams requires every team member to have a Microsoft 365 work or school account. "
+                                + describeIncapableParticipants(incapable) + " cannot host a Teams link.");
             }
         }
+    }
+
+    /** Names the members who block the provider, so the caller can act rather than guess. */
+    private String describeIncapableParticipants(List<UUID> userIds) {
+        List<String> names = userRepository.findAllById(userIds).stream()
+                .map(u -> u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail())
+                .filter(n -> n != null && !n.isBlank())
+                .toList();
+        if (names.isEmpty()) {
+            return userIds.size() == 1 ? "One team member" : userIds.size() + " team members";
+        }
+        return String.join(", ", names);
     }
 }
