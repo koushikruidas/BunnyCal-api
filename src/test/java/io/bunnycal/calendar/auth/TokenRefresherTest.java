@@ -240,6 +240,93 @@ class TokenRefresherTest {
         verify(googleTokenClient, never()).refreshAccessToken(any());
     }
 
+    // ── Credential identity drift ────────────────────────────────────────────
+    // A connection whose stored refresh token belongs to a different account than the row claims
+    // keeps working today: it silently reads and writes that other account's calendars. Every
+    // provider call funnels through the refresher, so refusing the token here is what stops a
+    // drifted connection from being used at all.
+
+    @Test
+    void refresh_whenTokenBelongsToAnotherAccount_marksTerminalAndNeverRunsOperation() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        conn.setProviderUserId("111852416355544746941");
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+        // The token answers for a different Google account than the row is keyed on.
+        when(googleTokenClient.fetchProviderUserId("new-token")).thenReturn("999999999999999999999");
+
+        CalendarConnectionStateException ex = assertThrows(CalendarConnectionStateException.class,
+                () -> tokenRefresher.executeWithValidToken(id, token -> "must-not-run"));
+
+        assertEquals("CONNECTION_IDENTITY_DRIFT", ex.getErrorCode());
+        assertEquals(false, ex.isRetryable());
+        verify(connectionWriteService).markFailureWithCategory(
+                eq(id), eq(OAuthErrorCategory.TERMINAL), eq("CONNECTION_IDENTITY_DRIFT"), any(), any());
+        // The drifted token must never be persisted, cached, or handed to the caller.
+        verify(connectionWriteService, never()).markActive(any(), any(), any(), any());
+        verify(accessTokenCache, never()).put(any(), any(), any());
+    }
+
+    @Test
+    void refresh_whenTokenMatchesConnection_proceedsNormally() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        conn.setProviderUserId("111852416355544746941");
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+        when(googleTokenClient.fetchProviderUserId("new-token")).thenReturn("111852416355544746941");
+
+        String result = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
+
+        assertEquals("ok:new-token", result);
+        verify(connectionWriteService).markActive(any(), any(), any(), any());
+        verify(connectionWriteService, never()).markFailureWithCategory(any(), any(), any(), any(), any());
+    }
+
+    // Fail closed only on a CONFIRMED mismatch — a probe that errors or answers blank leaves
+    // identity unverified. Revoking on an unverified answer would let a provider outage take out
+    // every connection at once.
+
+    @Test
+    void refresh_whenIdentityProbeFails_leavesConnectionUsable() {
+        UUID id = UUID.randomUUID();
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        conn.setProviderUserId("111852416355544746941");
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+        when(googleTokenClient.fetchProviderUserId("new-token"))
+                .thenThrow(new RuntimeException("userinfo endpoint 503"));
+
+        String result = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
+
+        assertEquals("ok:new-token", result);
+        verify(connectionWriteService, never()).markFailureWithCategory(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void refresh_whenConnectionHasNoProviderUserId_skipsTheAssertion() {
+        UUID id = UUID.randomUUID();
+        // providerUserId left null — nothing to compare against, so the guard must not fire.
+        CalendarConnection conn = connection(id, Instant.now().plusSeconds(60), CalendarConnectionStatus.ACTIVE);
+        when(repository.findById(id)).thenReturn(Optional.of(conn));
+        when(tokenCipher.decrypt("cipher")).thenReturn("refresh");
+        when(googleTokenClient.refreshAccessToken("refresh"))
+                .thenReturn(new TokenRefreshResult("new-token", Instant.now().plusSeconds(3600)));
+
+        String result = tokenRefresher.executeWithValidToken(id, token -> "ok:" + token);
+
+        assertEquals("ok:new-token", result);
+        verify(googleTokenClient, never()).fetchProviderUserId(any());
+        verify(connectionWriteService, never()).markFailureWithCategory(any(), any(), any(), any(), any());
+    }
+
     private static CalendarConnection connection(UUID id, Instant expiresAt, CalendarConnectionStatus status) {
         CalendarConnection conn = new CalendarConnection();
         conn.setProvider(CalendarProviderType.GOOGLE);

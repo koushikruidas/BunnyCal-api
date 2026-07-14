@@ -30,6 +30,7 @@ public class TokenRefresher {
     private static final Logger log = LoggerFactory.getLogger(TokenRefresher.class);
     private static final Duration REFRESH_SKEW = Duration.ofMinutes(5);
     private static final Duration FAILURE_COOLDOWN = Duration.ofMinutes(2);
+    static final String IDENTITY_DRIFT_CODE = "CONNECTION_IDENTITY_DRIFT";
 
     private final CalendarConnectionRepository connectionRepository;
     private final TokenCipher tokenCipher;
@@ -144,6 +145,8 @@ public class TokenRefresher {
                         tokenFingerprint(currentRefreshToken), tokenFingerprint(rotatedPlain));
             }
 
+            assertCredentialMatchesConnection(connection, tokenClient, refresh.accessToken());
+
             String token = saveRefreshedToken(connection.getId(),
                     refresh.accessToken(),
                     refresh.expiresAt(),
@@ -154,6 +157,10 @@ public class TokenRefresher {
             log.debug("{{\"event\":\"token_refresh_success\",\"connectionId\":\"{}\",\"provider\":\"{}\"}}",
                     connection.getId(), provider);
             return token;
+        } catch (CalendarConnectionStateException ex) {
+            // Identity drift: already marked and logged by the assertion, and it is not a token
+            // refresh failure. Rethrow untouched so it is not re-categorised as an OAuth error.
+            throw ex;
         } catch (RuntimeException ex) {
             tokenRefreshFailureCount.increment();
             OAuthErrorCategory category = categoryOf(ex);
@@ -172,6 +179,54 @@ public class TokenRefresher {
             markFailed(connection, errorCode, category);
             throw ex;
         }
+    }
+
+    /**
+     * Asserts that the freshly-issued access token still speaks for the account its connection row
+     * claims, by comparing the provider's opaque subject id against the stored
+     * {@code provider_user_id}.
+     *
+     * <p>These can drift: before multi-account support the OAuth callback keyed connections on
+     * {@code (user_id, provider)} alone, so connecting a second account of the same provider
+     * overwrote the existing row's credential in place while leaving its id, label and calendar
+     * inventory attached. Such a row keeps working — it just silently reads and writes another
+     * account's calendars. Every provider call funnels through here, so refusing the token is what
+     * stops a drifted connection from being used at all, rather than discovering it afterwards from
+     * an event that landed in a stranger's calendar.
+     *
+     * <p>Fails closed only on a <em>confirmed</em> mismatch. A probe that errors or answers blank
+     * leaves identity unverified and the operation proceeds — otherwise a provider outage would
+     * revoke every connection at once.
+     */
+    private void assertCredentialMatchesConnection(CalendarConnection connection,
+                                                   CalendarTokenClient tokenClient,
+                                                   String accessToken) {
+        String expected = connection.getProviderUserId();
+        if (expected == null || expected.isBlank()) {
+            return;
+        }
+        String actual;
+        try {
+            actual = tokenClient.fetchProviderUserId(accessToken);
+        } catch (RuntimeException ex) {
+            log.warn("calendar_connection_identity_unverified connectionId={} provider={} reason=probe_failed",
+                    connection.getId(), connection.getProvider(), ex);
+            return;
+        }
+        if (actual == null || actual.isBlank() || actual.equals(expected)) {
+            return;
+        }
+        meterRegistry.counter("calendar.connection.identity_drift.total",
+                "provider", connection.getProvider().name().toLowerCase(Locale.ROOT)).increment();
+        log.error("calendar_connection_identity_drift connectionId={} provider={} accountEmail={} "
+                        + "storedProviderUserId={} tokenProviderUserId={} action=marked_terminal",
+                connection.getId(), connection.getProvider(), connection.getAccountEmail(),
+                expected, actual);
+        markFailed(connection, IDENTITY_DRIFT_CODE, OAuthErrorCategory.TERMINAL);
+        throw new CalendarConnectionStateException(
+                IDENTITY_DRIFT_CODE,
+                false,
+                "Calendar connection no longer matches the account it was connected with. Reconnect it.");
     }
 
     private void markFailed(CalendarConnection connection, String errorCode, OAuthErrorCategory category) {
