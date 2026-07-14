@@ -309,6 +309,49 @@ class CalendarBusyTimeServiceTest {
         return c;
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // D. hasBusyConflict — instant-range check, not day-clamped
+    // ────────────────────────────────────────────────────────────────────
+
+    // The old confirm-time check loaded busy intervals for the START date only and let
+    // busyIntervalsForDate clamp them to that day's bounds. A booking running across
+    // local midnight had the portion after midnight silently truncated away, so a busy
+    // event sitting there did not block the confirm. Every date the range touches must
+    // be queried.
+    @Test
+    void hasBusyConflict_detectsBusyEventOnTheFarSideOfLocalMidnight() {
+        when(connectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(stubConnection(connGoogle)));
+
+        Instant start = Instant.parse("2026-05-10T23:30:00Z");
+        Instant end   = Instant.parse("2026-05-11T00:30:00Z");
+
+        // Busy block lives wholly on 05-11, after the slot's start date.
+        CalendarEvent nextDay = event(connGoogle, null, "2026-05-11T00:00:00Z", "2026-05-11T01:00:00Z");
+        when(eventRepository.findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+                eq(userId), any(), any()))
+                .thenReturn(List.of(nextDay));
+
+        assertTrue(service.hasBusyConflict(userId, start, end, utc, List.of()));
+    }
+
+    @Test
+    void hasBusyConflict_ignoresBusyEventThatOnlyTouchesTheBoundary() {
+        when(connectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+                .thenReturn(List.of(stubConnection(connGoogle)));
+
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        Instant end   = Instant.parse("2026-05-10T10:30:00Z");
+
+        // Abuts the slot exactly — [start, end) is half-open, so this must not conflict.
+        CalendarEvent abutting = event(connGoogle, null, "2026-05-10T10:30:00Z", "2026-05-10T11:00:00Z");
+        when(eventRepository.findByUserIdAndBlocksAvailabilityTrueAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+                eq(userId), any(), any()))
+                .thenReturn(List.of(abutting));
+
+        assertThat(service.hasBusyConflict(userId, start, end, utc, List.of())).isFalse();
+    }
+
     private static CalendarEvent event(UUID connectionId, String externalCalendarId, String startsAt, String endsAt) {
         CalendarEvent e = new CalendarEvent();
         e.setConnectionId(connectionId);

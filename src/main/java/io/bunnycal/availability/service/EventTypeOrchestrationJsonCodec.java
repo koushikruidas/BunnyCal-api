@@ -1,5 +1,7 @@
 package io.bunnycal.availability.service;
 
+import io.bunnycal.availability.domain.AvailabilityMode;
+import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -34,6 +36,27 @@ public class EventTypeOrchestrationJsonCodec {
         } catch (Exception ex) {
             return List.of();
         }
+    }
+
+    /**
+     * Resolves the availability bindings that govern which of the OWNER's calendars
+     * block this event type's slots.
+     *
+     * <p>SELECTED: only the explicitly listed connections/calendars block (an empty
+     * list therefore means "nothing blocks"). ALL_CONNECTED / null: an empty list,
+     * which {@link io.bunnycal.calendar.service.CalendarBusyTimeService} interprets
+     * as "every active connection blocks" (legacy behaviour).
+     *
+     * <p>This is the owner's configuration and applies ONLY to the owner's own
+     * calendars. Round-robin and collective PARTICIPANTS are evaluated against all of
+     * their own active connections — never against these bindings, which name
+     * connections the participant does not own.
+     */
+    public List<EventTypeOrchestrationNormalizer.AvailabilityBinding> resolveAvailabilityBindings(EventType eventType) {
+        if (eventType == null || eventType.getAvailabilityMode() != AvailabilityMode.SELECTED) {
+            return List.of();
+        }
+        return deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson());
     }
 
     public List<EventTypeSummaryResponse.AvailabilityCalendarResponse> toAvailabilityResponse(String rawJson) {

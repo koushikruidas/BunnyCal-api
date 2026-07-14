@@ -515,8 +515,7 @@ class SlotServiceTest {
                 .thenReturn(List.of(mondayRule));
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
         when(bookingRepository.findActiveOverlappingBookings(any(), any(), any())).thenReturn(List.of());
-        when(orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()))
-                .thenReturn(bindings);
+        when(orchestrationJsonCodec.resolveAvailabilityBindings(eventType)).thenReturn(bindings);
         when(calendarBusyTimeService.busyIntervalsForDateCanonical(
                 eq(userId), eq(date), any(), eq(bindings)))
                 .thenReturn(List.of());

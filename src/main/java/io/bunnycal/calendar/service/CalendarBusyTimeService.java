@@ -89,6 +89,43 @@ public class CalendarBusyTimeService {
         return IntervalUtils.normalize(intervals);
     }
 
+    /**
+     * True when any busy event overlaps the half-open instant range {@code [start, end)}.
+     *
+     * <p>Unlike {@link #busyIntervalsForDate}, this does not clamp to a single local
+     * day. A booking that crosses local midnight, or a busy event that starts the
+     * evening before and runs into the slot, is caught — day-clamped intervals would
+     * silently truncate both. Every local date the range touches is queried, so this
+     * is also safe when callers in different timezones evaluate the same UTC instants.
+     *
+     * <p>{@code availabilityBindings} carries the same selection semantics as
+     * {@link #busyIntervalsForDate}: empty means "all active connections".
+     */
+    public boolean hasBusyConflict(
+            UUID userId,
+            Instant start,
+            Instant end,
+            ZoneId zoneId,
+            List<AvailabilityBinding> availabilityBindings) {
+
+        if (start == null || end == null || !start.isBefore(end)) {
+            return false;
+        }
+        LocalDate firstDate = start.atZone(zoneId).toLocalDate();
+        // end is exclusive: a slot ending exactly at local midnight belongs to the
+        // day it started in, not the next one.
+        LocalDate lastDate = end.minusNanos(1).atZone(zoneId).toLocalDate();
+
+        for (LocalDate date = firstDate; !date.isAfter(lastDate); date = date.plusDays(1)) {
+            for (BusyInterval interval : busyIntervalsForDateCanonical(userId, date, zoneId, availabilityBindings)) {
+                if (interval.start().isBefore(end) && interval.end().isAfter(start)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     public List<BusyInterval> busyIntervalsForDateCanonical(
             UUID userId,
             LocalDate date,

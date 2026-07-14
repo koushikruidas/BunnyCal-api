@@ -9,6 +9,8 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
+import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
+import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.availability.service.ParticipantEligibilityService;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.dto.PublicConfirmResponse;
@@ -102,6 +104,7 @@ public class PublicBookingService {
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final EventTypeParticipantRepository eventTypeParticipantRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
+    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
@@ -137,6 +140,7 @@ public class PublicBookingService {
                                 BookingSubmissionFormatter bookingSubmissionFormatter,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
+                                EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                                 io.bunnycal.billing.entitlement.EntitlementService entitlementService,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
@@ -175,6 +179,9 @@ public class PublicBookingService {
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.eventTypeParticipantRepository = eventTypeParticipantRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
+        this.orchestrationJsonCodec = orchestrationJsonCodec == null
+                ? new EventTypeOrchestrationJsonCodec(new ObjectMapper())
+                : orchestrationJsonCodec;
         this.entitlementService = entitlementService;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
@@ -218,7 +225,7 @@ public class PublicBookingService {
                 collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
                 participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
-                entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
+                null, entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
     }
 
     @Transactional(readOnly = true)
@@ -677,9 +684,12 @@ public class PublicBookingService {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
-        // Check the assigned participant's calendar busy blocks.
-        String actualTimezone = resolveBookingHostTimezone(booking);
-        boolean hasProjectionBusy = hasProjectionBusyConflict(assignedParticipantId, actualTimezone, start, end);
+        // Check the assigned participant's calendar busy blocks. Resolve the timezone
+        // from the participant themselves, not from the booking's "host" — for RR those
+        // happen to be the same row today, but the busy lookup is the participant's.
+        String participantTimezone = resolveUserTimezone(assignedParticipantId);
+        boolean hasProjectionBusy =
+                hasParticipantProjectionBusyConflict(assignedParticipantId, participantTimezone, start, end);
         if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -710,7 +720,9 @@ public class PublicBookingService {
         }
 
         String actualTimezone = resolveBookingHostTimezone(booking);
-        boolean hasProjectionBusy = hasProjectionBusyConflict(booking.getHostId(), actualTimezone, start, end);
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        boolean hasProjectionBusy =
+                hasOwnerProjectionBusyConflict(booking.getHostId(), eventType, actualTimezone, start, end);
         if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -754,7 +766,7 @@ public class PublicBookingService {
             }
 
             String tz = resolveUserTimezone(participantId);
-            if (hasProjectionBusyConflict(participantId, tz, start, end)) {
+            if (hasParticipantProjectionBusyConflict(participantId, tz, start, end)) {
                 throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available.");
             }
         }
@@ -911,7 +923,6 @@ public class PublicBookingService {
 
             // Verify the requested new slot actually falls within the participant's availability.
             EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
-            LocalDate date = start.atZone(ZoneId.of(resolveBookingHostTimezone(booking))).toLocalDate();
             boolean participantFree = roundRobinAssignmentService
                     .candidateParticipantsForSlot(eventType, start, end, List.of(assignedParticipantId), Instant.now())
                     .contains(assignedParticipantId);
@@ -925,7 +936,19 @@ public class PublicBookingService {
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
-        if (hasProjectionBusyConflict(booking.getHostId(), resolveBookingHostTimezone(booking), start, end)) {
+        // ROUND_ROBIN: booking.hostId is the assigned participant → all their own
+        // connections block. ONE_ON_ONE: booking.hostId is the event type owner → only
+        // the calendars selected for this event type block, same as the slot listing.
+        boolean busy = target.kind() == EventKind.ROUND_ROBIN
+                ? hasParticipantProjectionBusyConflict(
+                        booking.getHostId(), resolveUserTimezone(booking.getHostId()), start, end)
+                : hasOwnerProjectionBusyConflict(
+                        booking.getHostId(),
+                        bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId()),
+                        resolveBookingHostTimezone(booking),
+                        start,
+                        end);
+        if (busy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
 
@@ -939,19 +962,46 @@ public class PublicBookingService {
         );
     }
 
-    private static boolean overlaps(Instant aStart, Instant aEnd, Instant bStart, Instant bEnd) {
-        return aStart.isBefore(bEnd) && aEnd.isAfter(bStart);
+    /**
+     * Confirm-time calendar conflict check for the event type OWNER.
+     *
+     * <p>Resolves the same availability bindings the slot listing used, so a slot that
+     * was offered cannot be rejected here by a calendar the owner deselected for this
+     * event type.
+     */
+    private boolean hasOwnerProjectionBusyConflict(UUID ownerId,
+                                                   EventType eventType,
+                                                   String timezone,
+                                                   Instant start,
+                                                   Instant end) {
+        return hasProjectionBusyConflict(
+                ownerId, timezone, start, end,
+                orchestrationJsonCodec.resolveAvailabilityBindings(eventType));
     }
 
-    private boolean hasProjectionBusyConflict(UUID userId, String timezone, Instant start, Instant end) {
+    /**
+     * Confirm-time calendar conflict check for a round-robin / collective PARTICIPANT.
+     *
+     * <p>Participants are evaluated against ALL of their own active connections (empty
+     * bindings). The event type's availability bindings are the owner's configuration
+     * and name connections the participant does not own, so they must not be applied
+     * here — this matches {@code ParticipantAvailabilityService}, which generated the
+     * slots the participant was offered on.
+     */
+    private boolean hasParticipantProjectionBusyConflict(UUID participantId,
+                                                         String timezone,
+                                                         Instant start,
+                                                         Instant end) {
+        return hasProjectionBusyConflict(participantId, timezone, start, end, List.of());
+    }
+
+    private boolean hasProjectionBusyConflict(UUID userId,
+                                              String timezone,
+                                              Instant start,
+                                              Instant end,
+                                              List<AvailabilityBinding> availabilityBindings) {
         ZoneId zoneId = timeConversionService.resolveZone(timezone);
-        LocalDate date = start.atZone(zoneId).toLocalDate();
-        return calendarBusyTimeService.busyIntervalsForDate(userId, date, zoneId, List.of()).stream()
-                .anyMatch(interval -> overlaps(
-                        start,
-                        end,
-                        interval.start().toInstant(),
-                        interval.end().toInstant()));
+        return calendarBusyTimeService.hasBusyConflict(userId, start, end, zoneId, availabilityBindings);
     }
 
     private static String normalizeGuestEmail(String value) {

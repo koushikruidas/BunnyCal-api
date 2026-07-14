@@ -12,6 +12,7 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotResponse;
+import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.AssignmentReason;
@@ -40,6 +41,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -124,11 +126,12 @@ class PublicBookingServiceTest {
         Mockito.lenient().when(entitlementService.resolve(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(io.bunnycal.billing.entitlement.PlanCatalog.forTier(
                         io.bunnycal.billing.entitlement.PlanTier.PROFESSIONAL));
-        Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
+        Mockito.lenient().when(calendarBusyTimeService.hasBusyConflict(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(false);
         // Default: every event type lookup returns a published event type so the
         // published gate does not interfere with tests that don't test publish state.
         EventType publishedEventType = EventType.builder()
@@ -600,15 +603,13 @@ class PublicBookingServiceTest {
         when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(stateRow(bookingId, userId, 3L)));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
-        when(calendarBusyTimeService.busyIntervalsForDate(
+        when(calendarBusyTimeService.hasBusyConflict(
                 org.mockito.ArgumentMatchers.eq(userId),
-                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(start),
+                org.mockito.ArgumentMatchers.eq(end),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any()))
-                .thenReturn(List.of(new TimeInterval(
-                        Instant.parse("2026-05-10T11:10:00Z").atZone(java.time.ZoneId.of("UTC")),
-                        Instant.parse("2026-05-10T11:40:00Z").atZone(java.time.ZoneId.of("UTC"))
-                )));
+                .thenReturn(true);
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> service.reschedule("koushik", "30min", bookingId, new PublicRescheduleRequest(start), null));
@@ -619,6 +620,111 @@ class PublicBookingServiceTest {
                 org.mockito.ArgumentMatchers.eq(start),
                 org.mockito.ArgumentMatchers.eq(end),
                 org.mockito.ArgumentMatchers.eq(3L));
+    }
+
+    // Regression: the confirm-time busy check used to pass an empty binding list, which
+    // CalendarBusyTimeService reads as "every active connection blocks". The slot listing
+    // passes the event type's SELECTED bindings. With more than one calendar connected the
+    // two disagreed: a slot was offered, then rejected as SLOT_UNAVAILABLE on confirm by a
+    // calendar the owner had deselected for this event type. Confirm must ask the same
+    // question the listing asked.
+    @Test
+    void confirm_oneOnOne_checksBusyAgainstOwnersSelectedCalendarsOnly() {
+        UUID bookingId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        Instant end = Instant.parse("2026-05-10T10:30:00Z");
+        UUID selectedConnectionId = UUID.randomUUID();
+
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(start).endTime(end).guestEmail("guest@example.com")
+                .build();
+        EventType selectedModeEventType = EventType.builder()
+                .id(eventTypeId).userId(userId).name("Test Event").slug("30min")
+                .duration(Duration.ofMinutes(30))
+                .bufferBefore(Duration.ZERO).bufferAfter(Duration.ZERO)
+                .slotInterval(Duration.ofMinutes(30))
+                .minNotice(Duration.ZERO).maxAdvance(Duration.ofDays(30))
+                .holdDuration(Duration.ofMinutes(15))
+                .kind(EventKind.ONE_ON_ONE).capacity(1).published(true)
+                .availabilityMode(io.bunnycal.availability.domain.AvailabilityMode.SELECTED)
+                .availabilityCalendarsJson("[{\"connectionId\":\"" + selectedConnectionId
+                        + "\",\"provider\":\"GOOGLE\",\"externalCalendarId\":\"work@example.com\"}]")
+                .build();
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingEventTypeResolver.requireByEventTypeId(eventTypeId)).thenReturn(selectedModeEventType);
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, userId, 1L)));
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
+
+        service.confirm("koushik", "30min", bookingId);
+
+        ArgumentCaptor<List<EventTypeOrchestrationNormalizer.AvailabilityBinding>> bindings =
+                ArgumentCaptor.forClass(List.class);
+        verify(calendarBusyTimeService).hasBusyConflict(
+                org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.eq(start),
+                org.mockito.ArgumentMatchers.eq(end),
+                org.mockito.ArgumentMatchers.any(),
+                bindings.capture());
+        assertEquals(1, bindings.getValue().size());
+        assertEquals(selectedConnectionId, bindings.getValue().get(0).connectionId());
+        assertEquals("work@example.com", bindings.getValue().get(0).externalCalendarId());
+        verify(bookingService).confirmHeldBooking(bookingId);
+    }
+
+    // The mirror of the above: the owner's bindings name connections a round-robin
+    // PARTICIPANT does not own, so they must NOT be applied to the participant's busy
+    // check. Participants are always evaluated against all of their own connections —
+    // exactly what ParticipantAvailabilityService did when it generated their slots.
+    @Test
+    void confirm_roundRobin_checksParticipantBusyAgainstAllTheirConnections() {
+        UUID bookingId = UUID.randomUUID();
+        UUID participantId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        Instant end = Instant.parse("2026-05-10T10:30:00Z");
+
+        Booking booking = Booking.builder().id(bookingId).hostId(participantId).eventTypeId(eventTypeId)
+                .startTime(start).endTime(end).guestEmail("guest@example.com")
+                .build();
+        EventType rrEventType = EventType.builder()
+                .id(eventTypeId).userId(userId).name("RR Event").slug("30min")
+                .duration(Duration.ofMinutes(30))
+                .bufferBefore(Duration.ZERO).bufferAfter(Duration.ZERO)
+                .slotInterval(Duration.ofMinutes(30))
+                .minNotice(Duration.ZERO).maxAdvance(Duration.ofDays(30))
+                .holdDuration(Duration.ofMinutes(15))
+                .kind(EventKind.ROUND_ROBIN).capacity(1).published(true)
+                .availabilityMode(io.bunnycal.availability.domain.AvailabilityMode.SELECTED)
+                .availabilityCalendarsJson("[{\"connectionId\":\"" + UUID.randomUUID()
+                        + "\",\"provider\":\"GOOGLE\",\"externalCalendarId\":\"owner@example.com\"}]")
+                .build();
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(roundRobinTarget());
+        when(bookingEventTypeResolver.requireByEventTypeId(eventTypeId)).thenReturn(rrEventType);
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, participantId, 1L)));
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        when(participantEligibilityService.checkForRoundRobin(participantId))
+                .thenReturn(new io.bunnycal.availability.service.ParticipantEligibilityResult(
+                        participantId, true, null));
+        when(bookingRepository.countConflictsExcludingBooking(participantId, bookingId, start, end)).thenReturn(0L);
+        when(userRepository.findById(participantId)).thenReturn(Optional.of(
+                io.bunnycal.auth.domain.user.User.builder().id(participantId).timezone("UTC").build()));
+
+        service.confirm("koushik", "30min", bookingId);
+
+        ArgumentCaptor<List<EventTypeOrchestrationNormalizer.AvailabilityBinding>> bindings =
+                ArgumentCaptor.forClass(List.class);
+        verify(calendarBusyTimeService).hasBusyConflict(
+                org.mockito.ArgumentMatchers.eq(participantId),
+                org.mockito.ArgumentMatchers.eq(start),
+                org.mockito.ArgumentMatchers.eq(end),
+                org.mockito.ArgumentMatchers.any(),
+                bindings.capture());
+        assertEquals(List.of(), bindings.getValue(),
+                "the owner's calendar selection must not be applied to a participant's calendars");
     }
 
     @Test

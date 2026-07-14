@@ -18,7 +18,6 @@ import io.bunnycal.availability.engine.SlotGenerationEngine.BookingWindow;
 import io.bunnycal.availability.engine.SlotGenerationEngine.SlotInput;
 import io.bunnycal.availability.engine.SlotGenerationEngine.SlotUtc;
 import io.bunnycal.availability.engine.TimeInterval;
-import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.identity.SlotIdGenerator;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
@@ -289,13 +288,11 @@ public class SlotService {
                 ? buildGroupReservationCandidateWindows(host, eventType, date)
                 : buildEventAvailabilityFilter(host, eventType, date);
 
-        // 6.6 Calendar busy — resolve bindings according to availabilityMode.
-        // SELECTED: use only the explicitly listed connections (empty list = no blocking).
-        // ALL_CONNECTED / null: fall back to all active connections (legacy behavior).
-        AvailabilityMode availabilityMode = eventType.getAvailabilityMode();
-        List<AvailabilityBinding> availabilityBindings = (availabilityMode == AvailabilityMode.SELECTED)
-                ? orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson())
-                : List.of();
+        // 6.6 Calendar busy — the owner's per-event calendar selection. Confirm-time
+        // conflict checks resolve the same bindings the same way, so what a guest is
+        // offered and what they can commit agree by construction.
+        List<AvailabilityBinding> availabilityBindings =
+                orchestrationJsonCodec.resolveAvailabilityBindings(eventType);
         List<BusyInterval> canonicalBusy =
                 calendarBusyTimeService.busyIntervalsForDateCanonical(host.getId(), date, zoneId, availabilityBindings);
         List<TimeInterval> calendarBusy = new ArrayList<>(canonicalBusy.size());
