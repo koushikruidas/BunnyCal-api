@@ -74,10 +74,10 @@ public class EventConferencingResolver {
      * calendar rather than trusted blindly.
      *
      * <p>The settings page refuses to leave these two inconsistent, so the guard below should never
-     * fire. It exists because the alternative failure is invisible and lands on a guest: a stale
-     * {@code GOOGLE_MEET} default paired with a Microsoft write-back would ask Graph for a Meet link,
-     * get nothing back, and confirm a booking with no way to join it. Degrading to {@code NONE} at
-     * least fails honestly — and the log line says which user to look at.
+     * fire. If it does, preserve the configured provider: the booking capability guard can then
+     * reject confirmation explicitly, and the outbox can defer any notification that depends on a
+     * provider-created link. Silently degrading to {@code NONE} would confirm and email a meeting
+     * with no way to join it.
      */
     public ConferencingProviderType defaultFor(UUID userId) {
         ConferencingProviderType preference = userRepository.findById(userId)
@@ -95,10 +95,9 @@ public class EventConferencingResolver {
                 .orElse(null);
         if (writeback == null || !capabilityService.canServe(writeback, preference)) {
             log.warn("conferencing_default_unserviceable userId={} default={} writebackProvider={} "
-                            + "-- falling back to NONE; settings should have prevented this",
+                            + "-- preserving configured provider for explicit capability rejection",
                     userId, preference,
                     writeback == null ? "none" : writeback.getProvider());
-            return ConferencingProviderType.NONE;
         }
         return preference;
     }

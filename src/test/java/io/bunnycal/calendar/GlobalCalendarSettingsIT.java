@@ -203,6 +203,21 @@ class GlobalCalendarSettingsIT {
     }
 
     /**
+     * A stale or externally-invalid native default must remain visible to the booking guard. If the
+     * resolver silently turns it into NONE, the booking is confirmed and emailed without a link.
+     */
+    @Test
+    void unserviceableNativeDefault_isPreservedForExplicitBookingRejection() {
+        User owner = createUser("owner@test.com");
+        connection(owner, CalendarProviderType.MICROSOFT, CONSUMER_PUID, true);
+        owner.setDefaultConferencingProvider(ConferencingProviderType.MICROSOFT_TEAMS);
+        userRepository.saveAndFlush(owner);
+
+        assertThat(conferencingResolver.resolve(owner.getId(), eventBoundToDefault(owner)))
+                .isEqualTo(ConferencingProviderType.MICROSOFT_TEAMS);
+    }
+
+    /**
      * Disconnecting the calendar that served the default link leaves nothing that can mint it. The
      * default stands down to NONE rather than staying pointed at something unbuildable — bookings
      * then carry no link, which is visible, instead of failing at confirmation for a guest.
