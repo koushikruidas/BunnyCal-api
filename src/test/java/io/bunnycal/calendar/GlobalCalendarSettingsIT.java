@@ -150,26 +150,25 @@ class GlobalCalendarSettingsIT {
 
     // ── The settings page refuses to create the trap ────────────────────────────────────────────
 
-    /**
-     * Moving your bookings to a calendar that cannot serve your default link is refused. This is the
-     * moment the old model silently broke every Meet event; now it fails in front of the person who
-     * can fix it, instead of in front of a guest weeks later.
-     */
+    /** Moving write-back across providers must not deadlock with the native conferencing selector. */
     @Test
-    void movingBookingsToACalendarThatCannotServeTheDefaultLink_isRefused() {
+    void movingBookingsAcrossProviders_standsDownIncompatibleLinkAndAllowsNewNativeDefault() {
         User owner = createUser("owner@test.com");
         connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
         CalendarConnection microsoft = connection(owner, CalendarProviderType.MICROSOFT, ENTRA_OID, false);
         managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.GOOGLE_MEET);
 
-        assertThatThrownBy(() -> managementService.setDefaultWriteback(owner.getId(), microsoft.getId()))
-                .isInstanceOf(CustomException.class)
-                .hasMessageContaining("Google Meet")
-                .hasMessageContaining("Change your default meeting link first");
+        managementService.setDefaultWriteback(owner.getId(), microsoft.getId());
 
         assertThat(connectionRepository.findByUserIdAndDefaultWritebackTrue(owner.getId()).orElseThrow().getProvider())
-                .as("the write-back calendar must not have moved")
-                .isEqualTo(CalendarProviderType.GOOGLE);
+                .isEqualTo(CalendarProviderType.MICROSOFT);
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .as("Meet is cleared instead of blocking the write-back move")
+                .isEqualTo(ConferencingProviderType.NONE);
+
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.MICROSOFT_TEAMS);
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.MICROSOFT_TEAMS);
     }
 
     /** And the mirror image: choosing a link your calendar cannot mint is refused too. */

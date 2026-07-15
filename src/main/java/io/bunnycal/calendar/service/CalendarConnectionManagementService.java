@@ -60,12 +60,12 @@ public class CalendarConnectionManagementService {
     /**
      * Points the user's bookings at a different connected account.
      *
-     * <p>Refuses the change when the target provider cannot mint the user's current default meeting
-     * link — moving to Outlook while your default is Google Meet, say. Meet only exists on a Google
-     * calendar and Teams only on a Microsoft work/school one, so allowing this would leave every
-     * event type that follows the default resolving to a link nobody can create. That failure is
-     * invisible: it surfaces weeks later, as a guest receiving a booking with no way to join.
-     * Failing here, where the user is looking and can act, is the whole point of the global model.
+     * <p>If the target cannot mint the current native meeting link — moving to Outlook while the
+     * default is Google Meet, for example — the write-back move still succeeds and the incompatible
+     * link stands down to {@code NONE}. Refusing both changes creates a settings deadlock: Teams
+     * cannot be selected until Microsoft is write-back, while Microsoft cannot become write-back
+     * until Meet is changed. Standing down is safe, visible, and lets the user choose the new native
+     * provider immediately afterward.
      *
      * <p>Clearing the old flag before setting the new one keeps the partial unique index satisfied
      * throughout — it forbids two TRUE rows for a user, not zero.
@@ -82,18 +82,10 @@ public class CalendarConnectionManagementService {
             return;
         }
 
-        User user = requireUser(userId);
-        ConferencingProviderType defaultLink = user.getDefaultConferencingProvider();
-        if (!EventConferencingResolver.canServe(connection, defaultLink)) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Your default meeting link is " + describe(defaultLink) + ", which can only be created on "
-                            + requiredCalendarFor(defaultLink) + ". Change your default meeting link first, "
-                            + "then move your bookings to this calendar.");
-        }
-
         connectionRepository.clearDefaultWritebackForUser(userId);
         connection.setDefaultWriteback(true);
         connectionRepository.save(connection);
+        standDownDefaultLinkIfUnservable(userId, connection);
         slotCacheVersionService.bumpVersionAfterCommit(userId);
         OpsLoggers.HOST.info("calendar_default_writeback_changed hostId={} connectionId={} provider={}",
                 userId, connectionId, connection.getProvider());
