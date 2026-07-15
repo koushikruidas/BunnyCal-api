@@ -17,7 +17,7 @@ import io.bunnycal.integration.ProviderCapabilities;
 import io.bunnycal.integration.ProviderCapabilityRegistry;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.enums.ConferencingProviderType;
-import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import io.bunnycal.conferencing.service.ZoomConferencingOAuthService;
 import java.time.Duration;
 import java.time.Instant;
@@ -34,6 +34,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -50,14 +51,17 @@ public class CalendarRuntimeStatusService {
     private final AuthIdentityRepository authIdentityRepository;
     private final UserRepository userRepository;
     private final CalendarInventoryHydrator inventoryHydrator;
+    private final NativeConferencingCapabilityService conferencingCapabilityService;
 
+    @Autowired
     public CalendarRuntimeStatusService(CalendarConnectionRepository calendarConnectionRepository,
                                         CalendarConnectionCalendarRepository inventoryRepository,
                                         ProviderCapabilityRegistry providerCapabilityRegistry,
                                         ZoomConferencingOAuthService zoomConferencingOAuthService,
                                         AuthIdentityRepository authIdentityRepository,
                                         UserRepository userRepository,
-                                        CalendarInventoryHydrator inventoryHydrator) {
+                                        CalendarInventoryHydrator inventoryHydrator,
+                                        NativeConferencingCapabilityService conferencingCapabilityService) {
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.inventoryRepository = inventoryRepository;
         this.providerCapabilityRegistry = providerCapabilityRegistry;
@@ -65,6 +69,19 @@ public class CalendarRuntimeStatusService {
         this.authIdentityRepository = authIdentityRepository;
         this.userRepository = userRepository;
         this.inventoryHydrator = inventoryHydrator;
+        this.conferencingCapabilityService = conferencingCapabilityService;
+    }
+
+    CalendarRuntimeStatusService(CalendarConnectionRepository calendarConnectionRepository,
+                                 CalendarConnectionCalendarRepository inventoryRepository,
+                                 ProviderCapabilityRegistry providerCapabilityRegistry,
+                                 ZoomConferencingOAuthService zoomConferencingOAuthService,
+                                 AuthIdentityRepository authIdentityRepository,
+                                 UserRepository userRepository,
+                                 CalendarInventoryHydrator inventoryHydrator) {
+        this(calendarConnectionRepository, inventoryRepository, providerCapabilityRegistry,
+                zoomConferencingOAuthService, authIdentityRepository, userRepository, inventoryHydrator,
+                new NativeConferencingCapabilityService(inventoryRepository));
     }
 
     public CalendarRuntimeStatusResponse runtimeStatus(UUID userId) {
@@ -89,8 +106,8 @@ public class CalendarRuntimeStatusService {
                 .findFirst()
                 .orElseGet(() -> connections.size() == 1 ? connections.get(0) : null);
 
-        boolean meetAvailable = EventConferencingResolver.canServe(writeback, ConferencingProviderType.GOOGLE_MEET);
-        boolean teamsAvailable = EventConferencingResolver.canServe(writeback, ConferencingProviderType.MICROSOFT_TEAMS);
+        boolean meetAvailable = conferencingCapabilityService.canServe(writeback, ConferencingProviderType.GOOGLE_MEET);
+        boolean teamsAvailable = conferencingCapabilityService.canServe(writeback, ConferencingProviderType.MICROSOFT_TEAMS);
         boolean zoomConnected = "CONNECTED".equalsIgnoreCase(zoomConferencingOAuthService.status(userId));
 
         ConferencingProviderType defaultProvider = userRepository.findById(userId)
@@ -117,11 +134,22 @@ public class CalendarRuntimeStatusService {
             List<CalendarConnectionCalendar> rows = inventoryRepository
                     .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId());
             boolean stale = rows.isEmpty()
-                    || rows.stream().anyMatch(r -> r.getLastSyncedAt() == null || r.getLastSyncedAt().isBefore(cutoff));
+                    || rows.stream().anyMatch(r -> r.getLastSyncedAt() == null || r.getLastSyncedAt().isBefore(cutoff))
+                    || (connection.getProvider() == CalendarProviderType.MICROSOFT
+                        && projectionCalendarTeamsCapabilityUnknown(rows));
             if (stale) {
                 inventoryHydrator.hydrateBestEffort(connection);
             }
         }
+    }
+
+    private static boolean projectionCalendarTeamsCapabilityUnknown(List<CalendarConnectionCalendar> rows) {
+        Optional<CalendarConnectionCalendar> selected = rows.stream()
+                .filter(CalendarConnectionCalendar::isSelected)
+                .findFirst();
+        return selected.or(() -> rows.stream().filter(CalendarConnectionCalendar::isPrimary).findFirst())
+                .map(row -> !row.isTeamsCapabilityKnown())
+                .orElse(true);
     }
 
     private Map<UUID, List<CalendarConnectionCalendar>> loadInventory(List<CalendarConnection> connections) {
@@ -202,14 +230,8 @@ public class CalendarRuntimeStatusService {
         boolean personal = MicrosoftAccountClassifier.isConsumerMsa(connection);
         return new CalendarRuntimeStatusResponse.Account(
                 personal ? "PERSONAL_MSA" : "MICROSOFT_365",
-                !personal
+                conferencingCapabilityService.canServe(connection, ConferencingProviderType.MICROSOFT_TEAMS)
         );
-    }
-
-    private boolean supportsNativeTeamsForConnection(CalendarConnection connection) {
-        return connection != null
-                && connection.getProvider() == CalendarProviderType.MICROSOFT
-                && !MicrosoftAccountClassifier.isConsumerMsa(connection);
     }
 
     private CalendarRuntimeStatusResponse.Identity resolveIdentity(UUID userId) {

@@ -2,7 +2,6 @@ package io.bunnycal.conferencing.service;
 
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
@@ -24,9 +23,12 @@ public class ConferencingExecutionPolicy {
     private static final Logger log = LoggerFactory.getLogger(ConferencingExecutionPolicy.class);
 
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final NativeConferencingCapabilityService capabilityService;
 
-    public ConferencingExecutionPolicy(CalendarConnectionRepository calendarConnectionRepository) {
+    public ConferencingExecutionPolicy(CalendarConnectionRepository calendarConnectionRepository,
+                                       NativeConferencingCapabilityService capabilityService) {
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.capabilityService = capabilityService;
     }
 
     public ConferencingExecutionResult adaptForMirrorProvider(ConferencingInstruction instruction,
@@ -55,19 +57,17 @@ public class ConferencingExecutionPolicy {
                 && mirrorProviderType == CalendarProviderType.MICROSOFT);
 
         if (nativeMatch) {
-            // Consumer-MSA Teams guard: a personal Outlook.com / hotmail.com / live.com
-            // account doesn't have Teams-for-Business; Graph silently lands the event
-            // without an onlineMeeting.joinUrl. Fail explicitly at booking time rather
-            // than producing an event with no join link.
+            // Teams is advertised by the target calendar itself. Account shape alone is not enough:
+            // an Entra user can still lack the Teams licence/provider on its Outlook calendar.
             if (conferencingProvider == ConferencingProviderType.MICROSOFT_TEAMS
                     && schedulingConnectionId != null) {
                 CalendarConnection connection = calendarConnectionRepository.findById(schedulingConnectionId).orElse(null);
-                if (connection != null && MicrosoftAccountClassifier.isConsumerMsa(connection)) {
-                    log.warn("conferencing_ms_teams_consumer_msa_rejected bookingId={} action={} connectionId={} providerUserId={}",
-                            bookingId, action, connection.getId(), connection.getProviderUserId());
+                if (!capabilityService.canServe(connection, ConferencingProviderType.MICROSOFT_TEAMS)) {
+                    log.warn("conferencing_ms_teams_calendar_capability_rejected bookingId={} action={} connectionId={}",
+                            bookingId, action, schedulingConnectionId);
                     throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                            "Microsoft Teams conferencing requires a work or school Microsoft account; "
-                                    + "the chosen projection calendar belongs to a personal Outlook.com account.");
+                            "Microsoft Teams conferencing is not enabled for the chosen Microsoft calendar. "
+                                    + "Choose a work or school calendar with Teams enabled, or use Zoom.");
                 }
             }
             log.info("conferencing_native_match bookingId={} action={} mirrorProvider={} conferencingProvider={}",

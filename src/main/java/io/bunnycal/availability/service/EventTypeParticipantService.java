@@ -14,13 +14,11 @@ import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
-import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
@@ -114,6 +112,7 @@ public class EventTypeParticipantService {
     private final ProfileAvatarService profileAvatarService;
     private final BookingSchedulingProjectionResolver projectionResolver;
     private final EventConferencingResolver conferencingResolver;
+    private final NativeConferencingCapabilityService conferencingCapabilityService;
     // Injected lazily to break the circular dependency:
     // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
     @Lazy
@@ -131,7 +130,8 @@ public class EventTypeParticipantService {
                                        TimeSource timeSource,
                                        ProfileAvatarService profileAvatarService,
                                        BookingSchedulingProjectionResolver projectionResolver,
-                                       EventConferencingResolver conferencingResolver) {
+                                       EventConferencingResolver conferencingResolver,
+                                       NativeConferencingCapabilityService conferencingCapabilityService) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
@@ -144,6 +144,7 @@ public class EventTypeParticipantService {
         this.profileAvatarService = profileAvatarService;
         this.projectionResolver = projectionResolver;
         this.conferencingResolver = conferencingResolver;
+        this.conferencingCapabilityService = conferencingCapabilityService;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -365,14 +366,10 @@ public class EventTypeParticipantService {
             boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
 
-            // Teams capability: requires an active Microsoft work/school (Entra) account.
-            // Consumer MSA accounts (Outlook.com) cannot host native Teams meetings. A user may
-            // hold several Microsoft accounts, so any one work/school account is enough.
-            boolean supportsNativeTeams = calendarConnectionRepository
-                    .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                    .stream()
-                    .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn));
+            boolean supportsNativeTeams = projectionResolver.writebackConnection(uid)
+                    .map(conn -> conferencingCapabilityService.canServe(
+                            conn, ConferencingProviderType.MICROSOFT_TEAMS))
+                    .orElse(false);
 
             String displayName = u != null ? u.getName() : null;
             out.add(new EventTypeParticipantResponse(
@@ -457,7 +454,7 @@ public class EventTypeParticipantService {
                         return false;   // Zoom, custom, none: no calendar needed.
                     }
                     CalendarConnection writeback = projectionResolver.writebackConnection(uid).orElse(null);
-                    return !EventConferencingResolver.canServe(writeback, resolved);
+                    return !conferencingCapabilityService.canServe(writeback, resolved);
                 })
                 .toList();
 

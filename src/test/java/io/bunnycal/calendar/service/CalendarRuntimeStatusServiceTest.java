@@ -60,6 +60,7 @@ class CalendarRuntimeStatusServiceTest {
         // availability, and it is the write-back destination within this connection.
         primary.setChecksAvailability(true);
         primary.setSelected(true);
+        primary.setSupportsNativeTeams(true);
         primary.setLastSyncedAt(Instant.now());
 
         CalendarConnectionCalendar secondary = new CalendarConnectionCalendar();
@@ -288,11 +289,18 @@ class CalendarRuntimeStatusServiceTest {
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
+        CalendarConnectionCalendar teamsCalendar = new CalendarConnectionCalendar();
+        teamsCalendar.setConnectionId(connectionId);
+        teamsCalendar.setExternalCalendarId("primary");
+        teamsCalendar.setPrimary(true);
+        teamsCalendar.setSupportsNativeTeams(true);
+        teamsCalendar.setLastSyncedAt(Instant.now());
+
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
         when(inventoryRepo.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
-                .thenReturn(List.of());
+                .thenReturn(List.of(teamsCalendar));
         when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
-                .thenReturn(List.of());
+                .thenReturn(List.of(teamsCalendar));
 
         ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
         when(capabilityRegistry.forCalendar(CalendarProviderType.MICROSOFT))

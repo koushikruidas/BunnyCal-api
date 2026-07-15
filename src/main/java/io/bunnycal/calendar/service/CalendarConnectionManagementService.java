@@ -13,7 +13,7 @@ import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.logging.OpsLoggers;
-import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +35,7 @@ public class CalendarConnectionManagementService {
     private final CalendarOAuthService googleOAuthService;
     private final MicrosoftCalendarOAuthService microsoftOAuthService;
     private final SlotCacheVersionService slotCacheVersionService;
+    private final NativeConferencingCapabilityService conferencingCapabilityService;
 
     /**
      * Disconnects one account. Revoking upstream, marking the row REVOKED and clearing its token
@@ -114,6 +115,10 @@ public class CalendarConnectionManagementService {
         });
         calendar.setSelected(true);
         inventoryRepository.save(calendar);
+        CalendarConnection connection = requireOwnedConnection(userId, connectionId);
+        if (connection.isDefaultWriteback()) {
+            standDownDefaultLinkIfUnservable(userId, connection);
+        }
         OpsLoggers.HOST.info("calendar_writeback_calendar_changed hostId={} connectionId={} calendarId={}",
                 userId, connectionId, externalCalendarId);
     }
@@ -175,7 +180,7 @@ public class CalendarConnectionManagementService {
                         describe(provider) + " needs " + requiredCalendarFor(provider)
                                 + " to create the meeting on. Connect one first.");
             }
-            if (!EventConferencingResolver.canServe(writeback, provider)) {
+            if (!conferencingCapabilityService.canServe(writeback, provider)) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         describe(provider) + " can only be created on " + requiredCalendarFor(provider)
                                 + ", but your bookings go to your " + writeback.getProvider()
@@ -244,7 +249,7 @@ public class CalendarConnectionManagementService {
         if (current == null || !current.requiresCalendarProvider()) {
             return;
         }
-        if (EventConferencingResolver.canServe(writeback, current)) {
+        if (conferencingCapabilityService.canServe(writeback, current)) {
             return;
         }
         user.setDefaultConferencingProvider(ConferencingProviderType.NONE);

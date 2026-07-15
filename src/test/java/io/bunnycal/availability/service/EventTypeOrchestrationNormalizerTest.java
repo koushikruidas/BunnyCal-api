@@ -92,7 +92,9 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsGoogleMeetWithMicrosoftMirrorProvider() {
-        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(Mockito.mock(CalendarConnectionRepository.class));
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(
+                Mockito.mock(CalendarConnectionRepository.class),
+                Mockito.mock(io.bunnycal.conferencing.service.NativeConferencingCapabilityService.class));
         ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.GOOGLE_MEET);
 
         assertThrows(CustomException.class,
@@ -101,7 +103,9 @@ class EventTypeOrchestrationNormalizerTest {
 
     @Test
     void conferencingExecutionPolicy_rejectsMicrosoftTeamsWithGoogleMirrorProvider() {
-        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(Mockito.mock(CalendarConnectionRepository.class));
+        ConferencingExecutionPolicy policy = new ConferencingExecutionPolicy(
+                Mockito.mock(CalendarConnectionRepository.class),
+                Mockito.mock(io.bunnycal.conferencing.service.NativeConferencingCapabilityService.class));
         ConferencingInstruction instruction = ConferencingInstruction.requestNativeMeet(ConferencingProviderType.MICROSOFT_TEAMS);
 
         assertThrows(CustomException.class,

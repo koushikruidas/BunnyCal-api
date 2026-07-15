@@ -150,6 +150,8 @@ public class CalendarInventoryHydrator {
             row.setCanRead(entry.canRead());
             row.setCanWrite(entry.canWrite());
             row.setHidden(entry.hidden());
+            row.setSupportsNativeTeams(provider == CalendarProviderType.MICROSOFT
+                    && entry.supportsNativeTeams());
             row.setLastSyncedAt(now);
             inventoryRepository.save(row);
             log.info("provider_calendar_inventory_entry connectionId={} calendarId={} name={} writable={} primary={}",

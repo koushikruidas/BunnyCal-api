@@ -274,8 +274,9 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (eventType == null || booking == null) {
             return false;
         }
-        return conferencingResolver.resolve(booking.getHostId(), eventType)
-                == ConferencingProviderType.GOOGLE_MEET;
+        ConferencingProviderType resolved = conferencingResolver.resolve(booking.getHostId(), eventType);
+        return resolved == ConferencingProviderType.GOOGLE_MEET
+                || resolved == ConferencingProviderType.MICROSOFT_TEAMS;
     }
 
     private record SchedulingResolution(UUID connectionId, String provider) {}

@@ -4,8 +4,6 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import java.util.UUID;
@@ -42,11 +40,14 @@ public class EventConferencingResolver {
 
     private final UserRepository userRepository;
     private final CalendarConnectionRepository connectionRepository;
+    private final NativeConferencingCapabilityService capabilityService;
 
     public EventConferencingResolver(UserRepository userRepository,
-                                     CalendarConnectionRepository connectionRepository) {
+                                     CalendarConnectionRepository connectionRepository,
+                                     NativeConferencingCapabilityService capabilityService) {
         this.userRepository = userRepository;
         this.connectionRepository = connectionRepository;
+        this.capabilityService = capabilityService;
     }
 
     /**
@@ -92,7 +93,7 @@ public class EventConferencingResolver {
 
         CalendarConnection writeback = connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)
                 .orElse(null);
-        if (writeback == null || !canServe(writeback, preference)) {
+        if (writeback == null || !capabilityService.canServe(writeback, preference)) {
             log.warn("conferencing_default_unserviceable userId={} default={} writebackProvider={} "
                             + "-- falling back to NONE; settings should have prevented this",
                     userId, preference,
@@ -102,21 +103,4 @@ public class EventConferencingResolver {
         return preference;
     }
 
-    /** Whether this connection's provider can actually mint that kind of link. */
-    public static boolean canServe(CalendarConnection connection, ConferencingProviderType provider) {
-        if (connection == null || provider == null) {
-            return false;
-        }
-        if (!provider.requiresCalendarProvider()) {
-            return true;
-        }
-        return switch (provider) {
-            case GOOGLE_MEET -> connection.getProvider() == CalendarProviderType.GOOGLE;
-            // A personal Outlook.com account has no Teams-for-Business licence: Graph accepts
-            // isOnlineMeeting=true and silently returns an event with no joinUrl.
-            case MICROSOFT_TEAMS -> connection.getProvider() == CalendarProviderType.MICROSOFT
-                    && !MicrosoftAccountClassifier.isConsumerMsa(connection);
-            default -> true;
-        };
-    }
 }

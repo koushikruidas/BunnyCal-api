@@ -68,6 +68,10 @@ public class CalendarConnectionCalendar extends BaseEntity {
     @Column(name = "hidden", nullable = false)
     private boolean hidden = false;
 
+    /** True only when Microsoft Graph advertises teamsForBusiness for this exact calendar. */
+    @Column(name = "supports_native_teams")
+    private Boolean supportsNativeTeams;
+
     @Column(name = "last_synced_at")
     private Instant lastSyncedAt;
 
@@ -93,6 +97,9 @@ public class CalendarConnectionCalendar extends BaseEntity {
     public void setCanWrite(boolean canWrite) { this.canWrite = canWrite; }
     public boolean isHidden() { return hidden; }
     public void setHidden(boolean hidden) { this.hidden = hidden; }
+    public boolean isSupportsNativeTeams() { return Boolean.TRUE.equals(supportsNativeTeams); }
+    public boolean isTeamsCapabilityKnown() { return supportsNativeTeams != null; }
+    public void setSupportsNativeTeams(boolean supportsNativeTeams) { this.supportsNativeTeams = supportsNativeTeams; }
     public Instant getLastSyncedAt() { return lastSyncedAt; }
     public void setLastSyncedAt(Instant lastSyncedAt) { this.lastSyncedAt = lastSyncedAt; }
 }

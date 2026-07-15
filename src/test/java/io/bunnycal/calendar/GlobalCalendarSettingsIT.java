@@ -265,6 +265,9 @@ class GlobalCalendarSettingsIT {
         calendar.setCanRead(true);
         calendar.setCanWrite(true);
         calendar.setChecksAvailability(true);
+        if (provider == CalendarProviderType.MICROSOFT) {
+            calendar.setSupportsNativeTeams(ENTRA_OID.equals(providerUserId));
+        }
         inventoryRepository.save(calendar);
 
         return saved;

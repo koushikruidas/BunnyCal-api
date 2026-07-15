@@ -7,6 +7,7 @@ import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
@@ -30,13 +31,16 @@ public class BookingConferencingCapabilityGuard {
     private final EventTypeRepository eventTypeRepository;
     private final BookingSchedulingProjectionResolver projectionResolver;
     private final EventConferencingResolver conferencingResolver;
+    private final NativeConferencingCapabilityService capabilityService;
 
     public BookingConferencingCapabilityGuard(EventTypeRepository eventTypeRepository,
                                               BookingSchedulingProjectionResolver projectionResolver,
-                                              EventConferencingResolver conferencingResolver) {
+                                              EventConferencingResolver conferencingResolver,
+                                              NativeConferencingCapabilityService capabilityService) {
         this.eventTypeRepository = eventTypeRepository;
         this.projectionResolver = projectionResolver;
         this.conferencingResolver = conferencingResolver;
+        this.capabilityService = capabilityService;
     }
 
     /**
@@ -62,7 +66,7 @@ public class BookingConferencingCapabilityGuard {
                     describe(conferencing) + " needs a connected calendar to create the meeting link, "
                             + "and this host has none.");
         }
-        if (!EventConferencingResolver.canServe(writeback, conferencing)) {
+        if (!capabilityService.canServe(writeback, conferencing)) {
             throw new CustomException(
                     ErrorCode.VALIDATION_ERROR,
                     describe(conferencing) + " cannot be created on this host's "

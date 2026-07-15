@@ -85,4 +85,21 @@ class CalendarInventoryHydratorTest {
                 .extracting(CalendarConnectionCalendar::isChecksAvailability)
                 .containsExactly(true, false, false);
     }
+
+    @Test
+    void persist_microsoftInventory_keepsTeamsCapabilityOnExactCalendar() {
+        UUID connectionId = UUID.randomUUID();
+        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepository.save(any(CalendarConnectionCalendar.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        hydrator.persist(connectionId, CalendarProviderType.MICROSOFT, List.of(
+                new ProviderCalendarInventoryEntry(
+                        "calendar-id", "Calendar", true, true, true, false, true)));
+
+        ArgumentCaptor<CalendarConnectionCalendar> captor = ArgumentCaptor.forClass(CalendarConnectionCalendar.class);
+        verify(inventoryRepository).save(captor.capture());
+        assertThat(captor.getValue().isSupportsNativeTeams()).isTrue();
+    }
 }

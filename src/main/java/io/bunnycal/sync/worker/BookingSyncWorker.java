@@ -237,6 +237,22 @@ public class BookingSyncWorker {
                 ));
         providerLatency(job.getProvider()).record(java.time.Duration.between(startedAt, Instant.now()));
         if (result.status() == CalendarService.CreateEventStatus.SUCCESS) {
+            if (instruction.requestsNativeMeet()
+                    && instruction.providerType() == io.bunnycal.common.enums.ConferencingProviderType.MICROSOFT_TEAMS
+                    && (result.conferenceUrl() == null || result.conferenceUrl().isBlank())) {
+                log.error("microsoft_teams_join_url_missing bookingId={} syncJobId={} externalEventId={} action=delete_empty_projection",
+                        job.getInternalRefId(), job.getId(), result.externalEventId());
+                try {
+                    calendarService.deleteEvent(new CalendarService.DeleteCalendarEventCommand(
+                            job.getInternalRefId(), job.getProvider(), result.externalEventId(),
+                            job.getSchedulingConnectionId()));
+                } catch (RuntimeException cleanupFailure) {
+                    log.error("microsoft_teams_empty_projection_cleanup_failed bookingId={} syncJobId={} externalEventId={}",
+                            job.getInternalRefId(), job.getId(), result.externalEventId(), cleanupFailure);
+                }
+                handleFailure(job, "UNSUPPORTED_ACCOUNT_CAPABILITY");
+                return;
+            }
             conferenceDetails = conferenceDetails.withJoinUrlIfMissing(result.conferenceUrl(), "provider_create_result");
             syncJobRepository.markSyncedWithMetadata(
                     job.getId(),
@@ -522,7 +538,8 @@ public class BookingSyncWorker {
             if (message.contains("microsoft teams conferencing requires a microsoft 365 work/school account")
                     || message.contains("personal outlook.com accounts are not supported")
                     || message.contains("work or school microsoft account")
-                    || message.contains("personal outlook.com account")) {
+                    || message.contains("personal outlook.com account")
+                    || message.contains("microsoft teams conferencing is not enabled")) {
                 return "UNSUPPORTED_ACCOUNT_CAPABILITY";
             }
             if (message.contains("requires a google projection calendar")
@@ -548,9 +565,11 @@ public class BookingSyncWorker {
     }
 
     private void publishDeferredConfirmationNotification(CalendarSyncJob job, ConferencingInstruction instruction) {
-        if (instruction == null
-                || !instruction.requestsNativeMeet()
-                || instruction.providerType() != io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET) {
+        if (instruction == null || !instruction.requestsNativeMeet()) {
+            return;
+        }
+        if (instruction.providerType() != io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET
+                && instruction.providerType() != io.bunnycal.common.enums.ConferencingProviderType.MICROSOFT_TEAMS) {
             return;
         }
         UUID readyEventId = UUID.nameUUIDFromBytes(

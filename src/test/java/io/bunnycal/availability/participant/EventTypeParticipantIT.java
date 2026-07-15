@@ -15,6 +15,8 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -81,6 +83,7 @@ class EventTypeParticipantIT {
     @Autowired EventTypeParticipantService participantService;
     @Autowired TeamService teamService;
     @Autowired CalendarConnectionRepository calendarConnectionRepository;
+    @Autowired CalendarConnectionCalendarRepository calendarConnectionCalendarRepository;
 
     @BeforeEach
     void setUp() {
@@ -306,7 +309,16 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
-        return calendarConnectionRepository.save(c);
+        CalendarConnection saved = calendarConnectionRepository.save(c);
+        CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
+        calendar.setConnectionId(saved.getId());
+        calendar.setExternalCalendarId("primary");
+        calendar.setName("Calendar");
+        calendar.setPrimary(true);
+        calendar.setSelected(true);
+        calendar.setSupportsNativeTeams(true);
+        calendarConnectionCalendarRepository.save(calendar);
+        return saved;
     }
 
     private CalendarConnection microsoftPersonalConnection(UUID userId) {
