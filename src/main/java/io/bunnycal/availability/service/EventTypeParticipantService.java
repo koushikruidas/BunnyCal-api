@@ -13,11 +13,14 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
+import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
@@ -60,10 +63,10 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><b>availability_rules</b> — per participant's own working hours (keyed by their
  *       user_id in the availability_rules table).</li>
  *   <li><b>availability_overrides</b> — per participant's own date overrides.</li>
- *   <li><b>calendar busy blocks</b> — from the participant's own connected calendars
- *       (their own calendar_connections rows, using ALL_CONNECTED semantics). The event
- *       type's availabilityCalendarsJson / availabilityMode is the owner's selection only
- *       and does NOT apply to participants.</li>
+ *   <li><b>calendar busy blocks</b> — from the participant's own calendars, specifically the ones
+ *       they flagged as checking availability. That is their setting and it applies identically
+ *       whoever is booking them: on their own event types, and on any team event they are part
+ *       of.</li>
  *   <li><b>timezone</b> — each participant's own User.timezone. The engine must be called
  *       once per participant in that participant's timezone, and results converted to UTC
  *       before aggregation.</li>
@@ -109,6 +112,8 @@ public class EventTypeParticipantService {
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
     private final ProfileAvatarService profileAvatarService;
+    private final BookingSchedulingProjectionResolver projectionResolver;
+    private final EventConferencingResolver conferencingResolver;
     // Injected lazily to break the circular dependency:
     // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
     @Lazy
@@ -124,7 +129,9 @@ public class EventTypeParticipantService {
                                        BookingAssignmentRepository bookingAssignmentRepository,
                                        OutboxPublisher outboxPublisher,
                                        TimeSource timeSource,
-                                       ProfileAvatarService profileAvatarService) {
+                                       ProfileAvatarService profileAvatarService,
+                                       BookingSchedulingProjectionResolver projectionResolver,
+                                       EventConferencingResolver conferencingResolver) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
@@ -135,6 +142,8 @@ public class EventTypeParticipantService {
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
         this.profileAvatarService = profileAvatarService;
+        this.projectionResolver = projectionResolver;
+        this.conferencingResolver = conferencingResolver;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -418,60 +427,45 @@ public class EventTypeParticipantService {
     }
 
     /**
-     * Validates that the chosen conferencing provider is compatible with the
-     * given participant pool for a ROUND_ROBIN event type.
+     * Validates that every member of a round-robin pool can host the event's meeting link.
      *
-     * <p>For RR there is no owner projection calendar: the meeting link is created from whichever
-     * participant the rotation assigns, on their own calendar. So <em>every</em> participant must be
-     * able to support the provider — "at least one can" is not enough, because the rotation does not
-     * assign to the capable one, it assigns to whoever is next. A Google Meet pool containing a
-     * member whose only calendar is Outlook produces a confirmed booking with no join link the first
-     * time that member comes up.
+     * <p>The rotation assigns the meeting to whoever is next, and that member's own calendar mints
+     * the link — so the requirement is on all of them, not on any of them.
      *
-     * <ul>
-     *   <li>GOOGLE_MEET     — every participant needs an active Google calendar.</li>
-     *   <li>MICROSOFT_TEAMS — every participant needs an active Microsoft calendar on a work/school
-     *       (Entra) account; a consumer MSA cannot host Teams.</li>
-     *   <li>ZOOM / CUSTOM_URL / NONE — no calendar requirement; the link is provider-independent.</li>
-     * </ul>
+     * <p><b>This check can go stale, and cannot be made not to.</b> It runs when the pool is built,
+     * but each member's capability depends on <em>their own</em> write-back calendar, which they can
+     * change afterwards without ever seeing this event type. A member who moves from Google to
+     * Outlook silently stops being able to host a Meet for a pool someone else configured months ago.
+     * The booking-time guard ({@code BookingConferencingCapabilityGuard}) is what actually protects
+     * the guest; this exists to fail early, while the person building the pool is still looking at it.
      */
     private void validateConferencingForRoundRobinParticipants(
             ConferencingProviderType conferencing, List<UUID> participantIds) {
-        if (conferencing == null
-                || conferencing == ConferencingProviderType.NONE
-                || conferencing == ConferencingProviderType.CUSTOM_URL
-                || conferencing == ConferencingProviderType.ZOOM) {
-            return;
-        }
+        // Every member must be able to host, not just one of them: the rotation assigns the meeting
+        // to whoever is next, not to whoever happens to be capable. A pool with one Outlook-only
+        // member, offered Google Meet, produces bookings with no join link whenever their turn
+        // comes up.
+        //
+        // Capability is resolved per member against THEIR OWN settings — the event type stores
+        // DEFAULT, and each member's default resolves against the calendar they write to. So a
+        // member who has a Google account connected but sends their bookings to Outlook cannot host
+        // a Meet, and this is the check that says so.
+        List<UUID> incapable = participantIds.stream()
+                .filter(uid -> {
+                    ConferencingProviderType resolved = conferencingResolver.resolve(uid, conferencing);
+                    if (resolved == null || !resolved.requiresCalendarProvider()) {
+                        return false;   // Zoom, custom, none: no calendar needed.
+                    }
+                    CalendarConnection writeback = projectionResolver.writebackConnection(uid).orElse(null);
+                    return !EventConferencingResolver.canServe(writeback, resolved);
+                })
+                .toList();
 
-        if (conferencing == ConferencingProviderType.GOOGLE_MEET) {
-            List<UUID> incapable = participantIds.stream()
-                    .filter(uid -> calendarConnectionRepository
-                            .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                                    uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE)
-                            .isEmpty())
-                    .toList();
-            if (!incapable.isEmpty()) {
-                throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Google Meet requires every team member to have an active Google Calendar connection. "
-                                + describeIncapableParticipants(incapable) + " cannot host a Meet link.");
-            }
-            return;
-        }
-
-        if (conferencing == ConferencingProviderType.MICROSOFT_TEAMS) {
-            List<UUID> incapable = participantIds.stream()
-                    .filter(uid -> calendarConnectionRepository
-                            .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                                    uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                            .stream()
-                            .noneMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn)))
-                    .toList();
-            if (!incapable.isEmpty()) {
-                throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Microsoft Teams requires every team member to have a Microsoft 365 work or school account. "
-                                + describeIncapableParticipants(incapable) + " cannot host a Teams link.");
-            }
+        if (!incapable.isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Every team member needs a calendar that can create this meeting link. "
+                            + describeIncapableParticipants(incapable) + " cannot host it. "
+                            + "They can fix this in their own calendar settings, or you can use Zoom.");
         }
     }
 

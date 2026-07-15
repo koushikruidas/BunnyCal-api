@@ -7,6 +7,7 @@ import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.availability.service.EventTypeLifecycleNotificationService;
 import io.bunnycal.availability.service.EventTypeLifecycleOutboxPayload;
 import io.bunnycal.booking.service.BookingEventTypeResolver;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.booking.ownership.BookingOwnershipService;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.session.domain.EventSession;
@@ -19,6 +20,7 @@ import io.bunnycal.team.notification.ParticipantSetupRequestNotificationService;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.sync.invariants.CompositeSyncStateClassifier;
 import io.bunnycal.sync.invariants.LineageContext;
@@ -48,6 +50,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final BookingOwnershipService bookingOwnershipService;
     private final BookingEventTypeResolver bookingEventTypeResolver;
+    private final EventConferencingResolver conferencingResolver;
+    private final BookingSchedulingProjectionResolver projectionResolver;
     @Nullable
     private final BookingNotificationService bookingNotificationService;
     @Nullable
@@ -73,6 +77,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         CalendarConnectionRepository calendarConnectionRepository,
                                         BookingOwnershipService bookingOwnershipService,
                                         BookingEventTypeResolver bookingEventTypeResolver,
+                                        EventConferencingResolver conferencingResolver,
+                                        BookingSchedulingProjectionResolver projectionResolver,
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
@@ -90,6 +96,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingOwnershipService = bookingOwnershipService;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
+        this.conferencingResolver = conferencingResolver;
+        this.projectionResolver = projectionResolver;
         this.bookingNotificationService = bookingNotificationService;
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
@@ -198,7 +206,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
             bookingOwnershipService.ensureOwnership(booking, eventType);
         }
 
-        boolean deferNotification = shouldDeferNotificationUntilProjection(event, eventType);
+        boolean deferNotification = shouldDeferNotificationUntilProjection(event, booking, eventType);
         if (bookingNotificationService != null && !deferNotification) {
             bookingNotificationService.handleOutboxEvent(event);
         }
@@ -251,14 +259,23 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                 && event.getAggregateId() != null;
     }
 
-    private boolean shouldDeferNotificationUntilProjection(OutboxEvent event, @Nullable EventType eventType) {
+    /**
+     * The event type stores {@code DEFAULT} — a pointer — so it must be resolved against the writer
+     * before being compared to a real provider. Comparing the raw stored value would answer "not
+     * Meet" for every default-bound event type, the confirmation would go out before the sync job
+     * had created the Meet link, and the guest would receive a booking email with no way to join.
+     */
+    private boolean shouldDeferNotificationUntilProjection(OutboxEvent event,
+                                                           @Nullable Booking booking,
+                                                           @Nullable EventType eventType) {
         if (event == null || !"BOOKING_CONFIRMED".equals(event.getEventType())) {
             return false;
         }
-        if (eventType == null) {
+        if (eventType == null || booking == null) {
             return false;
         }
-        return eventType.getConferencingProvider() == ConferencingProviderType.GOOGLE_MEET;
+        return conferencingResolver.resolve(booking.getHostId(), eventType)
+                == ConferencingProviderType.GOOGLE_MEET;
     }
 
     private record SchedulingResolution(UUID connectionId, String provider) {}
@@ -381,11 +398,12 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         if (session == null) {
             return new SessionSyncResolution("DEFERRED", 0L);
         }
-        String provider = eventTypeRepository.findByIdAndUserId(session.getEventTypeId(), session.getHostId())
-                .map(eventType -> eventType.getProjectionProvider() == null
-                        ? "DEFERRED"
-                        : eventType.getProjectionProvider().name().toLowerCase(java.util.Locale.ROOT))
-                .orElse("DEFERRED");
+        // The session is written to its host's global write-back calendar, so that connection's
+        // provider is the one the sync job routes to.
+        var projection = projectionResolver.resolveForUser(session.getHostId());
+        String provider = projection == null || projection.provider() == null
+                ? "DEFERRED"
+                : projection.provider().name().toLowerCase(java.util.Locale.ROOT);
         return new SessionSyncResolution(provider, session.getCalendarSequence());
     }
 

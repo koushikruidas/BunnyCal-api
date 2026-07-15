@@ -25,6 +25,7 @@ import io.bunnycal.common.logging.OpsLogSupport;
 import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
 import io.bunnycal.conferencing.service.ConferencingCoordinator;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
@@ -84,6 +85,7 @@ public class BookingNotificationService {
     private final EmailDeliverabilityPolicy deliverabilityPolicy;
     private final NotificationSendDedupService notificationSendDedupService;
     private final ConferencingCoordinator conferencingCoordinator;
+    private final EventConferencingResolver conferencingResolver;
     private final ConferencingEventMappingRepository conferencingEventMappingRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final BookingOwnershipRepository bookingOwnershipRepository;
@@ -109,6 +111,7 @@ public class BookingNotificationService {
                                       EmailDeliverabilityPolicy deliverabilityPolicy,
                                       NotificationSendDedupService notificationSendDedupService,
                                       ConferencingCoordinator conferencingCoordinator,
+                                      EventConferencingResolver conferencingResolver,
                                       ConferencingEventMappingRepository conferencingEventMappingRepository,
                                       CalendarConnectionRepository calendarConnectionRepository,
                                       BookingOwnershipRepository bookingOwnershipRepository,
@@ -134,6 +137,7 @@ public class BookingNotificationService {
         this.deliverabilityPolicy = deliverabilityPolicy;
         this.notificationSendDedupService = notificationSendDedupService;
         this.conferencingCoordinator = conferencingCoordinator;
+        this.conferencingResolver = conferencingResolver;
         this.conferencingEventMappingRepository = conferencingEventMappingRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.bookingOwnershipRepository = bookingOwnershipRepository;
@@ -159,6 +163,7 @@ public class BookingNotificationService {
                                       EmailDeliverabilityPolicy deliverabilityPolicy,
                                       NotificationSendDedupService notificationSendDedupService,
                                       ConferencingCoordinator conferencingCoordinator,
+                                      EventConferencingResolver conferencingResolver,
                                       ConferencingEventMappingRepository conferencingEventMappingRepository,
                                       CalendarConnectionRepository calendarConnectionRepository,
                                       BookingOwnershipRepository bookingOwnershipRepository,
@@ -170,7 +175,7 @@ public class BookingNotificationService {
                                       long capabilityTokenTtlDays) {
         this(bookingRepository, userRepository, eventTypeRepository, bookingAssignmentRepository, mailSender,
                 icsInviteGenerator, bookingManageLinkService, guestCapabilityTokenService, recipientResolver,
-                deliverabilityPolicy, notificationSendDedupService, conferencingCoordinator,
+                deliverabilityPolicy, notificationSendDedupService, conferencingCoordinator, conferencingResolver,
                 conferencingEventMappingRepository, calendarConnectionRepository, bookingOwnershipRepository, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), notificationsEnabled, fromAddress,
                 calendarOrganizerEmail, calendarOrganizerName, debugEmlDir, capabilityTokenTtlDays);
@@ -384,14 +389,14 @@ public class BookingNotificationService {
                 if (calendarOrganizerEmail == null || calendarOrganizerEmail.isBlank()) {
                     log.warn("organizer_authority_mismatch_detected bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={}",
                             booking.getId(),
-                            eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                            ownership == null ? "unknown" : ownership.getProjectionProvider(),
                             "",
                             "",
                             clientType);
                 } else {
                     log.info("organizer_authority_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={}",
                             booking.getId(),
-                            eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                            ownership == null ? "unknown" : ownership.getProjectionProvider(),
                             "",
                             calendarOrganizerEmail,
                             clientType);
@@ -412,7 +417,7 @@ public class BookingNotificationService {
                         conferenceDetails == null ? "NONE" : conferenceDetails.provider());
                 log.info("lifecycle_client_reconciliation_verified bookingId={} provider={} externalEventId={} organizerIdentity={} clientType={} lifecycleOperation={}",
                         booking.getId(),
-                        eventType == null ? "unknown" : eventType.getProjectionProvider(),
+                        ownership == null ? "unknown" : ownership.getProjectionProvider(),
                         "",
                         calendarOrganizerEmail,
                         clientType,
@@ -719,7 +724,7 @@ public class BookingNotificationService {
         if (eventType == null) {
             return ConferenceDetails.none("event_type_missing", java.time.Instant.now());
         }
-        ConferencingProviderType providerType = eventType.getConferencingProvider();
+        ConferencingProviderType providerType = conferencingResolver.resolve(booking.getHostId(), eventType);
         if (providerType == null || providerType == ConferencingProviderType.NONE) {
             return ConferenceDetails.none("provider_none", java.time.Instant.now());
         }

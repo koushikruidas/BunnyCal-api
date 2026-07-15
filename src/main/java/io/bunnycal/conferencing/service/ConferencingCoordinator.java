@@ -36,17 +36,20 @@ public class ConferencingCoordinator {
     private final EventTypeRepository eventTypeRepository;
     private final ConferencingProviderRegistry providerRegistry;
     private final ConferencingEventMappingRepository mappingRepository;
+    private final EventConferencingResolver conferencingResolver;
     private final TransactionTemplate requiresNew;
 
     public ConferencingCoordinator(BookingRepository bookingRepository,
                                    EventTypeRepository eventTypeRepository,
                                    ConferencingProviderRegistry providerRegistry,
                                    ConferencingEventMappingRepository mappingRepository,
+                                   EventConferencingResolver conferencingResolver,
                                    PlatformTransactionManager transactionManager) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.providerRegistry = providerRegistry;
         this.mappingRepository = mappingRepository;
+        this.conferencingResolver = conferencingResolver;
         this.requiresNew = new TransactionTemplate(transactionManager);
         this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -55,7 +58,7 @@ public class ConferencingCoordinator {
     public ConferencingInstruction prepareForCreate(UUID bookingId, UUID hostId) {
         Booking booking = loadBooking(bookingId, hostId);
         EventType eventType = loadEventType(booking);
-        ConferencingProviderType providerType = resolveProviderType(eventType);
+        ConferencingProviderType providerType = resolveProviderType(booking, eventType);
         log.info("conferencing_provider_resolved bookingId={} action=CREATE eventTypeId={} provider={}",
                 bookingId, booking.getEventTypeId(), providerType);
 
@@ -84,6 +87,7 @@ public class ConferencingCoordinator {
                 yield ConferencingInstruction.requestNativeMeet(providerType);
             }
             case ZOOM -> createExternalMeeting(booking, eventType, providerType);
+            case DEFAULT -> throw unresolvedPointer(bookingId);
         };
     }
 
@@ -91,7 +95,7 @@ public class ConferencingCoordinator {
     public ConferencingInstruction prepareForUpdate(UUID bookingId, UUID hostId) {
         Booking booking = loadBooking(bookingId, hostId);
         EventType eventType = loadEventType(booking);
-        ConferencingProviderType providerType = resolveProviderType(eventType);
+        ConferencingProviderType providerType = resolveProviderType(booking, eventType);
         log.info("conferencing_provider_resolved bookingId={} action=UPDATE eventTypeId={} provider={}",
                 bookingId, booking.getEventTypeId(), providerType);
 
@@ -100,7 +104,18 @@ public class ConferencingCoordinator {
             case CUSTOM_URL -> instructionFromCustomUrl(eventType);
             case GOOGLE_MEET, MICROSOFT_TEAMS -> ConferencingInstruction.requestNativeMeet(providerType);
             case ZOOM -> updateExternalMeeting(booking, eventType, providerType);
+            case DEFAULT -> throw unresolvedPointer(bookingId);
         };
+    }
+
+    /**
+     * {@link ConferencingProviderType#DEFAULT} is a pointer; {@link #resolveProviderType} has already
+     * turned it into a real provider (or {@code NONE}). Reaching here means the resolver was bypassed
+     * — fail loudly rather than pick an arbitrary branch and hand a guest a booking with no join link.
+     */
+    private static IllegalStateException unresolvedPointer(UUID bookingId) {
+        return new IllegalStateException(
+                "unresolved DEFAULT conferencing pointer reached provider dispatch for booking " + bookingId);
     }
 
     @Transactional
@@ -263,9 +278,16 @@ public class ConferencingCoordinator {
                 .orElseThrow(() -> new IllegalStateException("event type not found for conferencing prepare: " + booking.getEventTypeId()));
     }
 
-    private static ConferencingProviderType resolveProviderType(EventType eventType) {
-        ConferencingProviderType providerType = eventType.getConferencingProvider();
-        return providerType == null ? ConferencingProviderType.NONE : providerType;
+    /**
+     * Resolve the event type's stored choice against the <b>writer</b> — whoever receives the
+     * calendar event and therefore mints the link. That is {@code booking.getHostId()}: the owner
+     * for 1:1/group/collective, and the <em>assigned member</em> for round-robin.
+     *
+     * <p>This is the choke point: {@link ConferencingProviderType#DEFAULT} is a pointer and must
+     * never reach the switches below, which branch on real providers.
+     */
+    private ConferencingProviderType resolveProviderType(Booking booking, EventType eventType) {
+        return conferencingResolver.resolve(booking.getHostId(), eventType);
     }
 
     private static String truncateError(String message) {

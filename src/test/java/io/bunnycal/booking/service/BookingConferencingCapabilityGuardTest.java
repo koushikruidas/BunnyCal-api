@@ -10,9 +10,9 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -23,113 +23,159 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+/**
+ * The guard asks one question, of every event kind alike: can the calendar that will receive this
+ * booking actually mint the meeting link the event type resolves to? The <em>writer</em> is the
+ * booking's host — the owner for 1:1/group/collective, the assigned member for round-robin — so
+ * there is no kind-specific branch left to test.
+ */
 @ExtendWith(MockitoExtension.class)
 class BookingConferencingCapabilityGuardTest {
 
     @Mock
     private EventTypeRepository eventTypeRepository;
     @Mock
-    private CalendarConnectionRepository calendarConnectionRepository;
+    private BookingSchedulingProjectionResolver projectionResolver;
+    @Mock
+    private EventConferencingResolver conferencingResolver;
 
     private BookingConferencingCapabilityGuard guard;
 
     @BeforeEach
     void setUp() {
-        guard = new BookingConferencingCapabilityGuard(eventTypeRepository, calendarConnectionRepository);
+        guard = new BookingConferencingCapabilityGuard(
+                eventTypeRepository, projectionResolver, conferencingResolver);
     }
 
-    // ── ROUND_ROBIN — all conferencing providers must pass ──────────────────
+    // ── ROUND_ROBIN — resolved against the ASSIGNED MEMBER's own calendar ───
 
     @Test
-    void roundRobin_withGoogleMeet_andNullProjection_doesNotThrow() {
+    void roundRobin_meetResolvedForAssignedMember_withGoogleCalendar_doesNotThrow() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID bookingId = UUID.randomUUID();
         UUID participantId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ROUND_ROBIN, ConferencingProviderType.DEFAULT);
 
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(rrEventType(eventTypeId, ConferencingProviderType.GOOGLE_MEET, null)));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(participantId, eventType))
+                .thenReturn(ConferencingProviderType.GOOGLE_MEET);
+        when(projectionResolver.writebackConnection(participantId))
+                .thenReturn(Optional.of(connection(CalendarProviderType.GOOGLE, "google-user-123")));
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(bookingId, participantId, eventTypeId));
-    }
-
-    @Test
-    void roundRobin_withMicrosoftTeams_andNullProjection_doesNotThrow() {
-        UUID eventTypeId = UUID.randomUUID();
-        UUID bookingId = UUID.randomUUID();
-        UUID participantId = UUID.randomUUID();
-
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(rrEventType(eventTypeId, ConferencingProviderType.MICROSOFT_TEAMS, null)));
-
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(bookingId, participantId, eventTypeId));
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), participantId, eventTypeId));
     }
 
     @Test
-    void roundRobin_withZoom_andNullProjection_doesNotThrow() {
+    void roundRobin_teamsResolvedForAssignedMember_withMicrosoft365Calendar_doesNotThrow() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID bookingId = UUID.randomUUID();
         UUID participantId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ROUND_ROBIN, ConferencingProviderType.DEFAULT);
 
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(rrEventType(eventTypeId, ConferencingProviderType.ZOOM, null)));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(participantId, eventType))
+                .thenReturn(ConferencingProviderType.MICROSOFT_TEAMS);
+        when(projectionResolver.writebackConnection(participantId)).thenReturn(
+                Optional.of(connection(CalendarProviderType.MICROSOFT,
+                        "12345678-1234-1234-1234-123456789012")));
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(bookingId, participantId, eventTypeId));
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), participantId, eventTypeId));
     }
 
     @Test
-    void roundRobin_withGoogleMeet_andMicrosoftProjection_doesNotThrow() {
-        // Even if an RR event type somehow has a Microsoft projection (migration artifact),
-        // the guard must not fire — conferencing ownership is participant-derived.
+    void roundRobin_withZoom_doesNotThrow() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID bookingId = UUID.randomUUID();
         UUID participantId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ROUND_ROBIN, ConferencingProviderType.ZOOM);
 
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(rrEventType(eventTypeId, ConferencingProviderType.GOOGLE_MEET, CalendarProviderType.MICROSOFT)));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(participantId, eventType))
+                .thenReturn(ConferencingProviderType.ZOOM);
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(bookingId, participantId, eventTypeId));
+        // Zoom needs no calendar provider, so the write-back calendar is never consulted.
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), participantId, eventTypeId));
     }
 
     @Test
     void roundRobin_withNoConferencing_doesNotThrow() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID bookingId = UUID.randomUUID();
         UUID participantId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ROUND_ROBIN, ConferencingProviderType.NONE);
 
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(rrEventType(eventTypeId, ConferencingProviderType.NONE, null)));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(participantId, eventType))
+                .thenReturn(ConferencingProviderType.NONE);
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(bookingId, participantId, eventTypeId));
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), participantId, eventTypeId));
     }
 
-    // ── ONE_ON_ONE — projection provider checks must still fire ────────────
+    // ── ONE_ON_ONE — provider capability checks must still fire ────────────
 
     @Test
-    void oneOnOne_withGoogleMeet_andGoogleProjection_doesNotThrow() {
+    void oneOnOne_withGoogleMeet_andGoogleWriteback_doesNotThrow() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(
-                ownerEventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.GOOGLE_MEET, CalendarProviderType.GOOGLE, connId)));
-        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(googleConnection(connId)));
+        UUID hostId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.DEFAULT);
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), UUID.randomUUID(), eventTypeId));
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(hostId, eventType))
+                .thenReturn(ConferencingProviderType.GOOGLE_MEET);
+        when(projectionResolver.writebackConnection(hostId))
+                .thenReturn(Optional.of(connection(CalendarProviderType.GOOGLE, "google-user-123")));
+
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), hostId, eventTypeId));
     }
 
     @Test
-    void oneOnOne_withGoogleMeet_andMicrosoftProjection_throws() {
+    void oneOnOne_withGoogleMeet_andMicrosoftWriteback_throws() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(
-                ownerEventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.GOOGLE_MEET, CalendarProviderType.MICROSOFT, connId)));
+        UUID hostId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.DEFAULT);
+
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(hostId, eventType))
+                .thenReturn(ConferencingProviderType.GOOGLE_MEET);
+        when(projectionResolver.writebackConnection(hostId)).thenReturn(
+                Optional.of(connection(CalendarProviderType.MICROSOFT,
+                        "12345678-1234-1234-1234-123456789012")));
 
         assertThrows(CustomException.class,
-                () -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), UUID.randomUUID(), eventTypeId));
+                () -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), hostId, eventTypeId));
     }
 
     @Test
-    void oneOnOne_withMicrosoftTeams_andGoogleProjection_throws() {
+    void oneOnOne_withMicrosoftTeams_andGoogleWriteback_throws() {
         UUID eventTypeId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(
-                ownerEventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.MICROSOFT_TEAMS, CalendarProviderType.GOOGLE, connId)));
+        UUID hostId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.DEFAULT);
+
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(hostId, eventType))
+                .thenReturn(ConferencingProviderType.MICROSOFT_TEAMS);
+        when(projectionResolver.writebackConnection(hostId))
+                .thenReturn(Optional.of(connection(CalendarProviderType.GOOGLE, "google-user-123")));
 
         assertThrows(CustomException.class,
-                () -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), UUID.randomUUID(), eventTypeId));
+                () -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), hostId, eventTypeId));
+    }
+
+    // A native meeting link with no calendar at all to mint it on cannot be honoured.
+    @Test
+    void nativeMeetingLink_withNoWritebackCalendar_throws() {
+        UUID eventTypeId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        EventType eventType = eventType(eventTypeId, EventKind.ONE_ON_ONE, ConferencingProviderType.DEFAULT);
+
+        when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.of(eventType));
+        when(conferencingResolver.resolve(hostId, eventType))
+                .thenReturn(ConferencingProviderType.GOOGLE_MEET);
+        when(projectionResolver.writebackConnection(hostId)).thenReturn(Optional.empty());
+
+        assertThrows(CustomException.class,
+                () -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), hostId, eventTypeId));
     }
 
     // ── Unknown event type → safe no-op ────────────────────────────────────
@@ -139,40 +185,19 @@ class BookingConferencingCapabilityGuardTest {
         UUID eventTypeId = UUID.randomUUID();
         when(eventTypeRepository.findById(eventTypeId)).thenReturn(Optional.empty());
 
-        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(UUID.randomUUID(), UUID.randomUUID(), eventTypeId));
+        assertDoesNotThrow(() -> guard.assertBookingConfirmationSupported(
+                UUID.randomUUID(), UUID.randomUUID(), eventTypeId));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static EventType rrEventType(UUID id, ConferencingProviderType conferencing, CalendarProviderType projectionProvider) {
+    private static EventType eventType(UUID id, EventKind kind, ConferencingProviderType conferencing) {
         return EventType.builder()
                 .id(id)
                 .userId(UUID.randomUUID())
-                .name("RR Event")
-                .kind(EventKind.ROUND_ROBIN)
-                .conferencingProvider(conferencing)
-                .projectionProvider(projectionProvider)
-                .duration(Duration.ofMinutes(30))
-                .bufferBefore(Duration.ZERO)
-                .bufferAfter(Duration.ZERO)
-                .slotInterval(Duration.ofMinutes(30))
-                .minNotice(Duration.ZERO)
-                .maxAdvance(Duration.ofDays(30))
-                .holdDuration(Duration.ofMinutes(10))
-                .build();
-    }
-
-    private static EventType ownerEventType(UUID id, EventKind kind, ConferencingProviderType conferencing,
-                                             CalendarProviderType projectionProvider, UUID projectionConnectionId) {
-        return EventType.builder()
-                .id(id)
-                .userId(UUID.randomUUID())
-                .name("Owner Event")
+                .name("Event")
                 .kind(kind)
                 .conferencingProvider(conferencing)
-                .projectionProvider(projectionProvider)
-                .projectionConnectionId(projectionConnectionId)
-                .projectionCalendarId("primary")
                 .duration(Duration.ofMinutes(30))
                 .bufferBefore(Duration.ZERO)
                 .bufferAfter(Duration.ZERO)
@@ -183,18 +208,18 @@ class BookingConferencingCapabilityGuardTest {
                 .build();
     }
 
-    private static CalendarConnection googleConnection(UUID id) {
+    private static CalendarConnection connection(CalendarProviderType provider, String providerUserId) {
         CalendarConnection c = new CalendarConnection();
         c.setUserId(UUID.randomUUID());
-        c.setProvider(CalendarProviderType.GOOGLE);
+        c.setProvider(provider);
         c.setStatus(CalendarConnectionStatus.ACTIVE);
-        c.setProviderUserId("google-user-123");
+        c.setProviderUserId(providerUserId);
         c.setRefreshTokenCiphertext("cipher");
         c.setScopes(List.of("calendar.readwrite"));
         try {
             java.lang.reflect.Field f = CalendarConnection.class.getDeclaredField("id");
             f.setAccessible(true);
-            f.set(c, id);
+            f.set(c, UUID.randomUUID());
         } catch (Exception ignored) {}
         return c;
     }

@@ -39,9 +39,6 @@ class BookingOwnershipServiceTest {
     void ownershipMaterialization_allowedBeforeBookings() {
         UUID bookingId = UUID.randomUUID();
         EventType eventType = EventType.builder()
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(UUID.randomUUID())
-                .projectionCalendarId("primary")
                 .build();
         Booking booking = Booking.builder().id(bookingId).build();
         when(repository.findByBookingId(bookingId)).thenReturn(Optional.empty());
@@ -62,9 +59,6 @@ class BookingOwnershipServiceTest {
     void existingOwnership_survivesAnEventTypeWhoseProjectionHasSinceChanged() {
         UUID bookingId = UUID.randomUUID();
         EventType eventType = EventType.builder()
-                .projectionProvider(CalendarProviderType.MICROSOFT)
-                .projectionConnectionId(UUID.randomUUID())
-                .projectionCalendarId("cal-m")
                 .build();
         Booking booking = Booking.builder().id(bookingId).build();
         BookingOwnership existing = new BookingOwnership();

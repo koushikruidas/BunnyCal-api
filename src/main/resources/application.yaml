@@ -164,6 +164,9 @@ logging:
 
 calendar:
   sync:
+    # Holiday calendars change rarely. Their per-calendar cursor is checked on every sweep, but
+    # the provider is called only when the last successful holiday sync is at least this old.
+    holiday-interval: ${CALENDAR_SYNC_HOLIDAY_INTERVAL:PT24H}
     # Phase 4 parallel sweep. Default OFF: the scheduler runs the original single-threaded
     # path until parallel-enabled is flipped, so deploying this is a no-op behavior change.
     # See CalendarSyncScheduler for the no-overlap invariant that sweep-max-runtime protects.

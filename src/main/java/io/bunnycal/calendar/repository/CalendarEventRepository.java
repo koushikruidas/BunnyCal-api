@@ -26,6 +26,34 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             Instant windowEnd,
             Instant windowStart);
 
+    /**
+     * Events rendered as ordinary calendar meetings. Holiday feeds have their own deduplicated
+     * endpoint/day-off layer, and OTHER calendars are intentionally invisible. Legacy unattributed
+     * rows remain visible until they are naturally replaced by attributed sync data.
+     */
+    @Query("""
+            select e from CalendarEvent e
+            where e.userId = :userId
+              and e.cancelled = false
+              and e.deleted = false
+              and e.startsAt < :windowEnd
+              and e.endsAt > :windowStart
+              and (
+                    e.externalCalendarId is null
+                 or exists (
+                        select 1 from CalendarConnectionCalendar c
+                        where c.connectionId = e.connectionId
+                          and c.externalCalendarId = e.externalCalendarId
+                          and c.calendarRole = io.bunnycal.calendar.domain.CalendarRole.PRIMARY
+                          and c.canRead = true
+                    )
+              )
+            """)
+    List<CalendarEvent> findDisplayEventsOnPrimaryCalendars(
+            @Param("userId") UUID userId,
+            @Param("windowEnd") Instant windowEnd,
+            @Param("windowStart") Instant windowStart);
+
     Optional<CalendarEvent> findByConnectionIdAndProviderAndExternalEventId(UUID connectionId,
                                                                              String provider,
                                                                              String externalEventId);
@@ -82,6 +110,75 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             @Param("wholeConnectionIds") Collection<UUID> wholeConnectionIds,
             @Param("calendarScopedConnectionIds") Collection<UUID> calendarScopedConnectionIds,
             @Param("selectedExternalCalendarIds") Collection<String> selectedExternalCalendarIds,
+            @Param("windowEnd") Instant windowEnd,
+            @Param("windowStart") Instant windowStart);
+
+    /**
+     * Every event that should block this user, on every calendar they left switched on.
+     *
+     * <p>Availability is a property of the calendar, not of the event type being booked: a calendar
+     * either blocks its owner or it does not, and that answer is the same whether they are hosting
+     * their own event or sitting in someone else's round-robin.
+     *
+     * <p>An event contributes when its calendar is flagged {@code checks_availability}, or when it
+     * carries no calendar attribution at all. That second case is the legacy wildcard: rows ingested
+     * before per-calendar attribution existed have a null {@code external_calendar_id} and belong to
+     * no inventory row, so requiring a match would silently stop them blocking anything.
+     */
+    @Query("""
+            select e from CalendarEvent e
+            where e.userId = :userId
+              and e.cancelled = false
+              and e.deleted = false
+              and e.blocksAvailability = true
+              and e.startsAt < :windowEnd
+              and e.endsAt > :windowStart
+              and (
+                    e.externalCalendarId is null
+                 or exists (
+                        select 1 from CalendarConnectionCalendar c
+                        where c.connectionId = e.connectionId
+                          and c.externalCalendarId = e.externalCalendarId
+                          and c.calendarRole = io.bunnycal.calendar.domain.CalendarRole.PRIMARY
+                          and c.checksAvailability = true
+                          and c.canRead = true
+                    )
+              )
+            """)
+    List<CalendarEvent> findBusyOnAvailabilityCalendars(
+            @Param("userId") UUID userId,
+            @Param("windowEnd") Instant windowEnd,
+            @Param("windowStart") Instant windowStart);
+
+    /**
+     * Events on the user's holiday calendars within the window. These do NOT block as busy time
+     * (their calendar has {@code checks_availability = false}, so they never reach the busy query
+     * above) — they are surfaced here to mark whole days off instead.
+     */
+    @Query("""
+            select e from CalendarEvent e
+            where e.userId = :userId
+              and e.cancelled = false
+              and e.deleted = false
+              and e.startsAt < :windowEnd
+              and e.endsAt > :windowStart
+              and exists (
+                    select 1 from CalendarConnectionCalendar c
+                    where c.connectionId = e.connectionId
+                      and c.externalCalendarId = e.externalCalendarId
+                      and c.calendarRole = io.bunnycal.calendar.domain.CalendarRole.HOLIDAY
+                      and c.canRead = true
+                      and exists (
+                            select 1 from CalendarConnectionCalendar primaryCalendar
+                            where primaryCalendar.connectionId = e.connectionId
+                              and primaryCalendar.calendarRole = io.bunnycal.calendar.domain.CalendarRole.PRIMARY
+                              and primaryCalendar.checksAvailability = true
+                              and primaryCalendar.canRead = true
+                      )
+              )
+            """)
+    List<CalendarEvent> findHolidayEvents(
+            @Param("userId") UUID userId,
             @Param("windowEnd") Instant windowEnd,
             @Param("windowStart") Instant windowStart);
 }

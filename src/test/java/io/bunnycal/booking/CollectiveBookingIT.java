@@ -315,7 +315,7 @@ class CollectiveBookingIT extends AbstractBookingIT {
         jdbc.update("""
                 INSERT INTO calendar_connection_calendars
                     (id, connection_id, external_calendar_id, name, is_primary, is_selected,
-                     sync_enabled, can_read, can_write, hidden)
+                     checks_availability, can_read, can_write, hidden)
                 VALUES (?,?,?,?,true,true,true,true,true,false)
                 """, UUID.randomUUID(), connId, "primary@" + userId, "Primary");
     }

@@ -15,7 +15,9 @@ import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.calendar.provider.UpdateEventResponse;
 import io.bunnycal.calendar.provider.GoogleCalendarProvider;
 import io.bunnycal.calendar.provider.MicrosoftCalendarProvider;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionStatus;
@@ -53,6 +55,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -63,6 +67,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -101,9 +107,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -114,6 +117,17 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
+        // The session is written to the host's global write-back calendar, resolved live.
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
         when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(EventSession.builder()
                 .id(sessionId)
                 .hostId(hostId)
@@ -154,6 +168,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -164,6 +180,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -224,6 +242,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -234,6 +254,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -258,9 +280,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -271,6 +290,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobCreateId), List.of(jobUpdateId));
@@ -365,6 +389,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -375,6 +401,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -398,9 +426,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -411,6 +436,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobId));
@@ -468,6 +498,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -478,6 +510,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -502,9 +536,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .conferencingProvider(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET)
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
@@ -516,6 +547,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobId));
@@ -583,6 +619,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -593,6 +631,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -616,9 +656,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -629,6 +666,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobId));
@@ -689,6 +731,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -699,6 +743,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -722,9 +768,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -735,6 +778,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobId));
@@ -788,6 +836,8 @@ class SessionSyncWorkerTest {
         GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
         MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
         SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
 
         SessionSyncWorker worker = new SessionSyncWorker(
                 syncJobRepository,
@@ -798,6 +848,8 @@ class SessionSyncWorkerTest {
                 connectionRepository,
                 googleCalendarProvider,
                 microsoftCalendarProvider,
+                projectionResolver,
+                conferencingResolver,
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -820,9 +872,6 @@ class SessionSyncWorkerTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(15))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(connectionId)
-                .projectionCalendarId("primary")
                 .build();
         when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
         when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
@@ -833,6 +882,11 @@ class SessionSyncWorkerTest {
                 .timezone("UTC")
                 .build()));
         when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.GOOGLE_MEET);
 
         when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
                 .thenReturn(List.of(jobId));

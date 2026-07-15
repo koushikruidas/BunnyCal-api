@@ -3,7 +3,6 @@ package io.bunnycal.availability.service;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
-import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
@@ -40,7 +39,6 @@ public class EventTypeService {
     private final UserRepository userRepository;
     private final SessionUserResolver sessionUserResolver;
     private final EventTypeOrchestrationNormalizer orchestrationNormalizer;
-    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final PublishReadinessService publishReadinessService;
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
@@ -53,7 +51,6 @@ public class EventTypeService {
                             UserRepository userRepository,
                             SessionUserResolver sessionUserResolver,
                             EventTypeOrchestrationNormalizer orchestrationNormalizer,
-                            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                             PublishReadinessService publishReadinessService,
                             OutboxPublisher outboxPublisher,
                             TimeSource timeSource,
@@ -65,7 +62,6 @@ public class EventTypeService {
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
         this.orchestrationNormalizer = orchestrationNormalizer;
-        this.orchestrationJsonCodec = orchestrationJsonCodec;
         this.publishReadinessService = publishReadinessService;
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
@@ -83,11 +79,8 @@ public class EventTypeService {
 
         String username = ensureUsername(user);
         String slug = uniqueSlug(userId, requestedOrDerivedSlug(request));
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration = orchestrationNormalizer.normalize(userId, request);
-
-        AvailabilityMode availabilityMode = (request.availabilityCalendars() != null && !request.availabilityCalendars().isEmpty())
-                ? AvailabilityMode.SELECTED
-                : AvailabilityMode.ALL_CONNECTED;
+        EventTypeOrchestrationNormalizer.ConferencingConfig conferencing =
+                orchestrationNormalizer.normalize(request);
 
         EventKind kind = request.kind() != null ? request.kind() : EventKind.ONE_ON_ONE;
         // Premium event kinds (Group/Round Robin/Collective) require the matching plan feature;
@@ -102,21 +95,13 @@ public class EventTypeService {
         // occurred yet. All other kinds start published (single-host, always ready).
         boolean startPublished = kind != EventKind.COLLECTIVE;
 
-        EventTypeOrchestrationNormalizer.ProjectionDestination proj = orchestration.projectionDestination();
         EventType eventType = EventType.builder()
                 .userId(userId)
                 .name(request.name().trim())
                 .description(trimToNull(request.description()))
                 .location(trimToNull(request.location()))
-                .organizerCalendarConnectionId(proj != null ? proj.connectionId() : null)
-                .projectionConnectionId(proj != null ? proj.connectionId() : null)
-                .projectionCalendarId(proj != null ? proj.calendarId() : null)
-                .projectionProvider(proj != null ? io.bunnycal.calendar.domain.CalendarProviderType.valueOf(
-                        proj.provider().toUpperCase(Locale.ROOT)) : null)
-                .availabilityCalendarsJson(orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()))
-                .availabilityMode(availabilityMode)
-                .conferencingProvider(orchestration.conferencing().provider())
-                .customConferenceUrl(orchestration.conferencing().customUrl())
+                .conferencingProvider(conferencing.providerType())
+                .customConferenceUrl(conferencing.customUrl())
                 .slug(slug)
                 .duration(Duration.ofMinutes(request.durationMinutes()))
                 .bufferBefore(Duration.ofMinutes(request.bufferBeforeMinutes()))
@@ -141,17 +126,12 @@ public class EventTypeService {
     /**
      * Partial update. An absent field leaves the stored value alone.
      *
-     * <p>This is the repair path that did not exist: an event type's booking calendar was written at
-     * creation and could not be changed by any route afterwards, so a wrong or stale calendar could
-     * only be fixed by deleting the event type and rebuilding it.
-     *
-     * <p>Bookings already made are untouched — {@code booking_ownership} records where each event was
-     * actually written and wins over the event type from then on, so changing the calendar here
-     * never relocates a meeting already sitting on someone's calendar. Only later bookings follow
-     * the new setting.
+     * <p>No calendar fields: which calendars block you, and which one receives your bookings, are
+     * settings on your account rather than on each event type — change them once and every event
+     * type follows.
      *
      * <p>{@code kind} is immutable: it gates entitlements at creation, and every downstream
-     * assumption about who gets the calendar write is derived from it.
+     * assumption about who receives the calendar write is derived from it.
      */
     @Transactional
     public EventTypeSummaryResponse update(UUID actingUserId, UUID eventTypeId, UpdateEventTypeRequest request) {
@@ -162,14 +142,8 @@ public class EventTypeService {
         User user = sessionUserResolver.require(actingUserId, "PUT:/api/event-types");
         validateUpdate(request);
 
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration orchestration =
-                orchestrationNormalizer.normalizeForDraftMutation(
-                        actingUserId,
-                        eventType,
-                        request.availabilityCalendars(),
-                        request.conference(),
-                        request.projectionDestination(),
-                        orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()));
+        EventTypeOrchestrationNormalizer.ConferencingConfig conferencing =
+                orchestrationNormalizer.normalizeForDraftMutation(eventType, request.conference());
 
         if (request.name() != null) eventType.setName(request.name().trim());
         if (request.description() != null) eventType.setDescription(trimToNull(request.description()));
@@ -182,35 +156,15 @@ public class EventTypeService {
         if (request.maxAdvanceDays() != null) eventType.setMaxAdvance(Duration.ofDays(request.maxAdvanceDays()));
         if (request.holdDurationMinutes() != null) eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
 
-        // Availability: an explicit list (even an empty one) replaces the selection; absent leaves it.
-        if (request.availabilityCalendars() != null) {
-            eventType.setAvailabilityCalendarsJson(
-                    orchestrationJsonCodec.serializeAvailabilityBindings(orchestration.availabilityBindings()));
-            eventType.setAvailabilityMode(request.availabilityCalendars().isEmpty()
-                    ? AvailabilityMode.ALL_CONNECTED
-                    : AvailabilityMode.SELECTED);
-        }
-
-        // Booking calendar: a supplied destination re-pins it; an empty one unpins back to "use my
-        // default". normalizeForDraftMutation carries the stored triple forward when absent.
-        if (request.projectionDestination() != null) {
-            EventTypeOrchestrationNormalizer.ProjectionDestination proj = orchestration.projectionDestination();
-            eventType.setProjectionConnectionId(proj != null ? proj.connectionId() : null);
-            eventType.setProjectionCalendarId(proj != null ? proj.calendarId() : null);
-            eventType.setProjectionProvider(proj != null
-                    ? io.bunnycal.calendar.domain.CalendarProviderType.valueOf(proj.provider().toUpperCase(Locale.ROOT))
-                    : null);
-        }
-
         if (request.conference() != null) {
-            eventType.setConferencingProvider(orchestration.conferencing().provider());
-            eventType.setCustomConferenceUrl(orchestration.conferencing().customUrl());
+            eventType.setConferencingProvider(conferencing.providerType());
+            eventType.setCustomConferenceUrl(conferencing.customUrl());
         }
 
         EventType saved = eventTypeRepository.save(eventType);
         OpsLoggers.HOST.info(
-                "event_type_updated hostId={} eventTypeId={} eventTypeKind={} projectionCalendarId={} availabilityMode={}",
-                actingUserId, saved.getId(), saved.getKind(), saved.getProjectionCalendarId(), saved.getAvailabilityMode());
+                "event_type_updated hostId={} eventTypeId={} eventTypeKind={} conferencingProvider={}",
+                actingUserId, saved.getId(), saved.getKind(), saved.getConferencingProvider());
         return toSummary(saved, ensureUsername(user));
     }
 
@@ -391,18 +345,11 @@ public class EventTypeService {
     }
 
     private EventTypeSummaryResponse toSummary(EventType eventType, String username) {
-        List<EventTypeSummaryResponse.AvailabilityCalendarResponse> availability =
-                orchestrationJsonCodec.toAvailabilityResponse(eventType.getAvailabilityCalendarsJson());
         EventTypeSummaryResponse.ConferenceResponse conference = new EventTypeSummaryResponse.ConferenceResponse(
                 eventType.getConferencingProvider() != ConferencingProviderType.NONE,
                 eventType.getConferencingProvider().name(),
                 eventType.getCustomConferenceUrl()
         );
-        EventTypeSummaryResponse.ProjectionDestinationResponse projectionDestination =
-                new EventTypeSummaryResponse.ProjectionDestinationResponse(
-                        eventType.getProjectionProvider() == null ? null : eventType.getProjectionProvider().name(),
-                        eventType.getProjectionConnectionId(),
-                        eventType.getProjectionCalendarId());
         // Evaluate degraded only for COLLECTIVE; other kinds are single-host and always non-degraded.
         boolean degraded = eventType.getKind() == EventKind.COLLECTIVE
                 && publishReadinessService.evaluate(eventType).degraded();
@@ -421,9 +368,7 @@ public class EventTypeService {
                 degraded,
                 groupSeriesBounds.startDate(),
                 groupSeriesBounds.endDate(),
-                availability,
                 conference,
-                projectionDestination,
                 summarizeAvailabilityWindows(eventType)
         );
     }

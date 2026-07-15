@@ -1,23 +1,19 @@
 package io.bunnycal.availability.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
-import io.bunnycal.calendar.domain.CalendarConnection;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
-import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.time.Instant;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import io.bunnycal.conferencing.service.ConferencingExecutionPolicy;
@@ -25,172 +21,73 @@ import io.bunnycal.conferencing.service.ConferencingInstruction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class EventTypeOrchestrationNormalizerTest {
 
-    @Mock
-    private CalendarConnectionRepository calendarConnectionRepository;
-
     private EventTypeOrchestrationNormalizer normalizer;
 
     @BeforeEach
     void setUp() {
-        normalizer = new EventTypeOrchestrationNormalizer(calendarConnectionRepository, new SimpleMeterRegistry());
-    }
-
-    @Test
-    void projectionDestination_isExplicitAndIndependentOfAvailabilityOrder() {
-        UUID userId = UUID.randomUUID();
-        UUID oldConnId = UUID.randomUUID();
-        UUID newConnId = UUID.randomUUID();
-
-        CalendarConnection oldConn = activeConnection(userId, oldConnId, CalendarProviderType.GOOGLE);
-        CalendarConnection newConn = activeConnection(userId, newConnId, CalendarProviderType.MICROSOFT);
-
-        when(calendarConnectionRepository.findById(newConnId)).thenReturn(Optional.of(newConn));
-        when(calendarConnectionRepository.findById(oldConnId)).thenReturn(Optional.of(oldConn));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Ordering Test", null, null, 30, 0, 0, 30, 0, 30, 10, "ordering-test",
-                List.of(
-                        new CreateEventTypeRequest.AvailabilityCalendarRequest(newConnId.toString(), "microsoft", "cal_m"),
-                        new CreateEventTypeRequest.AvailabilityCalendarRequest(oldConnId.toString(), "google", "cal_g")
-                ),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", oldConnId, "proj-g")
-        );
-
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertEquals(oldConnId, normalized.projectionDestination().connectionId());
-        assertEquals("google", normalized.projectionDestination().provider());
-        assertEquals(2, normalized.availabilityBindings().size());
-        assertEquals(newConnId, normalized.availabilityBindings().get(0).connectionId());
-        assertEquals(oldConnId, normalized.availabilityBindings().get(1).connectionId());
-    }
-
-    @Test
-    void availabilityBindings_allPreserved_withoutAffectingProjectionDestination() {
-        UUID userId = UUID.randomUUID();
-        UUID googleConnId = UUID.randomUUID();
-        UUID msConnId = UUID.randomUUID();
-        CalendarConnection googleConn = activeConnection(userId, googleConnId, CalendarProviderType.GOOGLE);
-        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
-
-        when(calendarConnectionRepository.findById(googleConnId)).thenReturn(Optional.of(googleConn));
-        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Multi", null, null, 30, 0, 0, 30, 0, 30, 10, "multi",
-                List.of(
-                        new CreateEventTypeRequest.AvailabilityCalendarRequest(googleConnId.toString(), "google", "cal_g"),
-                        new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", "cal_m")
-                ),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", googleConnId, "proj-g")
-        );
-
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertEquals(googleConnId, normalized.projectionDestination().connectionId());
-        assertEquals(2, normalized.availabilityBindings().size());
-        assertEquals(googleConnId, normalized.availabilityBindings().get(0).connectionId());
-        assertEquals(msConnId, normalized.availabilityBindings().get(1).connectionId());
-    }
-
-    // An absent destination is now "use my default", resolved live at booking time — not an error.
-    // A host with one calendar is never shown the picker, and pinning the calendar we would have
-    // shown them binds the event type to a connection they never chose (and which changes id the
-    // moment they reconnect the account).
-    @Test
-    void missingProjectionDestination_meansUseMyDefault() {
-        UUID userId = UUID.randomUUID();
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                null
-        );
-
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration result = normalizer.normalize(userId, request);
-
-        assertNull(result.projectionDestination());
-    }
-
-    @Test
-    void availabilityConnectionsAreValidatedAsReadOnlyBindings() {
-        UUID userId = UUID.randomUUID();
-        UUID availabilityConnectionId = UUID.randomUUID();
-        CalendarConnection conn = activeConnection(userId, availabilityConnectionId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(availabilityConnectionId)).thenReturn(Optional.of(conn));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(availabilityConnectionId.toString(), "google", "cal_1")),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", availabilityConnectionId, "proj-g")
-        );
-
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertEquals(1, normalized.availabilityBindings().size());
-        assertEquals(availabilityConnectionId, normalized.availabilityBindings().get(0).connectionId());
-        assertEquals(ConferencingProviderType.NONE, normalized.conferencing().provider());
+        normalizer = new EventTypeOrchestrationNormalizer();
     }
 
     @Test
     void customConferenceUrlRequiresHttps() {
-        UUID userId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(true, "custom_url", "http://insecure.test"),
-                projection("google", connId, "proj-g")
+                null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        assertThrows(CustomException.class, () -> normalizer.normalize(request));
     }
 
     @Test
-    void googleMeetWithMicrosoftProjectionDestination_rejectedAtNormalization() {
-        UUID userId = UUID.randomUUID();
-        UUID msConnId = UUID.randomUUID();
-        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
-        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
+    void customConferenceUrl_httpsAccepted() {
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "custom_url", "https://secure.test/room"),
+                null
+        );
 
+        EventTypeOrchestrationNormalizer.ConferencingConfig config = normalizer.normalize(request);
+
+        assertTrue(config.enabled());
+        assertEquals(ConferencingProviderType.CUSTOM_URL, config.providerType());
+        assertEquals("https://secure.test/room", config.customUrl());
+    }
+
+    // Meet can only be minted on a Google calendar, so an event type that froze it would break the
+    // day its owner moved their write-back calendar. It is reachable only through DEFAULT.
+    @Test
+    void googleMeet_cannotBePinnedToAnEventType() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Cross Provider", null, null, 30, 0, 0, 30, 0, 30, 10, "cross-provider",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", null)),
+                List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
-                projection("microsoft", msConnId, "proj-m")
+                null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(request));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
     }
 
     @Test
-    void microsoftTeamsWithConsumerMsaProjection_rejectedAtNormalization() {
-        UUID userId = UUID.randomUUID();
-        UUID msConnId = UUID.randomUUID();
-        CalendarConnection msConn = activeConnection(userId, msConnId, CalendarProviderType.MICROSOFT);
-        msConn.setProviderUserId("ed9adb1ac97c0819");
-        when(calendarConnectionRepository.findById(msConnId)).thenReturn(Optional.of(msConn));
-
+    void microsoftTeams_cannotBePinnedToAnEventType() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Teams on MSA", null, null, 30, 0, 0, 30, 0, 30, 10, "teams-msa",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(msConnId.toString(), "microsoft", null)),
+                "Teams", null, null, 30, 0, 0, 30, 0, 30, 10, "teams",
+                List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(true, "microsoft_teams", null),
-                projection("microsoft", msConnId, "proj-m")
+                null
         );
 
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(request));
+        assertEquals(ErrorCode.VALIDATION_ERROR, ex.getErrorCode());
     }
 
     @Test
@@ -212,130 +109,66 @@ class EventTypeOrchestrationNormalizerTest {
     }
 
     @Test
-    void invalidAvailabilityConnection_throwsValidationError() {
-        UUID userId = UUID.randomUUID();
-        UUID unknownId = UUID.randomUUID();
-        when(calendarConnectionRepository.findById(unknownId)).thenReturn(Optional.empty());
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(unknownId.toString(), "google", null)),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", unknownId, "proj-g")
-        );
-
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-    }
-
-    @Test
-    void nonUuidAvailabilityConnectionId_throwsValidationError() {
-        UUID userId = UUID.randomUUID();
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest("google", "google", null)),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", UUID.randomUUID(), "proj-g")
-        );
-
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-    }
-
-    @Test
-    void projectionDestination_providerMismatch_rejected() {
-        UUID userId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        // Connection is GOOGLE but request says MICROSOFT
-        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
-
+    void conferencingDisabled_yieldsNone() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("microsoft", connId, "cal-id")
+                null
         );
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
+
+        EventTypeOrchestrationNormalizer.ConferencingConfig config = normalizer.normalize(request);
+
+        assertFalse(config.enabled());
+        assertEquals(ConferencingProviderType.NONE, config.providerType());
+        assertNull(config.customUrl());
     }
 
+    // "A meeting link, but you didn't say which" — the user's own global default is the answer.
     @Test
-    void availabilityExternalCalendarId_uuidShaped_rejected() {
-        UUID userId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(new CreateEventTypeRequest.AvailabilityCalendarRequest(
-                        connId.toString(), "google", UUID.randomUUID().toString())),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", connId, "primary")
-        );
-        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-        assertTrue(ex.getMessage().contains("externalCalendarId"));
-    }
-
-    @Test
-    void projectionCalendarId_uuidShaped_rejected() {
-        UUID userId = UUID.randomUUID();
-        UUID connId = UUID.randomUUID();
-        CalendarConnection conn = activeConnection(userId, connId, CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findById(connId)).thenReturn(Optional.of(conn));
-
+    void conferencingEnabledWithoutProvider_yieldsDefaultPointer() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                projection("google", connId, UUID.randomUUID().toString())
+                new CreateEventTypeRequest.ConferenceRequest(true, null, null),
+                null
         );
-        CustomException ex = assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-        assertTrue(ex.getMessage().contains("projectionDestination.calendarId"));
+
+        EventTypeOrchestrationNormalizer.ConferencingConfig config = normalizer.normalize(request);
+
+        assertTrue(config.enabled());
+        assertEquals(ConferencingProviderType.DEFAULT, config.providerType());
+        assertTrue(config.providerType().isPointer());
     }
 
-    // ── ROUND_ROBIN tests ────────────────────────────────────────────────────
-
     @Test
-    void roundRobin_withNullProjectionDestination_succeeds() {
-        UUID userId = UUID.randomUUID();
-
+    void conferencingProviderNone_withEnabledTrue_rejected() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Team Standup", null, null, 30, 0, 0, 30, 0, 30, 10, "team-standup",
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                null,
-                EventKind.ROUND_ROBIN, null
+                new CreateEventTypeRequest.ConferenceRequest(true, "none", null),
+                null
         );
 
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertTrue(normalized.projectionDestination() == null,
-                "ROUND_ROBIN events must not require a projectionDestination");
-        assertTrue(normalized.availabilityBindings().isEmpty());
-        assertEquals(ConferencingProviderType.NONE, normalized.conferencing().provider());
+        assertThrows(CustomException.class, () -> normalizer.normalize(request));
     }
 
     @Test
-    void roundRobin_withGoogleMeetConferencing_andNullProjection_succeeds() {
-        UUID userId = UUID.randomUUID();
-
+    void unknownConferencingProvider_rejected() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "RR Google Meet", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-gmeet",
+                "Intro", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
                 List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
-                null,
-                EventKind.ROUND_ROBIN, null
+                new CreateEventTypeRequest.ConferenceRequest(true, "webex", null),
+                null
         );
 
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertTrue(normalized.projectionDestination() == null);
-        assertEquals(ConferencingProviderType.GOOGLE_MEET, normalized.conferencing().provider());
+        assertThrows(CustomException.class, () -> normalizer.normalize(request));
     }
 
-    @Test
-    void roundRobin_withZoomConferencing_andNullProjection_succeeds() {
-        UUID userId = UUID.randomUUID();
+    // ── kind-independence: conferencing normalisation does not branch on event kind ───────────
 
+    @Test
+    void roundRobin_withZoomConferencing_succeeds() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "RR Zoom", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-zoom",
                 List.of(),
@@ -344,16 +177,26 @@ class EventTypeOrchestrationNormalizerTest {
                 EventKind.ROUND_ROBIN, null
         );
 
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
+        EventTypeOrchestrationNormalizer.ConferencingConfig config = normalizer.normalize(request);
 
-        assertTrue(normalized.projectionDestination() == null);
-        assertEquals(ConferencingProviderType.ZOOM, normalized.conferencing().provider());
+        assertEquals(ConferencingProviderType.ZOOM, config.providerType());
     }
 
     @Test
-    void roundRobin_withMicrosoftTeamsConferencing_andNullProjection_succeeds() {
-        UUID userId = UUID.randomUUID();
+    void roundRobin_withGoogleMeetConferencing_rejected() {
+        CreateEventTypeRequest request = new CreateEventTypeRequest(
+                "RR Google Meet", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-gmeet",
+                List.of(),
+                new CreateEventTypeRequest.ConferenceRequest(true, "google_meet", null),
+                null,
+                EventKind.ROUND_ROBIN, null
+        );
 
+        assertThrows(CustomException.class, () -> normalizer.normalize(request));
+    }
+
+    @Test
+    void roundRobin_withMicrosoftTeamsConferencing_rejected() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
                 "RR Teams", null, null, 30, 0, 0, 30, 0, 30, 10, "rr-teams",
                 List.of(),
@@ -362,108 +205,68 @@ class EventTypeOrchestrationNormalizerTest {
                 EventKind.ROUND_ROBIN, null
         );
 
-        // validateConferencingAgainstProjection short-circuits when projection is null —
-        // Teams link is created from the assigned participant's calendar at booking time.
-        EventTypeOrchestrationNormalizer.NormalizedOrchestration normalized = normalizer.normalize(userId, request);
-
-        assertTrue(normalized.projectionDestination() == null);
-        assertEquals(ConferencingProviderType.MICROSOFT_TEAMS, normalized.conferencing().provider());
+        assertThrows(CustomException.class, () -> normalizer.normalize(request));
     }
 
     @Test
-    void oneOnOne_withNullProjectionDestination_resolvesToDefaultAtBookingTime() {
-        UUID userId = UUID.randomUUID();
-
+    void group_conferencingDisabled_yieldsNone() {
         CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "1:1 No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "intro",
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(false, null, null),
-                null,
-                EventKind.ONE_ON_ONE, null
-        );
-
-        assertNull(normalizer.normalize(userId, request).projectionDestination(),
-                "no pinned calendar — the booking resolves the host's default instead");
-    }
-
-    // Making the destination optional must not smuggle away the conferencing guardrail. With no
-    // pinned calendar the booking lands on the host's default connection, so the capability question
-    // is the same — just asked of the pool the default is drawn from. A host with no Google calendar
-    // at all cannot host a Meet link no matter which of their connections is chosen.
-    @Test
-    void nullProjection_withGoogleMeet_rejectsHostWithNoGoogleCalendar() {
-        UUID userId = UUID.randomUUID();
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
-                .thenReturn(List.of());
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Meet No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "meet",
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "GOOGLE_MEET", null),
-                null,
-                EventKind.ONE_ON_ONE, null
-        );
-
-        assertThrows(CustomException.class, () -> normalizer.normalize(userId, request));
-    }
-
-    @Test
-    void nullProjection_withGoogleMeet_allowsHostWhoHasAGoogleCalendar() {
-        UUID userId = UUID.randomUUID();
-        CalendarConnection google = new CalendarConnection();
-        google.setUserId(userId);
-        google.setProvider(CalendarProviderType.GOOGLE);
-        when(calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                userId, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE))
-                .thenReturn(List.of(google));
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Meet No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "meet",
-                List.of(),
-                new CreateEventTypeRequest.ConferenceRequest(true, "GOOGLE_MEET", null),
-                null,
-                EventKind.ONE_ON_ONE, null
-        );
-
-        assertNull(normalizer.normalize(userId, request).projectionDestination());
-    }
-
-    @Test
-    void group_withNullProjectionDestination_resolvesToDefaultAtBookingTime() {
-        UUID userId = UUID.randomUUID();
-
-        CreateEventTypeRequest request = new CreateEventTypeRequest(
-                "Group No Projection", null, null, 30, 0, 0, 30, 0, 30, 10, "group",
+                "Group", null, null, 30, 0, 0, 30, 0, 30, 10, "group",
                 List.of(),
                 new CreateEventTypeRequest.ConferenceRequest(false, null, null),
                 null,
                 EventKind.GROUP, null
         );
 
-        assertNull(normalizer.normalize(userId, request).projectionDestination(),
-                "no pinned calendar — the booking resolves the host's default instead");
+        assertEquals(ConferencingProviderType.NONE, normalizer.normalize(request).providerType());
     }
 
-    private static CalendarConnection activeConnection(UUID userId, UUID id, CalendarProviderType provider) {
-        CalendarConnection c = new CalendarConnection();
-        c.setUserId(userId);
-        c.setProvider(provider);
-        c.setStatus(CalendarConnectionStatus.ACTIVE);
-        c.setProviderUserId("provider-user");
-        c.setRefreshTokenCiphertext("cipher");
-        c.setLastTokenExpiresAt(Instant.now().plusSeconds(3600));
-        c.setScopes(List.of("calendar.readwrite"));
-        try {
-            java.lang.reflect.Field f = CalendarConnection.class.getDeclaredField("id");
-            f.setAccessible(true);
-            f.set(c, id);
-        } catch (Exception ignored) {
-        }
-        return c;
+    // ── draft mutation: a null conference block means "leave it alone" ────────────────────────
+
+    @Test
+    void draftMutation_nullConference_roundTripsExistingChoice() {
+        EventType existing = EventType.builder()
+                .id(UUID.randomUUID())
+                .userId(UUID.randomUUID())
+                .name("Intro")
+                .conferencingProvider(ConferencingProviderType.ZOOM)
+                .build();
+
+        EventTypeOrchestrationNormalizer.ConferencingConfig config =
+                normalizer.normalizeForDraftMutation(existing, null);
+
+        assertTrue(config.enabled());
+        assertEquals(ConferencingProviderType.ZOOM, config.providerType());
     }
 
-    private static CreateEventTypeRequest.ProjectionDestinationRequest projection(String provider, UUID connectionId, String calendarId) {
-        return new CreateEventTypeRequest.ProjectionDestinationRequest(provider, connectionId.toString(), calendarId);
+    @Test
+    void draftMutation_nullConference_onNoneEventType_staysNone() {
+        EventType existing = EventType.builder()
+                .id(UUID.randomUUID())
+                .userId(UUID.randomUUID())
+                .name("Intro")
+                .conferencingProvider(ConferencingProviderType.NONE)
+                .build();
+
+        EventTypeOrchestrationNormalizer.ConferencingConfig config =
+                normalizer.normalizeForDraftMutation(existing, null);
+
+        assertFalse(config.enabled());
+        assertEquals(ConferencingProviderType.NONE, config.providerType());
+    }
+
+    @Test
+    void draftMutation_explicitConference_overridesExistingChoice() {
+        EventType existing = EventType.builder()
+                .id(UUID.randomUUID())
+                .userId(UUID.randomUUID())
+                .name("Intro")
+                .conferencingProvider(ConferencingProviderType.ZOOM)
+                .build();
+
+        EventTypeOrchestrationNormalizer.ConferencingConfig config = normalizer.normalizeForDraftMutation(
+                existing, new CreateEventTypeRequest.ConferenceRequest(true, null, null));
+
+        assertEquals(ConferencingProviderType.DEFAULT, config.providerType());
     }
 }

@@ -13,6 +13,7 @@ import io.bunnycal.calendar.dto.CalendarRuntimeStatusResponse;
 import io.bunnycal.calendar.dto.MicrosoftWebhookNotificationRequest;
 import io.bunnycal.calendar.auth.OAuthStateException;
 import io.bunnycal.common.api.ApiResponse;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import java.net.URI;
@@ -32,6 +33,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMethod;
@@ -163,13 +165,59 @@ public class CalendarIntegrationController {
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
-    /** Re-points round-robin write-back at a specific connected account. */
+    /**
+     * Points the user's bookings at a specific connected account.
+     *
+     * <p>Refused when that account's provider cannot mint the user's current default meeting link —
+     * see {@code CalendarConnectionManagementService#setDefaultWriteback}.
+     */
     @PostMapping("/connections/{connectionId}/default-writeback")
     public ResponseEntity<ApiResponse<Void>> setDefaultWriteback(@PathVariable("connectionId") UUID connectionId,
                                                                  Authentication authentication) {
         connectionManagementService.setDefaultWriteback(extractUserId(authentication), connectionId);
         return ResponseEntity.ok(ApiResponse.success(null));
     }
+
+    /** Chooses which calendar inside the write-back connection receives bookings. */
+    @PutMapping("/connections/{connectionId}/calendars/{calendarId}/writeback")
+    public ResponseEntity<ApiResponse<Void>> setWritebackCalendar(@PathVariable("connectionId") UUID connectionId,
+                                                                  @PathVariable("calendarId") String calendarId,
+                                                                  Authentication authentication) {
+        connectionManagementService.setWritebackCalendar(extractUserId(authentication), connectionId, calendarId);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    /**
+     * Turns one calendar's free/busy contribution on or off. Applies everywhere the user is booked,
+     * including team events they are a member of but do not own.
+     */
+    @PutMapping("/connections/{connectionId}/calendars/{calendarId}/availability")
+    public ResponseEntity<ApiResponse<Void>> setChecksAvailability(@PathVariable("connectionId") UUID connectionId,
+                                                                   @PathVariable("calendarId") String calendarId,
+                                                                   @RequestBody AvailabilityToggleRequest request,
+                                                                   Authentication authentication) {
+        connectionManagementService.setChecksAvailability(
+                extractUserId(authentication), connectionId, calendarId, request != null && request.checksAvailability());
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    /**
+     * Sets the default meeting link every event type follows unless it was given an explicit
+     * override. Constrained by the write-back calendar's provider.
+     */
+    @PutMapping("/default-conferencing")
+    public ResponseEntity<ApiResponse<Void>> setDefaultConferencing(@RequestBody DefaultConferencingRequest request,
+                                                                    Authentication authentication) {
+        ConferencingProviderType provider = ConferencingProviderType
+                .fromExternal(request == null ? null : request.provider())
+                .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR, "invalid provider"));
+        connectionManagementService.setDefaultConferencing(extractUserId(authentication), provider);
+        return ResponseEntity.ok(ApiResponse.success(null));
+    }
+
+    public record AvailabilityToggleRequest(boolean checksAvailability) {}
+
+    public record DefaultConferencingRequest(String provider) {}
 
     @DeleteMapping("/{provider}")
     public ResponseEntity<ApiResponse<Void>> disconnect(@PathVariable("provider") String provider,

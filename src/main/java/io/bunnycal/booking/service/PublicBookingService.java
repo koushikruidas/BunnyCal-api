@@ -9,9 +9,8 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.dto.AvailabilityStatus;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
-import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
-import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.availability.service.ParticipantEligibilityService;
+import io.bunnycal.availability.service.HolidayDayOffService;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicBookingStatusResponse;
@@ -75,6 +74,11 @@ public class PublicBookingService {
     @Autowired(required = false)
     private EmbedBookingSupport embedBookingSupport;
 
+    // Field-injected to keep the legacy test constructors stable while confirm-time availability
+    // gains the same holiday-day-off check as slot listing.
+    @Autowired(required = false)
+    private HolidayDayOffService holidayDayOffService;
+
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
     private final BookingService bookingService;
@@ -104,7 +108,6 @@ public class PublicBookingService {
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final EventTypeParticipantRepository eventTypeParticipantRepository;
     private final BookingEventTypeResolver bookingEventTypeResolver;
-    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     private final io.bunnycal.billing.entitlement.EntitlementService entitlementService;
     private final Duration guestManageTokenTtl;
     private final Duration projectionFreshnessSla;
@@ -140,7 +143,6 @@ public class PublicBookingService {
                                 BookingSubmissionFormatter bookingSubmissionFormatter,
                                 EventTypeParticipantRepository eventTypeParticipantRepository,
                                 BookingEventTypeResolver bookingEventTypeResolver,
-                                EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
                                 io.bunnycal.billing.entitlement.EntitlementService entitlementService,
                                 MeterRegistry meterRegistry,
                                 @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays,
@@ -179,9 +181,6 @@ public class PublicBookingService {
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.eventTypeParticipantRepository = eventTypeParticipantRepository;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
-        this.orchestrationJsonCodec = orchestrationJsonCodec == null
-                ? new EventTypeOrchestrationJsonCodec(new ObjectMapper())
-                : orchestrationJsonCodec;
         this.entitlementService = entitlementService;
         this.meterRegistry = meterRegistry;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
@@ -225,7 +224,7 @@ public class PublicBookingService {
                 collectiveSlotTokenService, collectiveAssignmentService, collectiveParticipantHoldRepository,
                 participantEligibilityService, bookingAssignmentRepository, userRepository, profileAvatarService, null, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), eventTypeParticipantRepository, bookingEventTypeResolver,
-                null, entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
+                entitlementService, meterRegistry, capabilityTokenTtlDays, projectionFreshnessSlaSeconds);
     }
 
     @Transactional(readOnly = true)
@@ -688,8 +687,9 @@ public class PublicBookingService {
         // from the participant themselves, not from the booking's "host" — for RR those
         // happen to be the same row today, but the busy lookup is the participant's.
         String participantTimezone = resolveUserTimezone(assignedParticipantId);
+        requireNotHolidayDayOff(assignedParticipantId, participantTimezone, start);
         boolean hasProjectionBusy =
-                hasParticipantProjectionBusyConflict(assignedParticipantId, participantTimezone, start, end);
+                hasProjectionBusyConflict(assignedParticipantId, participantTimezone, start, end);
         if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -720,9 +720,9 @@ public class PublicBookingService {
         }
 
         String actualTimezone = resolveBookingHostTimezone(booking);
-        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        requireNotHolidayDayOff(booking.getHostId(), actualTimezone, start);
         boolean hasProjectionBusy =
-                hasOwnerProjectionBusyConflict(booking.getHostId(), eventType, actualTimezone, start, end);
+                hasProjectionBusyConflict(booking.getHostId(), actualTimezone, start, end);
         if (hasProjectionBusy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -766,7 +766,8 @@ public class PublicBookingService {
             }
 
             String tz = resolveUserTimezone(participantId);
-            if (hasParticipantProjectionBusyConflict(participantId, tz, start, end)) {
+            requireNotHolidayDayOff(participantId, tz, start);
+            if (hasProjectionBusyConflict(participantId, tz, start, end)) {
                 throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available.");
             }
         }
@@ -787,12 +788,34 @@ public class PublicBookingService {
         return PublicConfirmResponse.oneOnOne(bookingId, "SYNCING", manageToken);
     }
 
+    private void requireNotHolidayDayOff(UUID userId, String timezone, Instant start) {
+        if (holidayDayOffService == null || userId == null || start == null) {
+            return;
+        }
+        ZoneId zoneId;
+        try {
+            zoneId = ZoneId.of(timezone == null || timezone.isBlank() ? "UTC" : timezone);
+        } catch (RuntimeException ignored) {
+            zoneId = ZoneId.of("UTC");
+        }
+        LocalDate date = start.atZone(zoneId).toLocalDate();
+        if (holidayDayOffService.isDayOffUnlessOverridden(userId, date, zoneId)) {
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                    "This time slot is no longer available.");
+        }
+    }
+
     private PublicConfirmResponse confirmGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
                                                            UUID registrationId) {
-        // GROUP confirm bypasses calendar conflict check — session occupancy is the
-        // authority; the slot was validated when the attendee joined.
+        // Session occupancy remains the authority for competing registrations, but a holiday can
+        // arrive between hold and confirm. Re-check the host's day-off layer so GROUP follows the
+        // same listing/confirmation contract as one-to-one, round-robin, and collective.
+        UUID sessionId = resolveSessionId(registrationId, target.userId());
+        EventSession session = eventSessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Session not found."));
+        requireNotHolidayDayOff(target.userId(), resolveUserTimezone(target.userId()), session.getStartTime());
         ConfirmRegistrationResult result = sessionService.confirmRegistration(
-                resolveSessionId(registrationId, target.userId()),
+                sessionId,
                 registrationId,
                 target.userId()
         );
@@ -813,6 +836,9 @@ public class PublicBookingService {
                                                   UUID bookingId,
                                                   String guestCapabilityToken) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        if (target.kind() == EventKind.GROUP) {
+            return manageGroupRegistrationView(target, bookingId, guestCapabilityToken);
+        }
         Booking booking = bookingLifecycleService.authorizeGuestManageView(bookingId, target.eventTypeId(), guestCapabilityToken);
 
         var row = bookingRepository.findManageRowByEventType(bookingId, target.eventTypeId())
@@ -835,6 +861,7 @@ public class PublicBookingService {
         return new PublicManageBookingResponse(
                 row.getBookingId(),
                 eventTitle,
+                target.kind(),
                 target.duration().toMinutes(),
                 row.getStartTime(),
                 row.getEndTime(),
@@ -851,6 +878,87 @@ public class PublicBookingService {
                 row.getExternalLifecycleReason(),
                 assignedHost.getTimezone()
         );
+    }
+
+    private PublicManageBookingResponse manageGroupRegistrationView(
+            PublicBookingTargetResolver.ResolvedTarget target,
+            UUID registrationId,
+            String guestCapabilityToken) {
+        SessionRegistration registration = sessionRegistrationRepository
+                .findByIdAndHostId(registrationId, target.userId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Registration not found."));
+        EventSession session = eventSessionRepository.findById(registration.getSessionId())
+                .filter(candidate -> target.eventTypeId().equals(candidate.getEventTypeId()))
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Session not found."));
+
+        if (!guestCapabilityTokenService.allows(
+                registrationId,
+                target.userId(),
+                guestCapabilityToken,
+                BookingActionType.MANAGE_BOOKING)) {
+            throw new CustomException(ErrorCode.FORBIDDEN, "Guest capability token is required.");
+        }
+
+        EventSessionRepository.SessionDetailRow sessionDetail = eventSessionRepository
+                .findSessionDetail(session.getId())
+                .stream()
+                .findFirst()
+                .orElse(null);
+        String conferenceUrl = sessionDetail == null ? null : sessionDetail.getConferenceUrl();
+        String conferenceProvider = sessionDetail == null
+                ? null
+                : firstNonBlank(sessionDetail.getConferenceProvider(), sessionDetail.getProvider());
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails =
+                conferenceUrl == null || conferenceUrl.isBlank()
+                        ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
+                        : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
+                                conferenceProvider == null ? "UNKNOWN" : conferenceProvider.toUpperCase(java.util.Locale.ROOT),
+                                conferenceUrl,
+                                null,
+                                null,
+                                null,
+                                "session_projection");
+
+        User host = userRepository.findById(target.userId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));
+        long durationMinutes = Math.max(1L, Duration.between(session.getStartTime(), session.getEndTime()).toMinutes());
+        return new PublicManageBookingResponse(
+                registration.getId(),
+                target.eventName(),
+                EventKind.GROUP,
+                durationMinutes,
+                session.getStartTime(),
+                session.getEndTime(),
+                host.getName(),
+                host.getUsername(),
+                profileAvatarService.resolveProfileImageUrl(host),
+                registration.getGuestName(),
+                registration.getGuestEmail(),
+                registration.getGuestNotes(),
+                List.of(),
+                conferenceDetails,
+                registration.getStatus().name(),
+                sessionLifecycleState(sessionDetail),
+                sessionDetail == null ? null : sessionDetail.getLastError(),
+                host.getTimezone());
+    }
+
+    private static String sessionLifecycleState(EventSessionRepository.SessionDetailRow row) {
+        if (row == null || row.getLastError() == null || row.getLastError().isBlank()) {
+            return "STABLE";
+        }
+        return switch (row.getLastError()) {
+            case "TERMINAL_EXTERNAL_DELETE" -> "TERMINAL_EXTERNAL_DELETE";
+            case "EXTERNAL_ACTION_REQUIRED" -> "EXTERNAL_ACTION_REQUIRED";
+            case "PROVIDER_STATE_ORPHANED" -> "PROVIDER_STATE_ORPHANED";
+            default -> row.getLastError().startsWith("DRIFT_") ? "ACTIVE_DRIFT" : "STABLE";
+        };
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) return first.trim();
+        if (second != null && !second.isBlank()) return second.trim();
+        return null;
     }
 
     @Transactional
@@ -936,18 +1044,13 @@ public class PublicBookingService {
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
-        // ROUND_ROBIN: booking.hostId is the assigned participant → all their own
-        // connections block. ONE_ON_ONE: booking.hostId is the event type owner → only
-        // the calendars selected for this event type block, same as the slot listing.
-        boolean busy = target.kind() == EventKind.ROUND_ROBIN
-                ? hasParticipantProjectionBusyConflict(
-                        booking.getHostId(), resolveUserTimezone(booking.getHostId()), start, end)
-                : hasOwnerProjectionBusyConflict(
-                        booking.getHostId(),
-                        bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId()),
-                        resolveBookingHostTimezone(booking),
-                        start,
-                        end);
+        // booking.hostId is whoever holds the slot: the assigned participant for round-robin, the
+        // event type owner otherwise. Either way it is their own calendars that block them, so both
+        // paths ask the same question — only the timezone the answer is framed in differs.
+        String timezone = target.kind() == EventKind.ROUND_ROBIN
+                ? resolveUserTimezone(booking.getHostId())
+                : resolveBookingHostTimezone(booking);
+        boolean busy = hasProjectionBusyConflict(booking.getHostId(), timezone, start, end);
         if (busy) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
         }
@@ -963,45 +1066,19 @@ public class PublicBookingService {
     }
 
     /**
-     * Confirm-time calendar conflict check for the event type OWNER.
+     * Confirm-time calendar conflict check, for anyone on the booking.
      *
-     * <p>Resolves the same availability bindings the slot listing used, so a slot that
-     * was offered cannot be rejected here by a calendar the owner deselected for this
-     * event type.
+     * <p>Owner and participant are no longer distinguished. They used to be, because each resolved a
+     * different set of calendars — and the two answers could disagree, which is how a slot that had
+     * just been offered could be rejected at confirm time. Availability is now a property of the
+     * user's calendars, so the listing and this check ask the identical question.
      */
-    private boolean hasOwnerProjectionBusyConflict(UUID ownerId,
-                                                   EventType eventType,
-                                                   String timezone,
-                                                   Instant start,
-                                                   Instant end) {
-        return hasProjectionBusyConflict(
-                ownerId, timezone, start, end,
-                orchestrationJsonCodec.resolveAvailabilityBindings(eventType));
-    }
-
-    /**
-     * Confirm-time calendar conflict check for a round-robin / collective PARTICIPANT.
-     *
-     * <p>Participants are evaluated against ALL of their own active connections (empty
-     * bindings). The event type's availability bindings are the owner's configuration
-     * and name connections the participant does not own, so they must not be applied
-     * here — this matches {@code ParticipantAvailabilityService}, which generated the
-     * slots the participant was offered on.
-     */
-    private boolean hasParticipantProjectionBusyConflict(UUID participantId,
-                                                         String timezone,
-                                                         Instant start,
-                                                         Instant end) {
-        return hasProjectionBusyConflict(participantId, timezone, start, end, List.of());
-    }
-
     private boolean hasProjectionBusyConflict(UUID userId,
                                               String timezone,
                                               Instant start,
-                                              Instant end,
-                                              List<AvailabilityBinding> availabilityBindings) {
+                                              Instant end) {
         ZoneId zoneId = timeConversionService.resolveZone(timezone);
-        return calendarBusyTimeService.hasBusyConflict(userId, start, end, zoneId, availabilityBindings);
+        return calendarBusyTimeService.hasBusyConflict(userId, start, end, zoneId);
     }
 
     private static String normalizeGuestEmail(String value) {

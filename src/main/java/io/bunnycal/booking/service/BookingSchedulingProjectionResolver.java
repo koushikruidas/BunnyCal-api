@@ -1,9 +1,9 @@
 package io.bunnycal.booking.service;
 
-import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
@@ -15,6 +15,19 @@ import java.util.UUID;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
+/**
+ * Resolves the calendar a booking is written to.
+ *
+ * <p>Write-back is a property of the <b>user</b>, not of the event type: one connection carries
+ * {@code is_default_writeback}, and one calendar within it carries {@code is_selected}. There is no
+ * per-event-type destination to consult, so every event kind resolves the same way — against
+ * whoever actually receives the calendar event.
+ *
+ * <p>That writer is {@code booking.getHostId()}: the owner for 1:1/group/collective, and the
+ * <em>assigned member</em> for round-robin. A round-robin booking therefore lands on the assigned
+ * member's own calendar, chosen by them, which is the only calendar the owner could never have
+ * picked for them anyway.
+ */
 @Service
 public class BookingSchedulingProjectionResolver {
 
@@ -27,43 +40,26 @@ public class BookingSchedulingProjectionResolver {
         this.inventoryRepository = inventoryRepository;
     }
 
-    /**
-     * Resolves the calendar a booking is written to.
-     *
-     * <p>An explicit projection triple on the event type pins the destination — the host chose a
-     * specific calendar for this event type. Its absence means "use my default", which is resolved
-     * live against {@code booking.hostId}'s own connections. Both cases are legitimate:
-     *
-     * <ul>
-     *   <li>ROUND_ROBIN never carries a triple — {@code hostId} is the assigned participant, only
-     *       known at booking time, and the owner cannot pick a calendar inside someone else's
-     *       provider account.</li>
-     *   <li>Other kinds carry one only if the host was actually asked. A host with a single calendar
-     *       is never shown the picker, so nothing is pinned and the default is used. Freezing the
-     *       calendar we would have shown them leaves the event type pinned to a connection they
-     *       never chose — and reconnecting an account mints a new connection id, so that pin can
-     *       silently go stale.</li>
-     * </ul>
-     */
     @Nullable
     public SchedulingProjection resolve(Booking booking, EventType eventType) {
-        if (eventType.getKind() != EventKind.ROUND_ROBIN
-                && eventType.getProjectionProvider() != null
-                && eventType.getProjectionConnectionId() != null
-                && eventType.getProjectionCalendarId() != null
-                && !eventType.getProjectionCalendarId().isBlank()) {
-            return new SchedulingProjection(
-                    eventType.getProjectionProvider(),
-                    eventType.getProjectionConnectionId(),
-                    eventType.getProjectionCalendarId().trim());
-        }
+        return resolveForUser(booking.getHostId());
+    }
 
-        CalendarConnection connection = resolveParticipantConnection(booking.getHostId(), eventType.getProjectionProvider())
-                .orElse(null);
+    /**
+     * The user's global write-back destination, or null if they have none — no active connection, or
+     * a connection whose inventory has not been hydrated.
+     *
+     * <p>Null means "do not write to a calendar", which is a legitimate state (the guest still gets
+     * an ICS invitation). It is <b>not</b> a licence to guess: picking some other connection the user
+     * did not choose is how bookings end up in the wrong account.
+     */
+    @Nullable
+    public SchedulingProjection resolveForUser(UUID userId) {
+        CalendarConnection connection = writebackConnection(userId).orElse(null);
         if (connection == null || connection.getProvider() == null) {
             return null;
         }
-        String calendarId = resolveParticipantCalendarId(connection.getId(), eventType.getProjectionCalendarId(), connection.getProvider());
+        String calendarId = writebackCalendarId(connection.getId(), connection.getProvider());
         if (calendarId == null || calendarId.isBlank()) {
             return null;
         }
@@ -71,80 +67,51 @@ public class BookingSchedulingProjectionResolver {
     }
 
     /**
-     * Picks which of a user's connections a booking with no pinned calendar is written back to.
+     * The connection the user nominated to receive their bookings.
      *
-     * <p>Reached when the event type names no destination: always for round-robin (the host is the
-     * assigned participant, known only at booking time), and for any other kind whose host was never
-     * shown the picker or chose to use their default. With several connections the target has to be
-     * chosen here. In preference order: the user's designated default write-back connection, then
-     * the one that owns a selected (or primary) calendar so this agrees with
-     * {@link #resolveParticipantCalendarId}, then the oldest. The last case is genuinely ambiguous
-     * and is logged rather than silently resolved.
+     * <p>A single active connection needs no nomination — there is nothing to choose between. With
+     * several, {@code is_default_writeback} is the answer; the settings page always sets it, and both
+     * OAuth callbacks self-promote the first connection, so it is present in practice.
+     *
+     * <p>There is deliberately <b>no</b> fall-back to "some other connection" when the nominated one
+     * is missing. The previous implementation quietly picked the oldest connection of <em>any</em>
+     * provider, which meant a booking could land in a Google account when the user had chosen
+     * Outlook. Under a global model the user has told us where their bookings go; if that is
+     * unavailable, the honest answer is nowhere.
      */
-    private Optional<CalendarConnection> resolveParticipantConnection(UUID participantUserId,
-                                                                      @Nullable CalendarProviderType preferredProvider) {
-        if (preferredProvider != null) {
-            List<CalendarConnection> matching = connectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                    participantUserId, preferredProvider, CalendarConnectionStatus.ACTIVE);
-            if (!matching.isEmpty()) {
-                return Optional.of(pickWritebackConnection(participantUserId, matching, preferredProvider));
-            }
-        }
-        List<CalendarConnection> any = connectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
-                participantUserId, CalendarConnectionStatus.ACTIVE);
-        if (any.isEmpty()) {
+    public Optional<CalendarConnection> writebackConnection(UUID userId) {
+        List<CalendarConnection> active = connectionRepository.findByUserIdAndStatusOrderByCreatedAtAsc(
+                userId, CalendarConnectionStatus.ACTIVE);
+        if (active.isEmpty()) {
             return Optional.empty();
         }
-        return Optional.of(pickWritebackConnection(participantUserId, any, null));
-    }
-
-    private CalendarConnection pickWritebackConnection(UUID participantUserId,
-                                                       List<CalendarConnection> candidates,
-                                                       @Nullable CalendarProviderType preferredProvider) {
-        if (candidates.size() == 1) {
-            return candidates.get(0);
+        if (active.size() == 1) {
+            return Optional.of(active.get(0));
         }
-        Optional<CalendarConnection> designated = candidates.stream()
+        Optional<CalendarConnection> designated = active.stream()
                 .filter(CalendarConnection::isDefaultWriteback)
                 .findFirst();
-        if (designated.isPresent()) {
-            return designated.get();
+        if (designated.isEmpty()) {
+            OpsLoggers.HOST.warn(
+                    "writeback_connection_unset userId={} activeConnections={} -- no default write-back "
+                            + "connection; bookings will not be written to a calendar",
+                    userId, active.size());
         }
-        Optional<CalendarConnection> withSelectedCalendar = candidates.stream()
-                .filter(c -> inventoryRepository.findByConnectionIdAndSelectedTrue(c.getId()).isPresent())
-                .findFirst();
-        if (withSelectedCalendar.isPresent()) {
-            return withSelectedCalendar.get();
-        }
-        CalendarConnection fallback = candidates.get(0);
-        OpsLoggers.HOST.warn(
-                "ambiguous_writeback_connection hostId={} provider={} candidateCount={} chosenConnectionId={} "
-                        + "reason=no_default_and_no_selected_calendar",
-                participantUserId, preferredProvider, candidates.size(), fallback.getId());
-        return fallback;
+        return designated;
     }
 
+    /** The calendar within that connection which receives the event. */
     @Nullable
-    private String resolveParticipantCalendarId(UUID connectionId,
-                                                @Nullable String preferredCalendarId,
-                                                CalendarProviderType providerType) {
-        if (preferredCalendarId != null && !preferredCalendarId.isBlank()) {
-            String trimmed = preferredCalendarId.trim();
-            if ("primary".equalsIgnoreCase(trimmed) && providerType == CalendarProviderType.GOOGLE) {
-                return "primary";
-            }
-            if (inventoryRepository.findByConnectionIdAndExternalCalendarId(connectionId, trimmed).isPresent()) {
-                return trimmed;
-            }
-        }
-
+    private String writebackCalendarId(UUID connectionId, CalendarProviderType providerType) {
         return inventoryRepository.findByConnectionIdAndSelectedTrue(connectionId)
-                .map(c -> c.getExternalCalendarId())
-                .or(() -> {
-                    List<io.bunnycal.calendar.domain.CalendarConnectionCalendar> calendars =
-                            inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId);
-                    return calendars.stream().findFirst().map(io.bunnycal.calendar.domain.CalendarConnectionCalendar::getExternalCalendarId);
-                })
+                .map(CalendarConnectionCalendar::getExternalCalendarId)
+                .or(() -> inventoryRepository
+                        .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId)
+                        .stream()
+                        .findFirst()
+                        .map(CalendarConnectionCalendar::getExternalCalendarId))
+                // Google always has a "primary" alias even before the inventory is hydrated;
+                // Microsoft has no such alias, so an unhydrated connection has nowhere to write.
                 .orElse(providerType == CalendarProviderType.GOOGLE ? "primary" : null);
     }
 

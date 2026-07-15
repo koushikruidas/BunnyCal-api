@@ -5,10 +5,16 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarEvent;
 import io.bunnycal.calendar.dto.CalendarEventDto;
 import io.bunnycal.calendar.dto.CalendarEventsResponse;
+import io.bunnycal.calendar.dto.CalendarHolidayDto;
+import io.bunnycal.calendar.dto.CalendarHolidaysResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
+import io.bunnycal.availability.service.HolidayDayOffService;
+import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.common.api.ApiResponse;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -26,11 +32,17 @@ public class CalendarEventsController {
 
     private final CalendarEventRepository calendarEventRepository;
     private final CalendarConnectionRepository calendarConnectionRepository;
+    private final HolidayDayOffService holidayDayOffService;
+    private final UserRepository userRepository;
 
     public CalendarEventsController(CalendarEventRepository calendarEventRepository,
-                                    CalendarConnectionRepository calendarConnectionRepository) {
+                                    CalendarConnectionRepository calendarConnectionRepository,
+                                    HolidayDayOffService holidayDayOffService,
+                                    UserRepository userRepository) {
         this.calendarEventRepository = calendarEventRepository;
         this.calendarConnectionRepository = calendarConnectionRepository;
+        this.holidayDayOffService = holidayDayOffService;
+        this.userRepository = userRepository;
     }
 
     @GetMapping("/events")
@@ -43,7 +55,7 @@ public class CalendarEventsController {
 
         List<CalendarEvent> events =
                 calendarEventRepository
-                        .findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan(
+                        .findDisplayEventsOnPrimaryCalendars(
                                 userId, end, start);
 
         // Load all non-revoked connections so the join covers ACTIVE, SYNCING, FAILED, and
@@ -73,6 +85,35 @@ public class CalendarEventsController {
                 .toList();
 
         return ResponseEntity.ok(ApiResponse.success(new CalendarEventsResponse(dtos)));
+    }
+
+    /**
+     * Backend-authoritative holiday list. Deduplication happens before dates are returned, so the
+     * dashboard and slot engine cannot disagree about which neighbouring date survives.
+     */
+    @GetMapping("/holidays")
+    public ResponseEntity<ApiResponse<CalendarHolidaysResponse>> listHolidays(
+            Authentication authentication,
+            @RequestParam LocalDate start,
+            @RequestParam LocalDate end) {
+        UUID userId = extractUserId(authentication);
+        String timezone = userRepository.findById(userId).map(user -> user.getTimezone()).orElse("UTC");
+        ZoneId zoneId;
+        try {
+            zoneId = ZoneId.of(timezone == null || timezone.isBlank() ? "UTC" : timezone);
+        } catch (RuntimeException ignored) {
+            zoneId = ZoneId.of("UTC");
+        }
+
+        List<CalendarHolidayDto> holidays = holidayDayOffService.holidays(userId, start, end, zoneId)
+                .stream()
+                .map(holiday -> new CalendarHolidayDto(
+                        holiday.date() + ":" + Integer.toUnsignedString(
+                                java.util.Objects.toString(holiday.title(), "Holiday").toLowerCase().hashCode(), 36),
+                        holiday.title() == null || holiday.title().isBlank() ? "Holiday" : holiday.title().trim(),
+                        holiday.date()))
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success(new CalendarHolidaysResponse(holidays)));
     }
 
     private UUID extractUserId(Authentication authentication) {

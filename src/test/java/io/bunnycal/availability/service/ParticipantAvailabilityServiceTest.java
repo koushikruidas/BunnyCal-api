@@ -1,15 +1,14 @@
 package io.bunnycal.availability.service;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
-import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
@@ -30,18 +29,16 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
  * Which calendars block a participant's slots.
  *
- * <p>The event type's availability selection is the OWNER's configuration — it names connections
- * only the owner holds — so it can never be applied to another participant. The collective owner is
- * the single exception: they sit on the meeting themselves, and the selection is about their own
- * calendars. Without that exception the picker would be decorative: collected in the wizard and
- * silently ignored by the engine that generates the slots.
+ * <p>Every participant — the owner included — is evaluated against <b>their own</b> calendars, and
+ * only their own: the set of calendars that block is a property of the user (each connection's
+ * {@code checks_availability} flag), never of the event type. There is no per-event-type selection
+ * that could leak the owner's connections onto a member who does not hold them.
  */
 @ExtendWith(MockitoExtension.class)
 class ParticipantAvailabilityServiceTest {
@@ -54,7 +51,7 @@ class ParticipantAvailabilityServiceTest {
     @Mock GroupEventReservationWindowRepository reservationWindowRepository;
     @Mock EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
     @Mock CalendarBusyTimeService calendarBusyTimeService;
-    @Mock EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    @Mock HolidayDayOffService holidayDayOffService;
     @Mock TimeConversionService timeConversionService;
 
     private ParticipantAvailabilityService service;
@@ -69,7 +66,7 @@ class ParticipantAvailabilityServiceTest {
                 userRepository, availabilityRuleRepository, availabilityOverrideRepository,
                 bookingRepository, eventSessionRepository, reservationWindowRepository,
                 eventAvailabilityWindowRepository, calendarBusyTimeService,
-                orchestrationJsonCodec, timeConversionService);
+                holidayDayOffService, timeConversionService);
 
         lenient().when(timeConversionService.resolveZone(any())).thenReturn(ZoneId.of("UTC"));
         lenient().when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(any()))
@@ -82,45 +79,36 @@ class ParticipantAvailabilityServiceTest {
                 .thenReturn(List.of());
         lenient().when(eventAvailabilityWindowRepository.findOwnWindowsForDay(any(), any()))
                 .thenReturn(List.of());
-        lenient().when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any(), any()))
+        lenient().when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any()))
                 .thenReturn(List.of());
     }
 
     @Test
-    void collectiveOwner_isEvaluatedAgainstTheirOwnSelectedCalendars() {
+    void collectiveOwner_isEvaluatedAgainstTheirOwnCalendars() {
         EventType eventType = collectiveEventType();
-        List<EventTypeOrchestrationNormalizer.AvailabilityBinding> selection =
-                List.of(new EventTypeOrchestrationNormalizer.AvailabilityBinding(
-                        UUID.randomUUID(), "google", "work@example.com"));
         when(userRepository.findById(ownerId)).thenReturn(Optional.of(user(ownerId)));
-        when(orchestrationJsonCodec.resolveAvailabilityBindings(eventType)).thenReturn(selection);
 
         service.computeForParticipant(ownerId, eventType, date, Instant.now());
 
-        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(
-                eq(ownerId), eq(date), any(), eq(selection));
+        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(eq(ownerId), eq(date), any());
     }
 
     @Test
-    void otherParticipants_areEvaluatedAgainstAllOfTheirOwnCalendars() {
+    void otherParticipants_areEvaluatedAgainstTheirOwnCalendars_notTheOwners() {
         EventType eventType = collectiveEventType();
         when(userRepository.findById(memberId)).thenReturn(Optional.of(user(memberId)));
 
         service.computeForParticipant(memberId, eventType, date, Instant.now());
 
-        // The owner's selection names connections this member does not own, so it must not be
-        // applied to them: every calendar they have connected blocks their slots.
-        ArgumentCaptor<List<EventTypeOrchestrationNormalizer.AvailabilityBinding>> bindings =
-                ArgumentCaptor.forClass(List.class);
-        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(
-                eq(memberId), eq(date), any(), bindings.capture());
-        assertEquals(List.of(), bindings.getValue());
+        // The member's own calendars block their slots. The owner's are never consulted for them.
+        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(eq(memberId), eq(date), any());
+        verify(calendarBusyTimeService, never()).busyIntervalsForDateCanonical(eq(ownerId), any(), any());
     }
 
-    // Round-robin's owner is not on the booking (the assigned member is) and its wizard collects no
-    // availability selection, so the owner exception must not leak into it.
+    // Round-robin's owner is not on the booking (the assigned member is), so nothing about the owner
+    // may bleed into a participant's availability.
     @Test
-    void roundRobinOwner_isNotGivenTheOwnerException() {
+    void roundRobinParticipant_isEvaluatedAgainstTheirOwnCalendars() {
         EventType eventType = EventType.builder()
                 .id(UUID.randomUUID()).userId(ownerId)
                 .kind(EventKind.ROUND_ROBIN)
@@ -130,17 +118,13 @@ class ParticipantAvailabilityServiceTest {
                 .slotInterval(Duration.ofMinutes(30))
                 .minNotice(Duration.ZERO).maxAdvance(Duration.ofDays(30))
                 .holdDuration(Duration.ofMinutes(15))
-                .availabilityMode(AvailabilityMode.SELECTED)
                 .build();
-        when(userRepository.findById(ownerId)).thenReturn(Optional.of(user(ownerId)));
+        when(userRepository.findById(memberId)).thenReturn(Optional.of(user(memberId)));
 
-        service.computeForParticipant(ownerId, eventType, date, Instant.now());
+        service.computeForParticipant(memberId, eventType, date, Instant.now());
 
-        ArgumentCaptor<List<EventTypeOrchestrationNormalizer.AvailabilityBinding>> bindings =
-                ArgumentCaptor.forClass(List.class);
-        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(
-                eq(ownerId), eq(date), any(), bindings.capture());
-        assertEquals(List.of(), bindings.getValue());
+        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(eq(memberId), eq(date), any());
+        verify(calendarBusyTimeService, never()).busyIntervalsForDateCanonical(eq(ownerId), any(), any());
     }
 
     private EventType collectiveEventType() {
@@ -153,7 +137,6 @@ class ParticipantAvailabilityServiceTest {
                 .slotInterval(Duration.ofMinutes(30))
                 .minNotice(Duration.ZERO).maxAdvance(Duration.ofDays(30))
                 .holdDuration(Duration.ofMinutes(15))
-                .availabilityMode(AvailabilityMode.SELECTED)
                 .build();
     }
 

@@ -94,95 +94,66 @@ class EventTypeUpdateIT {
     }
 
     @Test
-    void update_repinsTheBookingCalendar() {
+    void update_changesNonCalendarFields() {
         User owner = createUser("owner@test.com");
-        CalendarConnection first = googleConnection(owner.getId(), "first@gmail.com");
-        CalendarConnection second = googleConnection(owner.getId(), "second@gmail.com");
-        EventType et = persistEventType(owner.getId(), "demo", first, "first@gmail.com");
-
-        eventTypeService.update(owner.getId(), et.getId(), updateProjection(second, "second@gmail.com"));
-
-        EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
-        assertThat(reloaded.getProjectionConnectionId()).isEqualTo(second.getId());
-        assertThat(reloaded.getProjectionCalendarId()).isEqualTo("second@gmail.com");
-    }
-
-    // A host who pinned the wrong calendar must be able to get back to "use my default", not merely
-    // swap one pin for another. An explicitly-sent but empty destination unpins.
-    @Test
-    void update_withEmptyProjection_unpinsBackToTheDefault() {
-        User owner = createUser("owner@test.com");
-        CalendarConnection conn = googleConnection(owner.getId(), "first@gmail.com");
-        EventType et = persistEventType(owner.getId(), "demo", conn, "first@gmail.com");
+        EventType et = persistEventType(owner.getId(), "demo");
 
         eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
-                null, null, null, null, null, null, null, null, null, null,
-                null, null,
-                new CreateEventTypeRequest.ProjectionDestinationRequest(null, null, null)));
+                "Renamed", null, null, 45, null, null, null, null, null, null, null));
 
         EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
-        assertThat(reloaded.getProjectionConnectionId()).isNull();
-        assertThat(reloaded.getProjectionCalendarId()).isNull();
-        assertThat(reloaded.getProjectionProvider()).isNull();
+        assertThat(reloaded.getName()).isEqualTo("Renamed");
+        assertThat(reloaded.getDuration()).isEqualTo(Duration.ofMinutes(45));
     }
 
     @Test
     void update_leavesUnsuppliedFieldsAlone() {
         User owner = createUser("owner@test.com");
-        CalendarConnection conn = googleConnection(owner.getId(), "first@gmail.com");
-        EventType et = persistEventType(owner.getId(), "demo", conn, "first@gmail.com");
+        EventType et = persistEventType(owner.getId(), "demo");
 
         eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
-                "Renamed", null, null, null, null, null, null, null, null, null, null, null, null));
+                "Renamed", null, null, null, null, null, null, null, null, null, null));
 
         EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
         assertThat(reloaded.getName()).isEqualTo("Renamed");
-        // The calendar was not mentioned, so it must survive untouched.
-        assertThat(reloaded.getProjectionConnectionId()).isEqualTo(conn.getId());
-        assertThat(reloaded.getProjectionCalendarId()).isEqualTo("first@gmail.com");
-        assertThat(reloaded.getDuration()).isEqualTo(Duration.ofMinutes(30));
+        assertThat(reloaded.getDuration()).as("duration was not mentioned, so it survives")
+                .isEqualTo(Duration.ofMinutes(30));
     }
 
-    // THE regression this endpoint could otherwise have shipped. booking_ownership records where an
-    // event was ACTUALLY written, and ensureOwnership runs on every outbox dispatch — not just at
-    // creation. It used to re-derive ownership from the event type and throw if the two disagreed,
-    // so editing a calendar would have broken cancel and reschedule on every booking that already
-    // existed. An already-written booking must keep pointing at the calendar it lives on.
+    // booking_ownership records where an event was ACTUALLY written, and ensureOwnership runs on
+    // every outbox dispatch, not just at creation. It used to re-derive ownership from the event
+    // type and throw if the two disagreed. Editing an event type must not disturb the ownership of
+    // bookings that already exist, or cancel and reschedule break on every one of them.
     @Test
     void update_doesNotDisturbOwnershipOfBookingsThatAlreadyExist() {
         User owner = createUser("owner@test.com");
-        CalendarConnection first = googleConnection(owner.getId(), "first@gmail.com");
-        CalendarConnection second = googleConnection(owner.getId(), "second@gmail.com");
-        EventType et = persistEventType(owner.getId(), "demo", first, "first@gmail.com");
+        EventType et = persistEventType(owner.getId(), "demo");
 
-        // A booking exists and has been written to the ORIGINAL calendar.
         Booking booking = persistBooking(owner.getId(), et.getId());
         BookingOwnership created = ownershipService.ensureOwnership(booking, et);
-        assertThat(created.getProjectionCalendarId()).isEqualTo("first@gmail.com");
 
-        // The host re-points the event type at a different calendar.
-        eventTypeService.update(owner.getId(), et.getId(), updateProjection(second, "second@gmail.com"));
-        EventType repointed = eventTypeRepository.findById(et.getId()).orElseThrow();
+        // The host edits the event type (its conferencing choice).
+        eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
+                null, null, null, null, null, null, null, null, null, null,
+                new CreateEventTypeRequest.ConferenceRequest(true, "zoom", null)));
+        EventType edited = eventTypeRepository.findById(et.getId()).orElseThrow();
 
-        // Every later lifecycle event (cancel, reschedule) re-enters ensureOwnership. It must not
-        // throw, and it must still resolve to the calendar the event was actually written to.
-        BookingOwnership after = ownershipService.ensureOwnership(booking, repointed);
-        assertThat(after.getProjectionConnectionId()).isEqualTo(first.getId());
-        assertThat(after.getProjectionCalendarId()).isEqualTo("first@gmail.com");
-        assertThat(ownershipRepository.findByBookingId(booking.getId()).orElseThrow()
-                .getProjectionCalendarId()).isEqualTo("first@gmail.com");
+        // Re-entering ensureOwnership (as a later cancel/reschedule would) must not throw and must
+        // return the same ownership row that was created.
+        BookingOwnership after = ownershipService.ensureOwnership(booking, edited);
+        assertThat(after.getProjectionConnectionId()).isEqualTo(created.getProjectionConnectionId());
+        assertThat(after.getProjectionCalendarId()).isEqualTo(created.getProjectionCalendarId());
     }
 
     @Test
     void update_rejectsAnEventTypeOwnedBySomeoneElse() {
         User owner = createUser("owner@test.com");
         User stranger = createUser("stranger@test.com");
-        CalendarConnection conn = googleConnection(owner.getId(), "first@gmail.com");
-        EventType et = persistEventType(owner.getId(), "demo", conn, "first@gmail.com");
+        EventType et = persistEventType(owner.getId(), "demo");
 
         assertThatThrownBy(() -> eventTypeService.update(stranger.getId(), et.getId(),
                 new UpdateEventTypeRequest("Hijacked", null, null, null, null, null, null, null,
-                        null, null, null, null, null)))
+                        null, null, null)))
                 .isInstanceOf(CustomException.class)
                 .extracting(e -> ((CustomException) e).getErrorCode())
                 .isEqualTo(ErrorCode.FORBIDDEN);
@@ -190,35 +161,13 @@ class EventTypeUpdateIT {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private UpdateEventTypeRequest updateProjection(CalendarConnection connection, String calendarId) {
-        return new UpdateEventTypeRequest(
-                null, null, null, null, null, null, null, null, null, null,
-                null, null,
-                new CreateEventTypeRequest.ProjectionDestinationRequest(
-                        "google", connection.getId().toString(), calendarId));
-    }
-
     private User createUser(String email) {
         return userRepository.save(User.builder()
                 .email(email).name("U " + email).username("u-" + UUID.randomUUID().toString().substring(0, 8))
                 .timezone("UTC").build());
     }
 
-    private CalendarConnection googleConnection(UUID userId, String accountEmail) {
-        CalendarConnection c = new CalendarConnection();
-        c.setUserId(userId);
-        c.setProvider(CalendarProviderType.GOOGLE);
-        c.setProviderUserId("sub-" + UUID.randomUUID());
-        c.setAccountEmail(accountEmail);
-        c.setRefreshTokenCiphertext("cipher");
-        c.setLastTokenExpiresAt(Instant.now().plusSeconds(3600));
-        c.setScopes(List.of("https://www.googleapis.com/auth/calendar"));
-        c.setStatus(CalendarConnectionStatus.ACTIVE);
-        return connectionRepository.save(c);
-    }
-
-    private EventType persistEventType(UUID ownerId, String slug,
-                                       CalendarConnection projection, String calendarId) {
+    private EventType persistEventType(UUID ownerId, String slug) {
         return eventTypeRepository.save(EventType.builder()
                 .userId(ownerId)
                 .name("Demo Call")
@@ -233,9 +182,6 @@ class EventTypeUpdateIT {
                 .kind(EventKind.ONE_ON_ONE)
                 .capacity(1)
                 .conferencingProvider(io.bunnycal.common.enums.ConferencingProviderType.NONE)
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(projection.getId())
-                .projectionCalendarId(calendarId)
                 .build());
     }
 

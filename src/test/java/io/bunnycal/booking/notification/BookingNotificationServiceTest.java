@@ -69,6 +69,7 @@ class BookingNotificationServiceTest {
     @Mock private EmailDeliverabilityPolicy deliverabilityPolicy;
     @Mock private NotificationSendDedupService notificationSendDedupService;
     @Mock private ConferencingCoordinator conferencingCoordinator;
+    @Mock private io.bunnycal.conferencing.service.EventConferencingResolver conferencingResolver;
     @Mock private ConferencingEventMappingRepository conferencingEventMappingRepository;
     @Mock private io.bunnycal.calendar.repository.CalendarConnectionRepository calendarConnectionRepository;
     @Mock private BookingOwnershipRepository bookingOwnershipRepository;
@@ -92,6 +93,7 @@ class BookingNotificationServiceTest {
                 deliverabilityPolicy,
                 notificationSendDedupService,
                 conferencingCoordinator,
+                conferencingResolver,
                 conferencingEventMappingRepository,
                 calendarConnectionRepository,
                 bookingOwnershipRepository,
@@ -115,6 +117,16 @@ class BookingNotificationServiceTest {
         // explicitly when they exercise conferencing flows.
         lenient().when(conferencingEventMappingRepository.findByBookingIdAndProvider(any(), any()))
                 .thenReturn(Optional.empty());
+        // The resolver echoes the event type's stored provider by default — which is what it does
+        // for every non-pointer value. Tests that build an event type with a concrete provider
+        // therefore see it resolved unchanged, without each having to stub this explicitly.
+        lenient().when(conferencingResolver.resolve(any(java.util.UUID.class),
+                        any(io.bunnycal.availability.domain.EventType.class)))
+                .thenAnswer(inv -> {
+                    io.bunnycal.availability.domain.EventType et = inv.getArgument(1);
+                    return et == null ? io.bunnycal.common.enums.ConferencingProviderType.NONE
+                            : et.getConferencingProvider();
+                });
     }
 
     @Test
@@ -187,8 +199,6 @@ class BookingNotificationServiceTest {
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.MICROSOFT)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(consumerMsaConnection));
@@ -242,8 +252,6 @@ class BookingNotificationServiceTest {
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.MICROSOFT)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(entraConnection));
@@ -305,8 +313,6 @@ class BookingNotificationServiceTest {
         when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call").slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId))
@@ -364,8 +370,6 @@ class BookingNotificationServiceTest {
         when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call").slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId))
@@ -417,8 +421,6 @@ class BookingNotificationServiceTest {
         when(eventTypeRepository.findById(any()))
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call").slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId))
@@ -465,8 +467,6 @@ class BookingNotificationServiceTest {
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(googleConnection));
@@ -515,8 +515,6 @@ class BookingNotificationServiceTest {
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(unrelatedConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(unrelatedConnectionId)).thenReturn(Optional.of(unrelatedConnection));
@@ -564,8 +562,6 @@ class BookingNotificationServiceTest {
                 .thenReturn(Optional.of(EventType.builder()
                         .name("Discovery Call")
                         .slug("discovery-call")
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
                         .build()));
         when(bookingOwnershipRepository.findByBookingId(bookingId)).thenReturn(Optional.of(ownership));
         when(calendarConnectionRepository.findById(projectionConnectionId)).thenReturn(Optional.of(otherUsersConnection));
@@ -1110,7 +1106,6 @@ class BookingNotificationServiceTest {
                 EventType eventType = EventType.builder()
                         .name("Lifecycle")
                         .slug("lifecycle")
-                        .projectionProvider(projection)
                         .conferencingProvider(conferenceProvider)
                         .customConferenceUrl(conferenceProvider == ConferencingProviderType.CUSTOM_URL ? "https://example.com/room" : null)
                         .build();
