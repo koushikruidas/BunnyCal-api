@@ -45,7 +45,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendar primary = new CalendarConnectionCalendar();
@@ -150,7 +151,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -192,7 +194,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -241,7 +244,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -287,7 +291,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setDefaultWriteback(true);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendar teamsCalendar = new CalendarConnectionCalendar();

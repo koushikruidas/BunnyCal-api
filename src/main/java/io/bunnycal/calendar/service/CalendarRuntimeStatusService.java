@@ -85,7 +85,8 @@ public class CalendarRuntimeStatusService {
     }
 
     public CalendarRuntimeStatusResponse runtimeStatus(UUID userId) {
-        List<CalendarConnection> connections = calendarConnectionRepository.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE);
+        List<CalendarConnection> connections = calendarConnectionRepository
+                .findByUserIdAndStatusOrderByCreatedAtAscIdAsc(userId, CalendarConnectionStatus.ACTIVE);
         CalendarRuntimeStatusResponse.Identity identity = resolveIdentity(userId);
 
         // Trigger best-effort refresh for stale inventory BEFORE we read it back.

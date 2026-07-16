@@ -55,6 +55,14 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
     java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAsc(UUID userId, CalendarConnectionStatus status);
 
     /**
+     * Stable settings-page order. The id tie-breaker matters for rows created in the same database
+     * timestamp tick; without it a status refresh may return the same accounts in a different order
+     * and make calendar chips visibly jump after a selection mutation.
+     */
+    java.util.List<CalendarConnection> findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+            UUID userId, CalendarConnectionStatus status);
+
+    /**
      * The user's chosen round-robin write-back target, if they have one. Guarded by a partial
      * unique index on {@code (user_id) WHERE is_default_writeback}, so at most one row can match.
      */
