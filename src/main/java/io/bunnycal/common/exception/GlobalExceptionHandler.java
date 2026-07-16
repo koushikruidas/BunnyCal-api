@@ -129,6 +129,7 @@ public class GlobalExceptionHandler {
                 return HttpStatus.GONE;
             case EVENT_TYPE_NOT_PUBLISHED:
             case UNPUBLISHABLE_EVENT_TYPE:
+            case ONBOARDING_INCOMPLETE:
                 return HttpStatus.CONFLICT;
             default:
                 return HttpStatus.INTERNAL_SERVER_ERROR;

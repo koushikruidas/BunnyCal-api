@@ -1,5 +1,8 @@
 package io.bunnycal.auth.domain.user;
 
+import io.bunnycal.auth.onboarding.OnboardingStatus;
+import io.bunnycal.auth.onboarding.OnboardingStep;
+import io.bunnycal.auth.onboarding.OnboardingUseCase;
 import io.bunnycal.common.audit.BaseEntity;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.UserStatus;
@@ -65,6 +68,30 @@ public class User extends BaseEntity {
     @Builder.Default
     @Column(name = "timezone_auto", nullable = false)
     private boolean timezoneAuto = false;
+
+    /** Versioned first-run activation state. Existing accounts are backfilled as completed. */
+    @Builder.Default
+    @Column(name = "onboarding_version", nullable = false)
+    private int onboardingVersion = 1;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_status", nullable = false, length = 24)
+    private OnboardingStatus onboardingStatus = OnboardingStatus.NOT_STARTED;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_use_case", length = 32)
+    private OnboardingUseCase onboardingUseCase;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_last_step", length = 32)
+    private OnboardingStep onboardingLastStep;
+
+    @Column(name = "availability_confirmed_at")
+    private Instant availabilityConfirmedAt;
+
+    @Column(name = "onboarding_completed_at")
+    private Instant onboardingCompletedAt;
 
     /**
      * The user's global default meeting link. Event types storing
