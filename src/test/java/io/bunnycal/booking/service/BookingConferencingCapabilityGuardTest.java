@@ -11,6 +11,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
@@ -48,14 +49,23 @@ class BookingConferencingCapabilityGuardTest {
 
     @BeforeEach
     void setUp() {
-        CalendarConnectionCalendar teamsCalendar = new CalendarConnectionCalendar();
-        teamsCalendar.setSupportsNativeTeams(true);
         org.mockito.Mockito.lenient().when(
                 calendarRepository.findByConnectionIdAndSelectedTrue(org.mockito.ArgumentMatchers.any()))
-                .thenReturn(Optional.of(teamsCalendar));
+                .thenAnswer(invocation -> {
+                    CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
+                    calendar.setConnectionId(invocation.getArgument(0));
+                    calendar.setCalendarRole(CalendarRole.PRIMARY);
+                    calendar.setChecksAvailability(true);
+                    calendar.setCanRead(true);
+                    calendar.setCanWrite(true);
+                    calendar.setSelected(true);
+                    calendar.setSupportsNativeTeams(true);
+                    return Optional.of(calendar);
+                });
         guard = new BookingConferencingCapabilityGuard(
                 eventTypeRepository, projectionResolver, conferencingResolver,
-                new NativeConferencingCapabilityService(calendarRepository));
+                new NativeConferencingCapabilityService(
+                        calendarRepository, new io.bunnycal.calendar.service.AvailabilityCalendarPolicy()));
     }
 
     // ── ROUND_ROBIN — resolved against the ASSIGNED MEMBER's own calendar ───

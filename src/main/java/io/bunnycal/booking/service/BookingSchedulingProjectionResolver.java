@@ -8,6 +8,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.calendar.service.AvailabilityCalendarPolicy;
 import io.bunnycal.common.logging.OpsLoggers;
 import java.util.List;
 import java.util.Optional;
@@ -33,11 +34,14 @@ public class BookingSchedulingProjectionResolver {
 
     private final CalendarConnectionRepository connectionRepository;
     private final CalendarConnectionCalendarRepository inventoryRepository;
+    private final AvailabilityCalendarPolicy availabilityPolicy;
 
     public BookingSchedulingProjectionResolver(CalendarConnectionRepository connectionRepository,
-                                              CalendarConnectionCalendarRepository inventoryRepository) {
+                                                CalendarConnectionCalendarRepository inventoryRepository,
+                                                AvailabilityCalendarPolicy availabilityPolicy) {
         this.connectionRepository = connectionRepository;
         this.inventoryRepository = inventoryRepository;
+        this.availabilityPolicy = availabilityPolicy;
     }
 
     @Nullable
@@ -59,7 +63,7 @@ public class BookingSchedulingProjectionResolver {
         if (connection == null || connection.getProvider() == null) {
             return null;
         }
-        String calendarId = writebackCalendarId(connection.getId(), connection.getProvider());
+        String calendarId = writebackCalendarId(connection);
         if (calendarId == null || calendarId.isBlank()) {
             return null;
         }
@@ -68,10 +72,6 @@ public class BookingSchedulingProjectionResolver {
 
     /**
      * The connection the user nominated to receive their bookings.
-     *
-     * <p>A single active connection needs no nomination — there is nothing to choose between. With
-     * several, {@code is_default_writeback} is the answer; the settings page always sets it, and both
-     * OAuth callbacks self-promote the first connection, so it is present in practice.
      *
      * <p>There is deliberately <b>no</b> fall-back to "some other connection" when the nominated one
      * is missing. The previous implementation quietly picked the oldest connection of <em>any</em>
@@ -84,9 +84,6 @@ public class BookingSchedulingProjectionResolver {
                 userId, CalendarConnectionStatus.ACTIVE);
         if (active.isEmpty()) {
             return Optional.empty();
-        }
-        if (active.size() == 1) {
-            return Optional.of(active.get(0));
         }
         Optional<CalendarConnection> designated = active.stream()
                 .filter(CalendarConnection::isDefaultWriteback)
@@ -102,17 +99,12 @@ public class BookingSchedulingProjectionResolver {
 
     /** The calendar within that connection which receives the event. */
     @Nullable
-    private String writebackCalendarId(UUID connectionId, CalendarProviderType providerType) {
-        return inventoryRepository.findByConnectionIdAndSelectedTrue(connectionId)
+    private String writebackCalendarId(CalendarConnection connection) {
+        return inventoryRepository.findByConnectionIdAndSelectedTrue(connection.getId())
+                .filter(CalendarConnectionCalendar::isCanWrite)
+                .filter(calendar -> availabilityPolicy.contributesToAvailability(connection, calendar))
                 .map(CalendarConnectionCalendar::getExternalCalendarId)
-                .or(() -> inventoryRepository
-                        .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId)
-                        .stream()
-                        .findFirst()
-                        .map(CalendarConnectionCalendar::getExternalCalendarId))
-                // Google always has a "primary" alias even before the inventory is hydrated;
-                // Microsoft has no such alias, so an unhydrated connection has nowhere to write.
-                .orElse(providerType == CalendarProviderType.GOOGLE ? "primary" : null);
+                .orElse(null);
     }
 
     public record SchedulingProjection(

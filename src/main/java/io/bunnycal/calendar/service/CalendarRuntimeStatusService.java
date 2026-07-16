@@ -81,7 +81,7 @@ public class CalendarRuntimeStatusService {
                                  CalendarInventoryHydrator inventoryHydrator) {
         this(calendarConnectionRepository, inventoryRepository, providerCapabilityRegistry,
                 zoomConferencingOAuthService, authIdentityRepository, userRepository, inventoryHydrator,
-                new NativeConferencingCapabilityService(inventoryRepository));
+                new NativeConferencingCapabilityService(inventoryRepository, new AvailabilityCalendarPolicy()));
     }
 
     public CalendarRuntimeStatusResponse runtimeStatus(UUID userId) {
@@ -104,7 +104,7 @@ public class CalendarRuntimeStatusService {
         CalendarConnection writeback = connections.stream()
                 .filter(CalendarConnection::isDefaultWriteback)
                 .findFirst()
-                .orElseGet(() -> connections.size() == 1 ? connections.get(0) : null);
+                .orElse(null);
 
         boolean meetAvailable = conferencingCapabilityService.canServe(writeback, ConferencingProviderType.GOOGLE_MEET);
         boolean teamsAvailable = conferencingCapabilityService.canServe(writeback, ConferencingProviderType.MICROSOFT_TEAMS);
@@ -218,19 +218,24 @@ public class CalendarRuntimeStatusService {
                 connection.isDefaultWriteback(),
                 capabilityView,
                 roles,
-                toAccountMetadata(connection),
+                toAccountMetadata(connection, inventory),
                 calendars
         );
     }
 
-    private CalendarRuntimeStatusResponse.Account toAccountMetadata(CalendarConnection connection) {
+    private CalendarRuntimeStatusResponse.Account toAccountMetadata(
+            CalendarConnection connection,
+            List<CalendarConnectionCalendar> inventory) {
         if (connection == null || connection.getProvider() != CalendarProviderType.MICROSOFT) {
             return null;
         }
         boolean personal = MicrosoftAccountClassifier.isConsumerMsa(connection);
+        boolean supportsNativeTeams = !personal && inventory.stream()
+                .filter(calendar -> calendar.isSelected() || calendar.isPrimary())
+                .anyMatch(CalendarConnectionCalendar::isSupportsNativeTeams);
         return new CalendarRuntimeStatusResponse.Account(
                 personal ? "PERSONAL_MSA" : "MICROSOFT_365",
-                conferencingCapabilityService.canServe(connection, ConferencingProviderType.MICROSOFT_TEAMS)
+                supportsNativeTeams
         );
     }
 

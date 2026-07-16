@@ -284,6 +284,7 @@ class CalendarRuntimeStatusServiceTest {
         connection.setProvider(CalendarProviderType.MICROSOFT);
         connection.setProviderUserId("12345678-1234-1234-1234-123456789012");
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
+        connection.setDefaultWriteback(true);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
         when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
@@ -293,6 +294,11 @@ class CalendarRuntimeStatusServiceTest {
         teamsCalendar.setConnectionId(connectionId);
         teamsCalendar.setExternalCalendarId("primary");
         teamsCalendar.setPrimary(true);
+        teamsCalendar.setCalendarRole(CalendarRole.PRIMARY);
+        teamsCalendar.setCanRead(true);
+        teamsCalendar.setCanWrite(true);
+        teamsCalendar.setChecksAvailability(true);
+        teamsCalendar.setSelected(true);
         teamsCalendar.setSupportsNativeTeams(true);
         teamsCalendar.setLastSyncedAt(Instant.now());
 
@@ -301,6 +307,8 @@ class CalendarRuntimeStatusServiceTest {
                 .thenReturn(List.of(teamsCalendar));
         when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
                 .thenReturn(List.of(teamsCalendar));
+        when(inventoryRepo.findByConnectionIdAndSelectedTrue(connectionId))
+                .thenReturn(java.util.Optional.of(teamsCalendar));
 
         ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
         when(capabilityRegistry.forCalendar(CalendarProviderType.MICROSOFT))

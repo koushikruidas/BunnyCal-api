@@ -9,10 +9,12 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.service.CalendarConnectionManagementService;
@@ -95,6 +97,7 @@ class GlobalCalendarSettingsIT {
     @Autowired CalendarConnectionCalendarRepository inventoryRepository;
     @Autowired CalendarConnectionManagementService managementService;
     @Autowired EventConferencingResolver conferencingResolver;
+    @Autowired BookingSchedulingProjectionResolver projectionResolver;
 
     @BeforeEach
     void setUp() {
@@ -235,6 +238,60 @@ class GlobalCalendarSettingsIT {
                 .isEqualTo(ConferencingProviderType.NONE);
     }
 
+    @Test
+    void disablingTheServingAvailabilityCalendar_clearsWritebackAndNativeConferencing() {
+        User owner = createUser("owner@test.com");
+        CalendarConnection google = connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.GOOGLE_MEET);
+
+        managementService.setChecksAvailability(owner.getId(), google.getId(), "primary", false);
+
+        CalendarConnection reloadedConnection = connectionRepository.findById(google.getId()).orElseThrow();
+        CalendarConnectionCalendar reloadedCalendar = inventoryRepository
+                .findByConnectionIdAndExternalCalendarId(google.getId(), "primary").orElseThrow();
+        assertThat(reloadedCalendar.isChecksAvailability()).isFalse();
+        assertThat(reloadedCalendar.isSelected()).isFalse();
+        assertThat(reloadedConnection.isDefaultWriteback()).isFalse();
+        assertThat(projectionResolver.resolveForUser(owner.getId())).isNull();
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.NONE);
+    }
+
+    @Test
+    void disablingTheServingAvailabilityCalendar_preservesIndependentZoomDefault() {
+        User owner = createUser("owner@test.com");
+        CalendarConnection google = connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
+
+        managementService.setChecksAvailability(owner.getId(), google.getId(), "primary", false);
+
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.ZOOM);
+    }
+
+    @Test
+    void writebackRequiresAvailability_andCanBeChosenAgainAfterReEnabling() {
+        User owner = createUser("owner@test.com");
+        CalendarConnection google = connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+        managementService.setChecksAvailability(owner.getId(), google.getId(), "primary", false);
+
+        assertThatThrownBy(() -> managementService.setWritebackCalendar(
+                owner.getId(), google.getId(), "primary"))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("free/busy availability");
+        assertThatThrownBy(() -> managementService.setDefaultWriteback(owner.getId(), google.getId()))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("free/busy availability");
+
+        managementService.setChecksAvailability(owner.getId(), google.getId(), "primary", true);
+        managementService.setDefaultWriteback(owner.getId(), google.getId());
+
+        assertThat(connectionRepository.findById(google.getId()).orElseThrow().isDefaultWriteback()).isTrue();
+        assertThat(inventoryRepository.findByConnectionIdAndSelectedTrue(google.getId()))
+                .get().extracting(CalendarConnectionCalendar::getExternalCalendarId)
+                .isEqualTo("primary");
+    }
+
     /** A default that resolves to nothing is NONE, not a broken Meet link. */
     @Test
     void userWithNoWritebackCalendar_resolvesToNoLink() {
@@ -276,6 +333,7 @@ class GlobalCalendarSettingsIT {
         calendar.setExternalCalendarId(provider == CalendarProviderType.GOOGLE ? "primary" : "AAMkAG");
         calendar.setName("Calendar");
         calendar.setPrimary(true);
+        calendar.setCalendarRole(CalendarRole.PRIMARY);
         calendar.setSelected(true);
         calendar.setCanRead(true);
         calendar.setCanWrite(true);

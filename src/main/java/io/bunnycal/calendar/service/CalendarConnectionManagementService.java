@@ -84,7 +84,26 @@ public class CalendarConnectionManagementService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "Bookings can only be added to a connected calendar.");
         }
+        CalendarConnectionCalendar targetCalendar = inventoryRepository
+                .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId).stream()
+                .filter(calendar -> calendar.isCanWrite()
+                        && availabilityPolicy.contributesToAvailability(connection, calendar))
+                .findFirst()
+                .orElseThrow(() -> new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Select a writable calendar for free/busy availability before using it for writeback."));
+
+        // Re-enabling availability does not silently restore writeback. When the user explicitly
+        // chooses this connection again, make its eligible primary the exact projection target.
+        if (!targetCalendar.isSelected()) {
+            inventoryRepository.findByConnectionIdAndSelectedTrue(connectionId).ifPresent(previous -> {
+                previous.setSelected(false);
+                inventoryRepository.save(previous);
+            });
+            targetCalendar.setSelected(true);
+            inventoryRepository.save(targetCalendar);
+        }
         if (connection.isDefaultWriteback()) {
+            standDownDefaultLinkIfUnservable(userId, connection);
             return;
         }
 
@@ -103,13 +122,17 @@ public class CalendarConnectionManagementService {
      */
     @Transactional
     public void setWritebackCalendar(UUID userId, UUID connectionId, String externalCalendarId) {
-        requireOwnedConnection(userId, connectionId);
+        CalendarConnection connection = requireOwnedConnection(userId, connectionId);
         CalendarConnectionCalendar calendar = inventoryRepository
                 .findByConnectionIdAndExternalCalendarId(connectionId, externalCalendarId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar not found."));
         if (!calendar.isCanWrite()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "You have read-only access to this calendar, so bookings cannot be added to it.");
+        }
+        if (!availabilityPolicy.contributesToAvailability(connection, calendar)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Select this calendar for free/busy availability before using it for writeback.");
         }
         if (calendar.isSelected()) {
             return;
@@ -120,7 +143,6 @@ public class CalendarConnectionManagementService {
         });
         calendar.setSelected(true);
         inventoryRepository.save(calendar);
-        CalendarConnection connection = requireOwnedConnection(userId, connectionId);
         if (connection.isDefaultWriteback()) {
             standDownDefaultLinkIfUnservable(userId, connection);
         }
@@ -146,11 +168,35 @@ public class CalendarConnectionManagementService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "Only the primary calendar can be checked for booking conflicts.");
         }
-        if (calendar.isChecksAvailability() == checks) {
+        boolean availabilityChanged = calendar.isChecksAvailability() != checks;
+        boolean inconsistentWriteback = !checks && (calendar.isSelected()
+                || (connection.isDefaultWriteback()
+                    && inventoryRepository.findByConnectionIdAndSelectedTrue(connectionId)
+                            .filter(selected -> selected.isCanWrite()
+                                    && availabilityPolicy.contributesToAvailability(connection, selected))
+                            .isEmpty()));
+        if (!availabilityChanged && !inconsistentWriteback) {
             return;
         }
         calendar.setChecksAvailability(checks);
+        boolean writebackCleared = false;
+        if (!checks && calendar.isSelected()) {
+            calendar.setSelected(false);
+            writebackCleared = true;
+        }
         inventoryRepository.save(calendar);
+        boolean hasEligibleProjection = inventoryRepository.findByConnectionIdAndSelectedTrue(connectionId)
+                .filter(selected -> selected.isCanWrite()
+                        && availabilityPolicy.contributesToAvailability(connection, selected))
+                .isPresent();
+        if (!checks && connection.isDefaultWriteback() && !hasEligibleProjection) {
+            connection.setDefaultWriteback(false);
+            connectionRepository.save(connection);
+            writebackCleared = true;
+            // Native links depend on the writeback calendar. Provider-independent choices such as
+            // Zoom are deliberately preserved by standDownDefaultLinkIfUnservable.
+            standDownDefaultLinkIfUnservable(userId, null);
+        }
         if (checks) {
             // A newly enabled calendar may not have been polled while it was off. Mark the
             // connection projection stale so the next scheduler tick bootstraps/increments it even
@@ -165,8 +211,8 @@ public class CalendarConnectionManagementService {
                 "provider", connection.getProvider().name().toLowerCase(),
                 "policyVersion", Integer.toString(AvailabilityCalendarPolicy.CONTRACT_VERSION)).increment();
         OpsLoggers.HOST.info("calendar_availability_changed hostId={} connectionId={} calendarId={} "
-                        + "checksAvailability={} policyVersion={}",
-                userId, connectionId, externalCalendarId, checks,
+                        + "checksAvailability={} writebackCleared={} policyVersion={}",
+                userId, connectionId, externalCalendarId, checks, writebackCleared,
                 AvailabilityCalendarPolicy.CONTRACT_VERSION);
         logAvailabilityPolicySnapshot(userId, "settings_change");
     }

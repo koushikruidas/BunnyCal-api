@@ -17,6 +17,7 @@ import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -297,7 +298,11 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
-        return calendarConnectionRepository.save(c);
+        c.setDefaultWriteback(true);
+        CalendarConnection saved = calendarConnectionRepository.save(c);
+        CalendarConnectionCalendar calendar = eligibleProjectionCalendar(saved.getId());
+        calendarConnectionCalendarRepository.save(calendar);
+        return saved;
     }
 
     private CalendarConnection microsoftWorkConnection(UUID userId) {
@@ -309,13 +314,9 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
+        c.setDefaultWriteback(true);
         CalendarConnection saved = calendarConnectionRepository.save(c);
-        CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
-        calendar.setConnectionId(saved.getId());
-        calendar.setExternalCalendarId("primary");
-        calendar.setName("Calendar");
-        calendar.setPrimary(true);
-        calendar.setSelected(true);
+        CalendarConnectionCalendar calendar = eligibleProjectionCalendar(saved.getId());
         calendar.setSupportsNativeTeams(true);
         calendarConnectionCalendarRepository.save(calendar);
         return saved;
@@ -330,7 +331,22 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
+        c.setDefaultWriteback(true);
         return calendarConnectionRepository.save(c);
+    }
+
+    private static CalendarConnectionCalendar eligibleProjectionCalendar(UUID connectionId) {
+        CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
+        calendar.setConnectionId(connectionId);
+        calendar.setExternalCalendarId("primary");
+        calendar.setName("Calendar");
+        calendar.setPrimary(true);
+        calendar.setCalendarRole(CalendarRole.PRIMARY);
+        calendar.setCanRead(true);
+        calendar.setCanWrite(true);
+        calendar.setChecksAvailability(true);
+        calendar.setSelected(true);
+        return calendar;
     }
 
     private EventType createEventTypeWithConferencing(UUID ownerId, EventKind kind, ConferencingProviderType conferencing) {

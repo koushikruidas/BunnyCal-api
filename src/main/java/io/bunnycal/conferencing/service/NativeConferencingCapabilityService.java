@@ -5,6 +5,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
+import io.bunnycal.calendar.service.AvailabilityCalendarPolicy;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -14,9 +15,12 @@ import org.springframework.stereotype.Service;
 public class NativeConferencingCapabilityService {
 
     private final CalendarConnectionCalendarRepository calendarRepository;
+    private final AvailabilityCalendarPolicy availabilityPolicy;
 
-    public NativeConferencingCapabilityService(CalendarConnectionCalendarRepository calendarRepository) {
+    public NativeConferencingCapabilityService(CalendarConnectionCalendarRepository calendarRepository,
+                                               AvailabilityCalendarPolicy availabilityPolicy) {
         this.calendarRepository = calendarRepository;
+        this.availabilityPolicy = availabilityPolicy;
     }
 
     public boolean canServe(CalendarConnection connection, ConferencingProviderType provider) {
@@ -26,6 +30,12 @@ public class NativeConferencingCapabilityService {
         if (!provider.requiresCalendarProvider()) {
             return true;
         }
+        CalendarConnectionCalendar projection = projectionCalendar(connection.getId()).orElse(null);
+        if (projection == null
+                || !projection.isCanWrite()
+                || !availabilityPolicy.contributesToAvailability(connection, projection)) {
+            return false;
+        }
         if (provider == ConferencingProviderType.GOOGLE_MEET) {
             return connection.getProvider() == CalendarProviderType.GOOGLE;
         }
@@ -34,9 +44,7 @@ public class NativeConferencingCapabilityService {
                 || MicrosoftAccountClassifier.isConsumerMsa(connection)) {
             return false;
         }
-        return projectionCalendar(connection.getId())
-                .map(CalendarConnectionCalendar::isSupportsNativeTeams)
-                .orElse(false);
+        return projection.isSupportsNativeTeams();
     }
 
     public boolean calendarSupportsTeams(UUID connectionId, String externalCalendarId) {
@@ -52,14 +60,6 @@ public class NativeConferencingCapabilityService {
         if (connectionId == null) {
             return java.util.Optional.empty();
         }
-        java.util.Optional<CalendarConnectionCalendar> selected =
-                calendarRepository.findByConnectionIdAndSelectedTrue(connectionId);
-        if (selected.isPresent()) {
-            return selected;
-        }
-        return calendarRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId)
-                .stream()
-                .filter(CalendarConnectionCalendar::isPrimary)
-                .findFirst();
+        return calendarRepository.findByConnectionIdAndSelectedTrue(connectionId);
     }
 }
