@@ -15,7 +15,10 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +39,8 @@ public class CalendarConnectionManagementService {
     private final MicrosoftCalendarOAuthService microsoftOAuthService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final NativeConferencingCapabilityService conferencingCapabilityService;
+    private final AvailabilityCalendarPolicy availabilityPolicy;
+    private final MeterRegistry meterRegistry;
 
     /**
      * Disconnects one account. Revoking upstream, marking the row REVOKED and clearing its token
@@ -133,7 +138,7 @@ public class CalendarConnectionManagementService {
      */
     @Transactional
     public void setChecksAvailability(UUID userId, UUID connectionId, String externalCalendarId, boolean checks) {
-        requireOwnedConnection(userId, connectionId);
+        CalendarConnection connection = requireOwnedConnection(userId, connectionId);
         CalendarConnectionCalendar calendar = inventoryRepository
                 .findByConnectionIdAndExternalCalendarId(connectionId, externalCalendarId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Calendar not found."));
@@ -146,10 +151,50 @@ public class CalendarConnectionManagementService {
         }
         calendar.setChecksAvailability(checks);
         inventoryRepository.save(calendar);
+        if (checks) {
+            // A newly enabled calendar may not have been polled while it was off. Mark the
+            // connection projection stale so the next scheduler tick bootstraps/increments it even
+            // when a fresh webhook channel would otherwise defer the backstop poll.
+            connection.setLastSyncedAt(null);
+            connectionRepository.save(connection);
+        }
         // Slots already computed were generated against the old answer.
         slotCacheVersionService.bumpVersionAfterCommit(userId);
-        OpsLoggers.HOST.info("calendar_availability_changed hostId={} connectionId={} calendarId={} checksAvailability={}",
-                userId, connectionId, externalCalendarId, checks);
+        meterRegistry.counter("calendar.availability.selection.changed",
+                "enabled", Boolean.toString(checks),
+                "provider", connection.getProvider().name().toLowerCase(),
+                "policyVersion", Integer.toString(AvailabilityCalendarPolicy.CONTRACT_VERSION)).increment();
+        OpsLoggers.HOST.info("calendar_availability_changed hostId={} connectionId={} calendarId={} "
+                        + "checksAvailability={} policyVersion={}",
+                userId, connectionId, externalCalendarId, checks,
+                AvailabilityCalendarPolicy.CONTRACT_VERSION);
+        logAvailabilityPolicySnapshot(userId, "settings_change");
+    }
+
+    /** Structured support trace emitted whenever the user changes availability selection. */
+    private void logAvailabilityPolicySnapshot(UUID userId, String trigger) {
+        List<CalendarConnection> connections = connectionRepository
+                .findByUserIdAndStatusNot(userId, CalendarConnectionStatus.REVOKED);
+        Map<UUID, CalendarConnection> byId = connections.stream()
+                .collect(Collectors.toMap(CalendarConnection::getId, c -> c));
+        List<CalendarConnectionCalendar> calendars = connections.isEmpty()
+                ? List.of()
+                : inventoryRepository.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(
+                        byId.keySet());
+        int included = 0;
+        int excluded = 0;
+        for (CalendarConnectionCalendar candidate : calendars) {
+            AvailabilityCalendarPolicy.Decision decision = availabilityPolicy.evaluate(
+                    byId.get(candidate.getConnectionId()), candidate);
+            if (decision.included()) included++; else excluded++;
+            OpsLoggers.HOST.info("availability_policy_evaluated hostId={} connectionId={} calendarId={} "
+                            + "calendarName={} included={} reason={} policyVersion={} trigger={}",
+                    userId, candidate.getConnectionId(), candidate.getExternalCalendarId(), candidate.getName(),
+                    decision.included(), decision.reason(), AvailabilityCalendarPolicy.CONTRACT_VERSION, trigger);
+        }
+        OpsLoggers.HOST.info("availability_policy_snapshot hostId={} includedCalendarCount={} "
+                        + "excludedCalendarCount={} policyVersion={} trigger={}",
+                userId, included, excluded, AvailabilityCalendarPolicy.CONTRACT_VERSION, trigger);
     }
 
     /**

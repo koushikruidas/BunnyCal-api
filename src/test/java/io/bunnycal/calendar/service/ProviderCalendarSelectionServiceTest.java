@@ -94,6 +94,15 @@ class ProviderCalendarSelectionServiceTest {
     }
 
     @Test
+    void selectedCalendarOnANonDefaultConnection_doesNotBecomeAnAvailabilitySync() {
+        CalendarConnection connection = connection();
+        connection.setDefaultWriteback(false);
+        stubInventory(calendar("bookings", false, true));
+
+        assertThat(service.selectedAvailabilityCalendarIds(connection)).isEmpty();
+    }
+
+    @Test
     void skipsCalendarsTheUserTurnedOff() {
         stubInventory(
                 calendar("work", true, false),
@@ -152,6 +161,7 @@ class ProviderCalendarSelectionServiceTest {
     private CalendarConnection connection() {
         CalendarConnection c = new CalendarConnection();
         c.setProvider(CalendarProviderType.GOOGLE);
+        c.setDefaultWriteback(true);
         setId(c, connectionId);
         return c;
     }

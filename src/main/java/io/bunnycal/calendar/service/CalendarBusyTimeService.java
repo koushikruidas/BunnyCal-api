@@ -2,9 +2,7 @@ package io.bunnycal.calendar.service;
 
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.availability.engine.IntervalUtils;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarEvent;
-import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
 import io.bunnycal.common.time.DateTimeUtils;
 import java.time.Instant;
@@ -12,11 +10,8 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
@@ -29,23 +24,25 @@ public class CalendarBusyTimeService {
 
     private static final Logger log = LoggerFactory.getLogger(CalendarBusyTimeService.class);
 
-    // Sentinel values for the calendar-scoped query. JPQL `IN ()` against an empty
-    // collection is invalid in Hibernate, so when a partition bucket is empty we
-    // pass a single deliberately-impossible value that cannot match any real row.
-    private static final UUID NO_CONNECTION_SENTINEL = new UUID(0L, 0L);
-    private static final String NO_CALENDAR_SENTINEL =
-            "__bunnycal_no_calendar_sentinel__";
-
-    private final CalendarConnectionRepository connectionRepository;
     private final CalendarEventRepository eventRepository;
     private final MeterRegistry meterRegistry;
 
-    public CalendarBusyTimeService(CalendarConnectionRepository connectionRepository,
-                                   CalendarEventRepository eventRepository,
+    public CalendarBusyTimeService(CalendarEventRepository eventRepository,
                                    MeterRegistry meterRegistry) {
-        this.connectionRepository = connectionRepository;
         this.eventRepository = eventRepository;
         this.meterRegistry = meterRegistry;
+    }
+
+    /**
+     * Canonical connected-calendar busy-event read. Availability UI, slot listing, confirmation,
+     * round-robin, and collective scheduling must derive their calendar blockers through this
+     * service so there is only one persistence predicate for availability policy version 1.
+     */
+    public List<CalendarEvent> busyEvents(UUID userId, Instant start, Instant end) {
+        if (userId == null || start == null || end == null || !start.isBefore(end)) {
+            return List.of();
+        }
+        return eventRepository.findBusyOnAvailabilityCalendars(userId, end, start);
     }
 
     /**
@@ -119,8 +116,7 @@ public class CalendarBusyTimeService {
         Instant dayStartUtc = date.atStartOfDay(zoneId).toInstant();
         Instant dayEndUtc   = date.plusDays(1).atStartOfDay(zoneId).toInstant();
 
-        List<CalendarEvent> events =
-                eventRepository.findBusyOnAvailabilityCalendars(userId, dayEndUtc, dayStartUtc);
+        List<CalendarEvent> events = busyEvents(userId, dayStartUtc, dayEndUtc);
         recordLegacyNullMetrics(events);
 
         List<BusyInterval> intervals = new ArrayList<>(events.size());
@@ -189,13 +185,10 @@ public class CalendarBusyTimeService {
     }
 
     /**
-     * Counts events kept eligible only by the null-{@code external_calendar_id} wildcard — rows
-     * ingested before per-calendar attribution existed, which belong to no inventory row and so
-     * cannot be matched against the availability flag. They block unconditionally.
-     *
-     * <p>When this counter trends to zero from real traffic the wildcard can be retired and the
-     * query made strict, at which point turning a calendar off would be honoured for every event on
-     * it rather than only the attributed ones.
+     * Counts legacy events still lacking provider-calendar attribution. Policy version 1 scopes
+     * these rows to an enabled primary on their own connection, so they preserve busy-time safety
+     * without bypassing an explicit off switch. V124 backfills the deterministic cases; this metric
+     * tracks the unresolved tail.
      */
     private void recordLegacyNullMetrics(List<CalendarEvent> events) {
         long legacyNullMatches = events.stream()

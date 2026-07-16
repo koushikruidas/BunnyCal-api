@@ -155,6 +155,12 @@ class RoundRobinAvailabilityIT {
                         + "VALUES (?,?,?,?,?,NOW() + INTERVAL '1 hour','{}'::text[],?,0)",
                 connId, userId, "GOOGLE", "ext-" + userId, "dummy-token",
                 "ACTIVE");
+        jdbc.update(
+                "INSERT INTO calendar_connection_calendars "
+                        + "(id, connection_id, external_calendar_id, name, is_primary, calendar_role, "
+                        + "is_selected, checks_availability, can_read, can_write, hidden) "
+                        + "VALUES (?,?,?,?,true,'PRIMARY',true,true,true,true,false)",
+                UUID.randomUUID(), connId, "primary", "Primary");
         return connId;
     }
 

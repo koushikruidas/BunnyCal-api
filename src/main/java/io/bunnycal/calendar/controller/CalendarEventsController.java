@@ -8,7 +8,7 @@ import io.bunnycal.calendar.dto.CalendarEventsResponse;
 import io.bunnycal.calendar.dto.CalendarHolidayDto;
 import io.bunnycal.calendar.dto.CalendarHolidaysResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
-import io.bunnycal.calendar.repository.CalendarEventRepository;
+import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.availability.service.HolidayDayOffService;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.common.api.ApiResponse;
@@ -30,16 +30,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/calendar")
 public class CalendarEventsController {
 
-    private final CalendarEventRepository calendarEventRepository;
+    private final CalendarBusyTimeService calendarBusyTimeService;
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final HolidayDayOffService holidayDayOffService;
     private final UserRepository userRepository;
 
-    public CalendarEventsController(CalendarEventRepository calendarEventRepository,
+    public CalendarEventsController(CalendarBusyTimeService calendarBusyTimeService,
                                     CalendarConnectionRepository calendarConnectionRepository,
                                     HolidayDayOffService holidayDayOffService,
                                     UserRepository userRepository) {
-        this.calendarEventRepository = calendarEventRepository;
+        this.calendarBusyTimeService = calendarBusyTimeService;
         this.calendarConnectionRepository = calendarConnectionRepository;
         this.holidayDayOffService = holidayDayOffService;
         this.userRepository = userRepository;
@@ -53,10 +53,7 @@ public class CalendarEventsController {
 
         UUID userId = extractUserId(authentication);
 
-        List<CalendarEvent> events =
-                calendarEventRepository
-                        .findDisplayEventsOnPrimaryCalendars(
-                                userId, end, start);
+        List<CalendarEvent> events = calendarBusyTimeService.busyEvents(userId, start, end);
 
         // Load all non-revoked connections so the join covers ACTIVE, SYNCING, FAILED, and
         // ERROR states — events already ingested from a SYNCING connection are valid and

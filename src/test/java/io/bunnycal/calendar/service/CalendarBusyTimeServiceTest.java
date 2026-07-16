@@ -9,7 +9,6 @@ import static org.mockito.Mockito.when;
 
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.calendar.domain.CalendarEvent;
-import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
@@ -29,7 +28,6 @@ import org.mockito.MockitoAnnotations;
  */
 class CalendarBusyTimeServiceTest {
 
-    @Mock private CalendarConnectionRepository connectionRepository;
     @Mock private CalendarEventRepository eventRepository;
 
     private CalendarBusyTimeService service;
@@ -43,7 +41,7 @@ class CalendarBusyTimeServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        service = new CalendarBusyTimeService(connectionRepository, eventRepository, new SimpleMeterRegistry());
+        service = new CalendarBusyTimeService(eventRepository, new SimpleMeterRegistry());
     }
 
     @Test

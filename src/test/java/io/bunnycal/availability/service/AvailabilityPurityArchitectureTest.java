@@ -23,4 +23,26 @@ class AvailabilityPurityArchitectureTest {
         assertTrue(slotService.contains("busyIntervalsForDateCanonical"));
         assertTrue(slotService.contains("BusyInterval"));
     }
+
+    @Test
+    void everyCalendarAvailabilityConsumer_routesThroughTheCanonicalBusyService() throws Exception {
+        String slotService = Files.readString(
+                Path.of("src/main/java/io/bunnycal/availability/service/SlotService.java"));
+        String participantService = Files.readString(
+                Path.of("src/main/java/io/bunnycal/availability/service/ParticipantAvailabilityService.java"));
+        String publicBookingService = Files.readString(
+                Path.of("src/main/java/io/bunnycal/booking/service/PublicBookingService.java"));
+        String availabilityController = Files.readString(
+                Path.of("src/main/java/io/bunnycal/calendar/controller/CalendarEventsController.java"));
+        String eventRepository = Files.readString(
+                Path.of("src/main/java/io/bunnycal/calendar/repository/CalendarEventRepository.java"));
+
+        assertTrue(slotService.contains("calendarBusyTimeService.busyIntervalsForDateCanonical"));
+        assertTrue(participantService.contains("calendarBusyTimeService.busyIntervalsForDateCanonical"));
+        assertTrue(publicBookingService.contains("calendarBusyTimeService.hasBusyConflict"));
+        assertTrue(availabilityController.contains("calendarBusyTimeService.busyEvents"));
+        assertFalse(availabilityController.contains("CalendarEventRepository"));
+        assertFalse(eventRepository.contains("findDisplayEventsOnPrimaryCalendars"));
+        assertFalse(eventRepository.contains("findBusySelected"));
+    }
 }

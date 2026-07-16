@@ -2,7 +2,6 @@ package io.bunnycal.calendar.repository;
 
 import io.bunnycal.calendar.domain.CalendarEvent;
 import java.time.Instant;
-import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,92 +25,9 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
             Instant windowEnd,
             Instant windowStart);
 
-    /**
-     * Events rendered as ordinary calendar meetings. Holiday feeds have their own deduplicated
-     * endpoint/day-off layer, and OTHER calendars are intentionally invisible. Legacy unattributed
-     * rows remain visible until they are naturally replaced by attributed sync data.
-     */
-    @Query("""
-            select e from CalendarEvent e
-            where e.userId = :userId
-              and e.cancelled = false
-              and e.deleted = false
-              and e.startsAt < :windowEnd
-              and e.endsAt > :windowStart
-              and (
-                    e.externalCalendarId is null
-                 or exists (
-                        select 1 from CalendarConnectionCalendar c
-                        where c.connectionId = e.connectionId
-                          and c.externalCalendarId = e.externalCalendarId
-                          and c.calendarRole = io.bunnycal.calendar.domain.CalendarRole.PRIMARY
-                          and c.canRead = true
-                    )
-              )
-            """)
-    List<CalendarEvent> findDisplayEventsOnPrimaryCalendars(
-            @Param("userId") UUID userId,
-            @Param("windowEnd") Instant windowEnd,
-            @Param("windowStart") Instant windowStart);
-
     Optional<CalendarEvent> findByConnectionIdAndProviderAndExternalEventId(UUID connectionId,
                                                                              String provider,
                                                                              String externalEventId);
-
-    /**
-     * Calendar-scoped busy-event query.
-     *
-     * <p>Selection model — three orthogonal inputs the caller composes:
-     *
-     * <ul>
-     *   <li>{@code wholeConnectionIds} — connections the user opted into entirely
-     *       (legacy connection-level selection, or a binding with a null
-     *       externalCalendarId). Every non-cancelled event on these connections
-     *       contributes, regardless of the row's {@code external_calendar_id}.</li>
-     *   <li>{@code calendarScopedConnectionIds} — connections the user opted into at
-     *       calendar granularity. Events from these connections contribute only when
-     *       their {@code external_calendar_id} is in {@code selectedExternalCalendarIds}
-     *       <em>or</em> the row's {@code external_calendar_id IS NULL}. The null
-     *       allowance is the legacy-compatibility wildcard: rows ingested before
-     *       per-calendar attribution existed are not tied to any specific calendar
-     *       on the provider side, so excluding them would silently stop blocking
-     *       slots for every legacy user.</li>
-     *   <li>{@code selectedExternalCalendarIds} — the flat set of provider-native
-     *       calendar ids selected across all calendar-scoped bindings. Combined with
-     *       {@code calendarScopedConnectionIds} via an explicit pair filter is the
-     *       precise semantic, but a flat IN-list is sufficient here because the
-     *       caller already partitioned bindings by connection; cross-contamination
-     *       (calendar id A from connection X masquerading as A from connection Y)
-     *       cannot happen as long as calendar ids are globally unique per provider,
-     *       which they are by construction (Google: opaque per account; Microsoft:
-     *       Graph base64 ids embedding the mailbox).</li>
-     * </ul>
-     *
-     * <p>Either bucket may be empty; the caller is responsible for not calling this
-     * method when both are empty (fall back to {@link #findByUserIdAndCancelledFalseAndDeletedFalseAndStartsAtLessThanAndEndsAtGreaterThan}).
-     */
-    @Query("""
-            select e from CalendarEvent e
-            where e.cancelled = false
-              and e.deleted = false
-              and e.blocksAvailability = true
-              and e.startsAt < :windowEnd
-              and e.endsAt > :windowStart
-              and (
-                    e.connectionId in :wholeConnectionIds
-                 or (
-                        e.connectionId in :calendarScopedConnectionIds
-                    and (e.externalCalendarId is null
-                         or e.externalCalendarId in :selectedExternalCalendarIds)
-                 )
-              )
-            """)
-    List<CalendarEvent> findBusySelected(
-            @Param("wholeConnectionIds") Collection<UUID> wholeConnectionIds,
-            @Param("calendarScopedConnectionIds") Collection<UUID> calendarScopedConnectionIds,
-            @Param("selectedExternalCalendarIds") Collection<String> selectedExternalCalendarIds,
-            @Param("windowEnd") Instant windowEnd,
-            @Param("windowStart") Instant windowStart);
 
     /**
      * Every event that should block this user, on every calendar they left switched on.
@@ -120,10 +36,10 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
      * either blocks its owner or it does not, and that answer is the same whether they are hosting
      * their own event or sitting in someone else's round-robin.
      *
-     * <p>An event contributes when its calendar is flagged {@code checks_availability}, or when it
-     * carries no calendar attribution at all. That second case is the legacy wildcard: rows ingested
-     * before per-calendar attribution existed have a null {@code external_calendar_id} and belong to
-     * no inventory row, so requiring a match would silently stop them blocking anything.
+     * <p>The JPQL below is the persistence form of {@code AvailabilityCalendarPolicy.VERSION_1}.
+     * Keep the policy contract test green whenever this query changes. A legacy event with no
+     * calendar attribution is scoped to its connection's enabled primary calendar; it no longer
+     * bypasses an explicit off switch.
      */
     @Query("""
             select e from CalendarEvent e
@@ -133,17 +49,24 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
               and e.blocksAvailability = true
               and e.startsAt < :windowEnd
               and e.endsAt > :windowStart
-              and (
-                    e.externalCalendarId is null
-                 or exists (
+              and exists (
+                    select 1 from CalendarConnection connection
+                    where connection.id = e.connectionId
+                      and connection.userId = e.userId
+                      and connection.status not in (
+                            io.bunnycal.calendar.domain.CalendarConnectionStatus.REVOKED,
+                            io.bunnycal.calendar.domain.CalendarConnectionStatus.DISCONNECTED)
+                    )
+              and exists (
                         select 1 from CalendarConnectionCalendar c
                         where c.connectionId = e.connectionId
-                          and c.externalCalendarId = e.externalCalendarId
                           and c.calendarRole = io.bunnycal.calendar.domain.CalendarRole.PRIMARY
                           and c.checksAvailability = true
                           and c.canRead = true
+                          and c.hidden = false
+                          and (e.externalCalendarId is null
+                               or c.externalCalendarId = e.externalCalendarId)
                     )
-              )
             """)
     List<CalendarEvent> findBusyOnAvailabilityCalendars(
             @Param("userId") UUID userId,

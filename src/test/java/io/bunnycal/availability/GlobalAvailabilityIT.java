@@ -16,6 +16,7 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.repository.CalendarEventRepository;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.CalendarConnectionManagementService;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -87,6 +88,7 @@ class GlobalAvailabilityIT {
     @Autowired CalendarEventRepository eventRepository;
     @Autowired CalendarBusyTimeService busyTimeService;
     @Autowired CalendarConnectionManagementService managementService;
+    @Autowired SlotCacheVersionService slotCacheVersionService;
 
     @BeforeEach
     void setUp() {
@@ -135,6 +137,19 @@ class GlobalAvailabilityIT {
     }
 
     @Test
+    void firstAvailabilityToggle_strictlyAdvancesAPersistedSlotCacheVersion() {
+        User member = createUser("cache-version@test.com");
+        CalendarConnection conn = connection(member);
+        calendar(conn, "work", true);
+
+        assertThat(slotCacheVersionService.getCurrentVersion(member.getId())).isEqualTo(1L);
+
+        managementService.setChecksAvailability(member.getId(), conn.getId(), "work", false);
+
+        assertThat(slotCacheVersionService.getCurrentVersion(member.getId())).isEqualTo(2L);
+    }
+
+    @Test
     void otherCalendarsNeverBlockEvenWithALegacyFlag() {
         User member = createUser("member@test.com");
         CalendarConnection conn = connection(member);
@@ -155,10 +170,20 @@ class GlobalAvailabilityIT {
      * user is actually busy in.
      */
     @Test
-    void legacyEventsWithNoCalendarAttribution_stillBlock() {
+    void legacyEventsWithNoCalendarAttribution_respectTheConnectionsOffSwitch() {
         User member = createUser("member@test.com");
         CalendarConnection conn = connection(member);
         calendar(conn, "work", false);
+        busyEvent(member, conn, null, "2026-05-11T10:00:00Z", "2026-05-11T11:00:00Z");
+
+        assertThat(busyTimeService.busyIntervalsForDate(member.getId(), DAY, UTC)).isEmpty();
+    }
+
+    @Test
+    void legacyEventsWithNoCalendarAttribution_stillBlockOnAnEnabledConnection() {
+        User member = createUser("member@test.com");
+        CalendarConnection conn = connection(member);
+        calendar(conn, "work", true);
         busyEvent(member, conn, null, "2026-05-11T10:00:00Z", "2026-05-11T11:00:00Z");
 
         assertThat(busyTimeService.busyIntervalsForDate(member.getId(), DAY, UTC)).hasSize(1);

@@ -42,6 +42,7 @@ public class ProviderCalendarSelectionService {
 
     private final CalendarConnectionCalendarRepository calendarInventoryRepository;
     private final CalendarConnectionSyncCursorRepository cursorRepository;
+    private final AvailabilityCalendarPolicy availabilityPolicy;
     private final Duration holidaySyncInterval;
     private final Clock clock;
 
@@ -49,8 +50,10 @@ public class ProviderCalendarSelectionService {
     public ProviderCalendarSelectionService(
             CalendarConnectionCalendarRepository calendarInventoryRepository,
             CalendarConnectionSyncCursorRepository cursorRepository,
+            AvailabilityCalendarPolicy availabilityPolicy,
             @Value("${calendar.sync.holiday-interval:PT24H}") Duration holidaySyncInterval) {
-        this(calendarInventoryRepository, cursorRepository, holidaySyncInterval, Clock.systemUTC());
+        this(calendarInventoryRepository, cursorRepository, availabilityPolicy,
+                holidaySyncInterval, Clock.systemUTC());
     }
 
     ProviderCalendarSelectionService(
@@ -58,8 +61,19 @@ public class ProviderCalendarSelectionService {
             CalendarConnectionSyncCursorRepository cursorRepository,
             Duration holidaySyncInterval,
             Clock clock) {
+        this(calendarInventoryRepository, cursorRepository, new AvailabilityCalendarPolicy(),
+                holidaySyncInterval, clock);
+    }
+
+    ProviderCalendarSelectionService(
+            CalendarConnectionCalendarRepository calendarInventoryRepository,
+            CalendarConnectionSyncCursorRepository cursorRepository,
+            AvailabilityCalendarPolicy availabilityPolicy,
+            Duration holidaySyncInterval,
+            Clock clock) {
         this.calendarInventoryRepository = calendarInventoryRepository;
         this.cursorRepository = cursorRepository;
+        this.availabilityPolicy = availabilityPolicy;
         this.holidaySyncInterval = requirePositive(holidaySyncInterval);
         this.clock = clock;
     }
@@ -85,7 +99,7 @@ public class ProviderCalendarSelectionService {
         // primary is actually being checked. Turn the primary off and the holiday sync stops too —
         // there is nothing to show days-off against.
         boolean primaryChecksAvailability = inventory.stream()
-                .anyMatch(c -> c.getCalendarRole() == CalendarRole.PRIMARY && c.isChecksAvailability());
+                .anyMatch(c -> availabilityPolicy.contributesToAvailability(connection, c));
         boolean hasVisibleHolidayCalendar = primaryChecksAvailability && inventory.stream()
                 .anyMatch(c -> c.getCalendarRole() == CalendarRole.HOLIDAY && !c.isHidden());
         Map<String, Instant> lastSyncedByCalendarId = hasVisibleHolidayCalendar
@@ -95,11 +109,12 @@ public class ProviderCalendarSelectionService {
 
         Set<String> selected = new LinkedHashSet<>();
         int selectedHolidayCount = 0;
+        int availabilityCalendarCount = 0;
+        int writebackCalendarCount = 0;
         for (CalendarConnectionCalendar cal : inventory) {
             if (cal.isHidden()) continue;
-            // Poll a calendar when it blocks the user (free/busy), when it receives their bookings
-            // (so our own writes are read back), or when it is the holiday calendar and the primary
-            // is on (so we can mark whole days off). Birthdays and other feeds are never polled.
+            // Availability and writeback are independent reasons to sync. Their sets are composed
+            // here, at the orchestration boundary; neither policy changes the other one's meaning.
             String calId = cal.getExternalCalendarId();
             if (calId == null || calId.isBlank()) continue;
             String normalizedCalId = calId.trim();
@@ -107,11 +122,14 @@ public class ProviderCalendarSelectionService {
             boolean holidayDue = cal.getCalendarRole() == CalendarRole.HOLIDAY
                     && primaryChecksAvailability
                     && isHolidayDue(lastSyncedByCalendarId.get(normalizedCalId), holidayDueBefore);
+            boolean availabilityWanted = availabilityPolicy.contributesToAvailability(connection, cal);
+            boolean writebackWanted = connection.isDefaultWriteback() && cal.isSelected();
             boolean wanted = cal.getCalendarRole() == CalendarRole.HOLIDAY
                     ? holidayDue
-                    : (cal.getCalendarRole() == CalendarRole.PRIMARY && cal.isChecksAvailability())
-                            || cal.isSelected();
+                    : availabilityWanted || writebackWanted;
             if (!wanted) continue;
+            if (availabilityWanted) availabilityCalendarCount++;
+            if (writebackWanted) writebackCalendarCount++;
             if (selected.add(normalizedCalId) && cal.getCalendarRole() == CalendarRole.HOLIDAY) {
                 selectedHolidayCount++;
             }
@@ -122,9 +140,11 @@ public class ProviderCalendarSelectionService {
                             + "inventorySize={} reason=no_calendar_checks_availability",
                     provider, connectionId, syncModeTag, inventory.size());
         } else {
-            log.info("provider_calendar_selection provider={} connectionId={} calendarCount={} holidayCalendarCount={} "
-                            + "holidayInterval={} syncMode={}",
-                    provider, connectionId, selected.size(), selectedHolidayCount, holidaySyncInterval, syncModeTag);
+            log.info("provider_calendar_selection provider={} connectionId={} calendarCount={} availabilityCalendarCount={} "
+                            + "writebackCalendarCount={} holidayCalendarCount={} policyVersion={} holidayInterval={} syncMode={}",
+                    provider, connectionId, selected.size(), availabilityCalendarCount, writebackCalendarCount,
+                    selectedHolidayCount, AvailabilityCalendarPolicy.CONTRACT_VERSION,
+                    holidaySyncInterval, syncModeTag);
         }
         return selected;
     }

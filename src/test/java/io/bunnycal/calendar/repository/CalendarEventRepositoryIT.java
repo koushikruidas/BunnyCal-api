@@ -21,12 +21,9 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * JPQL-level test for {@link CalendarEventRepository#findBusySelected} against a real
- * Postgres instance. The unit test for {@link io.bunnycal.calendar.service.CalendarBusyTimeService}
- * stubs the repository and proves the partition is composed correctly; this test
- * proves the JPQL itself filters rows the way the documented selection model says
- * it should. Together they pin down the whole "calendar selection drives busy
- * intervals" invariant.
+ * Persistence contract tests for availability policy version 1. These pin the JPQL form of the
+ * side-effect-free domain policy so a shortcut query cannot silently diverge from slot listing,
+ * confirmation, the Availability UI, round-robin, or collective scheduling.
  */
 @SpringBootTest(classes = TestApplication.class)
 @Testcontainers
@@ -83,99 +80,40 @@ class CalendarEventRepositoryIT {
     }
 
     @Test
-    void calendarScoped_onlyMatchingCalendarIdContributes() {
-        // connB has TWO Microsoft calendars; user selected only the work one.
-        UUID workEvent   = insertEvent(connB, "AQMkAD-work",   "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
-        UUID familyEvent = insertEvent(connB, "AQMkAD-family", "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
+    void availabilityPolicyQuery_includesOnlyEnabledReadableVisiblePrimaryCalendar() {
+        insertInventory(connA, "work", true);
+        insertInventory(connB, "personal", false);
+        UUID included = insertEvent(connA, "work", "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
+        UUID excluded = insertEvent(connB, "personal", "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
 
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(impossibleUuid()),                // wholeConnectionIds — none
-                List.of(connB),                            // calendarScopedConnectionIds
-                List.of("AQMkAD-work"),                    // selectedExternalCalendarIds
-                windowEnd, windowStart);
+        List<CalendarEvent> result = repository.findBusyOnAvailabilityCalendars(userId, windowEnd, windowStart);
 
-        assertThat(result).extracting(CalendarEvent::getId).containsExactly(workEvent);
-        assertThat(result).extracting(CalendarEvent::getId).doesNotContain(familyEvent);
+        assertThat(result).extracting(CalendarEvent::getId).containsExactly(included);
+        assertThat(result).extracting(CalendarEvent::getId).doesNotContain(excluded);
     }
 
     @Test
-    void calendarScoped_legacyNullExternalCalendarIdRow_isKeptByWildcard() {
-        // Legacy row with NULL external_calendar_id (pre-multi-calendar ingestion).
-        // The wildcard rule says it should still contribute when its connection is
-        // in the calendar-scoped bucket. This locks Decision 1 in the SQL layer.
-        UUID legacyEvent = insertEvent(connB, null, "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
+    void availabilityPolicyQuery_legacyNullIsScopedToItsConnectionsSelection() {
+        insertInventory(connA, "work", true);
+        insertInventory(connB, "personal", false);
+        UUID included = insertEvent(connA, null, "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
+        UUID excluded = insertEvent(connB, null, "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
 
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(impossibleUuid()),
-                List.of(connB),
-                List.of("AQMkAD-work"),
-                windowEnd, windowStart);
+        List<CalendarEvent> result = repository.findBusyOnAvailabilityCalendars(userId, windowEnd, windowStart);
 
-        assertThat(result).extracting(CalendarEvent::getId).containsExactly(legacyEvent);
+        assertThat(result).extracting(CalendarEvent::getId).containsExactly(included);
+        assertThat(result).extracting(CalendarEvent::getId).doesNotContain(excluded);
     }
 
     @Test
-    void wholeConnection_allEventsOnConnectionContributeRegardlessOfCalendarId() {
-        UUID workEvent   = insertEvent(connB, "AQMkAD-work",   "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
-        UUID familyEvent = insertEvent(connB, "AQMkAD-family", "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
-        UUID legacyNull  = insertEvent(connB, null,             "2026-05-10T13:00:00Z", "2026-05-10T14:00:00Z");
+    void availabilityPolicyQuery_disconnectedConnectionNeverContributes() {
+        insertInventory(connA, "work", true);
+        UUID event = insertEvent(connA, "work", "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
+        jdbc.update("UPDATE calendar_connections SET status = 'REVOKED' WHERE id = ?", connA);
 
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(connB),                            // whole connection
-                List.of(impossibleUuid()),                 // no calendar-scoped
-                List.of("__unused-sentinel__"),
-                windowEnd, windowStart);
+        List<CalendarEvent> result = repository.findBusyOnAvailabilityCalendars(userId, windowEnd, windowStart);
 
-        assertThat(result).extracting(CalendarEvent::getId)
-                .containsExactlyInAnyOrder(workEvent, familyEvent, legacyNull);
-    }
-
-    @Test
-    void noCrossLeakBetweenConnections() {
-        // Identical calendar id strings on two different connections must not bleed
-        // into each other (they wouldn't in reality — Google/Microsoft ids are
-        // globally unique per provider — but the query must still gate by connection).
-        UUID aEvent = insertEvent(connA, "shared-id", "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
-        UUID bEvent = insertEvent(connB, "shared-id", "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
-
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(impossibleUuid()),
-                List.of(connA),                            // only connA in scoped bucket
-                List.of("shared-id"),
-                windowEnd, windowStart);
-
-        assertThat(result).extracting(CalendarEvent::getId).containsExactly(aEvent);
-        assertThat(result).extracting(CalendarEvent::getId).doesNotContain(bEvent);
-    }
-
-    @Test
-    void cancelledRows_excluded() {
-        UUID liveEvent = insertEvent(connB, "AQMkAD-work", "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
-        UUID cancelledEvent = insertEvent(connB, "AQMkAD-work", "2026-05-10T11:00:00Z", "2026-05-10T12:00:00Z");
-        jdbc.update("UPDATE calendar_events SET cancelled = TRUE WHERE id = ?", cancelledEvent);
-
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(impossibleUuid()),
-                List.of(connB),
-                List.of("AQMkAD-work"),
-                windowEnd, windowStart);
-
-        assertThat(result).extracting(CalendarEvent::getId).containsExactly(liveEvent);
-    }
-
-    @Test
-    void timeWindowFilter_excludesEventsOutsideWindow() {
-        insertEvent(connB, "AQMkAD-work", "2026-05-09T22:00:00Z", "2026-05-09T23:00:00Z"); // before
-        UUID inside = insertEvent(connB, "AQMkAD-work", "2026-05-10T09:00:00Z", "2026-05-10T10:00:00Z");
-        insertEvent(connB, "AQMkAD-work", "2026-05-12T09:00:00Z", "2026-05-12T10:00:00Z"); // after
-
-        List<CalendarEvent> result = repository.findBusySelected(
-                List.of(impossibleUuid()),
-                List.of(connB),
-                List.of("AQMkAD-work"),
-                windowEnd, windowStart);
-
-        assertThat(result).extracting(CalendarEvent::getId).containsExactly(inside);
+        assertThat(result).extracting(CalendarEvent::getId).doesNotContain(event);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -207,7 +145,15 @@ class CalendarEventRepositoryIT {
         return id;
     }
 
-    private static UUID impossibleUuid() {
-        return new UUID(0L, 0L);
+    private void insertInventory(UUID connectionId, String externalCalendarId, boolean checksAvailability) {
+        jdbc.update("""
+                INSERT INTO calendar_connection_calendars
+                    (id, connection_id, external_calendar_id, name, is_primary, calendar_role,
+                     is_selected, checks_availability, can_read, can_write, hidden,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, TRUE, 'PRIMARY', FALSE, ?, TRUE, TRUE, FALSE, NOW(), NOW())
+                """, UUID.randomUUID(), connectionId, externalCalendarId, externalCalendarId,
+                checksAvailability);
     }
+
 }
