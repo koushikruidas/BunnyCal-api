@@ -7,6 +7,7 @@ import io.bunnycal.calendar.client.ProviderCalendarInventoryEntry;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
@@ -121,16 +122,36 @@ public class CalendarInventoryHydrator {
             }
             keep.add(entry.externalCalendarId());
             CalendarConnectionCalendar row = existing.get(entry.externalCalendarId());
-            if (row == null) {
+            CalendarRole role = CalendarRole.classify(provider, entry);
+            boolean isNew = row == null;
+            CalendarRole previousRole = isNew ? null : row.getCalendarRole();
+            if (isNew) {
                 row = new CalendarConnectionCalendar();
                 row.setConnectionId(connectionId);
                 row.setExternalCalendarId(entry.externalCalendarId());
+                // Only the primary checks availability out of the box. Holiday and other calendars
+                // must never silently block a user's slots — they start off, and holidays feed
+                // days-off through a different path.
+                row.setChecksAvailability(role == CalendarRole.PRIMARY);
+            } else if (role != CalendarRole.PRIMARY) {
+                // Classification changes must never leave a former primary/legacy secondary
+                // blocking as busy after it becomes HOLIDAY or OTHER.
+                row.setChecksAvailability(false);
+            } else if (previousRole != CalendarRole.PRIMARY) {
+                // If the provider promotes a different calendar to primary, turn that new primary
+                // on once. A calendar that was already primary keeps the user's explicit toggle.
+                row.setChecksAvailability(true);
             }
+            // Re-classify on every hydration: provider changes and Microsoft renames can move a row
+            // between roles, and the availability invariant above follows the new role.
+            row.setCalendarRole(role);
             row.setName(entry.name());
             row.setPrimary(entry.primary());
             row.setCanRead(entry.canRead());
             row.setCanWrite(entry.canWrite());
             row.setHidden(entry.hidden());
+            row.setSupportsNativeTeams(provider == CalendarProviderType.MICROSOFT
+                    && entry.supportsNativeTeams());
             row.setLastSyncedAt(now);
             inventoryRepository.save(row);
             log.info("provider_calendar_inventory_entry connectionId={} calendarId={} name={} writable={} primary={}",

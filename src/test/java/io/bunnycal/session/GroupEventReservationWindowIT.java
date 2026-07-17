@@ -198,6 +198,12 @@ class GroupEventReservationWindowIT extends AbstractSessionIT {
                         NOW() + INTERVAL '1 hour', ARRAY['calendar.read']::text[], 'ACTIVE', 0, NOW(), NOW())
                 """, connectionId, host.getId());
         jdbc.update("""
+                INSERT INTO calendar_connection_calendars
+                    (id, connection_id, external_calendar_id, name, is_primary, calendar_role,
+                     is_selected, checks_availability, can_read, can_write, hidden)
+                VALUES (?, ?, 'primary', 'Primary', true, 'PRIMARY', true, true, true, true, false)
+                """, UUID.randomUUID(), connectionId);
+        jdbc.update("""
                 INSERT INTO calendar_events
                     (id, user_id, connection_id, provider, external_event_id, starts_at, ends_at,
                      cancelled, deleted, blocks_availability, created_at, updated_at)

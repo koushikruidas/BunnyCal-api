@@ -1,5 +1,6 @@
 package io.bunnycal.booking.dto;
 
+import io.bunnycal.availability.domain.EventKind;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -7,6 +8,7 @@ import java.util.UUID;
 public record PublicManageBookingResponse(
         UUID bookingId,
         String eventTitle,
+        EventKind eventKind,
         long durationMinutes,
         Instant startTime,
         Instant endTime,

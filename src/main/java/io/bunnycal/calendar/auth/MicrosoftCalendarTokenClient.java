@@ -22,4 +22,9 @@ public class MicrosoftCalendarTokenClient implements CalendarTokenClient {
     public TokenRefreshResult refreshAccessToken(String refreshToken) {
         return microsoftApiClient.refreshAccessToken(refreshToken);
     }
+
+    @Override
+    public String fetchProviderUserId(String accessToken) {
+        return microsoftApiClient.fetchProviderUserId(accessToken);
+    }
 }

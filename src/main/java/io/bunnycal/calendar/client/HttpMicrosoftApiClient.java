@@ -207,7 +207,7 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
     public List<ProviderCalendarInventoryEntry> listCalendars(String accessToken) {
         try {
             ResponseEntity<Map> response = graphClient.get()
-                    .uri("/v1.0/me/calendars?$select=id,name,isDefaultCalendar,canEdit,canShare,canViewPrivateItems,owner")
+                    .uri("/v1.0/me/calendars?$select=id,name,isDefaultCalendar,canEdit,canShare,canViewPrivateItems,owner,allowedOnlineMeetingProviders")
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
                     .retrieve()
                     .toEntity(Map.class);
@@ -233,12 +233,24 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
                 Object canView = map.get("canViewPrivateItems");
                 boolean canRead = canView == null || asBooleanLoose(canView);
                 boolean canWrite = canEdit;
-                entries.add(new ProviderCalendarInventoryEntry(id, name, primary, canRead, canWrite, false));
+                boolean supportsNativeTeams = containsIgnoreCase(
+                        map.get("allowedOnlineMeetingProviders"), "teamsForBusiness");
+                entries.add(new ProviderCalendarInventoryEntry(
+                        id, name, primary, canRead, canWrite, false, supportsNativeTeams));
             }
             return List.copyOf(entries);
         } catch (RestClientException ex) {
             throw classify(ex);
         }
+    }
+
+    private static boolean containsIgnoreCase(Object value, String expected) {
+        if (!(value instanceof List<?> values) || expected == null) {
+            return false;
+        }
+        return values.stream()
+                .map(HttpMicrosoftApiClient::asStringLoose)
+                .anyMatch(v -> expected.equalsIgnoreCase(v));
     }
 
     @Override
@@ -479,7 +491,12 @@ public class HttpMicrosoftApiClient implements MicrosoftApiClient {
         body.put("end", Map.of("dateTime", endsAt.toString(), "timeZone", "UTC"));
         body.put("responseRequested", false);
         body.put("isReminderOn", false);
-        if (instruction != null && instruction.embedsExternalUrl()) {
+        if (instruction != null
+                && instruction.mode() == ConferencingInstruction.Mode.REQUEST_NATIVE_MEET
+                && instruction.providerType() == ConferencingProviderType.MICROSOFT_TEAMS) {
+            body.put("isOnlineMeeting", true);
+            body.put("onlineMeetingProvider", "teamsForBusiness");
+        } else if (instruction != null && instruction.embedsExternalUrl()) {
             body.put("location", Map.of("displayName", instruction.joinUrl()));
         }
         return body;

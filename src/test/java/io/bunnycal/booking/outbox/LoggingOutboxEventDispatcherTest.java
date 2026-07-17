@@ -58,6 +58,10 @@ class LoggingOutboxEventDispatcherTest {
     @Mock
     private BookingEventTypeResolver bookingEventTypeResolver;
     @Mock
+    private io.bunnycal.conferencing.service.EventConferencingResolver conferencingResolver;
+    @Mock
+    private io.bunnycal.booking.service.BookingSchedulingProjectionResolver projectionResolver;
+    @Mock
     private SyncInvariantMonitor invariantMonitor;
 
     private LoggingOutboxEventDispatcher dispatcher;
@@ -72,6 +76,8 @@ class LoggingOutboxEventDispatcherTest {
                 calendarConnectionRepository,
                 bookingOwnershipService,
                 bookingEventTypeResolver,
+                conferencingResolver,
+                projectionResolver,
                 bookingNotificationService,
                 sessionNotificationService,
                 sessionSyncWorker,
@@ -158,6 +164,50 @@ class LoggingOutboxEventDispatcherTest {
                 eq("CREATE"),
                 eq(null),
                 eq(null), eq(null), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void dispatch_bookingConfirmedWithTeams_defersEmailUntilProjectionIsReady() {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        OutboxEvent event = OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Booking")
+                .aggregateId(bookingId)
+                .eventType("BOOKING_CONFIRMED")
+                .payload("{}")
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build();
+        Booking booking = Booking.builder().id(bookingId).hostId(hostId).eventTypeId(eventTypeId).build();
+        EventType eventType = EventType.builder()
+                .id(eventTypeId).userId(hostId).name("Teams call").slug("teams-call")
+                .duration(java.time.Duration.ofMinutes(30))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .conferencingProvider(ConferencingProviderType.DEFAULT)
+                .build();
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setBookingId(bookingId);
+        ownership.setProjectionProvider(CalendarProviderType.MICROSOFT);
+        ownership.setProjectionConnectionId(connectionId);
+        ownership.setProjectionCalendarId("calendar-id");
+        ownership.setOwnershipVersion(1L);
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(java.util.Optional.of(booking));
+        when(bookingEventTypeResolver.requireForBooking(booking)).thenReturn(eventType);
+        when(bookingOwnershipService.ensureOwnership(booking, eventType)).thenReturn(ownership);
+        when(calendarConnectionRepository.findById(connectionId))
+                .thenReturn(java.util.Optional.of(connection(connectionId, CalendarProviderType.MICROSOFT)));
+        when(conferencingResolver.resolve(hostId, eventType)).thenReturn(ConferencingProviderType.MICROSOFT_TEAMS);
+
+        dispatcher.dispatch(event);
+
+        verify(bookingNotificationService, never()).handleOutboxEvent(event);
+        verify(calendarSyncJobRepository).upsertPendingJob(
+                org.mockito.ArgumentMatchers.any(UUID.class), eq("BOOKING"), eq(bookingId), eq("microsoft"), eq("CREATE"),
+                eq(null), eq(hostId), eq(connectionId), eq(1L));
     }
 
     @Test
@@ -277,9 +327,6 @@ class LoggingOutboxEventDispatcherTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(5))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(authoritativeConnectionId)
-                .projectionCalendarId("primary")
                 .build();
         Booking booking = Booking.builder()
                 .id(bookingId)
@@ -337,8 +384,6 @@ class LoggingOutboxEventDispatcherTest {
                 .id(eventTypeId)
                 .userId(UUID.randomUUID())
                 .kind(io.bunnycal.availability.domain.EventKind.ROUND_ROBIN)
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionCalendarId("primary")
                 .build();
         BookingOwnership ownership = new BookingOwnership();
         ownership.setBookingId(bookingId);
@@ -399,9 +444,6 @@ class LoggingOutboxEventDispatcherTest {
                 .minNotice(java.time.Duration.ZERO)
                 .maxAdvance(java.time.Duration.ofDays(30))
                 .holdDuration(java.time.Duration.ofMinutes(5))
-                .projectionProvider(CalendarProviderType.GOOGLE)
-                .projectionConnectionId(projectionConnectionId)
-                .projectionCalendarId("primary")
                 .conferencingProvider(ConferencingProviderType.GOOGLE_MEET)
                 .build();
         BookingOwnership ownership = new BookingOwnership();
@@ -415,6 +457,11 @@ class LoggingOutboxEventDispatcherTest {
         when(bookingOwnershipService.ensureOwnership(booking, configured)).thenReturn(ownership);
         when(calendarConnectionRepository.findById(projectionConnectionId))
                 .thenReturn(java.util.Optional.of(connection(projectionConnectionId, CalendarProviderType.GOOGLE)));
+        // The defer decision resolves the event type's conferencing against the writer; this event
+        // resolves to Meet, so the confirmation must wait for the sync job to create the link.
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId),
+                org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(ConferencingProviderType.GOOGLE_MEET);
 
         dispatcher.dispatch(event);
 
@@ -560,7 +607,9 @@ class LoggingOutboxEventDispatcherTest {
                         .eventTypeId(eventTypeId)
                         .calendarSequence(12L)
                         .build()));
-        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
+        // The session's provider now comes from the host's write-back calendar, not the event type,
+        // so this lookup is no longer on the path — kept lenient as scenario context.
+        org.mockito.Mockito.lenient().when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId))
                 .thenReturn(java.util.Optional.of(EventType.builder()
                         .id(eventTypeId)
                         .userId(hostId)
@@ -573,10 +622,11 @@ class LoggingOutboxEventDispatcherTest {
                         .minNotice(java.time.Duration.ZERO)
                         .maxAdvance(java.time.Duration.ofDays(30))
                         .holdDuration(java.time.Duration.ofMinutes(15))
-                        .projectionProvider(CalendarProviderType.GOOGLE)
-                        .projectionConnectionId(projectionConnectionId)
-                        .projectionCalendarId("primary")
                         .build()));
+        // The session's provider is now derived from the host's global write-back calendar.
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new io.bunnycal.booking.service.BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, UUID.randomUUID(), "primary"));
         when(calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
                 io.bunnycal.sync.state.InternalRefType.SESSION,
                 sessionId,

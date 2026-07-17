@@ -39,7 +39,6 @@ class EventTypeDeleteGuardTest {
     @Mock private UserRepository userRepository;
     @Mock private SessionUserResolver sessionUserResolver;
     @Mock private EventTypeOrchestrationNormalizer orchestrationNormalizer;
-    @Mock private EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
     @Mock private PublishReadinessService publishReadinessService;
     @Mock private OutboxPublisher outboxPublisher;
     @Mock private BookingExperienceRepository experienceRepository;
@@ -61,7 +60,6 @@ class EventTypeDeleteGuardTest {
                 userRepository,
                 sessionUserResolver,
                 orchestrationNormalizer,
-                orchestrationJsonCodec,
                 publishReadinessService,
                 outboxPublisher,
                 timeSource,

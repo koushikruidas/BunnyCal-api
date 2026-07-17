@@ -88,7 +88,7 @@ class SlotCacheServiceVersionedOverloadTest {
         verify(valueOperations).get(keyCaptor.capture());
         String key = keyCaptor.getValue();
 
-        assertTrue(key.startsWith("slots:v2:"));
+        assertTrue(key.startsWith("slots:v3:"));
         assertTrue(key.contains(userId.toString()));
         assertTrue(key.contains(eventTypeId.toString()));
         assertTrue(key.contains("v42"));
@@ -164,7 +164,7 @@ class SlotCacheServiceVersionedOverloadTest {
                         true));
 
         verify(valueOperations, times(1))
-                .set(contains("slots:v2:"), any(String.class), any(Duration.class));
+                .set(contains("slots:v3:"), any(String.class), any(Duration.class));
     }
 
     @Test
@@ -182,7 +182,7 @@ class SlotCacheServiceVersionedOverloadTest {
         String key = keyCaptor.getValue();
 
         assertTrue(key.startsWith("slots:" + userId));
-        assertTrue(!key.startsWith("slots:v2:"));
+        assertTrue(!key.startsWith("slots:v3:"));
     }
 
     // 🔥 NEW — Concurrency test (critical)

@@ -22,4 +22,9 @@ public class GoogleCalendarTokenClient implements CalendarTokenClient {
     public TokenRefreshResult refreshAccessToken(String refreshToken) {
         return googleApiClient.refreshAccessToken(refreshToken);
     }
+
+    @Override
+    public String fetchProviderUserId(String accessToken) {
+        return googleApiClient.fetchProviderUserId(accessToken);
+    }
 }

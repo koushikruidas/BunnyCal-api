@@ -2,6 +2,7 @@ package io.bunnycal.availability.cache;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -16,6 +17,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -48,7 +50,8 @@ class SlotCacheVersionServiceTest {
     @Test
     void getCurrentVersion_returnsSentinelOnRedisFailure() {
         UUID userId = UUID.randomUUID();
-        when(valueOperations.get("slots:version:" + userId)).thenThrow(new RuntimeException("redis down"));
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenThrow(new RuntimeException("redis down"));
 
         long version = versionService.getCurrentVersion(userId);
 
@@ -58,7 +61,8 @@ class SlotCacheVersionServiceTest {
     @Test
     void getCurrentVersion_returnsSentinelOnCorruptValue() {
         UUID userId = UUID.randomUUID();
-        when(valueOperations.get("slots:version:" + userId)).thenReturn("not-a-number");
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenReturn(null);
 
         long version = versionService.getCurrentVersion(userId);
 
@@ -66,26 +70,46 @@ class SlotCacheVersionServiceTest {
     }
 
     @Test
+    void getCurrentVersion_atomicallyPersistsTheInitialVersion() {
+        UUID userId = UUID.randomUUID();
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenReturn(1L);
+
+        assertEquals(1L, versionService.getCurrentVersion(userId));
+    }
+
+    @Test
+    void firstBumpOnAnAbsentKey_advancesPastTheInitialVersion() {
+        UUID userId = UUID.randomUUID();
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenReturn(2L);
+
+        assertEquals(2L, versionService.incrementVersion(userId));
+    }
+
+    @Test
     void bumpVersionAfterCommit_runsImmediatelyWhenNoTransactionActive() {
         UUID userId = UUID.randomUUID();
-        when(valueOperations.increment("slots:version:" + userId)).thenReturn(2L);
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenReturn(2L);
 
         versionService.bumpVersionAfterCommit(userId);
 
-        verify(valueOperations, times(1)).increment("slots:version:" + userId);
+        verify(redisTemplate, times(1)).execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId)));
     }
 
     @Test
     void bumpVersionAfterCommit_deferredUntilAfterCommit() {
         UUID userId = UUID.randomUUID();
-        when(valueOperations.increment(eq("slots:version:" + userId))).thenReturn(3L);
+        when(redisTemplate.execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId))))
+                .thenReturn(3L);
 
         TransactionSynchronizationManager.initSynchronization();
         try {
             versionService.bumpVersionAfterCommit(userId);
 
             // Synchronization should be registered, but the bump must not have run yet.
-            verify(valueOperations, never()).increment(eq("slots:version:" + userId));
+            verify(redisTemplate, never()).execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId)));
             assertEquals(1, TransactionSynchronizationManager.getSynchronizations().size());
 
             // Simulate Spring's commit phase firing the synchronization callbacks.
@@ -96,7 +120,7 @@ class SlotCacheVersionServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
 
-        verify(valueOperations, times(1)).increment("slots:version:" + userId);
+        verify(redisTemplate, times(1)).execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId)));
     }
 
     @Test
@@ -113,7 +137,7 @@ class SlotCacheVersionServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
 
-        verify(valueOperations, never()).increment(eq("slots:version:" + userId));
+        verify(redisTemplate, never()).execute(any(RedisScript.class), eq(java.util.List.of("slots:version:" + userId)));
     }
 
     @Test
@@ -126,6 +150,6 @@ class SlotCacheVersionServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
 
-        verify(valueOperations, never()).increment(eq(null));
+        verify(redisTemplate, never()).execute(any(RedisScript.class), any());
     }
 }

@@ -30,60 +30,29 @@ public class BookingOwnershipService {
         this.projectionResolver = projectionResolver;
     }
 
-    /**
-     * @deprecated Use {@link #ensureOwnership(Booking, EventType)} for ROUND_ROBIN event types.
-     *             This overload reads eventType.projection* directly and is not RR-aware — calling
-     *             it for a ROUND_ROBIN event type would write to the event owner's calendar instead
-     *             of the assigned participant's calendar.
-     */
-    @Deprecated
-    @Transactional
-    public BookingOwnership ensureOwnership(UUID bookingId, EventType eventType) {
-        if (eventType == null) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Projection ownership is required for booking sync lifecycle.");
-        }
-        if (EventKind.ROUND_ROBIN.equals(eventType.getKind())) {
-            throw new IllegalStateException(
-                    "ensureOwnership(UUID, EventType) must not be called for ROUND_ROBIN event types. " +
-                    "Use ensureOwnership(Booking, EventType) instead — it resolves the assigned participant's calendar.");
-        }
-        BookingSchedulingProjectionResolver.SchedulingProjection projection;
-        if (eventType.getProjectionProvider() == null
-                || eventType.getProjectionConnectionId() == null
-                || eventType.getProjectionCalendarId() == null
-                || eventType.getProjectionCalendarId().isBlank()) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Projection ownership is required for booking sync lifecycle.");
-        }
-        projection = new BookingSchedulingProjectionResolver.SchedulingProjection(
-                eventType.getProjectionProvider(),
-                eventType.getProjectionConnectionId(),
-                eventType.getProjectionCalendarId().trim());
-        return ensureOwnership(bookingId, eventType, projection);
-    }
-
     @Transactional
     public BookingOwnership ensureOwnership(Booking booking, EventType eventType) {
-        BookingSchedulingProjectionResolver.SchedulingProjection projection = projectionResolver.resolve(booking, eventType);
-        return ensureOwnership(booking.getId(), eventType, projection);
-    }
-
-    private BookingOwnership ensureOwnership(UUID bookingId,
-                                            EventType eventType,
-                                            BookingSchedulingProjectionResolver.SchedulingProjection projection) {
-        if (eventType == null
-                ) {
+        if (eventType == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "Projection ownership is required for booking sync lifecycle.");
         }
-        BookingOwnership existing = repository.findByBookingId(bookingId).orElse(null);
+        // Ownership is a per-booking record of where the event was ACTUALLY written, and it is
+        // written once. This method runs on every outbox dispatch for a booking, not just at
+        // creation, so it must not re-derive ownership from the event type on the later passes:
+        // an event type's calendar can now be changed, and re-resolving would make a cancel or a
+        // reschedule of an already-written booking disagree with the calendar it actually lives on.
+        // Existing bookings keep their calendar; only new bookings pick up a changed setting.
+        BookingOwnership existing = repository.findByBookingId(booking.getId()).orElse(null);
         if (existing != null) {
             if ("AMBIGUOUS".equals(existing.getOwnershipState())) {
                 meterRegistry.counter("ambiguous_booking_ownership_total").increment();
             }
-            validateUnchangedOwnership(existing, projection, bookingId);
             return existing;
         }
+        return createOwnership(booking.getId(), projectionResolver.resolve(booking, eventType));
+    }
+
+    private BookingOwnership createOwnership(UUID bookingId,
+                                             BookingSchedulingProjectionResolver.SchedulingProjection projection) {
 
         BookingOwnership ownership = new BookingOwnership();
         ownership.setBookingId(bookingId);
@@ -163,15 +132,4 @@ public class BookingOwnershipService {
         NOOP_EMPTY_EXTERNAL_EVENT
     }
 
-    private static void validateUnchangedOwnership(BookingOwnership existing,
-                                                   BookingSchedulingProjectionResolver.SchedulingProjection projection,
-                                                   UUID bookingId) {
-        boolean changed = existing.getProjectionProvider() != (projection == null ? null : projection.provider())
-                || !java.util.Objects.equals(existing.getProjectionConnectionId(), projection == null ? null : projection.connectionId())
-                || !java.util.Objects.equals(existing.getProjectionCalendarId(), projection == null ? null : projection.calendarId());
-        if (changed) {
-            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
-                    "Booking ownership is immutable and does not match event type projection ownership for booking " + bookingId);
-        }
-    }
 }

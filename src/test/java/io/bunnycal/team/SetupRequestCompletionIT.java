@@ -103,7 +103,7 @@ class SetupRequestCompletionIT extends AbstractTeamIT {
         jdbc.update("""
                 INSERT INTO calendar_connection_calendars
                     (id, connection_id, external_calendar_id, name,
-                     is_primary, is_selected, sync_enabled, can_read, can_write, hidden)
+                     is_primary, is_selected, checks_availability, can_read, can_write, hidden)
                 VALUES (?, ?, 'primary@group.calendar.google.com', 'Primary',
                         true, true, true, true, ?, false)
                 """,

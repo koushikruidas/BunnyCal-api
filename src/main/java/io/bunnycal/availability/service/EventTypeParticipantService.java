@@ -13,11 +13,12 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
-import io.bunnycal.calendar.domain.CalendarConnectionStatus;
-import io.bunnycal.calendar.domain.CalendarProviderType;
-import io.bunnycal.calendar.domain.MicrosoftAccountClassifier;
+import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
@@ -60,10 +61,10 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><b>availability_rules</b> — per participant's own working hours (keyed by their
  *       user_id in the availability_rules table).</li>
  *   <li><b>availability_overrides</b> — per participant's own date overrides.</li>
- *   <li><b>calendar busy blocks</b> — from the participant's own connected calendars
- *       (their own calendar_connections rows, using ALL_CONNECTED semantics). The event
- *       type's availabilityCalendarsJson / availabilityMode is the owner's selection only
- *       and does NOT apply to participants.</li>
+ *   <li><b>calendar busy blocks</b> — from the participant's own calendars, specifically the ones
+ *       they flagged as checking availability. That is their setting and it applies identically
+ *       whoever is booking them: on their own event types, and on any team event they are part
+ *       of.</li>
  *   <li><b>timezone</b> — each participant's own User.timezone. The engine must be called
  *       once per participant in that participant's timezone, and results converted to UTC
  *       before aggregation.</li>
@@ -109,6 +110,9 @@ public class EventTypeParticipantService {
     private final OutboxPublisher outboxPublisher;
     private final TimeSource timeSource;
     private final ProfileAvatarService profileAvatarService;
+    private final BookingSchedulingProjectionResolver projectionResolver;
+    private final EventConferencingResolver conferencingResolver;
+    private final NativeConferencingCapabilityService conferencingCapabilityService;
     // Injected lazily to break the circular dependency:
     // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
     @Lazy
@@ -124,7 +128,10 @@ public class EventTypeParticipantService {
                                        BookingAssignmentRepository bookingAssignmentRepository,
                                        OutboxPublisher outboxPublisher,
                                        TimeSource timeSource,
-                                       ProfileAvatarService profileAvatarService) {
+                                       ProfileAvatarService profileAvatarService,
+                                       BookingSchedulingProjectionResolver projectionResolver,
+                                       EventConferencingResolver conferencingResolver,
+                                       NativeConferencingCapabilityService conferencingCapabilityService) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
@@ -135,6 +142,9 @@ public class EventTypeParticipantService {
         this.outboxPublisher = outboxPublisher;
         this.timeSource = timeSource;
         this.profileAvatarService = profileAvatarService;
+        this.projectionResolver = projectionResolver;
+        this.conferencingResolver = conferencingResolver;
+        this.conferencingCapabilityService = conferencingCapabilityService;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -356,14 +366,10 @@ public class EventTypeParticipantService {
             boolean hasRules = eligibility.reason() == ParticipantEligibilityReason.ACTIVE
                     || eligibility.reason() == ParticipantEligibilityReason.NO_ACTIVE_CALENDAR;
 
-            // Teams capability: requires an active Microsoft work/school (Entra) account.
-            // Consumer MSA accounts (Outlook.com) cannot host native Teams meetings. A user may
-            // hold several Microsoft accounts, so any one work/school account is enough.
-            boolean supportsNativeTeams = calendarConnectionRepository
-                    .findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                    .stream()
-                    .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn));
+            boolean supportsNativeTeams = projectionResolver.writebackConnection(uid)
+                    .map(conn -> conferencingCapabilityService.canServe(
+                            conn, ConferencingProviderType.MICROSOFT_TEAMS))
+                    .orElse(false);
 
             String displayName = u != null ? u.getName() : null;
             out.add(new EventTypeParticipantResponse(
@@ -418,50 +424,57 @@ public class EventTypeParticipantService {
     }
 
     /**
-     * Validates that the chosen conferencing provider is compatible with the
-     * given participant pool for a ROUND_ROBIN event type.
+     * Validates that every member of a round-robin pool can host the event's meeting link.
      *
-     * <p>For RR, there is no owner projection calendar; conferencing capability is
-     * derived from participant calendars. The rule is: at least one participant
-     * must be able to support the selected provider.
+     * <p>The rotation assigns the meeting to whoever is next, and that member's own calendar mints
+     * the link — so the requirement is on all of them, not on any of them.
      *
-     * <ul>
-     *   <li>GOOGLE_MEET   — at least one participant must have an active Google calendar.</li>
-     *   <li>MICROSOFT_TEAMS — at least one participant must have an active Microsoft calendar
-     *       that is a work/school (Entra) account, not a consumer MSA.</li>
-     *   <li>ZOOM / CUSTOM_URL / NONE — always allowed regardless of participant calendars.</li>
-     * </ul>
+     * <p><b>This check can go stale, and cannot be made not to.</b> It runs when the pool is built,
+     * but each member's capability depends on <em>their own</em> write-back calendar, which they can
+     * change afterwards without ever seeing this event type. A member who moves from Google to
+     * Outlook silently stops being able to host a Meet for a pool someone else configured months ago.
+     * The booking-time guard ({@code BookingConferencingCapabilityGuard}) is what actually protects
+     * the guest; this exists to fail early, while the person building the pool is still looking at it.
      */
     private void validateConferencingForRoundRobinParticipants(
             ConferencingProviderType conferencing, List<UUID> participantIds) {
-        if (conferencing == null
-                || conferencing == ConferencingProviderType.NONE
-                || conferencing == ConferencingProviderType.CUSTOM_URL
-                || conferencing == ConferencingProviderType.ZOOM) {
-            return;
-        }
+        // Every member must be able to host, not just one of them: the rotation assigns the meeting
+        // to whoever is next, not to whoever happens to be capable. A pool with one Outlook-only
+        // member, offered Google Meet, produces bookings with no join link whenever their turn
+        // comes up.
+        //
+        // Capability is resolved per member against THEIR OWN settings — the event type stores
+        // DEFAULT, and each member's default resolves against the calendar they write to. So a
+        // member who has a Google account connected but sends their bookings to Outlook cannot host
+        // a Meet, and this is the check that says so.
+        List<UUID> incapable = participantIds.stream()
+                .filter(uid -> {
+                    ConferencingProviderType resolved = conferencingResolver.resolve(uid, conferencing);
+                    if (resolved == null || !resolved.requiresCalendarProvider()) {
+                        return false;   // Zoom, custom, none: no calendar needed.
+                    }
+                    CalendarConnection writeback = projectionResolver.writebackConnection(uid).orElse(null);
+                    return !conferencingCapabilityService.canServe(writeback, resolved);
+                })
+                .toList();
 
-        if (conferencing == ConferencingProviderType.GOOGLE_MEET) {
-            boolean anyGoogle = participantIds.stream().anyMatch(uid ->
-                    !calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.GOOGLE, CalendarConnectionStatus.ACTIVE).isEmpty());
-            if (!anyGoogle) {
-                throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Google Meet requires at least one participant with an active Google Calendar connection.");
-            }
-            return;
+        if (!incapable.isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Every team member needs a calendar that can create this meeting link. "
+                            + describeIncapableParticipants(incapable) + " cannot host it. "
+                            + "They can fix this in their own calendar settings, or you can use Zoom.");
         }
+    }
 
-        if (conferencing == ConferencingProviderType.MICROSOFT_TEAMS) {
-            boolean anyTeamsCapable = participantIds.stream().anyMatch(uid ->
-                    calendarConnectionRepository.findByUserIdAndProviderAndStatusOrderByCreatedAtAsc(
-                            uid, CalendarProviderType.MICROSOFT, CalendarConnectionStatus.ACTIVE)
-                            .stream()
-                            .anyMatch(conn -> !MicrosoftAccountClassifier.isConsumerMsa(conn)));
-            if (!anyTeamsCapable) {
-                throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                        "Microsoft Teams requires at least one participant with a Microsoft 365 work or school account.");
-            }
+    /** Names the members who block the provider, so the caller can act rather than guess. */
+    private String describeIncapableParticipants(List<UUID> userIds) {
+        List<String> names = userRepository.findAllById(userIds).stream()
+                .map(u -> u.getName() != null && !u.getName().isBlank() ? u.getName() : u.getEmail())
+                .filter(n -> n != null && !n.isBlank())
+                .toList();
+        if (names.isEmpty()) {
+            return userIds.size() == 1 ? "One team member" : userIds.size() + " team members";
         }
+        return String.join(", ", names);
     }
 }

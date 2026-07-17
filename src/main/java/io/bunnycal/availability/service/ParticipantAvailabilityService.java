@@ -5,6 +5,7 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.engine.RecurrenceWindowFilter;
@@ -56,7 +57,7 @@ public class ParticipantAvailabilityService {
     private final GroupEventReservationWindowRepository reservationWindowRepository;
     private final EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
     private final CalendarBusyTimeService calendarBusyTimeService;
-    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    private final HolidayDayOffService holidayDayOffService;
     private final TimeConversionService timeConversionService;
 
     public ParticipantAvailabilityService(
@@ -68,7 +69,7 @@ public class ParticipantAvailabilityService {
             GroupEventReservationWindowRepository reservationWindowRepository,
             EventAvailabilityWindowRepository eventAvailabilityWindowRepository,
             CalendarBusyTimeService calendarBusyTimeService,
-            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
+            HolidayDayOffService holidayDayOffService,
             TimeConversionService timeConversionService) {
         this.userRepository = userRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
@@ -78,7 +79,7 @@ public class ParticipantAvailabilityService {
         this.reservationWindowRepository = reservationWindowRepository;
         this.eventAvailabilityWindowRepository = eventAvailabilityWindowRepository;
         this.calendarBusyTimeService = calendarBusyTimeService;
-        this.orchestrationJsonCodec = orchestrationJsonCodec;
+        this.holidayDayOffService = holidayDayOffService;
         this.timeConversionService = timeConversionService;
     }
 
@@ -86,8 +87,9 @@ public class ParticipantAvailabilityService {
      * Computes the slot candidates contributed by {@code participantUserId} for the
      * given event type and date.
      *
-     * <p>All data is loaded scoped to the participant — rules, override, bookings,
-     * sessions, calendar busy — never the event type owner's data.
+     * <p>Everything is scoped to the participant — rules, override, bookings, sessions, calendar
+     * busy. Nothing about which calendars block them is read from the event type: that is their own
+     * setting, and it is the same whoever is doing the booking.
      *
      * @param participantUserId the participant whose availability is being computed
      * @param eventType the event type being queried (used for duration/interval/constraints)
@@ -113,9 +115,18 @@ public class ParticipantAvailabilityService {
         List<AvailabilityRule> rules =
                 availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(participantUserId);
 
-        // 4. Load participant's own override (nullable).
+        // 4. Load participant's own override (nullable). A public holiday on the participant's own
+        //    holiday calendar makes their whole day off — so a member on holiday drops out of that
+        //    day's round-robin or collective. Their explicit override wins, same as for a host.
         AvailabilityOverride override =
                 availabilityOverrideRepository.findByUserIdAndDate(participantUserId, date).orElse(null);
+        if (override == null && holidayDayOffService.isDayOff(participantUserId, date, zoneId)) {
+            override = AvailabilityOverride.builder()
+                    .userId(participantUserId)
+                    .date(date)
+                    .isAvailable(false)
+                    .build();
+        }
 
         // 5. Compute day boundaries in participant's timezone.
         Instant dayStartUtc = timeConversionService.dayStartUtc(date, participant.getTimezone());
@@ -176,12 +187,15 @@ public class ParticipantAvailabilityService {
             eventAvailabilityFilter.add(new BookingWindow(start, end));
         }
 
-        // 10. Calendar busy — participant's OWN connections, ALL_CONNECTED semantics
-        //     (empty bindings list). The event type's availabilityCalendarsJson / mode
-        //     is the owner's config and does NOT apply to participants.
+        // 10. Calendar busy — the participant's own calendars, the ones they flagged as blocking.
+        //
+        //     Everyone is evaluated identically, owner included. Availability is a property of a
+        //     calendar, so the answer cannot depend on whose event is being booked. (It used to: the
+        //     owner's wizard selection applied to the owner alone, and every other participant was
+        //     evaluated with "all your calendars block you" — the same calendar, two rules, and no
+        //     way for the participant to reach the one being applied to them.)
         List<BusyInterval> canonicalBusy =
-                calendarBusyTimeService.busyIntervalsForDateCanonical(
-                        participantUserId, date, zoneId, List.of());
+                calendarBusyTimeService.busyIntervalsForDateCanonical(participantUserId, date, zoneId);
         List<TimeInterval> calendarBusy = new ArrayList<>(canonicalBusy.size());
         for (BusyInterval interval : canonicalBusy) {
             calendarBusy.add(new TimeInterval(

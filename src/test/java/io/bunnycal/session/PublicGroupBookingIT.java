@@ -6,6 +6,7 @@ import io.bunnycal.booking.dto.PublicBookRequest;
 import io.bunnycal.booking.dto.PublicBookingStatusResponse;
 import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicHoldResponse;
+import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -147,6 +148,40 @@ class PublicGroupBookingIT extends AbstractSessionIT {
 
         assertThat(queryRegistration(hold.bookingId()).get("status")).isEqualTo("CONFIRMED");
         assertThat(((Number) querySession(hold.sessionId()).get("confirmed_count")).intValue()).isEqualTo(1);
+    }
+
+    @Test
+    void groupManageView_usesRegistrationAndSessionInsteadOfBookingsTable() {
+        User host = createHostWithAvailability();
+        EventType et = createGroupType(host.getId(), 3);
+        PublicHoldResponse hold = hold(host.getUsername(), et.getSlug(), slotAt(9), "a@test.com", "Alice");
+        PublicConfirmResponse confirmation = confirm(host.getUsername(), et.getSlug(), hold.bookingId());
+
+        PublicManageBookingResponse response = publicBookingService.manageView(
+                host.getUsername(), et.getSlug(), hold.bookingId(), confirmation.manageToken());
+
+        assertThat(response.bookingId()).isEqualTo(hold.bookingId());
+        assertThat(response.eventKind()).isEqualTo(io.bunnycal.availability.domain.EventKind.GROUP);
+        assertThat(response.eventTitle()).isEqualTo(et.getName());
+        assertThat(response.startTime()).isEqualTo(slotAt(9));
+        assertThat(response.endTime()).isEqualTo(slotAt(9).plus(Duration.ofHours(1)));
+        assertThat(response.attendeeName()).isEqualTo("Alice");
+        assertThat(response.attendeeEmail()).isEqualTo("a@test.com");
+        assertThat(response.status()).isEqualTo("CONFIRMED");
+    }
+
+    @Test
+    void groupManageView_rejectsInvalidRegistrationToken() {
+        User host = createHostWithAvailability();
+        EventType et = createGroupType(host.getId(), 3);
+        PublicHoldResponse hold = hold(host.getUsername(), et.getSlug(), slotAt(9), "a@test.com", "Alice");
+        confirm(host.getUsername(), et.getSlug(), hold.bookingId());
+
+        assertThatThrownBy(() -> publicBookingService.manageView(
+                host.getUsername(), et.getSlug(), hold.bookingId(), "invalid-token"))
+                .isInstanceOf(CustomException.class)
+                .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
+                        .isEqualTo(ErrorCode.FORBIDDEN));
     }
 
     @Test

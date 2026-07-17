@@ -44,10 +44,19 @@ public record CalendarRuntimeStatusResponse(
             boolean conferencingEligible
     ) {}
 
+    /**
+     * @param defaultProvider the user's global default meeting link — what an event type that
+     *        follows the default will actually resolve to. Also what the create-event wizard labels
+     *        its "your default" option with.
+     * @param googleMeetAvailable whether Meet can be chosen as the default: true only when bookings
+     *        currently go to a Google calendar, since that is the only place a Meet link can be made.
+     * @param teamsAvailable likewise for Teams — a Microsoft calendar on a work/school account.
+     */
     public record Conferencing(
             boolean zoomConnected,
             boolean googleMeetAvailable,
-            boolean teamsAvailable
+            boolean teamsAvailable,
+            String defaultProvider
     ) {}
 
     public record Calendar(

@@ -77,6 +77,7 @@ public enum ErrorCode {
             "This event type is not currently accepting bookings."),
     UNPUBLISHABLE_EVENT_TYPE("UNPUBLISHABLE_EVENT_TYPE",
             "This event type cannot be published until all participants are ready."),
+    ONBOARDING_INCOMPLETE("ONBOARDING_INCOMPLETE", "Complete the required setup steps first."),
     EMBED_TOKEN_INVALID("EMBED_TOKEN_INVALID",
             "Embed token is invalid or has expired. Please reload the booking form."),
     EXPERIENCE_VERSION_MISMATCH("EXPERIENCE_VERSION_MISMATCH",

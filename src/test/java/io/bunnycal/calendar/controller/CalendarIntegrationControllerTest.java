@@ -150,7 +150,7 @@ class CalendarIntegrationControllerTest {
                         "application",
                         new CalendarRuntimeStatusResponse.Identity("google", "host@example.com"),
                         List.of(),
-                        new CalendarRuntimeStatusResponse.Conferencing(true, true, false)
+                        new CalendarRuntimeStatusResponse.Conferencing(true, true, false, "google_meet")
                 ));
 
         ApiResponse<CalendarRuntimeStatusResponse> body = controller.status(auth).getBody();

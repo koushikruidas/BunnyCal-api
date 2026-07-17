@@ -18,7 +18,6 @@ import io.bunnycal.availability.engine.SlotGenerationEngine.BookingWindow;
 import io.bunnycal.availability.engine.SlotGenerationEngine.SlotInput;
 import io.bunnycal.availability.engine.SlotGenerationEngine.SlotUtc;
 import io.bunnycal.availability.engine.TimeInterval;
-import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.identity.SlotIdGenerator;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
@@ -29,7 +28,6 @@ import io.bunnycal.availability.repository.DbClockRepository;
 import io.bunnycal.availability.repository.EventAvailabilityWindowRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
-import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
 import io.bunnycal.availability.domain.EventKind;
@@ -74,7 +72,7 @@ public class SlotService {
     private final SlotCacheService slotCacheService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final CalendarBusyTimeService calendarBusyTimeService;
-    private final EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    private final HolidayDayOffService holidayDayOffService;
     private final TimeConversionService timeConversionService;
     private final EventTypeParticipantService eventTypeParticipantService;
     private final ParticipantEligibilityService participantEligibilityService;
@@ -97,7 +95,7 @@ public class SlotService {
             SlotCacheService slotCacheService,
             SlotCacheVersionService slotCacheVersionService,
             CalendarBusyTimeService calendarBusyTimeService,
-            EventTypeOrchestrationJsonCodec orchestrationJsonCodec,
+            HolidayDayOffService holidayDayOffService,
             TimeConversionService timeConversionService,
             EventTypeParticipantService eventTypeParticipantService,
             ParticipantEligibilityService participantEligibilityService,
@@ -118,7 +116,7 @@ public class SlotService {
         this.slotCacheService = slotCacheService;
         this.slotCacheVersionService = slotCacheVersionService;
         this.calendarBusyTimeService = calendarBusyTimeService;
-        this.orchestrationJsonCodec = orchestrationJsonCodec;
+        this.holidayDayOffService = holidayDayOffService;
         this.timeConversionService = timeConversionService;
         this.eventTypeParticipantService = eventTypeParticipantService;
         this.participantEligibilityService = participantEligibilityService;
@@ -231,9 +229,14 @@ public class SlotService {
         List<AvailabilityRule> rules =
                 availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(host.getId());
 
-        // 6.4 Load override (nullable).
+        // 6.4 Load override (nullable). A public holiday makes the whole day off — but only when the
+        //     host has not spoken for the date themselves. Their explicit override always wins, so if
+        //     they deliberately marked a holiday as a working day, they work.
         AvailabilityOverride override =
                 availabilityOverrideRepository.findByUserIdAndDate(host.getId(), date).orElse(null);
+        if (override == null && holidayDayOffService.isDayOff(host.getId(), date, zoneId)) {
+            override = holidayDayOff(host.getId(), date);
+        }
 
         // 6.5 Load conflict windows overlapping the day in UTC.
         //     ONE_ON_ONE: load PENDING+CONFIRMED bookings from the bookings table.
@@ -289,15 +292,11 @@ public class SlotService {
                 ? buildGroupReservationCandidateWindows(host, eventType, date)
                 : buildEventAvailabilityFilter(host, eventType, date);
 
-        // 6.6 Calendar busy — resolve bindings according to availabilityMode.
-        // SELECTED: use only the explicitly listed connections (empty list = no blocking).
-        // ALL_CONNECTED / null: fall back to all active connections (legacy behavior).
-        AvailabilityMode availabilityMode = eventType.getAvailabilityMode();
-        List<AvailabilityBinding> availabilityBindings = (availabilityMode == AvailabilityMode.SELECTED)
-                ? orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson())
-                : List.of();
+        // 6.6 Calendar busy — the host's calendars. Listing and confirming now ask the same
+        // question with the same arguments, so what a guest is offered and what they can commit
+        // agree by construction rather than by two call sites remembering to stay in step.
         List<BusyInterval> canonicalBusy =
-                calendarBusyTimeService.busyIntervalsForDateCanonical(host.getId(), date, zoneId, availabilityBindings);
+                calendarBusyTimeService.busyIntervalsForDateCanonical(host.getId(), date, zoneId);
         List<TimeInterval> calendarBusy = new ArrayList<>(canonicalBusy.size());
         for (BusyInterval interval : canonicalBusy) {
             calendarBusy.add(new TimeInterval(
@@ -335,6 +334,19 @@ public class SlotService {
         boolean cacheable = postFetchVersion == snapshotVersion;
 
         return new ComputeOutcome(slots, now, cacheable);
+    }
+
+    /**
+     * A synthetic whole-day-off override standing in for a public holiday. Same shape the host would
+     * produce by marking the day unavailable by hand ({@code isAvailable = false}, no time bounds),
+     * so the engine collapses the day to zero slots exactly as it does for a real override.
+     */
+    private static AvailabilityOverride holidayDayOff(UUID userId, LocalDate date) {
+        return AvailabilityOverride.builder()
+                .userId(userId)
+                .date(date)
+                .isAvailable(false)
+                .build();
     }
 
     /**

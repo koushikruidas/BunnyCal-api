@@ -15,6 +15,9 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -81,6 +84,7 @@ class EventTypeParticipantIT {
     @Autowired EventTypeParticipantService participantService;
     @Autowired TeamService teamService;
     @Autowired CalendarConnectionRepository calendarConnectionRepository;
+    @Autowired CalendarConnectionCalendarRepository calendarConnectionCalendarRepository;
 
     @BeforeEach
     void setUp() {
@@ -294,7 +298,11 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
-        return calendarConnectionRepository.save(c);
+        c.setDefaultWriteback(true);
+        CalendarConnection saved = calendarConnectionRepository.save(c);
+        CalendarConnectionCalendar calendar = eligibleProjectionCalendar(saved.getId());
+        calendarConnectionCalendarRepository.save(calendar);
+        return saved;
     }
 
     private CalendarConnection microsoftWorkConnection(UUID userId) {
@@ -306,7 +314,12 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
-        return calendarConnectionRepository.save(c);
+        c.setDefaultWriteback(true);
+        CalendarConnection saved = calendarConnectionRepository.save(c);
+        CalendarConnectionCalendar calendar = eligibleProjectionCalendar(saved.getId());
+        calendar.setSupportsNativeTeams(true);
+        calendarConnectionCalendarRepository.save(calendar);
+        return saved;
     }
 
     private CalendarConnection microsoftPersonalConnection(UUID userId) {
@@ -318,7 +331,22 @@ class EventTypeParticipantIT {
         c.setRefreshTokenCiphertext("tok");
         c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
         c.setStatus(CalendarConnectionStatus.ACTIVE);
+        c.setDefaultWriteback(true);
         return calendarConnectionRepository.save(c);
+    }
+
+    private static CalendarConnectionCalendar eligibleProjectionCalendar(UUID connectionId) {
+        CalendarConnectionCalendar calendar = new CalendarConnectionCalendar();
+        calendar.setConnectionId(connectionId);
+        calendar.setExternalCalendarId("primary");
+        calendar.setName("Calendar");
+        calendar.setPrimary(true);
+        calendar.setCalendarRole(CalendarRole.PRIMARY);
+        calendar.setCanRead(true);
+        calendar.setCanWrite(true);
+        calendar.setChecksAvailability(true);
+        calendar.setSelected(true);
+        return calendar;
     }
 
     private EventType createEventTypeWithConferencing(UUID ownerId, EventKind kind, ConferencingProviderType conferencing) {
@@ -410,25 +438,76 @@ class EventTypeParticipantIT {
                 .isEqualTo(ErrorCode.VALIDATION_ERROR);
     }
 
+    // The rotation assigns to whoever is next, not to whoever can host the link. So a pool where
+    // only SOME members can support the provider is not bookable — it produces a confirmed meeting
+    // with no join link the first time an incapable member comes up. A mixed Google/Microsoft pool
+    // can therefore support neither Meet nor Teams; only a provider-independent link (Zoom, custom,
+    // none) works for it.
     @Test
-    void roundRobin_mixedGoogleAndMicrosoftWork_allowsBothConferencingProviders() {
+    void roundRobin_mixedGoogleAndMicrosoftWork_rejectsBothProviderBoundConferencingTypes() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        User bob = createUser("bob@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        addToOwnersTeam(owner.getId(), bob);
+        googleConnection(alice.getId());        // cannot host Teams
+        microsoftWorkConnection(bob.getId());   // cannot host Meet
+
+        EventType etGoogleMeet = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), etGoogleMeet.getId(), List.of(alice.getId(), bob.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+
+        EventType etTeams = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), etTeams.getId(), List.of(alice.getId(), bob.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
+    }
+
+    // Every member has Google, so every possible assignee can host a Meet link.
+    @Test
+    void roundRobin_googleMeet_allowedWhenEveryParticipantHasGoogle() {
         User owner = createUser("owner@test.com");
         User alice = createUser("alice@test.com");
         User bob = createUser("bob@test.com");
         addToOwnersTeam(owner.getId(), alice);
         addToOwnersTeam(owner.getId(), bob);
         googleConnection(alice.getId());
-        microsoftWorkConnection(bob.getId());
+        googleConnection(bob.getId());
 
-        EventType etGoogleMeet = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
-        List<EventTypeParticipantResponse> r1 = participantService.replaceParticipants(
-                owner.getId(), etGoogleMeet.getId(), List.of(alice.getId(), bob.getId()));
-        assertThat(r1).hasSize(2);
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        List<EventTypeParticipantResponse> result = participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId(), bob.getId()));
+        assertThat(result).hasSize(2);
+    }
 
-        EventType etTeams = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.MICROSOFT_TEAMS);
-        List<EventTypeParticipantResponse> r2 = participantService.replaceParticipants(
-                owner.getId(), etTeams.getId(), List.of(alice.getId(), bob.getId()));
-        assertThat(r2).hasSize(2);
+    // The regression this rule exists to prevent: adding a member who cannot host the event's
+    // conferencing provider must be refused, rather than silently poisoning the rotation.
+    @Test
+    void roundRobin_googleMeet_rejectsAddingAMemberWhoCannotHostMeet() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        User bob = createUser("bob@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        addToOwnersTeam(owner.getId(), bob);
+        googleConnection(alice.getId());
+        microsoftWorkConnection(bob.getId()); // Outlook only — no Meet link possible on his calendar
+
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        // Alice alone is fine.
+        assertThat(participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId()))).hasSize(1);
+
+        // Adding Bob would make some bookings unlinkable, so it must be refused.
+        assertThatThrownBy(() -> participantService.replaceParticipants(
+                owner.getId(), et.getId(), List.of(alice.getId(), bob.getId())))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.VALIDATION_ERROR);
     }
 
     @Test

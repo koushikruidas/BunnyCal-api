@@ -603,11 +603,11 @@ class CollectiveAvailabilityIT extends AbstractBookingIT {
                 connectionId, userId, "GOOGLE", "ext-" + userId, "dummy-token", "ACTIVE");
         // Insert a writable calendar inventory entry for this connection.
         // Columns: id, connection_id, external_calendar_id, name, is_primary, is_selected,
-        //          sync_enabled, can_read, can_write, hidden
+        //          checks_availability, can_read, can_write, hidden
         jdbc.update(
                 "INSERT INTO calendar_connection_calendars "
                         + "(id, connection_id, external_calendar_id, name, is_primary, is_selected, "
-                        + "sync_enabled, can_read, can_write, hidden) "
+                        + "checks_availability, can_read, can_write, hidden) "
                         + "VALUES (?,?,?,?,true,true,true,true,true,false)",
                 UUID.randomUUID(), connectionId, "primary@" + userId, "Primary");
     }

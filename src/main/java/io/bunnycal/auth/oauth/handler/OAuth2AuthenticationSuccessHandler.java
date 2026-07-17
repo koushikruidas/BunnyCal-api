@@ -10,6 +10,7 @@ import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.bunnycal.auth.dto.AuthResponse;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.service.RefreshTokenService;
+import io.bunnycal.auth.oauth.service.HostLoginCalendarBootstrapService;
 import io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.Cookie;
@@ -24,6 +25,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 import org.springframework.stereotype.Component;
@@ -37,6 +40,8 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     private final JwtTokenProvider jwtTokenProvider;
     private final RefreshTokenService refreshTokenService;
     private final AdminRoleService adminRoleService;
+    private final OAuth2AuthorizedClientService authorizedClientService;
+    private final HostLoginCalendarBootstrapService hostLoginCalendarBootstrapService;
 
     @Value("${auth.refresh-token.ttl-days}")
     private int refreshTokenTtlDays;
@@ -118,6 +123,29 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
                 provider, providerUserId, email, name, imageUrl
         );
 
+        boolean adminLogin = isAdminLogin(request);
+        boolean hostCalendarLogin = !adminLogin && hasCookie(
+                request,
+                CustomOAuth2AuthorizationRequestResolver.HOST_CALENDAR_COOKIE,
+                "host");
+        if (hostCalendarLogin && registrationId != null) {
+            try {
+                OAuth2AuthorizedClient authorizedClient = authorizedClientService.loadAuthorizedClient(
+                        registrationId, authentication.getName());
+                hostLoginCalendarBootstrapService.bootstrapIfNeeded(
+                        user.getId(), registrationId, authorizedClient);
+            } catch (RuntimeException ex) {
+                // Authentication still succeeds. Onboarding keeps a compact recovery action for
+                // denied consent, organization policy, missing refresh tokens, or sync failures.
+                log.warn("host_login_calendar_bootstrap_failed userId={} provider={} reason={}",
+                        user.getId(), registrationId, ex.getMessage(), ex);
+            }
+        }
+        if (hostCalendarLogin) {
+            CustomOAuth2AuthorizationRequestResolver.clearIntentCookie(
+                    response, request, CustomOAuth2AuthorizationRequestResolver.HOST_CALENDAR_COOKIE);
+        }
+
         List<String> roleNames = adminRoleService.activeRolesForUser(user.getId()).stream()
                 .map(AdminRole::name)
                 .toList();
@@ -147,7 +175,6 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
          *
          * */
 
-        boolean adminLogin = isAdminLogin(request);
         if (adminLogin) {
             clearOauthClientCookie(request, response);
         }
@@ -267,13 +294,17 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
     }
 
     private static boolean isAdminLogin(HttpServletRequest request) {
+        return hasCookie(request, CustomOAuth2AuthorizationRequestResolver.OAUTH_CLIENT_COOKIE, "admin");
+    }
+
+    private static boolean hasCookie(HttpServletRequest request, String name, String value) {
         Cookie[] cookies = request.getCookies();
         if (cookies == null) {
             return false;
         }
         for (Cookie cookie : cookies) {
-            if (CustomOAuth2AuthorizationRequestResolver.OAUTH_CLIENT_COOKIE.equals(cookie.getName())) {
-                return "admin".equalsIgnoreCase(cookie.getValue());
+            if (name.equals(cookie.getName())) {
+                return value.equalsIgnoreCase(cookie.getValue());
             }
         }
         return false;

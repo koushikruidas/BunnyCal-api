@@ -273,7 +273,7 @@ public class HttpGoogleApiClient implements GoogleApiClient {
                 boolean canRead = accessRole != null;
                 boolean canWrite = "writer".equals(accessRole) || "owner".equals(accessRole);
                 boolean hidden = booleanField(map, "hidden") || booleanField(map, "deleted");
-                entries.add(new ProviderCalendarInventoryEntry(id, name, primary, canRead, canWrite, hidden));
+                entries.add(new ProviderCalendarInventoryEntry(id, name, primary, canRead, canWrite, hidden, false));
             }
             return List.copyOf(entries);
         } catch (RestClientException ex) {

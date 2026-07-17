@@ -6,6 +6,7 @@ import io.bunnycal.availability.dto.EventTypeParticipantsRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.dto.RoundRobinStatsResponse;
+import io.bunnycal.availability.dto.UpdateEventTypeRequest;
 import io.bunnycal.availability.service.EventTypeParticipantService;
 import io.bunnycal.availability.service.EventTypeService;
 import io.bunnycal.availability.service.RoundRobinStatsService;
@@ -59,6 +60,14 @@ public class EventTypeController {
                                                                      @PathVariable UUID eventTypeId) {
         UUID userId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(eventTypeService.get(userId, eventTypeId)));
+    }
+
+    @PutMapping("/{eventTypeId}")
+    public ResponseEntity<ApiResponse<EventTypeSummaryResponse>> update(Authentication authentication,
+                                                                        @PathVariable UUID eventTypeId,
+                                                                        @RequestBody UpdateEventTypeRequest request) {
+        UUID userId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(eventTypeService.update(userId, eventTypeId, request)));
     }
 
     @DeleteMapping("/{eventTypeId}")

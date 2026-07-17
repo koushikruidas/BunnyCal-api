@@ -1,6 +1,10 @@
 package io.bunnycal.auth.domain.user;
 
+import io.bunnycal.auth.onboarding.OnboardingStatus;
+import io.bunnycal.auth.onboarding.OnboardingStep;
+import io.bunnycal.auth.onboarding.OnboardingUseCase;
 import io.bunnycal.common.audit.BaseEntity;
+import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.UserStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -64,6 +68,45 @@ public class User extends BaseEntity {
     @Builder.Default
     @Column(name = "timezone_auto", nullable = false)
     private boolean timezoneAuto = false;
+
+    /** Versioned first-run activation state. Existing accounts are backfilled as completed. */
+    @Builder.Default
+    @Column(name = "onboarding_version", nullable = false)
+    private int onboardingVersion = 2;
+
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_status", nullable = false, length = 24)
+    private OnboardingStatus onboardingStatus = OnboardingStatus.NOT_STARTED;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_use_case", length = 32)
+    private OnboardingUseCase onboardingUseCase;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "onboarding_last_step", length = 32)
+    private OnboardingStep onboardingLastStep;
+
+    @Column(name = "availability_confirmed_at")
+    private Instant availabilityConfirmedAt;
+
+    @Column(name = "onboarding_completed_at")
+    private Instant onboardingCompletedAt;
+
+    /**
+     * The user's global default meeting link. Event types storing
+     * {@link ConferencingProviderType#DEFAULT} resolve to this at booking time, so changing it
+     * carries every one of them forward instead of leaving them pinned to a provider their
+     * write-back calendar can no longer serve.
+     *
+     * <p>Constrained by the write-back calendar's provider (Google → Meet/Zoom/none; Microsoft
+     * work-school → Teams/Zoom/none; Microsoft consumer → Zoom/none) and enforced at the settings
+     * page, where the user can see and fix it.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "default_conferencing_provider", nullable = false, length = 32)
+    @Builder.Default
+    private ConferencingProviderType defaultConferencingProvider = ConferencingProviderType.NONE;
 
     @Column(name = "deletion_requested_at")
     private Instant deletionRequestedAt;

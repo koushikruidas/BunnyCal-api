@@ -50,31 +50,22 @@ public class EventType {
     @Column(length = 255)
     private String location;
 
-    @Column(name = "organizer_calendar_connection_id")
-    private UUID organizerCalendarConnectionId;
-
-    @Enumerated(EnumType.STRING)
-    @Column(name = "projection_provider", length = 32)
-    private CalendarProviderType projectionProvider;
-
-    @Column(name = "projection_connection_id")
-    private UUID projectionConnectionId;
-
-    @Column(name = "projection_calendar_id", length = 255)
-    private String projectionCalendarId;
-
-    @Column(name = "availability_calendars_json", columnDefinition = "TEXT")
-    private String availabilityCalendarsJson;
-
-    @Builder.Default
-    @Enumerated(EnumType.STRING)
-    @Column(name = "availability_mode", nullable = false, length = 32)
-    private AvailabilityMode availabilityMode = AvailabilityMode.ALL_CONNECTED;
-
+    /**
+     * Either {@link ConferencingProviderType#DEFAULT} — "use my global default meeting link",
+     * resolved against the writer at booking time — or a provider-independent override
+     * ({@code ZOOM}, {@code CUSTOM_URL}, {@code NONE}).
+     *
+     * <p>Never {@code GOOGLE_MEET} or {@code MICROSOFT_TEAMS}: those are coupled to a calendar
+     * provider, so freezing one here would break the day the owner moved their write-back calendar
+     * to the other provider. They are reachable only through the pointer.
+     *
+     * <p>Which calendars block this event, and which calendar receives it, are no longer stored
+     * here at all — both are properties of the user (see {@code calendar_connection_calendars}).
+     */
     @Builder.Default
     @Enumerated(EnumType.STRING)
     @Column(name = "conferencing_provider", nullable = false, length = 32)
-    private ConferencingProviderType conferencingProvider = ConferencingProviderType.GOOGLE_MEET;
+    private ConferencingProviderType conferencingProvider = ConferencingProviderType.DEFAULT;
 
     @Column(name = "custom_conference_url", length = 1024)
     private String customConferenceUrl;

@@ -12,6 +12,8 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotResponse;
+import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer;
+import io.bunnycal.availability.service.HolidayDayOffService;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.AssignmentReason;
@@ -40,12 +42,14 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.mockito.Mockito;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -77,6 +81,7 @@ class PublicBookingServiceTest {
     @Mock io.bunnycal.availability.repository.EventTypeParticipantRepository eventTypeParticipantRepository;
     @Mock BookingEventTypeResolver bookingEventTypeResolver;
     @Mock io.bunnycal.billing.entitlement.EntitlementService entitlementService;
+    @Mock HolidayDayOffService holidayDayOffService;
 
     private PublicBookingService service;
     private TimeConversionService timeConversionService;
@@ -119,16 +124,17 @@ class PublicBookingServiceTest {
                 14L,
                 120L
         );
+        ReflectionTestUtils.setField(service, "holidayDayOffService", holidayDayOffService);
         // Default: booking owner is entitled (PROFESSIONAL) so the entitlement gate on the hold
         // path is a pass-through for premium kinds. Tests asserting the un-entitled path override.
         Mockito.lenient().when(entitlementService.resolve(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(io.bunnycal.billing.entitlement.PlanCatalog.forTier(
                         io.bunnycal.billing.entitlement.PlanTier.PROFESSIONAL));
-        Mockito.lenient().when(calendarBusyTimeService.busyIntervalsForDate(
+        Mockito.lenient().when(calendarBusyTimeService.hasBusyConflict(
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any())).thenReturn(List.of());
+                org.mockito.ArgumentMatchers.any())).thenReturn(false);
         // Default: every event type lookup returns a published event type so the
         // published gate does not interfere with tests that don't test publish state.
         EventType publishedEventType = EventType.builder()
@@ -398,6 +404,68 @@ class PublicBookingServiceTest {
     }
 
     @Test
+    void confirm_rejectsHolidayDayOffBeforeConfirmingBooking() {
+        UUID bookingId = UUID.randomUUID();
+        Booking booking = Booking.builder().id(bookingId).hostId(userId).eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-05-10T10:00:00Z"))
+                .endTime(Instant.parse("2026-05-10T10:30:00Z"))
+                .guestEmail("guest@example.com")
+                .build();
+
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, userId, 1L)));
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.countConflictsExcludingBooking(userId, bookingId,
+                booking.getStartTime(), booking.getEndTime())).thenReturn(0L);
+        when(holidayDayOffService.isDayOffUnlessOverridden(
+                eq(userId), eq(LocalDate.of(2026, 5, 10)), eq(java.time.ZoneId.of("UTC"))))
+                .thenReturn(true);
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.confirm("koushik", "30min", bookingId));
+
+        assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
+        verify(bookingService, never()).confirmHeldBooking(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void confirmGroup_rejectsHolidayDayOffBeforeConfirmingRegistration() {
+        UUID registrationId = UUID.randomUUID();
+        UUID sessionId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-05-10T10:00:00Z");
+        var registration = io.bunnycal.session.domain.SessionRegistration.builder()
+                .id(registrationId)
+                .sessionId(sessionId)
+                .hostId(userId)
+                .build();
+        var session = io.bunnycal.session.domain.EventSession.builder()
+                .id(sessionId)
+                .hostId(userId)
+                .eventTypeId(eventTypeId)
+                .startTime(start)
+                .endTime(start.plus(Duration.ofMinutes(30)))
+                .build();
+
+        when(publicBookingTargetResolver.resolve("koushik", "group")).thenReturn(groupTarget());
+        when(sessionRegistrationRepository.findByIdAndHostId(registrationId, userId))
+                .thenReturn(Optional.of(registration));
+        when(eventSessionRepository.findById(sessionId)).thenReturn(Optional.of(session));
+        when(holidayDayOffService.isDayOffUnlessOverridden(
+                eq(userId), eq(LocalDate.of(2026, 5, 10)), eq(java.time.ZoneId.of("UTC"))))
+                .thenReturn(true);
+
+        CustomException ex = assertThrows(CustomException.class,
+                () -> service.confirm("koushik", "group", registrationId));
+
+        assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
+        verify(sessionService, never()).confirmRegistration(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void hold_roundRobin_usesSignedSlotTokenAndAssignmentService() {
         UUID bookingId = UUID.randomUUID();
         UUID participantId = UUID.randomUUID();
@@ -600,15 +668,12 @@ class PublicBookingServiceTest {
         when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
                 .thenReturn(Optional.of(stateRow(bookingId, userId, 3L)));
         when(bookingRepository.countConflictsExcludingBooking(userId, bookingId, start, end)).thenReturn(0L);
-        when(calendarBusyTimeService.busyIntervalsForDate(
+        when(calendarBusyTimeService.hasBusyConflict(
                 org.mockito.ArgumentMatchers.eq(userId),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(start),
+                org.mockito.ArgumentMatchers.eq(end),
                 org.mockito.ArgumentMatchers.any()))
-                .thenReturn(List.of(new TimeInterval(
-                        Instant.parse("2026-05-10T11:10:00Z").atZone(java.time.ZoneId.of("UTC")),
-                        Instant.parse("2026-05-10T11:40:00Z").atZone(java.time.ZoneId.of("UTC"))
-                )));
+                .thenReturn(true);
 
         CustomException ex = assertThrows(CustomException.class,
                 () -> service.reschedule("koushik", "30min", bookingId, new PublicRescheduleRequest(start), null));
@@ -620,6 +685,7 @@ class PublicBookingServiceTest {
                 org.mockito.ArgumentMatchers.eq(end),
                 org.mockito.ArgumentMatchers.eq(3L));
     }
+
 
     @Test
     void confirm_returnsSyncingAndConfirmsBooking() {
@@ -987,6 +1053,25 @@ class PublicBookingServiceTest {
                 Duration.ofMinutes(10),
                 EventKind.ROUND_ROBIN,
                 1
+        );
+    }
+
+    private PublicBookingTargetResolver.ResolvedTarget groupTarget() {
+        return new PublicBookingTargetResolver.ResolvedTarget(
+                userId,
+                eventTypeId,
+                "Host Name",
+                "koushik",
+                "UTC",
+                "host@example.com",
+                null,
+                "Group Session",
+                "desc",
+                "location",
+                Duration.ofMinutes(30),
+                Duration.ofMinutes(10),
+                EventKind.GROUP,
+                20
         );
     }
 

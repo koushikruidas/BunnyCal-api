@@ -26,7 +26,6 @@ import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.availability.engine.SlotGenerationEngine;
-import io.bunnycal.availability.domain.AvailabilityMode;
 import io.bunnycal.availability.identity.SlotIdGenerator;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
@@ -34,7 +33,6 @@ import io.bunnycal.availability.repository.DbClockRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.repository.BookingRepository;
-import io.bunnycal.availability.service.EventTypeOrchestrationNormalizer.AvailabilityBinding;
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.service.BusyInterval;
@@ -73,7 +71,7 @@ class SlotServiceTest {
     @Mock private SlotCacheService slotCacheService;
     @Mock private SlotCacheVersionService slotCacheVersionService;
     @Mock private CalendarBusyTimeService calendarBusyTimeService;
-    @Mock private EventTypeOrchestrationJsonCodec orchestrationJsonCodec;
+    @Mock private HolidayDayOffService holidayDayOffService;
     @Mock private EventTypeParticipantService eventTypeParticipantService;
     @Mock private ParticipantEligibilityService participantEligibilityService;
     @Mock private ParticipantAvailabilityService participantAvailabilityService;
@@ -110,7 +108,7 @@ class SlotServiceTest {
                 slotCacheService,
                 slotCacheVersionService,
                 calendarBusyTimeService,
-                orchestrationJsonCodec,
+                holidayDayOffService,
                 timeConversionService,
                 eventTypeParticipantService,
                 participantEligibilityService,
@@ -150,8 +148,9 @@ class SlotServiceTest {
         mondayRule.setDayOfWeek(DayOfWeek.MONDAY);
         mondayRule.setStartTime(LocalTime.of(9, 0));
         mondayRule.setEndTime(LocalTime.of(10, 0));
-        when(orchestrationJsonCodec.deserializeAvailabilityBindings(any())).thenReturn(List.of());
-        when(calendarBusyTimeService.busyIntervalsForDate(any(), any(), any(), any())).thenReturn(List.of());
+        org.mockito.Mockito.lenient()
+                .when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any()))
+                .thenReturn(List.of());
     }
 
     @Test
@@ -485,62 +484,11 @@ class SlotServiceTest {
     }
 
     @Test
-    void availabilityBindings_deserializedAndPassedToCalendarBusyTimeService() {
-        // When an event type has explicit availability_calendars_json set,
-        // SlotService must deserialize and forward those bindings so that
-        // CalendarBusyTimeService can filter by the correct connections.
-        UUID connId = UUID.fromString("00000000-0000-0000-0000-000000000099");
-        List<AvailabilityBinding> bindings =
-                List.of(new AvailabilityBinding(connId, "google", "primary"));
-
-        eventType = EventType.builder()
-                .id(eventTypeId)
-                .userId(userId)
-                .name("30-min")
-                .availabilityCalendarsJson("[{\"connectionId\":\"00000000-0000-0000-0000-000000000099\",\"provider\":\"google\",\"externalCalendarId\":\"primary\"}]")
-                .availabilityMode(AvailabilityMode.SELECTED)
-                .duration(Duration.ofMinutes(30))
-                .bufferBefore(Duration.ZERO)
-                .bufferAfter(Duration.ZERO)
-                .slotInterval(Duration.ofMinutes(30))
-                .minNotice(Duration.ZERO)
-                .maxAdvance(Duration.ofDays(365))
-                .build();
-
-        when(userRepository.findById(userId)).thenReturn(Optional.of(host));
-        when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
-        when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
-        when(dbClockRepository.now()).thenReturn(Instant.parse("2026-05-04T00:00:00Z"));
-        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
-                .thenReturn(List.of(mondayRule));
-        when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
-        when(bookingRepository.findActiveOverlappingBookings(any(), any(), any())).thenReturn(List.of());
-        when(orchestrationJsonCodec.deserializeAvailabilityBindings(eventType.getAvailabilityCalendarsJson()))
-                .thenReturn(bindings);
-        when(calendarBusyTimeService.busyIntervalsForDateCanonical(
-                eq(userId), eq(date), any(), eq(bindings)))
-                .thenReturn(List.of());
-
-        when(slotCacheService.getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any()))
-                .thenAnswer(invocation -> {
-                    @SuppressWarnings("unchecked")
-                    Supplier<ComputeOutcome> supplier = invocation.getArgument(4);
-                    ComputeOutcome outcome = supplier.get();
-                    return new CachedSlots(outcome.slots(), outcome.generatedAt());
-                });
-
-        slotService.getSlots(new SlotRequest(userId, eventTypeId, date));
-
-        // Verify the bindings were forwarded exactly as returned by the codec
-        verify(calendarBusyTimeService).busyIntervalsForDateCanonical(eq(userId), eq(date), any(), eq(bindings));
-    }
-
-    @Test
-    void explicitCalendarSelection_blocksOnlyFromSelectedCalendar() {
-        // A calendar event on the selected connection must block a slot;
-        // an event from a different connection must not — the filtering is
-        // tested at CalendarBusyTimeService level, but here we verify that
-        // when the service returns busy intervals they correctly remove slots.
+    void calendarBusyInterval_removesTheOverlappingSlot() {
+        // Which calendars contribute busy time is now a property of the user (the
+        // checks_availability flag on each inventory row), resolved inside
+        // CalendarBusyTimeService. Here we verify only that whatever it reports busy
+        // correctly removes slots.
         when(userRepository.findById(userId)).thenReturn(Optional.of(host));
         when(eventTypeRepository.findByIdAndUserIdAndDeletedAtIsNull(eventTypeId, userId)).thenReturn(Optional.of(eventType));
         when(slotCacheVersionService.getCurrentVersion(userId)).thenReturn(1L);
@@ -549,7 +497,6 @@ class SlotServiceTest {
                 .thenReturn(List.of(mondayRule)); // MONDAY 09:00–10:00 → 2 slots
         when(availabilityOverrideRepository.findByUserIdAndDate(userId, date)).thenReturn(Optional.empty());
         when(bookingRepository.findActiveOverlappingBookings(any(), any(), any())).thenReturn(List.of());
-        when(orchestrationJsonCodec.deserializeAvailabilityBindings(any())).thenReturn(List.of());
 
         // Calendar reports 09:00–09:30 as busy → first slot removed
         BusyInterval busy = new BusyInterval(
@@ -560,7 +507,7 @@ class SlotServiceTest {
                 "evt-1",
                 "test",
                 Instant.parse("2026-05-04T09:00:00Z"));
-        when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any(), any()))
+        when(calendarBusyTimeService.busyIntervalsForDateCanonical(any(), any(), any()))
                 .thenReturn(List.of(busy));
 
         when(slotCacheService.getOrCompute(eq(userId), eq(eventTypeId), eq(date), eq(1L), any()))

@@ -120,6 +120,17 @@ public class CalendarOAuthService {
                 properties.getClientId(),
                 properties.getClientSecret());
 
+        connectAuthorizedUser(userId, token);
+        return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
+    }
+
+    /**
+     * Persists and initializes a Google calendar from an authorization code that was exchanged by
+     * another trusted OAuth entry point, such as host sign-in. Keeping this path shared prevents
+     * login-created connections from skipping encryption, initial sync, inventory, or webhooks.
+     */
+    @Transactional
+    public ConnectedCalendar connectAuthorizedUser(UUID userId, OAuthTokenExchangeResult token) {
         if (token.accessToken() == null || token.expiresAt() == null) {
             throw new IllegalArgumentException("Invalid token response from provider");
         }
@@ -217,7 +228,7 @@ public class CalendarOAuthService {
                 "calendar_connection_created hostId={} connectionId={} provider={} status={} scopes={} reauth={}",
                 userId, saved.getId(), GOOGLE_PROVIDER, saved.getStatus(),
                 saved.getScopes() == null ? 0 : saved.getScopes().size(), existing.isPresent());
-        return new OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
+        return new ConnectedCalendar(saved.getId(), saved.getStatus());
     }
 
     /**
@@ -405,4 +416,6 @@ public class CalendarOAuthService {
     }
 
     public record OAuthCallbackResult(String source, String returnTo, String bookingSessionId) {}
+
+    public record ConnectedCalendar(UUID connectionId, CalendarConnectionStatus status) {}
 }

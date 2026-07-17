@@ -5,6 +5,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.calendar.client.CalendarClientException;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -22,6 +23,7 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
+import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
 import io.bunnycal.session.repository.EventSessionRepository;
@@ -57,6 +59,8 @@ public class SessionSyncWorker {
     private final CalendarConnectionRepository connectionRepository;
     private final Map<CalendarProviderType, CalendarProvider> providersByType;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
+    private final BookingSchedulingProjectionResolver projectionResolver;
+    private final EventConferencingResolver conferencingResolver;
     private final SyncRetryPolicy retryPolicy;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate txTemplate;
@@ -71,6 +75,8 @@ public class SessionSyncWorker {
                               GoogleCalendarProvider googleCalendarProvider,
                               MicrosoftCalendarProvider microsoftCalendarProvider,
                               BookingSubmissionFormatter bookingSubmissionFormatter,
+                              BookingSchedulingProjectionResolver projectionResolver,
+                              EventConferencingResolver conferencingResolver,
                               SyncRetryPolicy retryPolicy,
                               PlatformTransactionManager transactionManager,
                               MeterRegistry meterRegistry) {
@@ -85,6 +91,8 @@ public class SessionSyncWorker {
                 CalendarProviderType.MICROSOFT, microsoftCalendarProvider
         );
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
+        this.projectionResolver = projectionResolver;
+        this.conferencingResolver = conferencingResolver;
         this.retryPolicy = retryPolicy;
         this.meterRegistry = meterRegistry;
         this.txTemplate = new TransactionTemplate(transactionManager);
@@ -99,12 +107,15 @@ public class SessionSyncWorker {
                              CalendarConnectionRepository connectionRepository,
                              GoogleCalendarProvider googleCalendarProvider,
                              MicrosoftCalendarProvider microsoftCalendarProvider,
+                             BookingSchedulingProjectionResolver projectionResolver,
+                             EventConferencingResolver conferencingResolver,
                              SyncRetryPolicy retryPolicy,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry) {
         this(syncJobRepository, sessionRepository, registrationRepository, eventTypeRepository, userRepository,
                 connectionRepository, googleCalendarProvider, microsoftCalendarProvider,
-                new BookingSubmissionFormatter(new ObjectMapper()), retryPolicy, transactionManager, meterRegistry);
+                new BookingSubmissionFormatter(new ObjectMapper()), projectionResolver, conferencingResolver,
+                retryPolicy, transactionManager, meterRegistry);
     }
 
     public int processPending(int batchSize) {
@@ -172,14 +183,21 @@ public class SessionSyncWorker {
             EventType eventType = eventTypeRepository
                     .findByIdAndUserId(session.getEventTypeId(), session.getHostId())
                     .orElse(null);
-            if (eventType == null || eventType.getProjectionConnectionId() == null) {
-                log.info("session_sync_skip_no_projection sessionId={} jobId={}", sessionId, job.getId());
+            // Group sessions are written to the host's global write-back calendar, exactly like every
+            // other kind. (They used to read a projection destination frozen on the event type — the
+            // only kind that did, and the only one that had no fallback when it was absent.)
+            BookingSchedulingProjectionResolver.SchedulingProjection projection = eventType == null
+                    ? null
+                    : projectionResolver.resolveForUser(session.getHostId());
+            if (projection == null) {
+                log.info("session_sync_skip_no_projection sessionId={} jobId={} hostId={}",
+                        sessionId, job.getId(), session.getHostId());
                 syncJobRepository.markSynced(job.getId(), job.getVersion(), job.getExternalEventId());
                 return;
             }
 
             CalendarConnection connection = connectionRepository
-                    .findById(eventType.getProjectionConnectionId())
+                    .findById(projection.connectionId())
                     .orElse(null);
             if (connection == null || connection.getStatus() != CalendarConnectionStatus.ACTIVE) {
                 log.warn("session_sync_skip_inactive_connection sessionId={} jobId={}", sessionId, job.getId());
@@ -206,9 +224,10 @@ public class SessionSyncWorker {
             String title = eventType.getName() != null && !eventType.getName().isBlank()
                     ? eventType.getName() : "Group Session";
             String description = bookingSubmissionFormatter.buildSessionDescription(confirmedRegistrations);
-            String targetCalendarId = eventType.getProjectionCalendarId();
+            String targetCalendarId = projection.calendarId();
             String idempotencyKey = "session-" + connection.getId() + "-" + session.getStartTime().getEpochSecond();
-            ConferencingInstruction conferencingInstruction = resolveConferencingInstruction(eventType);
+            ConferencingInstruction conferencingInstruction =
+                    resolveConferencingInstruction(session.getHostId(), eventType);
             ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(
                     conferencingInstruction, "session_event_type", Instant.now());
 
@@ -438,11 +457,17 @@ public class SessionSyncWorker {
                 job.getInternalRefId(), job.getId(), code, permanent);
     }
 
-    private ConferencingInstruction resolveConferencingInstruction(EventType eventType) {
+    /**
+     * @param hostId the session host — the writer, whose global default resolves the
+     *               {@link ConferencingProviderType#DEFAULT} pointer. Without this the switch below
+     *               would fall through {@code default -> none()} for every default-bound event type,
+     *               and group sessions would quietly lose their join links.
+     */
+    private ConferencingInstruction resolveConferencingInstruction(UUID hostId, EventType eventType) {
         if (eventType == null) {
             return ConferencingInstruction.none();
         }
-        ConferencingProviderType providerType = eventType.getConferencingProvider();
+        ConferencingProviderType providerType = conferencingResolver.resolve(hostId, eventType);
         if (providerType == null || providerType == ConferencingProviderType.NONE) {
             return ConferencingInstruction.none();
         }

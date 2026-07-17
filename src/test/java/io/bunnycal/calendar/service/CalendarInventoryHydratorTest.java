@@ -11,6 +11,7 @@ import io.bunnycal.calendar.client.MicrosoftApiClient;
 import io.bunnycal.calendar.client.ProviderCalendarInventoryEntry;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
@@ -60,5 +61,45 @@ class CalendarInventoryHydratorTest {
         verify(inventoryRepository).save(captor.capture());
         assertThat(captor.getValue().getExternalCalendarId())
                 .isEqualTo("family17130278116817796873@group.calendar.google.com");
+    }
+
+    @Test
+    void persist_classifiesRolesAndOnlyEnablesPrimaryByDefault() {
+        UUID connectionId = UUID.randomUUID();
+        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepository.save(any(CalendarConnectionCalendar.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        hydrator.persist(connectionId, CalendarProviderType.GOOGLE, List.of(
+                new ProviderCalendarInventoryEntry("primary", "Calendar", true, true, true, false),
+                new ProviderCalendarInventoryEntry("en.indian#holiday@group.v.calendar.google.com", "India holidays", false, true, false, false),
+                new ProviderCalendarInventoryEntry("birthdays", "Birthdays", false, true, false, false)));
+
+        ArgumentCaptor<CalendarConnectionCalendar> captor = ArgumentCaptor.forClass(CalendarConnectionCalendar.class);
+        verify(inventoryRepository, org.mockito.Mockito.times(3)).save(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(CalendarConnectionCalendar::getCalendarRole)
+                .containsExactly(CalendarRole.PRIMARY, CalendarRole.HOLIDAY, CalendarRole.OTHER);
+        assertThat(captor.getAllValues())
+                .extracting(CalendarConnectionCalendar::isChecksAvailability)
+                .containsExactly(true, false, false);
+    }
+
+    @Test
+    void persist_microsoftInventory_keepsTeamsCapabilityOnExactCalendar() {
+        UUID connectionId = UUID.randomUUID();
+        when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of());
+        when(inventoryRepository.save(any(CalendarConnectionCalendar.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        hydrator.persist(connectionId, CalendarProviderType.MICROSOFT, List.of(
+                new ProviderCalendarInventoryEntry(
+                        "calendar-id", "Calendar", true, true, true, false, true)));
+
+        ArgumentCaptor<CalendarConnectionCalendar> captor = ArgumentCaptor.forClass(CalendarConnectionCalendar.class);
+        verify(inventoryRepository).save(captor.capture());
+        assertThat(captor.getValue().isSupportsNativeTeams()).isTrue();
     }
 }

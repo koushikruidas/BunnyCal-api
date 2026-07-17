@@ -8,17 +8,14 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.auth.repository.AuthIdentityRepository;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.domain.user.User;
-import io.bunnycal.availability.domain.EventType;
-import io.bunnycal.availability.repository.EventTypeRepository;
-import io.bunnycal.availability.service.EventTypeOrchestrationJsonCodec;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.domain.CalendarProviderType;
+import io.bunnycal.calendar.domain.CalendarRole;
 import io.bunnycal.calendar.dto.CalendarRuntimeStatusResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
@@ -34,7 +31,7 @@ import org.junit.jupiter.api.Test;
 class CalendarRuntimeStatusServiceTest {
 
     @Test
-    void runtimeStatus_exposesInventoryAndComputesSelectionUnion() {
+    void runtimeStatus_exposesInventoryAndItsPerCalendarFlags() {
         UUID userId = UUID.randomUUID();
         UUID connectionId = UUID.randomUUID();
         String primaryCalendarId = "AQMkADAwATM";
@@ -48,7 +45,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendar primary = new CalendarConnectionCalendar();
@@ -56,22 +54,32 @@ class CalendarRuntimeStatusServiceTest {
         primary.setExternalCalendarId(primaryCalendarId);
         primary.setName("Calendar");
         primary.setPrimary(true);
+        primary.setCalendarRole(CalendarRole.PRIMARY);
         primary.setCanRead(true);
         primary.setCanWrite(true);
+        // Both flags are now properties of the inventory row itself: this calendar blocks
+        // availability, and it is the write-back destination within this connection.
+        primary.setChecksAvailability(true);
+        primary.setSelected(true);
+        primary.setSupportsNativeTeams(true);
         primary.setLastSyncedAt(Instant.now());
 
         CalendarConnectionCalendar secondary = new CalendarConnectionCalendar();
         secondary.setConnectionId(connectionId);
         secondary.setExternalCalendarId(secondaryCalendarId);
         secondary.setName("Engineering");
+        secondary.setCalendarRole(CalendarRole.OTHER);
         secondary.setCanRead(true);
         secondary.setCanWrite(false);
+        secondary.setChecksAvailability(false);
+        secondary.setSelected(false);
         secondary.setLastSyncedAt(Instant.now());
 
         CalendarConnectionCalendar hidden = new CalendarConnectionCalendar();
         hidden.setConnectionId(connectionId);
         hidden.setExternalCalendarId("AQ-hidden");
         hidden.setName("Hidden");
+        hidden.setCalendarRole(CalendarRole.OTHER);
         hidden.setHidden(true);
         hidden.setLastSyncedAt(Instant.now());
 
@@ -93,31 +101,11 @@ class CalendarRuntimeStatusServiceTest {
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
 
-        EventType eventType = new EventType();
-        eventType.setId(UUID.randomUUID());
-        eventType.setUserId(userId);
-        // Availability binding references the primary calendar of this connection.
-        // The secondary is NOT bound; the legacy entry uses connectionId as calendarId.
-        String legacyConnectionAsCalendarId = connectionId.toString();
-        String availabilityJson = "[{\"connectionId\":\"" + connectionId + "\",\"provider\":\"microsoft\",\"externalCalendarId\":\""
-                + primaryCalendarId + "\"},"
-                + "{\"connectionId\":\"" + connectionId + "\",\"provider\":\"microsoft\",\"externalCalendarId\":\""
-                + legacyConnectionAsCalendarId + "\"}]";
-        eventType.setAvailabilityCalendarsJson(availabilityJson);
-        // Projection destination points to the primary calendar.
-        eventType.setProjectionConnectionId(connectionId);
-        eventType.setProjectionCalendarId(primaryCalendarId);
-        eventType.setProjectionProvider(CalendarProviderType.MICROSOFT);
-
-        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of(eventType));
-
-        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
         CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
                 connectionRepo, inventoryRepo, capabilityRegistry, zoom,
-                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+                authIdentityRepository, userRepository, hydrator);
 
         CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
 
@@ -134,8 +122,8 @@ class CalendarRuntimeStatusServiceTest {
         assertThat(status.account().type()).isEqualTo("MICROSOFT_365");
         assertThat(status.account().supportsNativeTeams()).isTrue();
 
-        // Additive: calendars hydrated, hidden filtered.
-        assertThat(status.calendars()).hasSize(2);
+        // Only the primary is exposed. Holiday, birthday, feed, and secondary rows stay implicit.
+        assertThat(status.calendars()).hasSize(1);
 
         CalendarRuntimeStatusResponse.Calendar primaryOut = status.calendars().stream()
                 .filter(c -> c.calendarId().equals(primaryCalendarId)).findFirst().orElseThrow();
@@ -144,11 +132,7 @@ class CalendarRuntimeStatusServiceTest {
         assertThat(primaryOut.selectedForAvailability()).isTrue();
         assertThat(primaryOut.selectedForProjection()).isTrue();
 
-        CalendarRuntimeStatusResponse.Calendar secondaryOut = status.calendars().stream()
-                .filter(c -> c.calendarId().equals(secondaryCalendarId)).findFirst().orElseThrow();
-        assertThat(secondaryOut.canWrite()).isFalse();
-        assertThat(secondaryOut.selectedForAvailability()).isFalse();
-        assertThat(secondaryOut.selectedForProjection()).isFalse();
+        assertThat(status.calendars()).noneMatch(c -> c.calendarId().equals(secondaryCalendarId));
 
         // Fresh inventory means no stale-refresh trigger.
         verify(hydrator, never()).hydrateBestEffort(any());
@@ -167,7 +151,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -185,14 +170,11 @@ class CalendarRuntimeStatusServiceTest {
         when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
-        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
-        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
         CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
                 connectionRepo, inventoryRepo, capabilityRegistry, zoom,
-                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+                authIdentityRepository, userRepository, hydrator);
 
         service.runtimeStatus(userId);
 
@@ -212,7 +194,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -234,14 +217,11 @@ class CalendarRuntimeStatusServiceTest {
         user.setName("Koushik Ruidas");
         user.setEmail("koushikruidas@gmail.com");
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.of(user));
-        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
-        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
         CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
                 connectionRepo, inventoryRepo, capabilityRegistry, zoom,
-                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+                authIdentityRepository, userRepository, hydrator);
 
         CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
         CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);
@@ -264,7 +244,8 @@ class CalendarRuntimeStatusServiceTest {
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
@@ -282,14 +263,11 @@ class CalendarRuntimeStatusServiceTest {
         when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
-        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
-        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
         CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
                 connectionRepo, inventoryRepo, capabilityRegistry, zoom,
-                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+                authIdentityRepository, userRepository, hydrator);
 
         CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
         CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);
@@ -310,16 +288,32 @@ class CalendarRuntimeStatusServiceTest {
         connection.setProvider(CalendarProviderType.MICROSOFT);
         connection.setProviderUserId("12345678-1234-1234-1234-123456789012");
         connection.setStatus(CalendarConnectionStatus.ACTIVE);
+        connection.setDefaultWriteback(true);
 
         CalendarConnectionRepository connectionRepo = mock(CalendarConnectionRepository.class);
-        when(connectionRepo.findByUserIdAndStatus(userId, CalendarConnectionStatus.ACTIVE))
+        when(connectionRepo.findByUserIdAndStatusOrderByCreatedAtAscIdAsc(
+                userId, CalendarConnectionStatus.ACTIVE))
                 .thenReturn(List.of(connection));
+
+        CalendarConnectionCalendar teamsCalendar = new CalendarConnectionCalendar();
+        teamsCalendar.setConnectionId(connectionId);
+        teamsCalendar.setExternalCalendarId("primary");
+        teamsCalendar.setPrimary(true);
+        teamsCalendar.setCalendarRole(CalendarRole.PRIMARY);
+        teamsCalendar.setCanRead(true);
+        teamsCalendar.setCanWrite(true);
+        teamsCalendar.setChecksAvailability(true);
+        teamsCalendar.setSelected(true);
+        teamsCalendar.setSupportsNativeTeams(true);
+        teamsCalendar.setLastSyncedAt(Instant.now());
 
         CalendarConnectionCalendarRepository inventoryRepo = mock(CalendarConnectionCalendarRepository.class);
         when(inventoryRepo.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
-                .thenReturn(List.of());
+                .thenReturn(List.of(teamsCalendar));
         when(inventoryRepo.findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(anyList()))
-                .thenReturn(List.of());
+                .thenReturn(List.of(teamsCalendar));
+        when(inventoryRepo.findByConnectionIdAndSelectedTrue(connectionId))
+                .thenReturn(java.util.Optional.of(teamsCalendar));
 
         ProviderCapabilityRegistry capabilityRegistry = mock(ProviderCapabilityRegistry.class);
         when(capabilityRegistry.forCalendar(CalendarProviderType.MICROSOFT))
@@ -330,14 +324,11 @@ class CalendarRuntimeStatusServiceTest {
         when(authIdentityRepository.findByUserIdOrderByCreatedAtDesc(userId)).thenReturn(List.of());
         UserRepository userRepository = mock(UserRepository.class);
         when(userRepository.findById(userId)).thenReturn(java.util.Optional.empty());
-        EventTypeRepository eventTypeRepository = mock(EventTypeRepository.class);
-        when(eventTypeRepository.findByUserIdAndDeletedAtIsNullOrderByNameAsc(userId)).thenReturn(List.of());
-        EventTypeOrchestrationJsonCodec codec = new EventTypeOrchestrationJsonCodec(new ObjectMapper());
         CalendarInventoryHydrator hydrator = mock(CalendarInventoryHydrator.class);
 
         CalendarRuntimeStatusService service = new CalendarRuntimeStatusService(
                 connectionRepo, inventoryRepo, capabilityRegistry, zoom,
-                authIdentityRepository, userRepository, eventTypeRepository, codec, hydrator);
+                authIdentityRepository, userRepository, hydrator);
 
         CalendarRuntimeStatusResponse response = service.runtimeStatus(userId);
         CalendarRuntimeStatusResponse.ConnectionStatus status = response.connections().get(0);

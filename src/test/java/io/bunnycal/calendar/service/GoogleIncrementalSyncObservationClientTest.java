@@ -230,7 +230,7 @@ class GoogleIncrementalSyncObservationClientTest {
     }
 
     @Test
-    void fetchIncremental_no_event_type_selection_falls_back_to_primary_inventory_calendar() {
+    void fetchIncremental_hydratedInventoryWithNoSelection_doesNotSyncPrimary() {
         CalendarConnection connection = connection();
         String primary = "user@gmail.com";
         when(selectionService.selectedAvailabilityCalendarIds(connection, SyncSourceAttribution.PULL_SYNC)).thenReturn(Set.of());
@@ -241,18 +241,11 @@ class GoogleIncrementalSyncObservationClientTest {
         inv.setPrimary(true);
         when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
                 .thenReturn(List.of(inv));
-        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), primary))
-                .thenReturn(Optional.empty());
-        when(googleApiClient.listEventsFull(any(), eq(primary)))
-                .thenReturn(new GoogleApiClient.SyncWindow(
-                        List.of(observation("evt-p", false)),
-                        "p-token"));
-
         ExternalCalendarSyncClient.SyncBatch batch =
                 client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
 
-        assertThat(batch.events()).hasSize(1);
-        assertThat(batch.events().get(0).externalCalendarId()).isEqualTo(primary);
+        assertThat(batch.events()).isEmpty();
+        verify(googleApiClient, never()).listEventsFull(any(), eq(primary));
     }
 
     @Test
@@ -282,7 +275,7 @@ class GoogleIncrementalSyncObservationClientTest {
     }
 
     @Test
-    void fetchIncremental_selected_calendar_not_in_inventory_skips_and_falls_back_to_primary() {
+    void fetchIncremental_selectedCalendarNotInInventory_skipsWithoutPrimaryFallback() {
         CalendarConnection connection = connection();
         String invalid = "not-in-inventory@group.calendar.google.com";
         String primary = "primary";
@@ -294,18 +287,12 @@ class GoogleIncrementalSyncObservationClientTest {
         inv.setPrimary(true);
         when(inventoryRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()))
                 .thenReturn(List.of(inv));
-        when(cursorRepository.findByConnectionIdAndExternalCalendarId(connection.getId(), primary))
-                .thenReturn(Optional.empty());
-        when(googleApiClient.listEventsFull(any(), eq(primary)))
-                .thenReturn(new GoogleApiClient.SyncWindow(List.of(observation("evt-p", false)), "p-token"));
-
         ExternalCalendarSyncClient.SyncBatch batch =
                 client.fetchIncremental(connection, SyncSourceAttribution.PULL_SYNC);
 
         verify(googleApiClient, never()).listEventsFull(any(), eq(invalid));
-        verify(googleApiClient).listEventsFull(any(), eq(primary));
-        assertThat(batch.events()).hasSize(1);
-        assertThat(batch.events().get(0).externalCalendarId()).isEqualTo(primary);
+        verify(googleApiClient, never()).listEventsFull(any(), eq(primary));
+        assertThat(batch.events()).isEmpty();
     }
 
     @Test

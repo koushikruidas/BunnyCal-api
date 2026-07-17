@@ -24,17 +24,20 @@ public class ConferencingOrchestrator {
     private final ConferencingProviderRegistry conferencingProviderRegistry;
     private final ConferencingEventMappingRepository conferencingEventMappingRepository;
     private final CalendarEventMappingRepository calendarEventMappingRepository;
+    private final EventConferencingResolver conferencingResolver;
 
     public ConferencingOrchestrator(BookingRepository bookingRepository,
                                     EventTypeRepository eventTypeRepository,
                                     ConferencingProviderRegistry conferencingProviderRegistry,
                                     ConferencingEventMappingRepository conferencingEventMappingRepository,
-                                    CalendarEventMappingRepository calendarEventMappingRepository) {
+                                    CalendarEventMappingRepository calendarEventMappingRepository,
+                                    EventConferencingResolver conferencingResolver) {
         this.bookingRepository = bookingRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.conferencingProviderRegistry = conferencingProviderRegistry;
         this.conferencingEventMappingRepository = conferencingEventMappingRepository;
         this.calendarEventMappingRepository = calendarEventMappingRepository;
+        this.conferencingResolver = conferencingResolver;
     }
 
     @Transactional
@@ -47,7 +50,7 @@ public class ConferencingOrchestrator {
             if (booking == null) return;
             EventType eventType = eventTypeRepository.findById(booking.getEventTypeId()).orElse(null);
             if (eventType == null) return;
-            ConferencingProviderType providerType = eventType.getConferencingProvider();
+            ConferencingProviderType providerType = conferencingResolver.resolve(booking.getHostId(), eventType);
             if (providerType == null || providerType == ConferencingProviderType.NONE || providerType == ConferencingProviderType.CUSTOM_URL) {
                 return;
             }

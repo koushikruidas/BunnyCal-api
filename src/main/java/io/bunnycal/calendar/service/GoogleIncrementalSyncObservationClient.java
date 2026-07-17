@@ -149,11 +149,10 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
     }
 
     /**
-     * @return list of provider-native Google calendar ids to poll. Prefers the user's
-     *         selected availability calendars; falls back to the connection's primary
-     *         inventory calendar so a freshly-connected user with no event types still
-     *         gets availability blocking for their primary calendar (same fallback the
-     *         Microsoft client uses).
+     * @return provider-native ids selected independently for availability and writeback sync.
+     *         A hydrated inventory with no selection returns an empty set; falling back to its
+     *         primary would turn connection into availability. Only a brand-new connection with no
+     *         inventory gets Google's reserved primary alias so initial hydration can recover.
      */
     private Set<String> resolveCalendarsToSync(CalendarConnection connection,
                                                SyncSourceAttribution sourceAttribution) {
@@ -181,33 +180,18 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
             if (!normalizedSelected.isEmpty()) {
                 return normalizedSelected;
             }
-            log.info("google_calendar_sync_selection_invalid connectionId={} action=fallback reason=all_selected_calendars_missing_from_inventory",
+            log.info("google_calendar_sync_selection_invalid connectionId={} action=skip reason=all_selected_calendars_missing_from_inventory",
                     connection.getId());
         }
 
-        Set<String> fallback = new LinkedHashSet<>();
-        for (CalendarConnectionCalendar cal : inventory) {
-            if (cal.isPrimary() && cal.getExternalCalendarId() != null && !cal.getExternalCalendarId().isBlank()) {
-                fallback.add(cal.getExternalCalendarId());
-                break;
-            }
+        if (!inventory.isEmpty()) {
+            log.info("google_calendar_sync_no_selected_calendar connectionId={} action=skip inventorySize={}",
+                    connection.getId(), inventory.size());
+            return Set.of();
         }
-        if (fallback.isEmpty() && !inventory.isEmpty()) {
-            String first = inventory.get(0).getExternalCalendarId();
-            if (first != null && !first.isBlank()) fallback.add(first);
-        }
-        if (fallback.isEmpty()) {
-            // Inventory may not be hydrated yet (e.g. brand-new connection before the
-            // OAuth callback's inventory hydration ran). Fall back to Google's reserved
-            // "primary" alias so we don't silently no-op.
-            fallback.add("primary");
-            log.info("google_calendar_sync_fallback_to_primary_alias connectionId={} reason=no_inventory",
-                    connection.getId());
-        } else {
-            log.info("google_calendar_sync_fallback_to_primary connectionId={} calendarId={} reason=no_event_type_selection",
-                    connection.getId(), fallback.iterator().next());
-        }
-        return fallback;
+        log.info("google_calendar_sync_fallback_to_primary_alias connectionId={} reason=no_inventory",
+                connection.getId());
+        return Set.of("primary");
     }
 
     private static String normalizeGoogleCalendarId(String value) {

@@ -233,7 +233,10 @@ public class SlotCacheService {
     }
 
     private String cacheKeyV2(UUID userId, UUID eventTypeId, LocalDate date, long version) {
-        return "slots:v2:%s:%s:%s:v%d".formatted(userId, eventTypeId, date, version);
+        // v3 starts with the persisted-version invariant: a missing version key is initialized
+        // atomically before this key can be written, and the first invalidation advances to v2.
+        // The namespace change prevents pre-fix v1 entries from being reused during rollout.
+        return "slots:v3:%s:%s:%s:v%d".formatted(userId, eventTypeId, date, version);
     }
 
     public record CachedSlots(List<SlotGenerationEngine.SlotUtc> slots, Instant generatedAt) {}

@@ -28,11 +28,36 @@ public class CalendarConnectionCalendar extends BaseEntity {
     @Column(name = "is_primary", nullable = false)
     private boolean primary;
 
+    /**
+     * What kind of calendar this is — {@link CalendarRole}. Decides display, blocking, and sync:
+     * only {@code PRIMARY} is shown and blocks by default; {@code HOLIDAY} feeds days-off (never busy
+     * time); {@code OTHER} (birthdays, feeds) does nothing. Classified at hydration.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "calendar_role", nullable = false, length = 16)
+    private CalendarRole calendarRole = CalendarRole.OTHER;
+
+    /**
+     * This is the calendar within its connection that receives confirmed bookings. At most one per
+     * connection.
+     *
+     * <p>Before the global model this column was read by the write-back resolver but written by
+     * nothing, so it was always false and the resolver's "selected calendar" tier could never fire.
+     * The settings page now writes it.
+     */
     @Column(name = "is_selected", nullable = false)
     private boolean selected;
 
-    @Column(name = "sync_enabled", nullable = false)
-    private boolean syncEnabled = true;
+    /**
+     * The primary calendar is read for free/busy whenever anyone books its owner — on their own
+     * event types and on any team event they participate in. Holiday and other calendars stay off.
+     *
+     * <p>Turning it off is the deliberate exception, and it holds everywhere. Under the old
+     * per-event-type model a user could exclude a noisy calendar from their own events, then have it
+     * silently start blocking them again the moment a colleague added them to a round-robin.
+     */
+    @Column(name = "checks_availability", nullable = false)
+    private boolean checksAvailability;
 
     @Column(name = "can_read", nullable = false)
     private boolean canRead = true;
@@ -42,6 +67,10 @@ public class CalendarConnectionCalendar extends BaseEntity {
 
     @Column(name = "hidden", nullable = false)
     private boolean hidden = false;
+
+    /** True only when Microsoft Graph advertises teamsForBusiness for this exact calendar. */
+    @Column(name = "supports_native_teams")
+    private Boolean supportsNativeTeams;
 
     @Column(name = "last_synced_at")
     private Instant lastSyncedAt;
@@ -55,16 +84,22 @@ public class CalendarConnectionCalendar extends BaseEntity {
     public void setName(String name) { this.name = name; }
     public boolean isPrimary() { return primary; }
     public void setPrimary(boolean primary) { this.primary = primary; }
+
+    public CalendarRole getCalendarRole() { return calendarRole; }
+    public void setCalendarRole(CalendarRole calendarRole) { this.calendarRole = calendarRole; }
     public boolean isSelected() { return selected; }
     public void setSelected(boolean selected) { this.selected = selected; }
-    public boolean isSyncEnabled() { return syncEnabled; }
-    public void setSyncEnabled(boolean syncEnabled) { this.syncEnabled = syncEnabled; }
+    public boolean isChecksAvailability() { return checksAvailability; }
+    public void setChecksAvailability(boolean checksAvailability) { this.checksAvailability = checksAvailability; }
     public boolean isCanRead() { return canRead; }
     public void setCanRead(boolean canRead) { this.canRead = canRead; }
     public boolean isCanWrite() { return canWrite; }
     public void setCanWrite(boolean canWrite) { this.canWrite = canWrite; }
     public boolean isHidden() { return hidden; }
     public void setHidden(boolean hidden) { this.hidden = hidden; }
+    public boolean isSupportsNativeTeams() { return Boolean.TRUE.equals(supportsNativeTeams); }
+    public boolean isTeamsCapabilityKnown() { return supportsNativeTeams != null; }
+    public void setSupportsNativeTeams(boolean supportsNativeTeams) { this.supportsNativeTeams = supportsNativeTeams; }
     public Instant getLastSyncedAt() { return lastSyncedAt; }
     public void setLastSyncedAt(Instant lastSyncedAt) { this.lastSyncedAt = lastSyncedAt; }
 }
