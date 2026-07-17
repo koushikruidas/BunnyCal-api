@@ -10,6 +10,7 @@ import io.bunnycal.auth.security.jwt.JwtTokenProvider;
 import io.bunnycal.auth.dto.AuthResponse;
 import io.bunnycal.auth.dto.UserDto;
 import io.bunnycal.auth.service.RefreshTokenService;
+import io.bunnycal.auth.oauth.service.CalendarBootstrapUnavailableException;
 import io.bunnycal.auth.oauth.service.HostLoginCalendarBootstrapService;
 import io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver;
 import jakarta.servlet.ServletException;
@@ -134,9 +135,14 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
                         registrationId, authentication.getName());
                 hostLoginCalendarBootstrapService.bootstrapIfNeeded(
                         user.getId(), registrationId, authorizedClient);
+            } catch (CalendarBootstrapUnavailableException ex) {
+                // Expected and user-recoverable: onboarding shows a reconnect action. No stack
+                // trace — this is a normal outcome, not a fault to investigate.
+                log.info("host_login_calendar_bootstrap_unavailable userId={} provider={} reason={} recovery=onboarding_reconnect",
+                        user.getId(), registrationId, ex.getMessage());
             } catch (RuntimeException ex) {
-                // Authentication still succeeds. Onboarding keeps a compact recovery action for
-                // denied consent, organization policy, missing refresh tokens, or sync failures.
+                // Unexpected: a sync, encryption, or provider fault. Authentication still succeeds
+                // and onboarding still offers reconnect, but this one is worth investigating.
                 log.warn("host_login_calendar_bootstrap_failed userId={} provider={} reason={}",
                         user.getId(), registrationId, ex.getMessage(), ex);
             }

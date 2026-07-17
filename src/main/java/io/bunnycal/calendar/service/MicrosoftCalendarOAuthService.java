@@ -148,7 +148,7 @@ public class MicrosoftCalendarOAuthService {
             // account — the finder keys on provider_user_id.
             refreshTokenCiphertext = base.getRefreshTokenCiphertext();
         } else {
-            throw new IllegalArgumentException("Refresh token missing from provider response");
+            throw new MissingRefreshTokenException("Refresh token missing from provider response");
         }
 
         connection.setUserId(userId);

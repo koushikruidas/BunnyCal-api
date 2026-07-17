@@ -158,7 +158,7 @@ public class CalendarOAuthService {
             // safe because `base` is now guaranteed to be the same external account.
             refreshTokenCiphertext = base.getRefreshTokenCiphertext();
         } else {
-            throw new IllegalArgumentException("Refresh token missing from provider response");
+            throw new MissingRefreshTokenException("Refresh token missing from provider response");
         }
 
         connection.setUserId(userId);
