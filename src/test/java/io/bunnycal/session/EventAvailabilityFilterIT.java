@@ -2,7 +2,9 @@ package io.bunnycal.session;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.dto.EventAvailabilityScheduleRequest;
 import io.bunnycal.availability.dto.EventAvailabilityWindowRequest;
 import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotRequest;
@@ -26,12 +28,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Event Availability FILTER for demand-driven event types (ONE_ON_ONE, ROUND_ROBIN,
+ * Event availability schedules for demand-driven event types (ONE_ON_ONE, ROUND_ROBIN,
  * COLLECTIVE).
  *
- * The filter only narrows the host's availability for the owning event type. It
- * reserves no time, blocks no other event type, and never modifies host availability.
- * Covers required tests I-O.
+ * Covers the legacy narrow-only endpoint plus explicit INHERIT/CUSTOM semantics. Custom
+ * schedules reserve no time, block no other event type, and never modify global availability.
  */
 class EventAvailabilityFilterIT extends AbstractSessionIT {
 
@@ -248,6 +249,94 @@ class EventAvailabilityFilterIT extends AbstractSessionIT {
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    @Test
+    void customOneOnOneSchedule_canExpandBeyondGlobalAvailability() {
+        User host = createHostWithWeekdayAvailability(); // 09:00-17:00
+        EventType oneOnOne = createDemandDrivenType(host.getId(), EventKind.ONE_ON_ONE);
+
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                oneOnOne.getId(),
+                new EventAvailabilityScheduleRequest(
+                        EventAvailabilityMode.CUSTOM,
+                        List.of(window(DayOfWeek.WEDNESDAY, "18:00", "20:00"))));
+
+        List<Instant> starts = slotStarts(host.getId(), oneOnOne.getId());
+        assertThat(starts).contains(slotAt(18, 0), slotAt(19, 30));
+        assertThat(starts).doesNotContain(slotAt(9, 0), slotAt(16, 30));
+    }
+
+    @Test
+    void customSchedule_canBeExplicitlyClosedWithoutFallingBackToInheritance() {
+        User host = createHostWithWeekdayAvailability();
+        EventType oneOnOne = createDemandDrivenType(host.getId(), EventKind.ONE_ON_ONE);
+
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                oneOnOne.getId(),
+                new EventAvailabilityScheduleRequest(EventAvailabilityMode.CUSTOM, List.of()));
+
+        assertThat(slotStarts(host.getId(), oneOnOne.getId())).isEmpty();
+        assertThat(eventTypeRepository.findById(oneOnOne.getId()).orElseThrow().getAvailabilityMode())
+                .isEqualTo(EventAvailabilityMode.CUSTOM);
+    }
+
+    @Test
+    void switchingBackToInherit_restoresGlobalAvailability() {
+        User host = createHostWithWeekdayAvailability();
+        EventType oneOnOne = createDemandDrivenType(host.getId(), EventKind.ONE_ON_ONE);
+
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                oneOnOne.getId(),
+                new EventAvailabilityScheduleRequest(
+                        EventAvailabilityMode.CUSTOM,
+                        List.of(window(DayOfWeek.WEDNESDAY, "18:00", "20:00"))));
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                oneOnOne.getId(),
+                new EventAvailabilityScheduleRequest(EventAvailabilityMode.INHERIT, List.of()));
+
+        List<Instant> starts = slotStarts(host.getId(), oneOnOne.getId());
+        assertThat(starts).contains(slotAt(9, 0), slotAt(16, 30));
+        assertThat(starts).doesNotContain(slotAt(18, 0));
+        assertThat(countWindows(oneOnOne.getId())).isZero();
+    }
+
+    @Test
+    void roundRobinCustomHours_doNotOverrideParticipantAvailability() {
+        User host = createHostWithWeekdayAvailability(); // participant is 09:00-17:00
+        EventType roundRobin = createDemandDrivenType(host.getId(), EventKind.ROUND_ROBIN);
+
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                roundRobin.getId(),
+                new EventAvailabilityScheduleRequest(
+                        EventAvailabilityMode.CUSTOM,
+                        List.of(window(DayOfWeek.WEDNESDAY, "16:00", "19:00"))));
+
+        List<Instant> starts = slotStarts(host.getId(), roundRobin.getId());
+        assertThat(starts).contains(slotAt(16, 0), slotAt(16, 30));
+        assertThat(starts).doesNotContain(slotAt(15, 30), slotAt(17, 0), slotAt(18, 0));
+    }
+
+    @Test
+    void collectiveCustomHours_doNotOverrideParticipantAvailability() {
+        User host = createHostWithWeekdayAvailability(); // participant is 09:00-17:00
+        EventType collective = createDemandDrivenType(host.getId(), EventKind.COLLECTIVE);
+
+        availabilityWindowService.replaceSchedule(
+                host.getId(),
+                collective.getId(),
+                new EventAvailabilityScheduleRequest(
+                        EventAvailabilityMode.CUSTOM,
+                        List.of(window(DayOfWeek.WEDNESDAY, "08:00", "10:00"))));
+
+        List<Instant> starts = slotStarts(host.getId(), collective.getId());
+        assertThat(starts).contains(slotAt(9, 0), slotAt(9, 30));
+        assertThat(starts).doesNotContain(slotAt(8, 0), slotAt(10, 0));
     }
 
     @Test

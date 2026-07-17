@@ -1,6 +1,7 @@
 package io.bunnycal.availability.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import java.time.LocalDate;
 import java.util.List;
@@ -19,15 +20,17 @@ public record EventTypeSummaryResponse(
         @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesStartDate,
         @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesEndDate,
         ConferenceResponse conference,
+        EventAvailabilityMode availabilityMode,
         /**
-         * The event's own availability-filter windows, empty when it simply inherits the
-         * host's availability. Carried on the summary so the dashboard can render each
+         * The event's own custom schedule windows, empty when it inherits defaults (or
+         * when an explicit custom schedule is closed). Carried on the summary so the dashboard can render each
          * card's bookable window without a request per card.
          */
         List<AvailabilityWindowResponse> availabilityWindows
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, 30, true, false, null, null, null, List.of());
+        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, 30, true, false,
+                null, null, null, EventAvailabilityMode.INHERIT, List.of());
     }
 
     public record AvailabilityWindowResponse(

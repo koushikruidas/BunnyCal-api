@@ -5,6 +5,7 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
@@ -169,8 +170,8 @@ public class ParticipantAvailabilityService {
             sessionBlockerWindows.add(new BookingWindow(start, end));
         }
 
-        // 9. Event availability filter — demand-driven (ROUND_ROBIN is like ONE_ON_ONE
-        //    here): own event's recurring filter windows narrow availability. Empty = full.
+        // 9. Multi-host event operating window. CUSTOM constrains this participant's own
+        //    availability; it never manufactures time outside their personal schedule.
         List<EventAvailabilityWindow> filterWindows =
                 eventAvailabilityWindowRepository.findOwnWindowsForDay(eventType.getId(), dayOfWeek.name());
         List<BookingWindow> eventAvailabilityFilter = new ArrayList<>(filterWindows.size());
@@ -203,7 +204,9 @@ public class ParticipantAvailabilityService {
                     DateTimeUtils.toZone(interval.end(), zoneId)));
         }
 
-        // 11. Build SlotInput — demand-driven (restrictToFilter=false).
+        // 11. CUSTOM is an event-level operating window, but participant availability
+        // remains the base. A missing custom window for this day therefore means closed.
+        boolean customSchedule = eventType.getAvailabilityMode() == EventAvailabilityMode.CUSTOM;
         SlotInput input = new SlotInput(
                 date,
                 zoneId,
@@ -215,6 +218,7 @@ public class ParticipantAvailabilityService {
                 eventAvailabilityFilter,
                 calendarBusy,
                 now,
+                customSchedule,
                 false);
 
         // 12. Run engine and return.

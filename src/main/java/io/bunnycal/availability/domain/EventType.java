@@ -100,6 +100,11 @@ public class EventType {
     private EventKind kind = EventKind.ONE_ON_ONE;
 
     @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "availability_mode", nullable = false, length = 16)
+    private EventAvailabilityMode availabilityMode = EventAvailabilityMode.INHERIT;
+
+    @Builder.Default
     @Column(name = "capacity", nullable = false)
     private int capacity = 1;
 

@@ -2,9 +2,12 @@ package io.bunnycal.availability.service;
 
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.domain.AvailabilityRule;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.dto.EventAvailabilityScheduleRequest;
+import io.bunnycal.availability.dto.EventAvailabilityScheduleResponse;
 import io.bunnycal.availability.dto.EventAvailabilityWindowRequest;
 import io.bunnycal.availability.dto.EventAvailabilityWindowResponse;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
@@ -18,13 +21,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Manages the recurring availability FILTER windows of a demand-driven event type
+ * Manages the recurring custom schedule of a demand-driven event type
  * (ONE_ON_ONE, ROUND_ROBIN, COLLECTIVE).
  *
  * Crucially, this service NEVER writes to {@code availability_rules}: host-global
- * working hours are owned exclusively by {@link AvailabilityService}. These windows
- * only narrow the host's availability for the owning event type; they reserve no
- * time and block no other event type.
+ * working hours are owned exclusively by {@link AvailabilityService}. A ONE_ON_ONE
+ * custom schedule replaces those global weekly hours for that event. For multi-host
+ * kinds it defines the event's operating window but never overrides a participant's
+ * own availability. These windows reserve no time and block no other event type.
  *
  * Writes bump the host's slot-cache version after commit so the change is reflected
  * in availability immediately (the 60s TTL alone would otherwise leave a stale view
@@ -52,15 +56,21 @@ public class EventAvailabilityWindowService {
     @Transactional(readOnly = true)
     public List<EventAvailabilityWindowResponse> list(UUID requesterId, UUID eventTypeId) {
         requireOwnedDemandDrivenEventType(requesterId, eventTypeId);
-        return windowRepository.findByEventTypeId(eventTypeId).stream()
-                .map(EventAvailabilityWindowResponse::from)
-                .toList();
+        return listWindows(eventTypeId);
+    }
+
+    @Transactional(readOnly = true)
+    public EventAvailabilityScheduleResponse getSchedule(UUID requesterId, UUID eventTypeId) {
+        EventType eventType = requireOwnedDemandDrivenEventType(requesterId, eventTypeId);
+        return new EventAvailabilityScheduleResponse(effectiveMode(eventType), listWindows(eventTypeId));
     }
 
     /**
-     * Replaces the full set of availability filter windows for the event type (bulk
-     * upsert). Unlike GROUP reservation windows there is NO cross-event overlap check
-     * and NO self-overlap rejection -- a filter owns nothing, so overlapping filters
+     * Backward-compatible replacement through the original filter API. These callers
+     * retain the historical narrow-only validation; new clients should use
+     * {@link #replaceSchedule(UUID, UUID, EventAvailabilityScheduleRequest)}.
+     * Unlike GROUP reservation windows there is NO cross-event overlap check and NO
+     * self-overlap rejection -- a custom schedule owns nothing, so overlapping windows
      * across event types (or even a redundant overlap within one type) are harmless.
      */
     @Transactional
@@ -71,13 +81,49 @@ public class EventAvailabilityWindowService {
 
         List<EventAvailabilityWindowRequest> safeWindows = windows == null ? List.of() : windows;
         validate(safeWindows);
+        // Backward-compatible behavior for callers of the original FILTER endpoint.
+        // The new schedule endpoint below is the explicit path that permits expansion.
         validateWithinHostAvailability(eventType.getUserId(), safeWindows);
 
-        windowRepository.deleteByEventTypeId(eventTypeId);
+        EventAvailabilityMode mode = safeWindows.isEmpty()
+                ? EventAvailabilityMode.INHERIT
+                : EventAvailabilityMode.CUSTOM;
+        return persistSchedule(eventType, mode, safeWindows).windows();
+    }
 
-        List<EventAvailabilityWindow> toSave = safeWindows.stream()
+    /**
+     * Atomically replaces both schedule mode and windows. CUSTOM windows are deliberately
+     * independent of the owner's global weekly hours, so they may be narrower or wider.
+     * Participant-owned availability remains authoritative in multi-host slot computation.
+     */
+    @Transactional
+    public EventAvailabilityScheduleResponse replaceSchedule(UUID requesterId,
+                                                              UUID eventTypeId,
+                                                              EventAvailabilityScheduleRequest request) {
+        EventType eventType = requireOwnedDemandDrivenEventType(requesterId, eventTypeId);
+        if (request == null || request.mode() == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Availability schedule mode is required.");
+        }
+        List<EventAvailabilityWindowRequest> safeWindows = request.windows() == null
+                ? List.of()
+                : request.windows();
+        if (request.mode() == EventAvailabilityMode.INHERIT && !safeWindows.isEmpty()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Inherited availability must not include custom windows.");
+        }
+        validate(safeWindows);
+        return persistSchedule(eventType, request.mode(), safeWindows);
+    }
+
+    private EventAvailabilityScheduleResponse persistSchedule(EventType eventType,
+                                                               EventAvailabilityMode mode,
+                                                               List<EventAvailabilityWindowRequest> windows) {
+
+        windowRepository.deleteByEventTypeId(eventType.getId());
+
+        List<EventAvailabilityWindow> toSave = windows.stream()
                 .map(w -> EventAvailabilityWindow.builder()
-                        .eventTypeId(eventTypeId)
+                        .eventTypeId(eventType.getId())
                         .dayOfWeek(w.dayOfWeek())
                         .startTime(w.startTime())
                         .endTime(w.endTime())
@@ -88,8 +134,22 @@ public class EventAvailabilityWindowService {
                 .map(EventAvailabilityWindowResponse::from)
                 .toList();
 
+        eventType.setAvailabilityMode(mode);
+        eventTypeRepository.save(eventType);
         slotCacheVersionService.bumpVersionAfterCommit(eventType.getUserId());
-        return saved;
+        return new EventAvailabilityScheduleResponse(mode, saved);
+    }
+
+    private List<EventAvailabilityWindowResponse> listWindows(UUID eventTypeId) {
+        return windowRepository.findByEventTypeId(eventTypeId).stream()
+                .map(EventAvailabilityWindowResponse::from)
+                .toList();
+    }
+
+    private static EventAvailabilityMode effectiveMode(EventType eventType) {
+        return eventType.getAvailabilityMode() == null
+                ? EventAvailabilityMode.INHERIT
+                : eventType.getAvailabilityMode();
     }
 
     private void validate(List<EventAvailabilityWindowRequest> windows) {
@@ -106,11 +166,9 @@ public class EventAvailabilityWindowService {
     }
 
     /**
-     * Every filter window must fall within the host's global availability for that
-     * day-of-week. Host availability is the upper bound: a filter can only narrow it,
-     * never extend booking into hours the host is not open. (Slot generation enforces
-     * this too via intersection, but rejecting at write time gives the host a clear
-     * error instead of a window that silently produces no slots.)
+     * Historical validation retained only for callers of the legacy windows endpoint.
+     * The schedule endpoint deliberately does not call this method because CUSTOM may
+     * extend beyond the owner's global weekly hours.
      */
     private void validateWithinHostAvailability(UUID hostId, List<EventAvailabilityWindowRequest> windows) {
         if (windows.isEmpty()) {
@@ -136,7 +194,7 @@ public class EventAvailabilityWindowService {
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
         if (eventType.getKind() == EventKind.GROUP) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Availability filter windows are not supported for GROUP event types; "
+                    "Custom availability schedules are not supported for GROUP event types; "
                             + "use reservation windows instead.");
         }
         return eventType;

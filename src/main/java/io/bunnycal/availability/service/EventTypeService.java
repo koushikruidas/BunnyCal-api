@@ -4,6 +4,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
@@ -369,14 +370,23 @@ public class EventTypeService {
                 groupSeriesBounds.startDate(),
                 groupSeriesBounds.endDate(),
                 conference,
+                eventType.getKind() == EventKind.GROUP
+                        ? EventAvailabilityMode.INHERIT
+                        : effectiveAvailabilityMode(eventType),
                 summarizeAvailabilityWindows(eventType)
         );
     }
 
+    private static EventAvailabilityMode effectiveAvailabilityMode(EventType eventType) {
+        return eventType.getAvailabilityMode() == null
+                ? EventAvailabilityMode.INHERIT
+                : eventType.getAvailabilityMode();
+    }
+
     /**
-     * The event's own availability-filter windows. Empty for GROUP (which reserves time via
-     * its reservation windows instead) and for any event that simply inherits the host's
-     * availability — in both cases the dashboard falls back to showing the host's hours.
+     * The event's own custom schedule windows. Empty for GROUP (which reserves time via
+     * reservation windows), for INHERIT, and for an explicitly closed CUSTOM schedule.
+     * The separate mode field lets clients distinguish the latter two cases.
      */
     private List<EventTypeSummaryResponse.AvailabilityWindowResponse> summarizeAvailabilityWindows(EventType eventType) {
         if (eventType.getKind() == EventKind.GROUP) {

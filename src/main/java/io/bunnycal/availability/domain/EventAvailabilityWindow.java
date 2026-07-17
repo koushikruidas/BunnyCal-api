@@ -24,21 +24,22 @@ import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
 /**
- * A recurring weekly window that FILTERS a demand-driven event type's availability
- * (ONE_ON_ONE, ROUND_ROBIN, COLLECTIVE) -- e.g. "this One-to-One is only bookable
- * Tue-Thu 10:00-15:00, even though I'm generally available Mon-Fri 09:00-17:00".
+ * A recurring weekly window in a demand-driven event type's CUSTOM schedule
+ * (ONE_ON_ONE, ROUND_ROBIN, COLLECTIVE).
  *
  * Semantics at slot-generation time:
  * <ul>
- *   <li>Acts ONLY as an intersection on the host's availability for the owning type.</li>
+ *   <li>For ONE_ON_ONE it replaces the owner's global weekly-hour source.</li>
+ *   <li>For multi-host kinds it constrains eligible participant slots without
+ *       extending any participant's personal availability.</li>
  *   <li>Reserves no time; blocks no other event type; creates no ownership.</li>
- *   <li>If no rows exist for the event type, no filtering is applied (the type sees
- *       the host's full availability).</li>
+ *   <li>INHERIT versus CUSTOM is explicit on {@link EventType}; therefore an empty
+ *       CUSTOM schedule means closed, while an empty INHERIT schedule follows defaults.</li>
  * </ul>
  *
  * Contrast with {@link GroupEventReservationWindow}, which is GROUP-only and DOES
  * block other event types (ownership), and with {@link AvailabilityRule}, which is
- * the host-global working-hours upper bound (keyed by user_id, not event type).
+ * the host-global default working hours (keyed by user_id, not event type).
  */
 @Getter
 @Setter
