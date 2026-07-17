@@ -239,7 +239,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
 
     // CAS increment confirmed_count; also flips OPEN→FULL when count reaches capacity.
     // Returns 1 if updated, 0 if capacity exhausted or session not found/wrong state.
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE event_sessions
                SET confirmed_count       = confirmed_count + 1,
@@ -255,7 +255,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
     int incrementConfirmedCount(@Param("id") UUID id);
 
     // CAS decrement confirmed_count; flips FULL→OPEN when a seat is freed.
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             UPDATE event_sessions
                SET confirmed_count       = confirmed_count - 1,

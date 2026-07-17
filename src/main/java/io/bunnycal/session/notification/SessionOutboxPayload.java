@@ -13,12 +13,16 @@ record SessionOutboxPayload(
         UUID sessionId,
         UUID registrationId,
         UUID hostId,
+        UUID eventTypeId,
         String hostUsername,
         String eventName,
         String eventSlug,
         Instant startTime,
         Instant endTime,
         int calendarSequence,
+        int confirmedCount,
+        int capacity,
+        boolean wasConfirmed,
 
         // REGISTRATION_CONFIRMED
         String newAttendeeEmail,
@@ -42,12 +46,16 @@ record SessionOutboxPayload(
         UUID sessionId = uuid(data, "sessionId");
         UUID registrationId = uuid(data, "registrationId");
         UUID hostId = uuid(data, "hostId");
+        UUID eventTypeId = uuid(data, "eventTypeId");
         String hostUsername = str(data, "hostUsername");
         String eventName = str(data, "eventName");
         String eventSlug = str(data, "eventSlug");
         Instant startTime = instant(data, "startTime");
         Instant endTime = instant(data, "endTime");
         int calendarSequence = intVal(data, "calendarSequence");
+        int confirmedCount = intVal(data, "confirmedCount");
+        int capacity = intVal(data, "capacity");
+        boolean wasConfirmed = boolVal(data, "wasConfirmed");
 
         String newAttendeeEmail = str(data, "guestEmail");
         String newAttendeeName = str(data, "guestName");
@@ -72,8 +80,9 @@ record SessionOutboxPayload(
             newAttendeeNotes = null;
         }
 
-        return new SessionOutboxPayload(sessionId, registrationId, hostId,
+        return new SessionOutboxPayload(sessionId, registrationId, hostId, eventTypeId,
                 hostUsername, eventName, eventSlug, startTime, endTime, calendarSequence,
+                confirmedCount, capacity, wasConfirmed,
                 newAttendeeEmail, newAttendeeName, newAttendeeNotes, capabilityToken, allConfirmed,
                 cancelledEmail, cancelledName, cancelledNotes, allAttendees);
     }
@@ -110,6 +119,12 @@ record SessionOutboxPayload(
             try { return Integer.parseInt(s); } catch (NumberFormatException ex) { return 0; }
         }
         return 0;
+    }
+
+    private static boolean boolVal(Map<String, Object> data, String key) {
+        Object v = data.get(key);
+        if (v instanceof Boolean b) return b;
+        return v != null && Boolean.parseBoolean(v.toString());
     }
 
     @SuppressWarnings("unchecked")

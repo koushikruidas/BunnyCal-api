@@ -1,6 +1,7 @@
 package io.bunnycal.availability.dto;
 
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.common.api.ForwardCompatibleRequest;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
@@ -25,7 +26,8 @@ public record CreateEventTypeRequest(
         ConferenceRequest conference,
         ProjectionDestinationRequest projectionDestination,
         EventKind kind,
-        Integer capacity
+        Integer capacity,
+        GroupHostNotificationMode groupHostNotificationMode
 ) implements ForwardCompatibleRequest {
     public CreateEventTypeRequest(
             String name,
@@ -42,7 +44,7 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, null, null, null, null, null);
+                slug, null, null, null, null, null, null);
     }
 
     public CreateEventTypeRequest(
@@ -63,7 +65,31 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, availabilityCalendars, conference, projectionDestination, null, null);
+                slug, availabilityCalendars, conference, projectionDestination, null, null, null);
+    }
+
+    /** Back-compatible constructor used by callers compiled before Group host notification settings. */
+    public CreateEventTypeRequest(
+            String name,
+            String description,
+            String location,
+            Integer durationMinutes,
+            Integer bufferBeforeMinutes,
+            Integer bufferAfterMinutes,
+            Integer slotIntervalMinutes,
+            Integer minNoticeMinutes,
+            Integer maxAdvanceDays,
+            Integer holdDurationMinutes,
+            String slug,
+            List<AvailabilityCalendarRequest> availabilityCalendars,
+            ConferenceRequest conference,
+            ProjectionDestinationRequest projectionDestination,
+            EventKind kind,
+            Integer capacity
+    ) {
+        this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
+                slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
+                slug, availabilityCalendars, conference, projectionDestination, kind, capacity, null);
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

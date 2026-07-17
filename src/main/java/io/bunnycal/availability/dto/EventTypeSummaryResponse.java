@@ -1,7 +1,9 @@
 package io.bunnycal.availability.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -13,21 +15,33 @@ public record EventTypeSummaryResponse(
         String link,
         EventKind kind,
         int capacity,
+        GroupHostNotificationMode groupHostNotificationMode,
         int durationMinutes,
         boolean published,
         boolean degraded,
         @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesStartDate,
         @JsonInclude(JsonInclude.Include.NON_NULL) LocalDate seriesEndDate,
         ConferenceResponse conference,
+        EventAvailabilityMode availabilityMode,
         /**
-         * The event's own availability-filter windows, empty when it simply inherits the
-         * host's availability. Carried on the summary so the dashboard can render each
+         * The event's own custom schedule windows, empty when it inherits defaults (or
+         * when an explicit custom schedule is closed). Carried on the summary so the dashboard can render each
          * card's bookable window without a request per card.
          */
-        List<AvailabilityWindowResponse> availabilityWindows
+        List<AvailabilityWindowResponse> availabilityWindows,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String description,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String location,
+        int bufferBeforeMinutes,
+        int bufferAfterMinutes,
+        int slotIntervalMinutes,
+        int minNoticeMinutes,
+        int maxAdvanceDays,
+        int holdDurationMinutes
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
-        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, 30, true, false, null, null, null, List.of());
+        this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, GroupHostNotificationMode.SMART_SUMMARY, 30, true, false,
+                null, null, null, EventAvailabilityMode.INHERIT, List.of(),
+                null, null, 0, 0, 30, 0, 30, 10);
     }
 
     public record AvailabilityWindowResponse(

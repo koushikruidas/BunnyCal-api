@@ -237,10 +237,12 @@ public class SessionService {
         outboxPublisher.publish("Session", sessionId, hostId,
                 new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CONFIRMED", 1,
                         new RegistrationConfirmedEvent(sessionId, registrationId, hostId,
+                                session.getEventTypeId(),
                                 ctx.hostUsername(), ctx.eventName(), ctx.eventSlug(),
                                 reg.getGuestEmail(), reg.getGuestName(), reg.getGuestNotes(),
                                 session.getStartTime(), session.getEndTime(),
                                 (int) updatedSession.getCalendarSequence(),
+                                updatedSession.getConfirmedCount(), updatedSession.getCapacity(),
                                 token,
                                 confirmedAttendees.stream()
                                         .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName(), r.getGuestNotes()))
@@ -301,12 +303,17 @@ public class SessionService {
         Instant startTimeForCancel = sessionForCancel != null ? sessionForCancel.getStartTime() : null;
         Instant endTimeForCancel = sessionForCancel != null ? sessionForCancel.getEndTime() : null;
         int calSeqForCancel = sessionForCancel != null ? (int) sessionForCancel.getCalendarSequence() : 0;
+        int confirmedCountForCancel = sessionForCancel != null ? sessionForCancel.getConfirmedCount() : 0;
+        int capacityForCancel = sessionForCancel != null ? sessionForCancel.getCapacity() : 0;
+        UUID eventTypeIdForCancel = sessionForCancel != null ? sessionForCancel.getEventTypeId() : null;
         outboxPublisher.publish("Session", sessionId, hostId,
                 new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CANCELLED", 1,
                         new RegistrationCancelledEvent(sessionId, registrationId, hostId,
+                                eventTypeIdForCancel,
                                 ctxCancel.hostUsername(), ctxCancel.eventName(), ctxCancel.eventSlug(),
                                 reg.getGuestEmail(), reg.getGuestName(), reg.getGuestNotes(), wasConfirmed,
-                                startTimeForCancel, endTimeForCancel, calSeqForCancel)));
+                                startTimeForCancel, endTimeForCancel, calSeqForCancel,
+                                confirmedCountForCancel, capacityForCancel)));
 
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
     }
@@ -416,19 +423,23 @@ public class SessionService {
                                   Instant startTime, Instant endTime) {}
 
     record RegistrationConfirmedEvent(UUID sessionId, UUID registrationId, UUID hostId,
+                                       UUID eventTypeId,
                                        String hostUsername, String eventName, String eventSlug,
                                        String guestEmail, String guestName, String guestNotes,
                                        Instant startTime, Instant endTime,
                                        int calendarSequence,
+                                       int confirmedCount, int capacity,
                                        String capabilityToken,
                                        List<AttendeeInfo> allConfirmedAttendees) {}
 
     record RegistrationCancelledEvent(UUID sessionId, UUID registrationId, UUID hostId,
+                                       UUID eventTypeId,
                                        String hostUsername, String eventName, String eventSlug,
                                        String guestEmail, String guestName, String guestNotes,
                                        boolean wasConfirmed,
                                        Instant startTime, Instant endTime,
-                                       int calendarSequence) {}
+                                       int calendarSequence,
+                                       int confirmedCount, int capacity) {}
 
     record SessionCancelledEvent(UUID sessionId, UUID hostId,
                                   String hostUsername, String eventName, String eventSlug,

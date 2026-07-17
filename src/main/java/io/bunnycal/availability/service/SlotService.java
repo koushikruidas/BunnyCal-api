@@ -20,6 +20,7 @@ import io.bunnycal.availability.engine.SlotGenerationEngine.SlotUtc;
 import io.bunnycal.availability.engine.TimeInterval;
 import io.bunnycal.availability.identity.SlotIdGenerator;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.engine.RecurrenceWindowFilter;
 import io.bunnycal.availability.repository.AvailabilityOverrideRepository;
@@ -277,17 +278,20 @@ public class SlotService {
         //     candidate source. The engine restricts availability to exactly these
         //     windows (restrictToFilter=true) -- host availability is only an upper
         //     bound, never the slot source. No windows on the day => no slots.
-        //   * Demand-driven (ONE_ON_ONE/ROUND_ROBIN/COLLECTIVE): the event's OWN
-        //     availability-filter windows narrow the host's availability.
+        //   * ONE_ON_ONE CUSTOM: the event's own windows replace global weekly hours.
+        //   * ROUND_ROBIN/COLLECTIVE CUSTOM: the event's own windows constrain the
+        //     participant union/intersection without overriding personal availability.
         //
-        // "Has a filter" is a property of the EVENT, not of the queried day. A demand-driven
-        // event with windows on Mon-Fri and none on Saturday is closed on Saturday -- that
+        // "Has a custom schedule" is an explicit property of the EVENT, not of the queried
+        // day. A demand-driven event with windows on Mon-Fri and none on Saturday is closed
+        // on Saturday -- that
         // absence IS the narrowing. Deciding restrictToFilter from the day's windows alone
         // would make "no windows today" indistinguishable from "no filter at all" and hand
         // back the host's full availability on exactly the days the host meant to exclude.
-        boolean hasEventFilter = eventType.getKind() != EventKind.GROUP
-                && eventAvailabilityWindowRepository.existsByEventTypeId(eventType.getId());
-        boolean restrictToFilter = eventType.getKind() == EventKind.GROUP || hasEventFilter;
+        boolean customSchedule = eventType.getKind() != EventKind.GROUP
+                && effectiveAvailabilityMode(eventType) == EventAvailabilityMode.CUSTOM;
+        boolean restrictToFilter = eventType.getKind() == EventKind.GROUP || customSchedule;
+        boolean customScheduleAsBase = eventType.getKind() == EventKind.ONE_ON_ONE && customSchedule;
         List<BookingWindow> eventAvailabilityFilter = eventType.getKind() == EventKind.GROUP
                 ? buildGroupReservationCandidateWindows(host, eventType, date)
                 : buildEventAvailabilityFilter(host, eventType, date);
@@ -317,7 +321,8 @@ public class SlotService {
                 eventAvailabilityFilter,
                 calendarBusy,
                 now,
-                restrictToFilter);
+                restrictToFilter,
+                customScheduleAsBase);
 
         // 6.8 Run engine.
         List<SlotUtc> slots = SlotGenerationEngine.compute(input);
@@ -334,6 +339,12 @@ public class SlotService {
         boolean cacheable = postFetchVersion == snapshotVersion;
 
         return new ComputeOutcome(slots, now, cacheable);
+    }
+
+    private static EventAvailabilityMode effectiveAvailabilityMode(EventType eventType) {
+        return eventType.getAvailabilityMode() == null
+                ? EventAvailabilityMode.INHERIT
+                : eventType.getAvailabilityMode();
     }
 
     /**
@@ -494,7 +505,8 @@ public class SlotService {
                 input.eventAvailabilityFilter(),
                 List.of(),
                 input.now(),
-                input.restrictToFilter()));
+                input.restrictToFilter(),
+                input.customScheduleAsBase()));
         // Candidate count before any busy filtering. If this number already excludes
         // the disputed window (e.g. 11:00 IST not present), the cause is rules/override
         // — not calendar busy aggregation.

@@ -26,18 +26,27 @@ public final class SlotGenerationEngine {
         Objects.requireNonNull(input.eventType(), "eventType is required");
         Objects.requireNonNull(input.now(), "now is required");
 
-        List<AvailabilityRule> safeRules = input.rules() == null ? List.of() : input.rules();
-        if (safeRules.isEmpty()) {
-            return List.of();
-        }
-
         validateEventType(input.eventType());
 
         ZonedDateTime dayStart = input.date().atStartOfDay(input.zoneId());
         ZonedDateTime dayEnd = dayStart.plusDays(1);
 
-        List<TimeInterval> baseIntervals = buildBaseIntervals(dayStart, dayEnd, safeRules);
-        List<TimeInterval> effectiveIntervals = applyOverride(dayStart, dayEnd, input.override(), baseIntervals);
+        List<TimeInterval> eventFilter = toBusyIntervals(
+                dayStart, dayEnd, input.eventAvailabilityFilter(), input.zoneId());
+        List<AvailabilityRule> safeRules = input.rules() == null ? List.of() : input.rules();
+        if (safeRules.isEmpty() && !input.customScheduleAsBase()) {
+            return List.of();
+        }
+
+        // ONE_ON_ONE CUSTOM mode deliberately replaces the owner's recurring weekly
+        // defaults. Date overrides/holidays still apply afterward, and all conflict,
+        // buffer, and notice checks below remain unchanged.
+        List<TimeInterval> baseIntervals = input.customScheduleAsBase()
+                ? eventFilter
+                : buildBaseIntervals(dayStart, dayEnd, safeRules);
+        List<TimeInterval> effectiveIntervals = input.customScheduleAsBase()
+                ? applyOverrideAsConstraint(dayStart, dayEnd, input.override(), baseIntervals)
+                : applyOverride(dayStart, dayEnd, input.override(), baseIntervals);
         List<TimeInterval> normalizedAvailability = IntervalUtils.normalize(effectiveIntervals);
 
         // Event Availability FILTER: clip the host's availability down to the event
@@ -54,9 +63,9 @@ public final class SlotGenerationEngine {
         //     bookable ONLY inside its reservation windows. An empty filter for the
         //     day therefore means NO availability -- host availability is an upper
         //     bound, never the slot source for GROUP.
-        List<TimeInterval> eventFilter = toBusyIntervals(
-                dayStart, dayEnd, input.eventAvailabilityFilter(), input.zoneId());
-        if (input.restrictToFilter()) {
+        if (input.customScheduleAsBase()) {
+            // Already selected as the base above; applying it again is redundant.
+        } else if (input.restrictToFilter()) {
             normalizedAvailability = eventFilter.isEmpty()
                     ? List.of()
                     : IntervalUtils.intersect(normalizedAvailability, eventFilter);
@@ -204,6 +213,27 @@ public final class SlotGenerationEngine {
         }
 
         return List.of(new TimeInterval(start, end));
+    }
+
+    /**
+     * Date overrides remain authoritative for a custom event schedule, but an
+     * "available" date override must not manufacture time outside that event's own
+     * operating hours. It therefore constrains the custom schedule by intersection;
+     * an unavailable override still closes the date completely.
+     */
+    private static List<TimeInterval> applyOverrideAsConstraint(
+            ZonedDateTime dayStart,
+            ZonedDateTime dayEnd,
+            AvailabilityOverride override,
+            List<TimeInterval> customIntervals) {
+        if (override == null) return customIntervals;
+        if (!override.isAvailable() || override.getStartTime() == null || override.getEndTime() == null) {
+            return List.of();
+        }
+        ZonedDateTime start = dayStart.with(override.getStartTime());
+        ZonedDateTime end = dayStart.with(override.getEndTime());
+        if (!start.isBefore(end)) return List.of();
+        return IntervalUtils.intersect(customIntervals, List.of(new TimeInterval(start, end)));
     }
 
     private static List<TimeInterval> toBusyIntervals(
@@ -391,7 +421,25 @@ public final class SlotGenerationEngine {
             List<BookingWindow> eventAvailabilityFilter,
             List<TimeInterval> calendarBusy,
             Instant now,
-            boolean restrictToFilter) {
+            boolean restrictToFilter,
+            boolean customScheduleAsBase) {
+
+        /** Back-compatible constructor for callers that only select empty-filter semantics. */
+        public SlotInput(
+                LocalDate date,
+                ZoneId zoneId,
+                List<AvailabilityRule> rules,
+                AvailabilityOverride override,
+                EventType eventType,
+                List<BookingWindow> bookings,
+                List<BookingWindow> sessionBlockers,
+                List<BookingWindow> eventAvailabilityFilter,
+                List<TimeInterval> calendarBusy,
+                Instant now,
+                boolean restrictToFilter) {
+            this(date, zoneId, rules, override, eventType, bookings, sessionBlockers,
+                    eventAvailabilityFilter, calendarBusy, now, restrictToFilter, false);
+        }
 
         /** Back-compatible constructor: demand-driven default (filter does not restrict). */
         public SlotInput(
@@ -406,7 +454,7 @@ public final class SlotGenerationEngine {
                 List<TimeInterval> calendarBusy,
                 Instant now) {
             this(date, zoneId, rules, override, eventType, bookings, sessionBlockers,
-                    eventAvailabilityFilter, calendarBusy, now, false);
+                    eventAvailabilityFilter, calendarBusy, now, false, false);
         }
     }
 }
