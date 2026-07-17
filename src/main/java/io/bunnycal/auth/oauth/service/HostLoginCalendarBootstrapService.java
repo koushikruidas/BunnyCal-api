@@ -6,6 +6,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.service.CalendarOAuthService;
 import io.bunnycal.calendar.service.MicrosoftCalendarOAuthService;
+import io.bunnycal.calendar.service.MissingRefreshTokenException;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Set;
@@ -45,28 +46,38 @@ public class HostLoginCalendarBootstrapService {
             return;
         }
         if (client == null || client.getAccessToken() == null) {
-            throw new IllegalArgumentException("Provider did not return an authorized calendar client");
+            throw new CalendarBootstrapUnavailableException(
+                    "Provider did not return an authorized calendar client");
         }
 
         OAuth2AccessToken accessToken = client.getAccessToken();
         requireCalendarScopes(registrationId, accessToken.getScopes());
+        // Google issues a refresh token only on a user's first consent; later logins send
+        // `prompt=select_account` and return none. That is normal, not a failure: the provider
+        // services carry the stored token forward once the token exchange has identified the
+        // external account. Rejecting a null here would preempt that and push healthy repeat
+        // logins into the onboarding reconnect notice.
         String refreshToken = client.getRefreshToken() == null
                 ? null
                 : client.getRefreshToken().getTokenValue();
         Instant expiresAt = accessToken.getExpiresAt();
-        if (refreshToken == null || refreshToken.isBlank()) {
-            throw new IllegalArgumentException("Provider did not return offline calendar access");
-        }
 
         OAuthTokenExchangeResult token = new OAuthTokenExchangeResult(
                 accessToken.getTokenValue(), refreshToken, expiresAt);
         CalendarOAuthService.ConnectedCalendar connected;
-        if ("google".equalsIgnoreCase(registrationId)) {
-            connected = googleOAuthService.connectAuthorizedUser(userId, token);
-        } else if ("microsoft".equalsIgnoreCase(registrationId)) {
-            connected = microsoftOAuthService.connectAuthorizedUser(userId, token);
-        } else {
-            throw new IllegalArgumentException("Unsupported host calendar provider: " + registrationId);
+        try {
+            if ("google".equalsIgnoreCase(registrationId)) {
+                connected = googleOAuthService.connectAuthorizedUser(userId, token);
+            } else if ("microsoft".equalsIgnoreCase(registrationId)) {
+                connected = microsoftOAuthService.connectAuthorizedUser(userId, token);
+            } else {
+                throw new IllegalArgumentException("Unsupported host calendar provider: " + registrationId);
+            }
+        } catch (MissingRefreshTokenException ex) {
+            // No token in the response and none stored for this account: the user has to re-consent.
+            // Expected and recoverable, so surface it as such rather than as a fault.
+            throw new CalendarBootstrapUnavailableException(
+                    "Provider did not return offline calendar access and none is stored");
         }
 
         if (connected.status() != CalendarConnectionStatus.ACTIVE) {
@@ -81,7 +92,7 @@ public class HostLoginCalendarBootstrapService {
         Set<String> granted = scopes == null ? Set.of() : scopes;
         if ("google".equalsIgnoreCase(registrationId)) {
             if (!granted.contains(GOOGLE_EVENTS) || !granted.contains(GOOGLE_READ)) {
-                throw new IllegalArgumentException("Google calendar permission was not granted");
+                throw new CalendarBootstrapUnavailableException("Google calendar permission was not granted");
             }
             return;
         }
@@ -91,7 +102,7 @@ public class HostLoginCalendarBootstrapService {
                     .anyMatch(scope -> scope.equals(MICROSOFT_READ_WRITE.toLowerCase(Locale.ROOT))
                             || scope.endsWith("/calendars.readwrite"));
             if (!canReadWrite) {
-                throw new IllegalArgumentException("Microsoft calendar permission was not granted");
+                throw new CalendarBootstrapUnavailableException("Microsoft calendar permission was not granted");
             }
             return;
         }

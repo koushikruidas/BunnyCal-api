@@ -1,5 +1,6 @@
 package io.bunnycal.auth.oauth.service;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -13,6 +14,7 @@ import io.bunnycal.calendar.domain.CalendarConnectionStatus;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.service.CalendarOAuthService;
 import io.bunnycal.calendar.service.MicrosoftCalendarOAuthService;
+import io.bunnycal.calendar.service.MissingRefreshTokenException;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
@@ -20,6 +22,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
@@ -112,11 +115,59 @@ class HostLoginCalendarBootstrapServiceTest {
 
         assertThatThrownBy(() -> service.bootstrapIfNeeded(
                 userId, "google", authorizedClient("google", Set.of("email", "profile"))))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(CalendarBootstrapUnavailableException.class)
                 .hasMessageContaining("permission was not granted");
 
         verify(googleOAuthService, never()).connectAuthorizedUser(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * Google returns a refresh token only on first consent. A repeat login must still bootstrap
+     * from the token already stored for that account instead of demanding re-consent.
+     */
+    @Test
+    void repeatLoginWithoutRefreshTokenStillBootstraps() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)).thenReturn(Optional.empty());
+        when(googleOAuthService.connectAuthorizedUser(
+                org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.any(OAuthTokenExchangeResult.class)))
+                .thenReturn(new CalendarOAuthService.ConnectedCalendar(
+                        connectionId, CalendarConnectionStatus.ACTIVE));
+
+        service.bootstrapIfNeeded(userId, "google", authorizedClientWithoutRefreshToken("google"));
+
+        ArgumentCaptor<OAuthTokenExchangeResult> token = ArgumentCaptor.forClass(OAuthTokenExchangeResult.class);
+        verify(googleOAuthService).connectAuthorizedUser(
+                org.mockito.ArgumentMatchers.eq(userId), token.capture());
+        // The null is passed through so the provider service can reuse the stored ciphertext.
+        assertThat(token.getValue().refreshToken()).isNull();
+        verify(onboardingService).configureCalendar(userId, connectionId);
+    }
+
+    /** No token in the response and none on record: the user genuinely has to re-consent. */
+    @Test
+    void repeatLoginWithNoStoredTokenAsksForReconnect() {
+        UUID userId = UUID.randomUUID();
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)).thenReturn(Optional.empty());
+        when(googleOAuthService.connectAuthorizedUser(
+                org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.any(OAuthTokenExchangeResult.class)))
+                .thenThrow(new MissingRefreshTokenException("Refresh token missing from provider response"));
+
+        assertThatThrownBy(() -> service.bootstrapIfNeeded(
+                userId, "google", authorizedClientWithoutRefreshToken("google")))
+                .isInstanceOf(CalendarBootstrapUnavailableException.class)
+                .hasMessageContaining("offline calendar access");
+    }
+
+    private static OAuth2AuthorizedClient authorizedClientWithoutRefreshToken(String registrationId) {
+        OAuth2AuthorizedClient full = authorizedClient(
+                registrationId, Set.of("email", "profile", GOOGLE_EVENTS, GOOGLE_READ));
+        return new OAuth2AuthorizedClient(
+                full.getClientRegistration(), full.getPrincipalName(), full.getAccessToken(), null);
     }
 
     private static OAuth2AuthorizedClient authorizedClient(String registrationId, Set<String> scopes) {
