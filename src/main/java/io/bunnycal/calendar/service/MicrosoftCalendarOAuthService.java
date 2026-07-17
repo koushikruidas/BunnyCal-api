@@ -104,6 +104,15 @@ public class MicrosoftCalendarOAuthService {
                 properties.getClientSecret(),
                 properties.getTenantId());
 
+        connectAuthorizedUser(userId, token);
+        return new CalendarOAuthService.OAuthCallbackResult(
+                payload.source(), payload.returnTo(), payload.bookingSessionId());
+    }
+
+    /** Reuses the full calendar-connection pipeline for the token issued during host sign-in. */
+    @Transactional
+    public CalendarOAuthService.ConnectedCalendar connectAuthorizedUser(
+            UUID userId, OAuthTokenExchangeResult token) {
         if (token.accessToken() == null || token.expiresAt() == null) {
             throw new IllegalArgumentException("Invalid token response from provider");
         }
@@ -192,7 +201,7 @@ public class MicrosoftCalendarOAuthService {
                 "calendar_connection_created hostId={} connectionId={} provider={} status={} scopes={} reauth={}",
                 userId, saved.getId(), MICROSOFT_PROVIDER, saved.getStatus(),
                 saved.getScopes() == null ? 0 : saved.getScopes().size(), existing.isPresent());
-        return new CalendarOAuthService.OAuthCallbackResult(payload.source(), payload.returnTo(), payload.bookingSessionId());
+        return new CalendarOAuthService.ConnectedCalendar(saved.getId(), saved.getStatus());
     }
 
     /** Aggregate Microsoft status across every account the user has connected. */

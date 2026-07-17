@@ -34,7 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @RequiredArgsConstructor
 public class OnboardingService {
-    public static final int CONTRACT_VERSION = 1;
+    public static final int CONTRACT_VERSION = 2;
 
     private final UserRepository userRepository;
     private final AvailabilityRuleRepository availabilityRuleRepository;
@@ -184,7 +184,8 @@ public class OnboardingService {
     private OnboardingStep resumeStep(User user, boolean availability, boolean calendar, boolean event) {
         if (user.getOnboardingUseCase() == null) return OnboardingStep.PURPOSE;
         if (!availability) return OnboardingStep.AVAILABILITY;
-        if (!calendar) return OnboardingStep.CALENDAR;
+        // Calendar authorization is part of host sign-in now. If it could not be initialized,
+        // FIRST_EVENT renders a compact recovery action instead of a standalone setup step.
         if (!event) return OnboardingStep.FIRST_EVENT;
         return OnboardingStep.SUCCESS;
     }

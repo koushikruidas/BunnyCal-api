@@ -72,7 +72,7 @@ public class User extends BaseEntity {
     /** Versioned first-run activation state. Existing accounts are backfilled as completed. */
     @Builder.Default
     @Column(name = "onboarding_version", nullable = false)
-    private int onboardingVersion = 1;
+    private int onboardingVersion = 2;
 
     @Builder.Default
     @Enumerated(EnumType.STRING)

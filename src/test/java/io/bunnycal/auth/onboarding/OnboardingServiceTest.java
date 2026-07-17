@@ -74,7 +74,7 @@ class OnboardingServiceTest {
     @Test
     void availabilityCannotBeConfirmedWithoutAStoredRule() {
         assertThatThrownBy(() -> service.update(userId,
-                new OnboardingUpdateRequest(OnboardingUseCase.CONSULTING, OnboardingStep.CALENDAR, true, false)))
+                new OnboardingUpdateRequest(OnboardingUseCase.CONSULTING, OnboardingStep.FIRST_EVENT, true, false)))
                 .isInstanceOf(CustomException.class)
                 .hasMessageContaining("Save at least one availability window");
     }
@@ -117,7 +117,7 @@ class OnboardingServiceTest {
         OnboardingStateResponse state = service.get(userId);
 
         assertThat(state.calendarReady()).isFalse();
-        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.CALENDAR);
+        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.FIRST_EVENT);
     }
 
     @Test

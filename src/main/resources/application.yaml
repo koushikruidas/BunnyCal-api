@@ -99,10 +99,7 @@ spring:
               - openid
               - profile
               - email
-              - offline_access
               - User.Read
-              - Calendars.ReadWrite
-              - Calendars.Read
         provider:
           microsoft:
             authorization-uri: https://login.microsoftonline.com/${MICROSOFT_TENANT_ID:common}/oauth2/v2.0/authorize
