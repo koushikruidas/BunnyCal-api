@@ -10,6 +10,7 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
+import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.UpdateEventTypeRequest;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeService;
@@ -99,12 +100,20 @@ class EventTypeUpdateIT {
         User owner = createUser("owner@test.com");
         EventType et = persistEventType(owner.getId(), "demo");
 
-        eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
-                "Renamed", null, null, 45, null, null, null, null, null, null, null));
+        EventTypeSummaryResponse response = eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
+                "Renamed", "Updated note", "Phone call", 45, 10, 15, 20, 180, 90, 12, null));
 
         EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
         assertThat(reloaded.getName()).isEqualTo("Renamed");
         assertThat(reloaded.getDuration()).isEqualTo(Duration.ofMinutes(45));
+        assertThat(response.description()).isEqualTo("Updated note");
+        assertThat(response.location()).isEqualTo("Phone call");
+        assertThat(response.bufferBeforeMinutes()).isEqualTo(10);
+        assertThat(response.bufferAfterMinutes()).isEqualTo(15);
+        assertThat(response.slotIntervalMinutes()).isEqualTo(20);
+        assertThat(response.minNoticeMinutes()).isEqualTo(180);
+        assertThat(response.maxAdvanceDays()).isEqualTo(90);
+        assertThat(response.holdDurationMinutes()).isEqualTo(12);
     }
 
     @Test

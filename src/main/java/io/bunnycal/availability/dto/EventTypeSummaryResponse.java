@@ -28,11 +28,20 @@ public record EventTypeSummaryResponse(
          * when an explicit custom schedule is closed). Carried on the summary so the dashboard can render each
          * card's bookable window without a request per card.
          */
-        List<AvailabilityWindowResponse> availabilityWindows
+        List<AvailabilityWindowResponse> availabilityWindows,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String description,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String location,
+        int bufferBeforeMinutes,
+        int bufferAfterMinutes,
+        int slotIntervalMinutes,
+        int minNoticeMinutes,
+        int maxAdvanceDays,
+        int holdDurationMinutes
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
         this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, GroupHostNotificationMode.SMART_SUMMARY, 30, true, false,
-                null, null, null, EventAvailabilityMode.INHERIT, List.of());
+                null, null, null, EventAvailabilityMode.INHERIT, List.of(),
+                null, null, 0, 0, 30, 0, 30, 10);
     }
 
     public record AvailabilityWindowResponse(

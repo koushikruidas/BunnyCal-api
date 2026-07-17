@@ -407,7 +407,15 @@ public class EventTypeService {
                 eventType.getKind() == EventKind.GROUP
                         ? EventAvailabilityMode.INHERIT
                         : effectiveAvailabilityMode(eventType),
-                summarizeAvailabilityWindows(eventType)
+                summarizeAvailabilityWindows(eventType),
+                eventType.getDescription(),
+                eventType.getLocation(),
+                (int) eventType.getBufferBefore().toMinutes(),
+                (int) eventType.getBufferAfter().toMinutes(),
+                (int) eventType.getSlotInterval().toMinutes(),
+                (int) eventType.getMinNotice().toMinutes(),
+                (int) eventType.getMaxAdvance().toDays(),
+                (int) eventType.getHoldDuration().toMinutes()
         );
     }
 
