@@ -8,6 +8,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.UpdateEventTypeRequest;
 import io.bunnycal.availability.repository.EventTypeRepository;
@@ -120,6 +121,34 @@ class EventTypeUpdateIT {
                 .isEqualTo(Duration.ofMinutes(30));
     }
 
+    @Test
+    void update_groupSettingsAcceptsMaximumCapacityAndNotificationMode() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistGroupEventType(owner.getId(), "workshop");
+
+        eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
+                null, null, null, null, null, null, null, null, null, null, null,
+                9_999, GroupHostNotificationMode.DAILY_DIGEST));
+
+        EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
+        assertThat(reloaded.getCapacity()).isEqualTo(9_999);
+        assertThat(reloaded.getGroupHostNotificationMode())
+                .isEqualTo(GroupHostNotificationMode.DAILY_DIGEST);
+    }
+
+    @Test
+    void update_groupSettingsRejectsCapacityAboveMaximum() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistGroupEventType(owner.getId(), "workshop");
+
+        assertThatThrownBy(() -> eventTypeService.update(owner.getId(), et.getId(),
+                new UpdateEventTypeRequest(
+                        null, null, null, null, null, null, null, null, null, null, null,
+                        10_000, null)))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("between 2 and 9999");
+    }
+
     // booking_ownership records where an event was ACTUALLY written, and ensureOwnership runs on
     // every outbox dispatch, not just at creation. It used to re-derive ownership from the event
     // type and throw if the two disagreed. Editing an event type must not disturb the ownership of
@@ -181,6 +210,25 @@ class EventTypeUpdateIT {
                 .holdDuration(Duration.ofMinutes(15))
                 .kind(EventKind.ONE_ON_ONE)
                 .capacity(1)
+                .conferencingProvider(io.bunnycal.common.enums.ConferencingProviderType.NONE)
+                .build());
+    }
+
+    private EventType persistGroupEventType(UUID ownerId, String slug) {
+        return eventTypeRepository.save(EventType.builder()
+                .userId(ownerId)
+                .name("Group Workshop")
+                .slug(slug)
+                .duration(Duration.ofMinutes(60))
+                .bufferBefore(Duration.ZERO)
+                .bufferAfter(Duration.ZERO)
+                .slotInterval(Duration.ofMinutes(60))
+                .minNotice(Duration.ZERO)
+                .maxAdvance(Duration.ofDays(30))
+                .holdDuration(Duration.ofMinutes(15))
+                .kind(EventKind.GROUP)
+                .capacity(500)
+                .groupHostNotificationMode(GroupHostNotificationMode.SMART_SUMMARY)
                 .conferencingProvider(io.bunnycal.common.enums.ConferencingProviderType.NONE)
                 .build());
     }

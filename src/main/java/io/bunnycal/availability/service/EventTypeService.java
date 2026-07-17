@@ -4,6 +4,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
 import io.bunnycal.availability.domain.EventKind;
+import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
@@ -36,6 +37,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class EventTypeService {
+
+    public static final int MAX_GROUP_CAPACITY = 9_999;
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;
     private final SessionUserResolver sessionUserResolver;
@@ -92,6 +95,11 @@ public class EventTypeService {
             entitlementService.require(userId, requiredFeature);
         }
         int capacity = request.capacity() != null ? request.capacity() : 1;
+        GroupHostNotificationMode groupHostNotificationMode = kind == EventKind.GROUP
+                ? request.groupHostNotificationMode() == null
+                    ? GroupHostNotificationMode.SMART_SUMMARY
+                    : request.groupHostNotificationMode()
+                : GroupHostNotificationMode.SMART_SUMMARY;
         // COLLECTIVE events start unpublished — no participants or readiness evaluation has
         // occurred yet. All other kinds start published (single-host, always ready).
         boolean startPublished = kind != EventKind.COLLECTIVE;
@@ -113,6 +121,7 @@ public class EventTypeService {
                 .holdDuration(Duration.ofMinutes(request.holdDurationMinutes()))
                 .kind(kind)
                 .capacity(capacity)
+                .groupHostNotificationMode(groupHostNotificationMode)
                 .published(startPublished)
                 .build();
 
@@ -141,7 +150,7 @@ public class EventTypeService {
         }
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
         User user = sessionUserResolver.require(actingUserId, "PUT:/api/event-types");
-        validateUpdate(request);
+        validateUpdate(eventType, request);
 
         EventTypeOrchestrationNormalizer.ConferencingConfig conferencing =
                 orchestrationNormalizer.normalizeForDraftMutation(eventType, request.conference());
@@ -156,6 +165,10 @@ public class EventTypeService {
         if (request.minNoticeMinutes() != null) eventType.setMinNotice(Duration.ofMinutes(request.minNoticeMinutes()));
         if (request.maxAdvanceDays() != null) eventType.setMaxAdvance(Duration.ofDays(request.maxAdvanceDays()));
         if (request.holdDurationMinutes() != null) eventType.setHoldDuration(Duration.ofMinutes(request.holdDurationMinutes()));
+        if (request.capacity() != null) eventType.setCapacity(request.capacity());
+        if (request.groupHostNotificationMode() != null) {
+            eventType.setGroupHostNotificationMode(request.groupHostNotificationMode());
+        }
 
         if (request.conference() != null) {
             eventType.setConferencingProvider(conferencing.providerType());
@@ -169,7 +182,7 @@ public class EventTypeService {
         return toSummary(saved, ensureUsername(user));
     }
 
-    private static void validateUpdate(UpdateEventTypeRequest request) {
+    private static void validateUpdate(EventType eventType, UpdateEventTypeRequest request) {
         if (request.name() != null && request.name().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "name must not be blank.");
         }
@@ -185,6 +198,17 @@ public class EventTypeService {
         if (isNegative(request.bufferBeforeMinutes()) || isNegative(request.bufferAfterMinutes())
                 || isNegative(request.minNoticeMinutes()) || isNegative(request.maxAdvanceDays())) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "buffer/notice/advance values must not be negative.");
+        }
+        if (request.capacity() != null) {
+            if (eventType.getKind() != EventKind.GROUP) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "capacity can only be changed for GROUP event types.");
+            }
+            validateGroupCapacity(request.capacity());
+        }
+        if (request.groupHostNotificationMode() != null && eventType.getKind() != EventKind.GROUP) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "groupHostNotificationMode is only supported for GROUP event types.");
         }
     }
 
@@ -303,8 +327,15 @@ public class EventTypeService {
         if (kind == EventKind.ONE_ON_ONE && capacity != 1) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "ONE_ON_ONE event types must have capacity=1.");
         }
-        if (kind == EventKind.GROUP && capacity < 2) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "GROUP event types must have capacity >= 2.");
+        if (kind == EventKind.GROUP) {
+            validateGroupCapacity(capacity);
+        }
+    }
+
+    private static void validateGroupCapacity(int capacity) {
+        if (capacity < 2 || capacity > MAX_GROUP_CAPACITY) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "GROUP event types must have capacity between 2 and " + MAX_GROUP_CAPACITY + ".");
         }
     }
 
@@ -364,6 +395,9 @@ public class EventTypeService {
                 "/public/" + username + "/" + eventType.getSlug(),
                 eventType.getKind(),
                 eventType.getCapacity(),
+                eventType.getGroupHostNotificationMode() == null
+                        ? GroupHostNotificationMode.SMART_SUMMARY
+                        : eventType.getGroupHostNotificationMode(),
                 (int) eventType.getDuration().toMinutes(),
                 eventType.isPublished(),
                 degraded,

@@ -109,6 +109,11 @@ public class EventType {
     private int capacity = 1;
 
     @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "group_host_notification_mode", nullable = false, length = 32)
+    private GroupHostNotificationMode groupHostNotificationMode = GroupHostNotificationMode.SMART_SUMMARY;
+
+    @Builder.Default
     @Column(name = "published", nullable = false)
     private boolean published = true;
 

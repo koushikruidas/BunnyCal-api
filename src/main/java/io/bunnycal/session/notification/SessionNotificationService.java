@@ -26,6 +26,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
+import org.springframework.lang.Nullable;
 
 @Service
 @ConditionalOnProperty(name = "booking.notifications.enabled", havingValue = "true")
@@ -40,6 +41,7 @@ public class SessionNotificationService {
     private final CalendarSyncJobRepository syncJobRepository;
     private final ObjectMapper objectMapper;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
+    private final GroupHostNotificationService groupHostNotificationService;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
@@ -56,7 +58,8 @@ public class SessionNotificationService {
                                        @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
                                        String calendarOrganizerEmail,
                                        @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}")
-                                       String calendarOrganizerName) {
+                                       String calendarOrganizerName,
+                                       @Nullable GroupHostNotificationService groupHostNotificationService) {
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
         this.manageLinkService = manageLinkService;
@@ -64,6 +67,7 @@ public class SessionNotificationService {
         this.syncJobRepository = syncJobRepository;
         this.objectMapper = objectMapper;
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
+        this.groupHostNotificationService = groupHostNotificationService;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
         this.calendarOrganizerName = calendarOrganizerName;
@@ -79,7 +83,7 @@ public class SessionNotificationService {
                                       String calendarOrganizerEmail,
                                       String calendarOrganizerName) {
         this(mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository, objectMapper,
-                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail, calendarOrganizerName);
+                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail, calendarOrganizerName, null);
     }
 
     public void handleSessionOutboxEvent(OutboxEvent event) {
@@ -134,6 +138,9 @@ public class SessionNotificationService {
         sendWithDedup(event, payload.newAttendeeEmail(), ics, "REQUEST",
                 "Meeting confirmed: " + payload.eventName(),
                 confirmedBody(payload.eventName(), manageLink, conferenceDetails, payload.newAttendeeNotes()));
+        if (groupHostNotificationService != null) {
+            groupHostNotificationService.handleRegistrationConfirmed(event, payload);
+        }
     }
 
     private void handleRegistrationCancelled(OutboxEvent event, SessionOutboxPayload payload) {
@@ -156,6 +163,9 @@ public class SessionNotificationService {
         sendWithDedup(event, payload.cancelledAttendeeEmail(), ics, "CANCEL",
                 "Meeting cancelled: " + payload.eventName(),
                 cancellationBody(payload.eventName(), payload.cancelledAttendeeNotes()));
+        if (groupHostNotificationService != null) {
+            groupHostNotificationService.handleRegistrationCancelled(event, payload);
+        }
     }
 
     private void handleSessionCancelled(OutboxEvent event, SessionOutboxPayload payload) {
