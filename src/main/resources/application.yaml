@@ -57,9 +57,20 @@ spring:
   mail:
     host: email-smtp.ap-south-1.amazonaws.com
     port: 587
-    username: ${AWS_SES_SMTP_USERNAME}
-    password: ${AWS_SES_SMTP_PASSWORD}
+    username: ${SPRING_MAIL_USERNAME:${AWS_SES_SMTP_USERNAME}}
+    password: ${SPRING_MAIL_PASSWORD:${AWS_SES_SMTP_PASSWORD}}
     properties:
+      # Submission servers on port 587 advertise STARTTLS before authentication. Keep these
+      # settings explicit: JavaMail otherwise attempts AUTH on the clear-text connection and
+      # providers reject it with "530 Must issue a STARTTLS command first".
+      #
+      # For an implicit-TLS endpoint on port 465 set STARTTLS_ENABLE/REQUIRED=false and
+      # SSL_ENABLE=true. Hostname verification remains enabled for either transport.
+      mail.smtp.auth: ${MAIL_SMTP_AUTH:true}
+      mail.smtp.starttls.enable: ${MAIL_SMTP_STARTTLS_ENABLE:true}
+      mail.smtp.starttls.required: ${MAIL_SMTP_STARTTLS_REQUIRED:true}
+      mail.smtp.ssl.enable: ${MAIL_SMTP_SSL_ENABLE:false}
+      mail.smtp.ssl.checkserveridentity: ${MAIL_SMTP_SSL_CHECK_SERVER_IDENTITY:true}
       # JavaMail defaults every one of these to infinity. Without them an unreachable SES holds
       # the sending thread on a TCP connect until the OS finally gives up (~45s observed), and
       # because the outbox dispatch runs inside a transaction that pins a Hikari connection for
