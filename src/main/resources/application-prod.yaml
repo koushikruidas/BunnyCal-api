@@ -49,10 +49,11 @@ spring:
     validate-on-migrate: true
 
   mail:
-    host: ${SPRING_MAIL_HOST:email-smtp.ap-south-1.amazonaws.com}
+    host: ${SPRING_MAIL_HOST}
     port: ${SPRING_MAIL_PORT:587}
-    username: ${AWS_SES_SMTP_USERNAME}
-    password: ${AWS_SES_SMTP_PASSWORD}
+    # Generic names support any SMTP provider; the AWS names remain as a compatibility fallback.
+    username: ${SPRING_MAIL_USERNAME:${AWS_SES_SMTP_USERNAME}}
+    password: ${SPRING_MAIL_PASSWORD:${AWS_SES_SMTP_PASSWORD}}
 
   # Spring Boot Docker Compose support is a local-dev convenience only. The
   # production runtime stack is orchestrated by the top-level docker-compose.yaml.
