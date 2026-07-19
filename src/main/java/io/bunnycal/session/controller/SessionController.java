@@ -3,6 +3,7 @@ package io.bunnycal.session.controller;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.session.domain.RegistrationStatus;
 import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.dto.SessionDetailResponse;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -73,6 +75,20 @@ public class SessionController {
         UUID requesterId = extractUserId(authentication);
         sessionQueryService.getSessionDetail(requesterId, sessionId);
         sessionService.cancelSession(sessionId, requesterId);
+        return ResponseEntity.ok(ApiResponse.success(sessionQueryService.getSessionDetail(requesterId, sessionId)));
+    }
+
+    @PostMapping("/sessions/{sessionId}/reschedule")
+    public ResponseEntity<ApiResponse<SessionDetailResponse>> rescheduleSession(
+            Authentication authentication,
+            @PathVariable UUID sessionId,
+            @RequestBody PublicRescheduleRequest request) {
+        if (request == null || request.startTime() == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
+        }
+        UUID requesterId = extractUserId(authentication);
+        sessionQueryService.getSessionDetail(requesterId, sessionId);
+        sessionService.rescheduleSession(sessionId, requesterId, request.startTime());
         return ResponseEntity.ok(ApiResponse.success(sessionQueryService.getSessionDetail(requesterId, sessionId)));
     }
 

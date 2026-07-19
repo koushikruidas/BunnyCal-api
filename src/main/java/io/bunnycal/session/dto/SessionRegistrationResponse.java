@@ -1,6 +1,8 @@
 package io.bunnycal.session.dto;
 
+import io.bunnycal.booking.dto.QuestionnaireResponse;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 public record SessionRegistrationResponse(
@@ -15,6 +17,7 @@ public record SessionRegistrationResponse(
         Instant createdAt,
         Instant updatedAt,
         long version,
-        boolean expired
+        boolean expired,
+        List<QuestionnaireResponse> questionnaireResponses
 ) {
 }

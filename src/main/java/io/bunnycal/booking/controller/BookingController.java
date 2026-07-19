@@ -5,6 +5,7 @@ import io.bunnycal.booking.dto.BookingDetailResponse;
 import io.bunnycal.booking.dto.BookingResponse;
 import io.bunnycal.booking.dto.CreateBookingRequest;
 import io.bunnycal.booking.dto.MeetingSummaryResponse;
+import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.idempotency.IdempotencyOutcome;
 import io.bunnycal.booking.idempotency.IdempotencyRoutes;
 import io.bunnycal.booking.idempotency.IdempotencyService;
@@ -42,6 +43,7 @@ public class BookingController {
 
     private static final String ROUTE = IdempotencyRoutes.API_BOOKINGS_CREATE;
     private static final String CANCEL_ROUTE = IdempotencyRoutes.API_BOOKINGS_CANCEL;
+    private static final String RESCHEDULE_ROUTE = IdempotencyRoutes.API_BOOKINGS_RESCHEDULE;
 
     private final BookingService bookingService;
     private final MeetingQueryService meetingQueryService;
@@ -151,6 +153,34 @@ public class BookingController {
                     Booking booking = bookingService.cancelBookingAsHost(bookingId, authenticatedUserId, null);
                     return new ResponseEnvelope<>(200, BookingResponse.from(booking));
                 });
+        return outcome.toResponseEntity(objectMapper);
+    }
+
+    @PostMapping("/{bookingId}/reschedule")
+    public ResponseEntity<?> reschedule(
+            Authentication authentication,
+            @PathVariable UUID bookingId,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody PublicRescheduleRequest request) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
+        }
+        if (request == null || request.startTime() == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
+        }
+        UUID authenticatedUserId = extractUserId(authentication);
+        String requestHash = RequestHasher.hash(Map.of(
+                "bookingId", bookingId,
+                "actorUserId", authenticatedUserId,
+                "startTime", request.startTime().toString()
+        ), objectMapper);
+        IdempotencyOutcome outcome = idempotencyService.execute(
+                idempotencyKey,
+                authenticatedUserId,
+                RESCHEDULE_ROUTE,
+                requestHash,
+                () -> new ResponseEnvelope<>(200, BookingResponse.from(
+                        bookingService.rescheduleBookingAsHost(bookingId, authenticatedUserId, request.startTime()))));
         return outcome.toResponseEntity(objectMapper);
     }
 

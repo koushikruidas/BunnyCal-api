@@ -370,6 +370,62 @@ public class SessionService {
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
     }
 
+    @Transactional
+    public void rescheduleSession(UUID sessionId, UUID hostId, Instant newStartTime) {
+        if (sessionId == null || hostId == null || newStartTime == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "sessionId, hostId and startTime are required.");
+        }
+        if (!newStartTime.isAfter(timeSource.now())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "The new meeting time must be in the future.");
+        }
+
+        EventSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Session not found."));
+        if (!hostId.equals(session.getHostId())) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
+        if (session.getStatus() == SessionStatus.CANCELLED || session.getStatus() == SessionStatus.COMPLETED) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Only active meetings can be rescheduled.");
+        }
+
+        Duration duration = Duration.between(session.getStartTime(), session.getEndTime());
+        if (duration.isZero() || duration.isNegative()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Meeting duration is invalid.");
+        }
+        Instant newEndTime = newStartTime.plus(duration);
+        sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(newStartTime.getEpochSecond()));
+        EventSession conflictingSession = sessionRepository
+                .findByHostIdAndEventTypeIdAndStartTime(hostId, session.getEventTypeId(), newStartTime)
+                .orElse(null);
+        if (conflictingSession != null && !sessionId.equals(conflictingSession.getId())) {
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "A group meeting already exists at this time.");
+        }
+
+        List<SessionRegistration> attendees = registrationRepository.findActiveBySessionId(sessionId);
+        session.setStartTime(newStartTime);
+        session.setEndTime(newEndTime);
+        session.setCalendarSequence(session.getCalendarSequence() + 1);
+        session.setVersion(session.getVersion() + 1);
+        EventSession updatedSession = sessionRepository.save(session);
+
+        SessionContext context = resolveContext(hostId, session.getEventTypeId());
+        outboxPublisher.publish("Session", sessionId, hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "SESSION_RESCHEDULED", 1,
+                        new SessionRescheduledEvent(sessionId, hostId,
+                                context.hostUsername(), context.eventName(), context.eventSlug(),
+                                updatedSession.getStartTime(), updatedSession.getEndTime(),
+                                (int) updatedSession.getCalendarSequence(),
+                                attendees.stream()
+                                        .map(registration -> new AttendeeInfo(
+                                                registration.getGuestEmail(),
+                                                registration.getGuestName(),
+                                                registration.getGuestNotes()))
+                                        .toList())));
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+    }
+
     /**
      * Expires a single PENDING registration. Called from RegistrationExpiryScheduler.
      * Does not decrement confirmed_count because PENDING registrations never increment it.
@@ -446,6 +502,12 @@ public class SessionService {
                                   Instant startTime, Instant endTime,
                                   int calendarSequence,
                                   List<AttendeeInfo> attendees) {}
+
+    record SessionRescheduledEvent(UUID sessionId, UUID hostId,
+                                   String hostUsername, String eventName, String eventSlug,
+                                   Instant startTime, Instant endTime,
+                                   int calendarSequence,
+                                   List<AttendeeInfo> attendees) {}
 
     public record AttendeeInfo(String email, String name, String notes) {}
 }
