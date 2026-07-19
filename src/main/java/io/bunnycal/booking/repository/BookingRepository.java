@@ -811,4 +811,53 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             """, nativeQuery = true)
     Optional<MeetingRow> findManageRowByEventType(@Param("bookingId") UUID bookingId,
                                                   @Param("eventTypeId") UUID eventTypeId);
+
+    interface BookingConflictRow {
+        UUID getId();
+        Instant getStartTime();
+        Instant getEndTime();
+        String getEventTypeName();
+    }
+
+    /**
+     * Confirmed bookings that occupy this user in the given interval.
+     *
+     * <p>Deliberately matches on <b>two</b> paths, unioned: bookings the user owns
+     * ({@code host_id}) and bookings they are an assigned participant of
+     * ({@code booking_assignments}). Round-robin assigns a single participant and collective
+     * assigns several, and in neither case is the participant guaranteed to be the booking's
+     * {@code host_id} — so a {@code host_id}-only predicate silently misses exactly the
+     * team-event conflicts this is here to catch.
+     *
+     * <p>Overlap is strict, so abutting bookings are not conflicts.
+     *
+     * <p><b>Partition note:</b> the class-level rule is that every read carries {@code host_id}
+     * for partition pruning. This query cannot: participant-side matches are spread across
+     * partitions by definition. It is bounded instead by a narrow time range and
+     * {@code status = 'CONFIRMED'}, and runs once per host reschedule rather than on a hot path.
+     */
+    @Query(value = """
+            SELECT b.id            AS id,
+                   b.start_time    AS startTime,
+                   b.end_time      AS endTime,
+                   et.name         AS eventTypeName
+              FROM bookings b
+              JOIN event_types et ON et.id = b.event_type_id
+             WHERE b.status = 'CONFIRMED'
+               AND b.start_time < :end
+               AND b.end_time   > :start
+               AND (
+                     b.host_id = :userId
+                     OR EXISTS (
+                         SELECT 1
+                           FROM booking_assignments ba
+                          WHERE ba.booking_id = b.id
+                            AND ba.participant_user_id = :userId
+                     )
+                   )
+             ORDER BY b.start_time
+            """, nativeQuery = true)
+    List<BookingConflictRow> findOverlappingForUser(@Param("userId") UUID userId,
+                                                    @Param("start") Instant start,
+                                                    @Param("end") Instant end);
 }

@@ -29,6 +29,11 @@ public enum ErrorCode {
             "Requested time overlaps an existing booking for this host."),
     SLOT_UNAVAILABLE("SLOT_UNAVAILABLE",
             "This time slot is no longer available."),
+    // The action is permitted but overlaps something we cannot judge for the user — currently
+    // busy time from a connected calendar, which may be focus time or a stale cached block.
+    // Clients retry with an explicit acknowledgement rather than treating this as a failure.
+    CONFIRMATION_REQUIRED("CONFIRMATION_REQUIRED",
+            "This action overlaps existing time on your calendar and needs confirmation."),
     GOOGLE_EVENT_CREATION_FAILED("GOOGLE_EVENT_CREATION_FAILED",
             "Unable to create Google Calendar event."),
     CALENDAR_SYNC_IN_PROGRESS("CALENDAR_SYNC_IN_PROGRESS",
@@ -39,6 +44,11 @@ public enum ErrorCode {
             "Booking is not in the expected state or version — concurrent update may have occurred."),
     CONFERENCING_DISCONNECT_NOT_SUPPORTED("CONFERENCING_DISCONNECT_NOT_SUPPORTED",
             "This conferencing provider cannot be disconnected on its own."),
+    /**
+     * @deprecated No longer thrown — group attendees can now move between sessions.
+     *     Retained so older clients that switch on this code still resolve it.
+     */
+    @Deprecated
     GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED("GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED",
             "Group event attendees cannot reschedule. Cancel your registration and re-book."),
     SESSION_CAPACITY_FULL("SESSION_CAPACITY_FULL",

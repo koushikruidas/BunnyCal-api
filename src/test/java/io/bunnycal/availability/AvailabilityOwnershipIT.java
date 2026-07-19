@@ -170,7 +170,7 @@ class AvailabilityOwnershipIT {
 
     private ReservationWindowRequest reservationWindow(DayOfWeek day, String start, String end) {
         return new ReservationWindowRequest(
-                io.bunnycal.availability.domain.ScheduleType.RECURRING,
+                null, io.bunnycal.availability.domain.ScheduleType.RECURRING,
                 LocalTime.parse(start), LocalTime.parse(end),
                 null, day,
                 io.bunnycal.availability.domain.RecurrenceFrequency.WEEKLY,

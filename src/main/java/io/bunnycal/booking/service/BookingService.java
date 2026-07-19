@@ -413,6 +413,47 @@ public class BookingService {
         return findBooking(bookingId, effectiveHostId);
     }
 
+    @Transactional
+    public Booking rescheduleBookingAsHost(UUID bookingId, UUID authenticatedHostId, Instant newStartTime) {
+        if (bookingId == null || authenticatedHostId == null || newStartTime == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "bookingId, authenticatedHostId and startTime are required.");
+        }
+        if (!newStartTime.isAfter(timeSource.now())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "The new meeting time must be in the future.");
+        }
+
+        var state = findState(bookingId);
+        Booking booking = bookingRepository.findAnyById(bookingId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+        boolean isAssignedParticipant = authenticatedHostId.equals(state.getHostId());
+        boolean isEventTypeOwner = eventTypeRepository != null
+                && eventTypeRepository.findById(booking.getEventTypeId())
+                        .map(eventType -> authenticatedHostId.equals(eventType.getUserId()))
+                        .orElse(false);
+        if (!isAssignedParticipant && !isEventTypeOwner) {
+            throw new CustomException(ErrorCode.FORBIDDEN, "You do not own this booking.");
+        }
+
+        BookingState current = parseBookingState(state.getStatus());
+        if (current.isTerminal()) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Only active meetings can be rescheduled.");
+        }
+
+        Duration duration = Duration.between(booking.getStartTime(), booking.getEndTime());
+        if (duration.isZero() || duration.isNegative()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Meeting duration is invalid.");
+        }
+        Instant newEndTime = newStartTime.plus(duration);
+        if (bookingRepository.countConflictsExcludingBooking(state.getHostId(), bookingId, newStartTime, newEndTime) > 0) {
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "The selected time conflicts with another meeting.");
+        }
+
+        updateBooking(bookingId, state.getHostId(), newStartTime, newEndTime, state.getVersion());
+        return findBooking(bookingId, state.getHostId());
+    }
+
     // ── State Transitions ────────────────────────────────────────────────────
 
     // DB result is the sole authority. Static check is a guardrail only

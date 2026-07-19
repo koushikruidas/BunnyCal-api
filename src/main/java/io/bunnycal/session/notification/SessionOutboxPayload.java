@@ -37,13 +37,25 @@ record SessionOutboxPayload(
         String cancelledAttendeeNotes,
 
         // SESSION_CANCELLED / SESSION_RESCHEDULED
-        List<AttendeeDto> allAttendees
+        List<AttendeeDto> allAttendees,
+
+        // REGISTRATION_MOVED — the guest left sourceSessionId for sessionId, whose
+        // previous time is carried so the notification can say what changed.
+        UUID sourceSessionId,
+        Instant previousStartTime,
+        Instant previousEndTime
 ) {
     record AttendeeDto(String email, String name, String notes) {}
 
     @SuppressWarnings("unchecked")
     static SessionOutboxPayload from(String eventType, Map<String, Object> data) {
+        // REGISTRATION_MOVED names the destination targetSessionId; every other event
+        // has a single sessionId. Both land in sessionId so downstream handling is
+        // uniform ("the session this event is about").
         UUID sessionId = uuid(data, "sessionId");
+        if (sessionId == null) {
+            sessionId = uuid(data, "targetSessionId");
+        }
         UUID registrationId = uuid(data, "registrationId");
         UUID hostId = uuid(data, "hostId");
         UUID eventTypeId = uuid(data, "eventTypeId");
@@ -80,11 +92,20 @@ record SessionOutboxPayload(
             newAttendeeNotes = null;
         }
 
+        // REGISTRATION_MOVED carries the target's attendee list under its own key so
+        // the source and target lists stay distinguishable in one payload.
+        if ("REGISTRATION_MOVED".equals(eventType) && allConfirmed.isEmpty()) {
+            allConfirmed = attendeeList(data, "targetAttendees");
+        }
+
         return new SessionOutboxPayload(sessionId, registrationId, hostId, eventTypeId,
                 hostUsername, eventName, eventSlug, startTime, endTime, calendarSequence,
                 confirmedCount, capacity, wasConfirmed,
                 newAttendeeEmail, newAttendeeName, newAttendeeNotes, capabilityToken, allConfirmed,
-                cancelledEmail, cancelledName, cancelledNotes, allAttendees);
+                cancelledEmail, cancelledName, cancelledNotes, allAttendees,
+                uuid(data, "sourceSessionId"),
+                instant(data, "previousStartTime"),
+                instant(data, "previousEndTime"));
     }
 
     private static UUID uuid(Map<String, Object> data, String key) {

@@ -26,13 +26,16 @@ class SessionControllerTest {
 
     @Mock private SessionQueryService sessionQueryService;
     @Mock private SessionService sessionService;
+    @Mock private io.bunnycal.session.service.SessionSeriesService sessionSeriesService;
+    @Mock private io.bunnycal.session.service.RescheduleConflictService rescheduleConflictService;
 
     private SessionController controller;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        controller = new SessionController(sessionQueryService, sessionService);
+        controller = new SessionController(sessionQueryService, sessionService, sessionSeriesService,
+                rescheduleConflictService);
     }
 
     @Test

@@ -270,10 +270,37 @@ class PublicGroupBookingIT extends AbstractSessionIT {
         assertThat(((Number) querySession(holdA.sessionId()).get("confirmed_count")).intValue()).isEqualTo(1);
     }
 
-    // ── reschedule rejection ──────────────────────────────────────────────────
+    // ── guest reschedule ──────────────────────────────────────────────────────
 
+    /**
+     * Group attendees can now move themselves between sessions. This previously threw
+     * GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED and told the guest to cancel and re-book,
+     * which released their seat before they had secured another.
+     */
     @Test
-    void groupReschedule_returns422WithGroupAttendeeRescheduleNotSupported() {
+    void groupReschedule_movesTheRegistrationToTheTargetSession() {
+        User host = createHostWithAvailability();
+        EventType et = createGroupType(host.getId(), 3);
+        PublicHoldResponse hold = hold(host.getUsername(), et.getSlug(), slotAt(9), "a@test.com", "A");
+        confirm(host.getUsername(), et.getSlug(), hold.bookingId());
+
+        var response = publicBookingService.reschedule(
+                host.getUsername(), et.getSlug(), hold.bookingId(),
+                new io.bunnycal.booking.dto.PublicRescheduleRequest(slotAt(10)), null);
+
+        assertThat(response.status()).isEqualTo("CONFIRMED");
+        assertThat(response.startTime()).isEqualTo(slotAt(10));
+        // Seat released at 09:00 and taken at 10:00.
+        assertThat(((Number) querySession(hold.sessionId()).get("confirmed_count")).intValue()).isZero();
+        assertThat(countRegistrationsByStatus(hold.sessionId(), "CONFIRMED")).isZero();
+    }
+
+    /**
+     * A PENDING hold reserves no seat, so there is nothing to transfer — moving one
+     * would decrement a seat the source session never took.
+     */
+    @Test
+    void groupReschedule_rejectsAnUnconfirmedHold() {
         User host = createHostWithAvailability();
         EventType et = createGroupType(host.getId(), 3);
         PublicHoldResponse hold = hold(host.getUsername(), et.getSlug(), slotAt(9), "a@test.com", "A");
@@ -283,7 +310,7 @@ class PublicGroupBookingIT extends AbstractSessionIT {
                 new io.bunnycal.booking.dto.PublicRescheduleRequest(slotAt(10)), null))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
-                        .isEqualTo(ErrorCode.GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED));
+                        .isEqualTo(ErrorCode.INVALID_STATE_TRANSITION));
     }
 
     // ── slot visibility via end-to-end flow ───────────────────────────────────

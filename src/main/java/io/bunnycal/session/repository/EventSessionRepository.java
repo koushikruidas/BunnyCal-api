@@ -237,6 +237,137 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """, nativeQuery = true)
     List<EventSession> findFutureActiveByHostId(@Param("hostId") UUID hostId, @Param("now") Instant now);
 
+    /**
+     * Future sessions with bookings that still track one of the given rules.
+     *
+     * <p>Used when a host edits or removes a reservation window: these are the sessions
+     * that cannot simply follow the new rule, because guests already hold seats at the
+     * old time. They get pinned rather than moved.
+     *
+     * <p>Only sessions with {@code confirmed_count > 0} qualify — an empty session has
+     * nobody to surprise, and under lazy materialization it usually does not exist as a
+     * row at all.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id         = :eventTypeId
+              AND reservation_window_id IN (:windowIds)
+              AND detached_at IS NULL
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findBookedFutureSessionsForWindows(@Param("eventTypeId") UUID eventTypeId,
+                                                           @Param("windowIds") List<UUID> windowIds,
+                                                           @Param("now") Instant now);
+
+    interface WindowBookedCountRow {
+        UUID getWindowId();
+        long getBookedCount();
+    }
+
+    /**
+     * Per-window count of booked future sessions still following their rule.
+     *
+     * <p>Same predicate as {@link #findBookedFutureSessionsForWindows} — deliberately, since
+     * this drives the warning shown <em>before</em> an edit and must count exactly the sessions
+     * that edit would pin. Windows with no booked sessions are absent rather than zero.
+     */
+    @Query(value = """
+            SELECT reservation_window_id AS windowId,
+                   COUNT(*)              AS bookedCount
+            FROM event_sessions
+            WHERE event_type_id         = :eventTypeId
+              AND reservation_window_id IS NOT NULL
+              AND detached_at IS NULL
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            GROUP BY reservation_window_id
+            """, nativeQuery = true)
+    List<WindowBookedCountRow> countBookedFutureSessionsByWindow(@Param("eventTypeId") UUID eventTypeId,
+                                                                 @Param("now") Instant now);
+
+    /**
+     * Future sessions left behind when their recurrence rule changed.
+     *
+     * <p>Restricted to {@code RULE_CHANGED} deliberately. {@code detached_at IS NOT NULL}
+     * alone conflates two opposite situations: the rule moved out from under the session,
+     * and the <em>host</em> deliberately moved the session ({@code HOST_RESCHEDULED}). Only
+     * the first is an unresolved consequence needing the host's attention — offering to move
+     * a host-rescheduled session back onto the rule proposes undoing a choice they just made,
+     * and the prompt would never clear because nothing about it is pending.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id = :eventTypeId
+              AND detached_reason = 'RULE_CHANGED'
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findPinnedFutureSessions(@Param("eventTypeId") UUID eventTypeId,
+                                                 @Param("now") Instant now);
+
+    /** Marks a session as no longer following its rule. Idempotent: only stamps once. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_sessions
+               SET detached_at     = :now,
+                   detached_reason = :reason,
+                   version         = version + 1
+             WHERE id = :id
+               AND detached_at IS NULL
+            """, nativeQuery = true)
+    int markDetached(@Param("id") UUID id, @Param("now") Instant now, @Param("reason") String reason);
+
+    /**
+     * Future sessions for an event type, whatever their lineage. Used by series cancel.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id = :eventTypeId
+              AND start_time >= :from
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findActiveSessionsFrom(@Param("eventTypeId") UUID eventTypeId,
+                                               @Param("from") Instant from);
+
+    /**
+     * Sessions past their end time that never reached a terminal state.
+     *
+     * <p>{@code COMPLETED} was previously unreachable — nothing transitioned a session
+     * once it finished — which left the terminal-state guards in reschedule and cancel
+     * as dead code.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE end_time < :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY end_time ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<EventSession> findSessionsDueForCompletion(@Param("now") Instant now, @Param("limit") int limit);
+
+    /** CAS a finished session to COMPLETED. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_sessions
+               SET status  = 'COMPLETED',
+                   version = version + 1
+             WHERE id       = :id
+               AND status  IN ('OPEN', 'FULL')
+               AND end_time < :now
+            """, nativeQuery = true)
+    int completeSession(@Param("id") UUID id, @Param("now") Instant now);
+
     // CAS increment confirmed_count; also flips OPEN→FULL when count reaches capacity.
     // Returns 1 if updated, 0 if capacity exhausted or session not found/wrong state.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
@@ -284,4 +415,29 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """,
             nativeQuery = true)
     int cancelSession(@Param("id") UUID id, @Param("hostId") UUID hostId);
+
+    /**
+     * Group sessions belonging to this host that overlap the given interval.
+     *
+     * <p>Overlap is strict ({@code start < :end AND end > :start}), so meetings that merely
+     * abut — 10:00-11:00 followed by 11:00-12:00 — are not conflicts. Spans every event type,
+     * not just one: the host cannot run two classes at once regardless of which event produced
+     * them. {@code excludeSessionId} keeps a session from conflicting with itself when the host
+     * reschedules it onto a time it already partly covers.
+     */
+    @Query(value = """
+            SELECT s.*
+              FROM event_sessions s
+             WHERE s.host_id = :hostId
+               AND s.status NOT IN ('CANCELLED', 'COMPLETED')
+               AND (:excludeSessionId IS NULL OR s.id <> :excludeSessionId)
+               AND s.start_time < :end
+               AND s.end_time   > :start
+             ORDER BY s.start_time
+            """,
+            nativeQuery = true)
+    List<EventSession> findOverlappingSessions(@Param("hostId") UUID hostId,
+                                               @Param("start") Instant start,
+                                               @Param("end") Instant end,
+                                               @Param("excludeSessionId") UUID excludeSessionId);
 }

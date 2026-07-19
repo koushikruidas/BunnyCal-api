@@ -7,6 +7,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.RecurrenceFrequency;
+import io.bunnycal.availability.domain.ReservationWindowStatus;
 import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.ReservationWindowRequest;
 import io.bunnycal.availability.dto.ReservationWindowResponse;
@@ -15,10 +16,17 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.session.service.SessionPinningService;
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,29 +45,45 @@ public class GroupEventReservationWindowService {
     private final EventTypeRepository eventTypeRepository;
     private final AvailabilityRuleRepository availabilityRuleRepository;
     private final SlotCacheVersionService slotCacheVersionService;
+    private final SessionPinningService sessionPinningService;
 
     public GroupEventReservationWindowService(
             GroupEventReservationWindowRepository windowRepository,
             EventTypeRepository eventTypeRepository,
             AvailabilityRuleRepository availabilityRuleRepository,
-            SlotCacheVersionService slotCacheVersionService) {
+            SlotCacheVersionService slotCacheVersionService,
+            SessionPinningService sessionPinningService) {
         this.windowRepository = windowRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.availabilityRuleRepository = availabilityRuleRepository;
         this.slotCacheVersionService = slotCacheVersionService;
+        this.sessionPinningService = sessionPinningService;
     }
 
     @Transactional(readOnly = true)
     public List<ReservationWindowResponse> list(UUID requesterId, UUID eventTypeId) {
         requireOwnedGroupEventType(requesterId, eventTypeId);
-        return windowRepository.findByEventTypeId(eventTypeId).stream()
+        return windowRepository.findByEventTypeIdAndStatus(eventTypeId, ReservationWindowStatus.ACTIVE).stream()
                 .map(ReservationWindowResponse::from)
                 .toList();
     }
 
     /**
-     * Replaces the full set of reservation windows for the event type (bulk upsert),
-     * mirroring {@link AvailabilityService#replaceRules} semantics.
+     * Replaces the full set of reservation windows for the event type.
+     *
+     * <p>Windows are matched by client-supplied {@code id}, never by content: a
+     * non-null id updates that row in place (preserving the identity that sessions
+     * link to), a null id inserts, and an existing window absent from the payload is
+     * retired. Content-based matching cannot work here — the fields that would form
+     * the key are exactly the fields a host edits.
+     *
+     * <p><b>Legacy compatibility.</b> If no submitted window carries an id, the caller
+     * is an old client and the original replace-all behavior is used. This is a
+     * whole-payload decision rather than per-window: a mix of ids and nulls is the
+     * ordinary new-client case ("my existing windows, plus a new one") and must take
+     * the id-keyed path, otherwise adding a window would look like a legacy payload
+     * and wipe out lineage. Remove this fallback one release after the frontend ships
+     * ids.
      */
     @Transactional
     public List<ReservationWindowResponse> replaceWindows(UUID requesterId,
@@ -73,18 +97,147 @@ public class GroupEventReservationWindowService {
         validateWithinHostAvailability(eventType.getUserId(), normalized);
         validateNoOverlapWithOtherGroupEvents(eventType.getUserId(), eventTypeId, normalized);
 
+        // An empty payload ("remove all my windows") carries no ids to inspect, but it
+        // is a perfectly ordinary new-client action and must still pin booked sessions
+        // before their rules retire. Only a *non-empty* payload where every window
+        // lacks an id identifies a legacy client, so empty takes the id-keyed path.
+        boolean legacyPayload = !normalized.isEmpty()
+                && normalized.stream().allMatch(w -> w.id() == null);
+        List<ReservationWindowResponse> saved = legacyPayload
+                ? replaceAllLegacy(eventTypeId, normalized)
+                : upsertByIdentity(eventTypeId, normalized);
+
+        slotCacheVersionService.bumpVersionAfterCommit(eventType.getUserId());
+        return saved;
+    }
+
+    /**
+     * Pre-lineage behavior: delete every window and re-insert. Destroys window ids,
+     * so any session lineage pointing at them is severed (the FK nulls it out).
+     * Retained only for clients that predate id-carrying payloads.
+     */
+    private List<ReservationWindowResponse> replaceAllLegacy(UUID eventTypeId,
+                                                             List<ReservationWindowRequest> normalized) {
+        // Only reached for a non-empty payload with no ids; the empty case is routed to
+        // the id-keyed path so it still pins and retires rather than deleting.
         windowRepository.deleteByEventTypeId(eventTypeId);
-
-        List<GroupEventReservationWindow> toSave = normalized.stream()
-                .map(w -> toEntity(eventTypeId, w))
+        return windowRepository.saveAll(
+                        normalized.stream().map(w -> toEntity(eventTypeId, w)).toList())
+                .stream()
+                .map(ReservationWindowResponse::from)
                 .toList();
+    }
 
+    /**
+     * Id-keyed upsert. Existing rows are mutated in place so their identity — and
+     * every session that links to it — survives the edit.
+     */
+    private List<ReservationWindowResponse> upsertByIdentity(UUID eventTypeId,
+                                                             List<ReservationWindowRequest> normalized) {
+        Map<UUID, GroupEventReservationWindow> existing =
+                windowRepository.findByEventTypeIdAndStatus(eventTypeId, ReservationWindowStatus.ACTIVE)
+                        .stream()
+                        .collect(Collectors.toMap(GroupEventReservationWindow::getId, w -> w));
+
+        Set<UUID> submittedIds = normalized.stream()
+                .map(ReservationWindowRequest::id)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        // Reject unknown or foreign ids outright rather than silently inserting them:
+        // a client sending an id it does not own is a bug, and quietly treating it as
+        // an insert would hide that while creating a duplicate window.
+        for (UUID id : submittedIds) {
+            if (!existing.containsKey(id)) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "Reservation window " + id + " does not belong to this event type.");
+            }
+        }
+
+        // Pin before mutating. A window whose schedule changes, or that is going away,
+        // may have booked sessions on the old schedule; those keep their time and their
+        // guests while future occurrences follow the new rule. Windows edited in ways
+        // that do not move any occurrence (a longer end date, say) are left alone so
+        // hosts are not shown spurious "these stayed behind" prompts.
+        List<UUID> windowsLosingOccurrences = new ArrayList<>();
+        for (ReservationWindowRequest w : normalized) {
+            if (w.id() != null && scheduleMoved(existing.get(w.id()), w)) {
+                windowsLosingOccurrences.add(w.id());
+            }
+        }
+        List<GroupEventReservationWindow> removed = existing.values().stream()
+                .filter(w -> !submittedIds.contains(w.getId()))
+                .toList();
+        removed.forEach(w -> windowsLosingOccurrences.add(w.getId()));
+        sessionPinningService.pinBookedSessions(eventTypeId, windowsLosingOccurrences);
+
+        List<GroupEventReservationWindow> toSave = new ArrayList<>();
+        for (ReservationWindowRequest w : normalized) {
+            toSave.add(w.id() == null
+                    ? toEntity(eventTypeId, w)
+                    : applyTo(existing.get(w.id()), w));
+        }
         List<ReservationWindowResponse> saved = windowRepository.saveAll(toSave).stream()
                 .map(ReservationWindowResponse::from)
                 .toList();
 
-        slotCacheVersionService.bumpVersionAfterCommit(eventType.getUserId());
+        retireWindows(removed);
+
         return saved;
+    }
+
+    /**
+     * True if the edit moves where occurrences land, as opposed to only changing how
+     * long the rule runs.
+     *
+     * <p>Day-of-week, time-of-day, schedule type and one-time date all relocate
+     * occurrences. Recurrence end bounds do not: extending or shortening a series leaves
+     * every remaining occurrence exactly where it was, so booked sessions keep tracking
+     * the rule. (Sessions past a shortened end bound are handled by the removal path,
+     * since their occurrences cease to exist.)
+     */
+    private boolean scheduleMoved(GroupEventReservationWindow before, ReservationWindowRequest after) {
+        if (before == null) {
+            return false;
+        }
+        return before.getScheduleType() != after.scheduleType()
+                || before.getDayOfWeek() != after.dayOfWeek()
+                || !java.util.Objects.equals(before.getStartTime(), after.startTime())
+                || !java.util.Objects.equals(before.getEndTime(), after.endTime())
+                || !java.util.Objects.equals(before.getEventDate(), after.eventDate())
+                || !java.util.Objects.equals(before.getStartDate(), after.startDate());
+    }
+
+    /**
+     * Retires windows instead of deleting them, so sessions they generated keep
+     * resolvable lineage. Storage is trivial next to the audit and support value.
+     */
+    private void retireWindows(List<GroupEventReservationWindow> windows) {
+        if (windows.isEmpty()) {
+            return;
+        }
+        Instant now = Instant.now();
+        for (GroupEventReservationWindow w : windows) {
+            w.setStatus(ReservationWindowStatus.RETIRED);
+            w.setRetiredAt(now);
+        }
+        windowRepository.saveAll(windows);
+    }
+
+    /** Copies submitted values onto an existing row, preserving its id. */
+    private GroupEventReservationWindow applyTo(GroupEventReservationWindow target,
+                                                 ReservationWindowRequest w) {
+        target.setScheduleType(w.scheduleType());
+        target.setStartTime(w.startTime());
+        target.setEndTime(w.endTime());
+        target.setEventDate(w.eventDate());
+        target.setDayOfWeek(w.dayOfWeek());
+        target.setFrequency(w.frequency());
+        target.setStartDate(w.startDate());
+        target.setRecurrenceEndMode(w.recurrenceEndMode());
+        target.setUntilDate(w.untilDate());
+        target.setOccurrenceCount(w.occurrenceCount());
+        return target;
     }
 
     // ── Normalization ──────────────────────────────────────────────────────────
@@ -103,6 +256,7 @@ public class GroupEventReservationWindowService {
             RecurrenceFrequency frequency = (scheduleType == ScheduleType.RECURRING && w.frequency() == null)
                     ? RecurrenceFrequency.WEEKLY : w.frequency();
             return new ReservationWindowRequest(
+                    w.id(), // identity must survive normalization
                     scheduleType,
                     w.startTime(),
                     w.endTime(),

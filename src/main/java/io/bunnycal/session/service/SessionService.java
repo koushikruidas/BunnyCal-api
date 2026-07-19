@@ -4,6 +4,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
@@ -17,6 +18,7 @@ import io.bunnycal.common.exception.RegistrationHoldActiveException;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.RegistrationStatus;
+import io.bunnycal.session.domain.SessionDetachedReason;
 import io.bunnycal.session.domain.SessionRegistration;
 import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.repository.EventSessionRepository;
@@ -44,6 +46,8 @@ public class SessionService {
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
     private final TimeSource timeSource;
+    private final SessionLineageResolver lineageResolver;
+    private final RescheduleConflictService rescheduleConflictService;
 
     public SessionService(EventSessionRepository sessionRepository,
                           SessionRegistrationRepository registrationRepository,
@@ -52,7 +56,9 @@ public class SessionService {
                           SlotCacheVersionService slotCacheVersionService,
                           UserRepository userRepository,
                           EventTypeRepository eventTypeRepository,
-                          TimeSource timeSource) {
+                          TimeSource timeSource,
+                          SessionLineageResolver lineageResolver,
+                          RescheduleConflictService rescheduleConflictService) {
         this.sessionRepository = sessionRepository;
         this.registrationRepository = registrationRepository;
         this.outboxPublisher = outboxPublisher;
@@ -61,6 +67,8 @@ public class SessionService {
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.timeSource = timeSource;
+        this.lineageResolver = lineageResolver;
+        this.rescheduleConflictService = rescheduleConflictService;
     }
 
     /**
@@ -254,6 +262,136 @@ public class SessionService {
     }
 
     /**
+     * Moves a confirmed registration from one session of an event type to another
+     * (guest self-reschedule).
+     *
+     * <p>Seat accounting reuses the same CAS primitives as join and cancel
+     * ({@code incrementConfirmedCount} / {@code decrementConfirmedCount}), so capacity
+     * enforcement and OPEN↔FULL flips behave identically on this path — there is no
+     * second implementation of seat math to drift.
+     *
+     * <p>Both slot locks are taken in ascending start-time order. Two guests swapping
+     * sessions in opposite directions would otherwise each hold the lock the other
+     * needs; a consistent global order makes that deadlock unreachable.
+     *
+     * @param rawToken the guest's capability token, or null when a host performs the move
+     */
+    @Transactional
+    public MoveRegistrationResult moveRegistration(UUID registrationId,
+                                                    UUID hostId,
+                                                    Instant targetStartTime,
+                                                    String rawToken) {
+        if (registrationId == null || hostId == null || targetStartTime == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "registrationId, hostId and startTime are required.");
+        }
+        if (rawToken != null && !tokenService.allows(registrationId, hostId, rawToken,
+                BookingActionType.MANAGE_BOOKING)) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
+
+        SessionRegistration reg = registrationRepository.findByIdAndHostId(registrationId, hostId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Registration not found."));
+        if (reg.getStatus() != RegistrationStatus.CONFIRMED) {
+            // PENDING holds reserve no seat and CANCELLED ones are terminal; neither
+            // can be moved. Re-booking is the correct path for both.
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Only confirmed registrations can be rescheduled.");
+        }
+
+        EventSession source = sessionRepository.findById(reg.getSessionId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Session not found."));
+        Instant now = timeSource.now();
+        if (!source.getStartTime().isAfter(now)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "This session has already started and can no longer be rescheduled.");
+        }
+        if (!targetStartTime.isAfter(now)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The new meeting time must be in the future.");
+        }
+        if (targetStartTime.equals(source.getStartTime())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The new meeting time matches the current one.");
+        }
+
+        EventType eventType = eventTypeRepository.findById(source.getEventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
+        Instant targetEndTime = targetStartTime.plus(
+                Duration.between(source.getStartTime(), source.getEndTime()));
+
+        // Lock both slots in a fixed order so opposing swaps cannot deadlock.
+        Instant firstLock = source.getStartTime().isBefore(targetStartTime)
+                ? source.getStartTime() : targetStartTime;
+        Instant secondLock = firstLock.equals(source.getStartTime())
+                ? targetStartTime : source.getStartTime();
+        sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(firstLock.getEpochSecond()));
+        sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(secondLock.getEpochSecond()));
+
+        // Materializes the target if this is its first booking — same path, and the
+        // same lineage stamping, as any other first registration.
+        EventSession target = findOrCreateSession(hostId, source.getEventTypeId(),
+                targetStartTime, targetEndTime, eventType.getCapacity());
+        if (target.getId().equals(source.getId())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The new meeting time matches the current one.");
+        }
+        if (target.getStatus() == SessionStatus.CANCELLED) {
+            throw new CustomException(ErrorCode.SESSION_CANCELLED);
+        }
+        if (target.getStatus() == SessionStatus.COMPLETED) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "That session has already finished.");
+        }
+
+        // Take the seat before releasing the old one: if the target is full we fail
+        // here with the guest still holding their original seat, rather than dropping
+        // them from both.
+        if (sessionRepository.incrementConfirmedCount(target.getId()) == 0) {
+            throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
+        }
+        if (registrationRepository.moveRegistration(
+                registrationId, reg.getVersion(), source.getId(), target.getId()) == 0) {
+            // Concurrently cancelled or moved; the transaction rolls back the seat we
+            // just took on the target.
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Registration was modified concurrently.");
+        }
+        sessionRepository.decrementConfirmedCount(source.getId());
+
+        EventSession updatedSource = sessionRepository.findById(source.getId()).orElse(source);
+        EventSession updatedTarget = sessionRepository.findById(target.getId()).orElse(target);
+        SessionContext ctx = resolveContext(hostId, source.getEventTypeId());
+
+        outboxPublisher.publish("Session", target.getId(), hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_MOVED", 1,
+                        new RegistrationMovedEvent(
+                                source.getId(), target.getId(), registrationId, hostId,
+                                source.getEventTypeId(),
+                                ctx.hostUsername(), ctx.eventName(), ctx.eventSlug(),
+                                reg.getGuestEmail(), reg.getGuestName(), reg.getGuestNotes(),
+                                source.getStartTime(), source.getEndTime(),
+                                updatedTarget.getStartTime(), updatedTarget.getEndTime(),
+                                (int) updatedSource.getCalendarSequence(),
+                                (int) updatedTarget.getCalendarSequence(),
+                                updatedTarget.getConfirmedCount(), updatedTarget.getCapacity(),
+                                attendeesOf(source.getId()), attendeesOf(target.getId()))));
+
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+
+        return new MoveRegistrationResult(source.getId(), target.getId(), registrationId,
+                updatedTarget.getStartTime(), updatedTarget.getEndTime());
+    }
+
+    private List<AttendeeInfo> attendeesOf(UUID sessionId) {
+        return registrationRepository.findConfirmedBySessionId(sessionId).stream()
+                .map(r -> new AttendeeInfo(r.getGuestEmail(), r.getGuestName(), r.getGuestNotes()))
+                .toList();
+    }
+
+    /**
      * Cancels a single registration (attendee self-cancel or host removal).
      * If the registration was CONFIRMED, the session's confirmed_count is decremented.
      */
@@ -370,6 +508,102 @@ public class SessionService {
         slotCacheVersionService.bumpVersionAfterCommit(hostId);
     }
 
+    @Transactional
+    public void rescheduleSession(UUID sessionId, UUID hostId, Instant newStartTime) {
+        rescheduleSession(sessionId, hostId, newStartTime, false);
+    }
+
+    /**
+     * @param acknowledgeExternalConflicts the host has seen and accepted busy time from their
+     *        connected calendar. Never suppresses hard conflicts — those are not acknowledgeable.
+     */
+    @Transactional
+    public void rescheduleSession(UUID sessionId, UUID hostId, Instant newStartTime,
+                                  boolean acknowledgeExternalConflicts) {
+        if (sessionId == null || hostId == null || newStartTime == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "sessionId, hostId and startTime are required.");
+        }
+        if (!newStartTime.isAfter(timeSource.now())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "The new meeting time must be in the future.");
+        }
+
+        EventSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Session not found."));
+        if (!hostId.equals(session.getHostId())) {
+            throw new CustomException(ErrorCode.FORBIDDEN);
+        }
+        if (session.getStatus() == SessionStatus.CANCELLED || session.getStatus() == SessionStatus.COMPLETED) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Only active meetings can be rescheduled.");
+        }
+
+        Duration duration = Duration.between(session.getStartTime(), session.getEndTime());
+        if (duration.isZero() || duration.isNegative()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Meeting duration is invalid.");
+        }
+        Instant newEndTime = newStartTime.plus(duration);
+        sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(newStartTime.getEpochSecond()));
+
+        // Re-checked inside the transaction rather than trusting the preview endpoint: a
+        // conflict can appear between the host seeing a clear dialog and confirming.
+        RescheduleConflicts conflicts =
+                rescheduleConflictService.check(hostId, newStartTime, newEndTime, sessionId);
+        if (conflicts.hasHard()) {
+            RescheduleConflicts.Conflict first = conflicts.hard().get(0);
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                    "This time overlaps \"" + first.title() + "\" on your calendar.");
+        }
+        if (conflicts.hasSoft() && !acknowledgeExternalConflicts) {
+            RescheduleConflicts.Conflict first = conflicts.soft().get(0);
+            throw new CustomException(ErrorCode.CONFIRMATION_REQUIRED,
+                    "This time overlaps \"" + first.title() + "\" on your connected calendar.");
+        }
+
+        // event_sessions_unique_slot is UNIQUE (host_id, event_type_id, start_time) with no
+        // status predicate, so even a CANCELLED session still owns its exact start time. The
+        // overlap check above deliberately ignores cancelled sessions — correct for "is the host
+        // busy?", but it would let this land as a raw constraint violation. Caught here so the
+        // host gets an explanation instead of a 500.
+        sessionRepository
+                .findByHostIdAndEventTypeIdAndStartTime(hostId, session.getEventTypeId(), newStartTime)
+                .filter(existing -> !sessionId.equals(existing.getId()))
+                .ifPresent(existing -> {
+                    throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                            "Another meeting for this event already starts at this exact time.");
+                });
+
+        List<SessionRegistration> attendees = registrationRepository.findActiveBySessionId(sessionId);
+        session.setStartTime(newStartTime);
+        session.setEndTime(newEndTime);
+        // The session no longer sits where its rule placed it. Lineage
+        // (reservationWindowId, scheduledOccurrenceStart) is write-once and stays
+        // pointing at the origin, so this move is recorded as a detachment rather
+        // than by rewriting where the occurrence came from.
+        if (session.getDetachedAt() == null) {
+            session.setDetachedAt(timeSource.now());
+            session.setDetachedReason(SessionDetachedReason.HOST_RESCHEDULED);
+        }
+        session.setCalendarSequence(session.getCalendarSequence() + 1);
+        session.setVersion(session.getVersion() + 1);
+        EventSession updatedSession = sessionRepository.save(session);
+
+        SessionContext context = resolveContext(hostId, session.getEventTypeId());
+        outboxPublisher.publish("Session", sessionId, hostId,
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "SESSION_RESCHEDULED", 1,
+                        new SessionRescheduledEvent(sessionId, hostId,
+                                context.hostUsername(), context.eventName(), context.eventSlug(),
+                                updatedSession.getStartTime(), updatedSession.getEndTime(),
+                                (int) updatedSession.getCalendarSequence(),
+                                attendees.stream()
+                                        .map(registration -> new AttendeeInfo(
+                                                registration.getGuestEmail(),
+                                                registration.getGuestName(),
+                                                registration.getGuestNotes()))
+                                        .toList())));
+        slotCacheVersionService.bumpVersionAfterCommit(hostId);
+    }
+
     /**
      * Expires a single PENDING registration. Called from RegistrationExpiryScheduler.
      * Does not decrement confirmed_count because PENDING registrations never increment it.
@@ -391,6 +625,14 @@ public class SessionService {
         return new SessionContext(username, name, slug);
     }
 
+    /**
+     * Finds the session for this slot, or materializes it.
+     *
+     * <p>This is the <b>only</b> place session lineage is written. Both
+     * {@code reservationWindowId} and {@code scheduledOccurrenceStart} are write-once
+     * (mapped {@code updatable = false}): they record where the occurrence came from,
+     * not where it currently sits, so later reschedules must leave them alone.
+     */
     private EventSession findOrCreateSession(UUID hostId, UUID eventTypeId,
                                               Instant startTime, Instant endTime,
                                               int capacity) {
@@ -398,6 +640,12 @@ public class SessionService {
                 .findByHostIdAndEventTypeIdAndStartTime(hostId, eventTypeId, startTime)
                 .orElseGet(() -> {
                     try {
+                        // Best-effort: a slot with no resolvable window (ad-hoc, or a
+                        // window retired between listing and booking) still books fine
+                        // with null lineage.
+                        UUID windowId = lineageResolver.resolveWindow(hostId, eventTypeId, startTime)
+                                .map(GroupEventReservationWindow::getId)
+                                .orElse(null);
                         return sessionRepository.save(EventSession.builder()
                                 .hostId(hostId)
                                 .eventTypeId(eventTypeId)
@@ -405,6 +653,10 @@ public class SessionService {
                                 .endTime(endTime)
                                 .capacity(capacity)
                                 .status(SessionStatus.OPEN)
+                                .reservationWindowId(windowId)
+                                // The rule placed the occurrence here; startTime may
+                                // later move, this never does.
+                                .scheduledOccurrenceStart(startTime)
                                 .build());
                     } catch (DataIntegrityViolationException e) {
                         // Concurrent insert won the race; re-select the winner.
@@ -446,6 +698,32 @@ public class SessionService {
                                   Instant startTime, Instant endTime,
                                   int calendarSequence,
                                   List<AttendeeInfo> attendees) {}
+
+    record SessionRescheduledEvent(UUID sessionId, UUID hostId,
+                                   String hostUsername, String eventName, String eventSlug,
+                                   Instant startTime, Instant endTime,
+                                   int calendarSequence,
+                                   List<AttendeeInfo> attendees) {}
+
+    /**
+     * A guest moved themselves from one session to another.
+     *
+     * <p>Carries both sides because two external calendar events change: the source
+     * loses an attendee and the target gains one. Each side has its own
+     * {@code calendarSequence} so iTIP updates are sequenced independently.
+     */
+    record RegistrationMovedEvent(UUID sourceSessionId, UUID targetSessionId,
+                                   UUID registrationId, UUID hostId,
+                                   UUID eventTypeId,
+                                   String hostUsername, String eventName, String eventSlug,
+                                   String guestEmail, String guestName, String guestNotes,
+                                   Instant previousStartTime, Instant previousEndTime,
+                                   Instant startTime, Instant endTime,
+                                   int sourceCalendarSequence,
+                                   int targetCalendarSequence,
+                                   int confirmedCount, int capacity,
+                                   List<AttendeeInfo> sourceAttendees,
+                                   List<AttendeeInfo> targetAttendees) {}
 
     public record AttendeeInfo(String email, String name, String notes) {}
 }

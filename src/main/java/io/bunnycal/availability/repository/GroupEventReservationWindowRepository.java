@@ -1,6 +1,7 @@
 package io.bunnycal.availability.repository;
 
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
+import io.bunnycal.availability.domain.ReservationWindowStatus;
 import io.bunnycal.availability.dto.GroupReservationBlockerResponse;
 import java.time.LocalDate;
 import java.util.List;
@@ -13,6 +14,14 @@ public interface GroupEventReservationWindowRepository
         extends JpaRepository<GroupEventReservationWindow, UUID> {
 
     List<GroupEventReservationWindow> findByEventTypeId(UUID eventTypeId);
+
+    /**
+     * Windows for an event type in a given lifecycle state. Callers that drive slot
+     * generation or editing want {@link ReservationWindowStatus#ACTIVE}; RETIRED rows
+     * exist only so pinned sessions keep resolvable lineage.
+     */
+    List<GroupEventReservationWindow> findByEventTypeIdAndStatus(UUID eventTypeId,
+                                                                 ReservationWindowStatus status);
 
     void deleteByEventTypeId(UUID eventTypeId);
 
@@ -31,6 +40,7 @@ public interface GroupEventReservationWindowRepository
             JOIN event_types et ON et.id = w.event_type_id
             WHERE w.event_type_id = :eventTypeId
               AND et.deleted_at IS NULL
+              AND w.status = 'ACTIVE'
               AND (
                 (w.schedule_type = 'ONE_TIME'   AND w.event_date  = :date)
                 OR
@@ -60,6 +70,7 @@ public interface GroupEventReservationWindowRepository
             WHERE et.user_id       = :hostId
               AND w.event_type_id <> :eventTypeId
               AND et.deleted_at IS NULL
+              AND w.status = 'ACTIVE'
               AND (
                 (w.schedule_type = 'ONE_TIME'   AND w.event_date  = :date)
                 OR
@@ -83,6 +94,7 @@ public interface GroupEventReservationWindowRepository
             WHERE et.user_id       = :hostId
               AND w.event_type_id <> :eventTypeId
               AND et.deleted_at IS NULL
+              AND w.status = 'ACTIVE'
             """, nativeQuery = true)
     List<GroupEventReservationWindow> findWindowsOwnedByOtherEventTypes(
             @Param("hostId") UUID hostId,
@@ -116,6 +128,7 @@ public interface GroupEventReservationWindowRepository
             JOIN EventType et ON et.id = w.eventTypeId
             WHERE et.userId = :hostId
               AND et.deletedAt IS NULL
+              AND w.status = io.bunnycal.availability.domain.ReservationWindowStatus.ACTIVE
             ORDER BY w.dayOfWeek, w.startTime
             """)
     List<GroupReservationBlockerResponse> findAllWindowsWithEventNameByHost(@Param("hostId") UUID hostId);

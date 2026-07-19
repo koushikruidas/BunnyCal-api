@@ -66,7 +66,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
     /** RECURRING window with NONE end mode (backward-compatible style). */
     private ReservationWindowRequest recurringWindow(DayOfWeek day, String start, String end) {
         return new ReservationWindowRequest(
-                ScheduleType.RECURRING, LocalTime.parse(start), LocalTime.parse(end),
+                null, ScheduleType.RECURRING, LocalTime.parse(start), LocalTime.parse(end),
                 null, day, RecurrenceFrequency.WEEKLY,
                 LocalDate.of(2026, 8, 3), RecurrenceEndMode.NONE, null, null);
     }
@@ -74,7 +74,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
     /** ONE_TIME window on a given date. */
     private ReservationWindowRequest oneTimeWindow(LocalDate date, String start, String end) {
         return new ReservationWindowRequest(
-                ScheduleType.ONE_TIME, LocalTime.parse(start), LocalTime.parse(end),
+                null, ScheduleType.ONE_TIME, LocalTime.parse(start), LocalTime.parse(end),
                 date, null, null, null, null, null, null);
     }
 
@@ -227,7 +227,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         // eventDate is null — should fail validation
         ReservationWindowRequest badRequest = new ReservationWindowRequest(
-                ScheduleType.ONE_TIME, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, ScheduleType.ONE_TIME, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
                 null, null, null, null, null, null, null);
 
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
@@ -246,7 +246,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
         // startDate is null — should fail validation
         ReservationWindowRequest badRequest = new ReservationWindowRequest(
-                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
                 null, DayOfWeek.WEDNESDAY, RecurrenceFrequency.WEEKLY,
                 null, RecurrenceEndMode.NONE, null, null);
 
@@ -266,7 +266,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
         LocalDate untilDate = LocalDate.of(2026, 7, 1); // before startDate
 
         ReservationWindowRequest badRequest = new ReservationWindowRequest(
-                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
                 null, DayOfWeek.MONDAY, RecurrenceFrequency.WEEKLY,
                 startDate, RecurrenceEndMode.UNTIL_DATE, untilDate, null);
 
@@ -283,7 +283,7 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
         EventType group = groupType(host.getId());
 
         ReservationWindowRequest badRequest = new ReservationWindowRequest(
-                ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
                 null, DayOfWeek.MONDAY, RecurrenceFrequency.WEEKLY,
                 LocalDate.of(2026, 8, 3), RecurrenceEndMode.OCCURRENCE_COUNT, null, 0);
 

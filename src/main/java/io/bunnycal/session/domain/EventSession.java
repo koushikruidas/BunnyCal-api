@@ -71,4 +71,47 @@ public class EventSession extends BaseEntity {
     @Builder.Default
     @Column(name = "terminal_intent_epoch", nullable = false)
     private long terminalIntentEpoch = 0L;
+
+    /**
+     * The reservation window that generated this session.
+     *
+     * <p><b>Write-once.</b> Set exactly once, when the session is first materialized
+     * in {@code SessionService.findOrCreateSession}. It records the rule that
+     * <em>created</em> the occurrence, not the rule that currently governs it — a
+     * session moved three times still traces back to its origin. Rescheduling and
+     * rule edits must never rewrite it.
+     *
+     * <p>Null for sessions predating lineage tracking and for ad-hoc sessions the
+     * host created directly, which never had a generating rule.
+     */
+    @Column(name = "reservation_window_id", updatable = false)
+    private UUID reservationWindowId;
+
+    /**
+     * Where the recurrence rule originally placed this occurrence.
+     *
+     * <p><b>Write-once.</b> {@link #startTime} is where the session actually is and
+     * moves whenever the host reschedules; this is where the rule said it should be
+     * and never changes. Keeping both means "which Monday was this?" is answerable
+     * directly rather than by replaying reschedule history.
+     *
+     * <p>Null under the same conditions as {@link #reservationWindowId}.
+     */
+    @Column(name = "scheduled_occurrence_start", updatable = false)
+    private Instant scheduledOccurrenceStart;
+
+    /**
+     * When this session stopped following its rule's schedule. Null while the session
+     * still tracks the recurrence rule.
+     */
+    @Column(name = "detached_at")
+    private Instant detachedAt;
+
+    /**
+     * Why this session detached. Always set together with {@link #detachedAt}
+     * (enforced by a DB check constraint).
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "detached_reason", length = 32)
+    private SessionDetachedReason detachedReason;
 }

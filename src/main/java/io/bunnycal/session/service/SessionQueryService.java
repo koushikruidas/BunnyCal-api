@@ -2,9 +2,12 @@ package io.bunnycal.session.service;
 
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.dto.QuestionnaireResponse;
+import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
 import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.dto.SessionDetailResponse;
 import io.bunnycal.session.dto.SessionPageResponse;
@@ -19,8 +22,11 @@ import io.bunnycal.sync.state.SyncJobStatus;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,17 +40,23 @@ public class SessionQueryService {
     private final EventSessionRepository sessionRepository;
     private final SessionRegistrationRepository registrationRepository;
     private final CalendarSyncJobRepository syncJobRepository;
+    private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
+    private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final TimeSource timeSource;
 
     public SessionQueryService(EventTypeRepository eventTypeRepository,
                                EventSessionRepository sessionRepository,
                                SessionRegistrationRepository registrationRepository,
                                CalendarSyncJobRepository syncJobRepository,
+                               BookingQuestionAnswerRepository bookingQuestionAnswerRepository,
+                               BookingSubmissionFormatter bookingSubmissionFormatter,
                                TimeSource timeSource) {
         this.eventTypeRepository = eventTypeRepository;
         this.sessionRepository = sessionRepository;
         this.registrationRepository = registrationRepository;
         this.syncJobRepository = syncJobRepository;
+        this.bookingQuestionAnswerRepository = bookingQuestionAnswerRepository;
+        this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.timeSource = timeSource;
     }
 
@@ -99,8 +111,17 @@ public class SessionQueryService {
                 timeSource.now(),
                 safeLimit + 1);
 
+        List<SessionRegistrationRepository.SessionRegistrationRow> pageRows = rows.stream().limit(safeLimit).toList();
+        Map<UUID, List<QuestionnaireResponse>> responsesByRegistration = questionnaireResponsesByRegistration(
+                requesterId,
+                pageRows.stream().map(SessionRegistrationRepository.SessionRegistrationRow::getRegistrationId).toList());
+
         return new SessionRegistrationPageResponse(
-                rows.stream().limit(safeLimit).map(this::toRegistration).toList(),
+                pageRows.stream()
+                        .map(row -> toRegistration(
+                                row,
+                                responsesByRegistration.getOrDefault(row.getRegistrationId(), List.of())))
+                        .toList(),
                 nextRegistrationCursor(rows, safeLimit),
                 rows.size() > safeLimit);
     }
@@ -179,7 +200,21 @@ public class SessionQueryService {
                 toSyncStatus(row));
     }
 
-    private SessionRegistrationResponse toRegistration(SessionRegistrationRepository.SessionRegistrationRow row) {
+    private Map<UUID, List<QuestionnaireResponse>> questionnaireResponsesByRegistration(UUID hostId,
+                                                                                          List<UUID> registrationIds) {
+        if (registrationIds.isEmpty()) {
+            return Map.of();
+        }
+        return bookingQuestionAnswerRepository.findByBookingIdInAndHostId(registrationIds, hostId).stream()
+                .collect(Collectors.groupingBy(
+                        answer -> answer.getBookingId(),
+                        Collectors.collectingAndThen(
+                                Collectors.toList(),
+                                answers -> bookingSubmissionFormatter.toResponses(answers))));
+    }
+
+    private SessionRegistrationResponse toRegistration(SessionRegistrationRepository.SessionRegistrationRow row,
+                                                         List<QuestionnaireResponse> questionnaireResponses) {
         return new SessionRegistrationResponse(
                 row.getRegistrationId(),
                 row.getSessionId(),
@@ -192,7 +227,8 @@ public class SessionQueryService {
                 row.getCreatedAt(),
                 row.getUpdatedAt(),
                 row.getVersion() == null ? 0L : row.getVersion(),
-                Boolean.TRUE.equals(row.getExpired()));
+                Boolean.TRUE.equals(row.getExpired()),
+                questionnaireResponses == null ? Collections.emptyList() : questionnaireResponses);
     }
 
     private SessionSyncStatusResponse toSyncStatus(EventSessionRepository.SessionSummaryRow row) {

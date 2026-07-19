@@ -27,6 +27,8 @@ import io.bunnycal.sync.invariants.LineageContext;
 import io.bunnycal.sync.invariants.SyncInvariantMonitor;
 import io.bunnycal.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.bunnycal.common.exception.CustomException;
+import java.time.Instant;
 import java.util.UUID;
 import org.springframework.lang.Nullable;
 import org.slf4j.Logger;
@@ -58,6 +60,8 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
     private final SessionNotificationService sessionNotificationService;
     @Nullable
     private final SessionSyncWorker sessionSyncWorker;
+    /** Lazy: SessionService publishes to the outbox, so eager injection would cycle. */
+    private final org.springframework.beans.factory.ObjectProvider<io.bunnycal.session.service.SessionService> sessionServiceProvider;
     @Nullable
     private final TeamInvitationNotificationService teamInvitationNotificationService;
     @Nullable
@@ -82,6 +86,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
                                         @Nullable BookingNotificationService bookingNotificationService,
                                         @Nullable SessionNotificationService sessionNotificationService,
                                         @Nullable SessionSyncWorker sessionSyncWorker,
+                                        org.springframework.beans.factory.ObjectProvider<io.bunnycal.session.service.SessionService> sessionServiceProvider,
                                         @Nullable TeamInvitationNotificationService teamInvitationNotificationService,
                                         @Nullable ParticipantSetupRequestNotificationService setupRequestNotificationService,
                                         @Nullable EventTypeLifecycleNotificationService eventTypeLifecycleNotificationService,
@@ -101,6 +106,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         this.bookingNotificationService = bookingNotificationService;
         this.sessionNotificationService = sessionNotificationService;
         this.sessionSyncWorker = sessionSyncWorker;
+        this.sessionServiceProvider = sessionServiceProvider;
         this.teamInvitationNotificationService = teamInvitationNotificationService;
         this.setupRequestNotificationService = setupRequestNotificationService;
         this.eventTypeLifecycleNotificationService = eventTypeLifecycleNotificationService;
@@ -161,10 +167,26 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
 
         // Session aggregate: route to session notification + session sync job creation.
         if (SESSION_AGGREGATE.equals(event != null ? event.getAggregateType() : null)) {
+            // A queued bulk move: perform the move itself here, then let the resulting
+            // SESSION_RESCHEDULED event drive sync and notifications through the normal
+            // path. Failures (target slot taken) stay isolated to this one session.
+            if ("SESSION_MOVE_REQUESTED".equals(event.getEventType())) {
+                applyQueuedSessionMove(event);
+                return;
+            }
             UUID sessionSyncJobId = createSessionSyncJobIfNeeded(event);
             if ("REGISTRATION_CONFIRMED".equals(event.getEventType())) {
                 ensureSessionConfirmationNotificationReady(event, sessionSyncJobId);
             } else {
+                // A move changes two calendar events: the aggregate id covers the
+                // target (attendee added), so the source (attendee removed) needs its
+                // own sync job or it keeps showing a guest who left.
+                if ("REGISTRATION_MOVED".equals(event.getEventType())) {
+                    UUID sourceJobId = createSourceSessionSyncJobForMove(event);
+                    if (sessionSyncWorker != null && sourceJobId != null) {
+                        sessionSyncWorker.processJob(sourceJobId);
+                    }
+                }
                 if (sessionSyncWorker != null && sessionSyncJobId != null) {
                     sessionSyncWorker.processJob(sessionSyncJobId);
                 }
@@ -309,6 +331,105 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         return null;
     }
 
+    /**
+     * Executes one queued session move from a bulk "move pinned sessions" request.
+     *
+     * <p>A conflict at the target is an expected outcome, not a delivery failure: the
+     * host resolves it from the pinned list. Rethrowing would send the event through the
+     * retry/DLQ machinery for something no retry can fix, so it is logged and swallowed.
+     */
+    private void applyQueuedSessionMove(OutboxEvent event) {
+        UUID sessionId = event.getAggregateId();
+        UUID hostId = event.getPartitionKey();
+        Instant target = extractPayloadInstant(event, "targetStartTime");
+        if (sessionId == null || hostId == null || target == null) {
+            log.warn("outbox.session_move_skipped_incomplete_payload eventId={}", event.getId());
+            return;
+        }
+        try {
+            sessionServiceProvider.getObject().rescheduleSession(sessionId, hostId, target);
+            log.info("outbox.session_move_applied sessionId={} target={}", sessionId, target);
+        } catch (CustomException ex) {
+            log.warn("outbox.session_move_failed sessionId={} target={} reason={}",
+                    sessionId, target, ex.getMessage());
+        }
+    }
+
+    @Nullable
+    private Instant extractPayloadInstant(OutboxEvent event, String key) {
+        try {
+            String raw = event.getPayload();
+            if (raw == null || raw.isBlank()) return null;
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(raw);
+            com.fasterxml.jackson.databind.JsonNode data = root.has("payload")
+                    ? root.get("payload") : root.get("data");
+            if (data == null || !data.hasNonNull(key)) return null;
+            return Instant.parse(data.get(key).asText());
+        } catch (Exception ex) {
+            log.warn("outbox.payload_instant_parse_failed key={} eventId={}", key,
+                    event != null ? event.getId() : null);
+            return null;
+        }
+    }
+
+    /**
+     * Enqueues a sync job for the session a moved registration <em>left</em>.
+     *
+     * <p>{@link #createSessionSyncJobIfNeeded} keys off the event's aggregate id, which
+     * for a move is the destination. The source session also changed — it lost an
+     * attendee — so without this its external calendar event keeps listing a guest who
+     * is no longer coming.
+     */
+    @Nullable
+    private UUID createSourceSessionSyncJobForMove(OutboxEvent event) {
+        UUID sourceSessionId = extractPayloadUuid(event, "sourceSessionId");
+        if (sourceSessionId == null) {
+            return null;
+        }
+        UUID hostId = event.getPartitionKey();
+        SessionSyncResolution resolution = resolveSessionSyncResolution(sourceSessionId);
+        requiresNewTx.executeWithoutResult(status ->
+                calendarSyncJobRepository.upsertPendingJob(
+                        UUID.randomUUID(),
+                        "SESSION",
+                        sourceSessionId,
+                        resolution.provider(),
+                        "UPDATE",
+                        null,
+                        hostId,
+                        null,
+                        resolution.sessionSequence()
+                )
+        );
+        log.info("outbox.session_sync_job_created sessionId={} action=UPDATE reason=move_source",
+                sourceSessionId);
+        return calendarSyncJobRepository.findByInternalRefTypeAndInternalRefIdAndProvider(
+                io.bunnycal.sync.state.InternalRefType.SESSION,
+                sourceSessionId,
+                resolution.provider())
+                .map(job -> job.getId())
+                .orElse(null);
+    }
+
+    @Nullable
+    private UUID extractPayloadUuid(OutboxEvent event, String key) {
+        try {
+            String raw = event.getPayload();
+            if (raw == null || raw.isBlank()) return null;
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(raw);
+            com.fasterxml.jackson.databind.JsonNode data = root.has("payload")
+                    ? root.get("payload") : root.get("data");
+            if (data == null || !data.hasNonNull(key)) return null;
+            return UUID.fromString(data.get(key).asText());
+        } catch (Exception ex) {
+            log.warn("outbox.payload_uuid_parse_failed key={} eventId={}", key,
+                    event != null ? event.getId() : null);
+            return null;
+        }
+    }
+
     @Nullable
     private UUID createSessionSyncJobIfNeeded(OutboxEvent event) {
         if (event == null || event.getAggregateId() == null) return null;
@@ -415,6 +536,7 @@ public class LoggingOutboxEventDispatcher implements OutboxEventDispatcher {
         return switch (eventType) {
             case "REGISTRATION_CONFIRMED" -> "UPDATE";
             case "REGISTRATION_CANCELLED" -> "UPDATE";
+            case "REGISTRATION_MOVED" -> "UPDATE";
             case "SESSION_CANCELLED" -> "DELETE";
             case "SESSION_RESCHEDULED" -> "UPDATE";
             default -> null;

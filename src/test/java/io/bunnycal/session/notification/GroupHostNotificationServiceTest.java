@@ -194,7 +194,7 @@ class GroupHostNotificationServiceTest {
                 Instant.parse("2026-07-18T09:00:00Z"), Instant.parse("2026-07-18T10:00:00Z"),
                 1, confirmedCount, capacity, false,
                 "guest@example.test", "Guest", null, null, List.of(),
-                null, null, null, List.of());
+                null, null, null, List.of(), null, null, null);
     }
 
     private SessionOutboxPayload cancelledPayload(int confirmedCount, int capacity) {
@@ -204,6 +204,6 @@ class GroupHostNotificationServiceTest {
                 Instant.parse("2026-07-18T09:00:00Z"), Instant.parse("2026-07-18T10:00:00Z"),
                 2, confirmedCount, capacity, true,
                 null, null, null, null, List.of(),
-                "guest@example.test", "Guest", null, List.of());
+                "guest@example.test", "Guest", null, List.of(), null, null, null);
     }
 }
