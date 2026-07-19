@@ -47,6 +47,7 @@ public class SessionService {
     private final EventTypeRepository eventTypeRepository;
     private final TimeSource timeSource;
     private final SessionLineageResolver lineageResolver;
+    private final RescheduleConflictService rescheduleConflictService;
 
     public SessionService(EventSessionRepository sessionRepository,
                           SessionRegistrationRepository registrationRepository,
@@ -56,7 +57,8 @@ public class SessionService {
                           UserRepository userRepository,
                           EventTypeRepository eventTypeRepository,
                           TimeSource timeSource,
-                          SessionLineageResolver lineageResolver) {
+                          SessionLineageResolver lineageResolver,
+                          RescheduleConflictService rescheduleConflictService) {
         this.sessionRepository = sessionRepository;
         this.registrationRepository = registrationRepository;
         this.outboxPublisher = outboxPublisher;
@@ -66,6 +68,7 @@ public class SessionService {
         this.eventTypeRepository = eventTypeRepository;
         this.timeSource = timeSource;
         this.lineageResolver = lineageResolver;
+        this.rescheduleConflictService = rescheduleConflictService;
     }
 
     /**
@@ -507,6 +510,16 @@ public class SessionService {
 
     @Transactional
     public void rescheduleSession(UUID sessionId, UUID hostId, Instant newStartTime) {
+        rescheduleSession(sessionId, hostId, newStartTime, false);
+    }
+
+    /**
+     * @param acknowledgeExternalConflicts the host has seen and accepted busy time from their
+     *        connected calendar. Never suppresses hard conflicts — those are not acknowledgeable.
+     */
+    @Transactional
+    public void rescheduleSession(UUID sessionId, UUID hostId, Instant newStartTime,
+                                  boolean acknowledgeExternalConflicts) {
         if (sessionId == null || hostId == null || newStartTime == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "sessionId, hostId and startTime are required.");
@@ -531,12 +544,34 @@ public class SessionService {
         }
         Instant newEndTime = newStartTime.plus(duration);
         sessionRepository.acquireSlotLock(hostId.toString(), String.valueOf(newStartTime.getEpochSecond()));
-        EventSession conflictingSession = sessionRepository
-                .findByHostIdAndEventTypeIdAndStartTime(hostId, session.getEventTypeId(), newStartTime)
-                .orElse(null);
-        if (conflictingSession != null && !sessionId.equals(conflictingSession.getId())) {
-            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "A group meeting already exists at this time.");
+
+        // Re-checked inside the transaction rather than trusting the preview endpoint: a
+        // conflict can appear between the host seeing a clear dialog and confirming.
+        RescheduleConflicts conflicts =
+                rescheduleConflictService.check(hostId, newStartTime, newEndTime, sessionId);
+        if (conflicts.hasHard()) {
+            RescheduleConflicts.Conflict first = conflicts.hard().get(0);
+            throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                    "This time overlaps \"" + first.title() + "\" on your calendar.");
         }
+        if (conflicts.hasSoft() && !acknowledgeExternalConflicts) {
+            RescheduleConflicts.Conflict first = conflicts.soft().get(0);
+            throw new CustomException(ErrorCode.CONFIRMATION_REQUIRED,
+                    "This time overlaps \"" + first.title() + "\" on your connected calendar.");
+        }
+
+        // event_sessions_unique_slot is UNIQUE (host_id, event_type_id, start_time) with no
+        // status predicate, so even a CANCELLED session still owns its exact start time. The
+        // overlap check above deliberately ignores cancelled sessions — correct for "is the host
+        // busy?", but it would let this land as a raw constraint violation. Caught here so the
+        // host gets an explanation instead of a 500.
+        sessionRepository
+                .findByHostIdAndEventTypeIdAndStartTime(hostId, session.getEventTypeId(), newStartTime)
+                .filter(existing -> !sessionId.equals(existing.getId()))
+                .ifPresent(existing -> {
+                    throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                            "Another meeting for this event already starts at this exact time.");
+                });
 
         List<SessionRegistration> attendees = registrationRepository.findActiveBySessionId(sessionId);
         session.setStartTime(newStartTime);

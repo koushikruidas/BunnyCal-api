@@ -3,19 +3,23 @@ package io.bunnycal.session.controller;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
-import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.session.domain.RegistrationStatus;
 import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.dto.PinnedSessionResponse;
+import io.bunnycal.session.dto.RescheduleConflictResponse;
 import io.bunnycal.session.dto.SeriesCancelPreviewResponse;
 import io.bunnycal.session.dto.SeriesOperationResponse;
 import io.bunnycal.session.dto.SessionDetailResponse;
 import io.bunnycal.session.dto.SessionPageResponse;
 import io.bunnycal.session.dto.SessionRegistrationPageResponse;
+import io.bunnycal.session.dto.SessionRescheduleRequest;
+import io.bunnycal.session.service.RescheduleConflictService;
+import io.bunnycal.session.service.RescheduleConflicts;
 import io.bunnycal.session.service.SessionService;
 import io.bunnycal.session.service.SessionQueryService;
 import io.bunnycal.session.service.SessionSeriesService;
 import io.bunnycal.sync.state.SyncJobStatus;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -38,13 +42,16 @@ public class SessionController {
     private final SessionQueryService sessionQueryService;
     private final SessionService sessionService;
     private final SessionSeriesService sessionSeriesService;
+    private final RescheduleConflictService rescheduleConflictService;
 
     public SessionController(SessionQueryService sessionQueryService,
                              SessionService sessionService,
-                             SessionSeriesService sessionSeriesService) {
+                             SessionSeriesService sessionSeriesService,
+                             RescheduleConflictService rescheduleConflictService) {
         this.sessionQueryService = sessionQueryService;
         this.sessionService = sessionService;
         this.sessionSeriesService = sessionSeriesService;
+        this.rescheduleConflictService = rescheduleConflictService;
     }
 
     @GetMapping("/event-types/{eventTypeId}/sessions")
@@ -149,14 +156,43 @@ public class SessionController {
     public ResponseEntity<ApiResponse<SessionDetailResponse>> rescheduleSession(
             Authentication authentication,
             @PathVariable UUID sessionId,
-            @RequestBody PublicRescheduleRequest request) {
+            @RequestBody SessionRescheduleRequest request) {
         if (request == null || request.startTime() == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "startTime is required.");
         }
         UUID requesterId = extractUserId(authentication);
         sessionQueryService.getSessionDetail(requesterId, sessionId);
-        sessionService.rescheduleSession(sessionId, requesterId, request.startTime());
+        sessionService.rescheduleSession(sessionId, requesterId, request.startTime(),
+                request.acknowledgeExternalConflicts());
         return ResponseEntity.ok(ApiResponse.success(sessionQueryService.getSessionDetail(requesterId, sessionId)));
+    }
+
+    /**
+     * Advisory preview of what a proposed time would collide with. Drives the reschedule dialog.
+     * The reschedule endpoint re-checks independently — a clean preview is never sufficient.
+     */
+    @GetMapping("/sessions/{sessionId}/reschedule-conflicts")
+    public ResponseEntity<ApiResponse<RescheduleConflictResponse>> previewRescheduleConflicts(
+            Authentication authentication,
+            @PathVariable UUID sessionId,
+            @RequestParam Instant startTime) {
+        UUID requesterId = extractUserId(authentication);
+        SessionDetailResponse detail = sessionQueryService.getSessionDetail(requesterId, sessionId);
+
+        Duration duration = Duration.between(detail.startTime(), detail.endTime());
+        RescheduleConflicts conflicts = rescheduleConflictService.check(
+                requesterId, startTime, startTime.plus(duration), sessionId);
+
+        return ResponseEntity.ok(ApiResponse.success(new RescheduleConflictResponse(
+                conflicts.hasHard(),
+                !conflicts.hasHard() && conflicts.hasSoft(),
+                conflicts.hard().stream().map(SessionController::toItem).toList(),
+                conflicts.soft().stream().map(SessionController::toItem).toList())));
+    }
+
+    private static RescheduleConflictResponse.ConflictItem toItem(RescheduleConflicts.Conflict c) {
+        return new RescheduleConflictResponse.ConflictItem(
+                c.title(), c.startTime(), c.endTime(), c.source());
     }
 
     @DeleteMapping("/sessions/{sessionId}/registrations/{registrationId}")

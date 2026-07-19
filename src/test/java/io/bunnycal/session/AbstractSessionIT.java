@@ -71,7 +71,8 @@ public abstract class AbstractSessionIT {
     void setUp() {
         jdbc.execute(
                 "TRUNCATE TABLE users, event_types, event_sessions, session_registrations, "
-                        + "booking_action_tokens, outbox_events, processed_events CASCADE");
+                        + "booking_action_tokens, outbox_events, processed_events, "
+                        + "bookings, booking_assignments CASCADE");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

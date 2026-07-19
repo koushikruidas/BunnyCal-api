@@ -383,4 +383,29 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """,
             nativeQuery = true)
     int cancelSession(@Param("id") UUID id, @Param("hostId") UUID hostId);
+
+    /**
+     * Group sessions belonging to this host that overlap the given interval.
+     *
+     * <p>Overlap is strict ({@code start < :end AND end > :start}), so meetings that merely
+     * abut — 10:00-11:00 followed by 11:00-12:00 — are not conflicts. Spans every event type,
+     * not just one: the host cannot run two classes at once regardless of which event produced
+     * them. {@code excludeSessionId} keeps a session from conflicting with itself when the host
+     * reschedules it onto a time it already partly covers.
+     */
+    @Query(value = """
+            SELECT s.*
+              FROM event_sessions s
+             WHERE s.host_id = :hostId
+               AND s.status NOT IN ('CANCELLED', 'COMPLETED')
+               AND (:excludeSessionId IS NULL OR s.id <> :excludeSessionId)
+               AND s.start_time < :end
+               AND s.end_time   > :start
+             ORDER BY s.start_time
+            """,
+            nativeQuery = true)
+    List<EventSession> findOverlappingSessions(@Param("hostId") UUID hostId,
+                                               @Param("start") Instant start,
+                                               @Param("end") Instant end,
+                                               @Param("excludeSessionId") UUID excludeSessionId);
 }
