@@ -85,6 +85,7 @@ class LoggingOutboxEventDispatcherTest {
                 null,
                 null,
                 null,
+                null,
                 txManager(),
                 invariantMonitor,
                 new SimpleMeterRegistry());

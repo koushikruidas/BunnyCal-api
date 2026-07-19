@@ -237,6 +237,105 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """, nativeQuery = true)
     List<EventSession> findFutureActiveByHostId(@Param("hostId") UUID hostId, @Param("now") Instant now);
 
+    /**
+     * Future sessions with bookings that still track one of the given rules.
+     *
+     * <p>Used when a host edits or removes a reservation window: these are the sessions
+     * that cannot simply follow the new rule, because guests already hold seats at the
+     * old time. They get pinned rather than moved.
+     *
+     * <p>Only sessions with {@code confirmed_count > 0} qualify — an empty session has
+     * nobody to surprise, and under lazy materialization it usually does not exist as a
+     * row at all.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id         = :eventTypeId
+              AND reservation_window_id IN (:windowIds)
+              AND detached_at IS NULL
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findBookedFutureSessionsForWindows(@Param("eventTypeId") UUID eventTypeId,
+                                                           @Param("windowIds") List<UUID> windowIds,
+                                                           @Param("now") Instant now);
+
+    /**
+     * Future sessions for an event type that have drifted from their rule — either the
+     * host moved them or the rule changed underneath them. Surfaced to the host so the
+     * divergence is visible rather than silent.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id = :eventTypeId
+              AND detached_at IS NOT NULL
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findPinnedFutureSessions(@Param("eventTypeId") UUID eventTypeId,
+                                                 @Param("now") Instant now);
+
+    /** Marks a session as no longer following its rule. Idempotent: only stamps once. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_sessions
+               SET detached_at     = :now,
+                   detached_reason = :reason,
+                   version         = version + 1
+             WHERE id = :id
+               AND detached_at IS NULL
+            """, nativeQuery = true)
+    int markDetached(@Param("id") UUID id, @Param("now") Instant now, @Param("reason") String reason);
+
+    /**
+     * Future sessions for an event type, whatever their lineage. Used by series cancel.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id = :eventTypeId
+              AND start_time >= :from
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findActiveSessionsFrom(@Param("eventTypeId") UUID eventTypeId,
+                                               @Param("from") Instant from);
+
+    /**
+     * Sessions past their end time that never reached a terminal state.
+     *
+     * <p>{@code COMPLETED} was previously unreachable — nothing transitioned a session
+     * once it finished — which left the terminal-state guards in reschedule and cancel
+     * as dead code.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE end_time < :now
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY end_time ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<EventSession> findSessionsDueForCompletion(@Param("now") Instant now, @Param("limit") int limit);
+
+    /** CAS a finished session to COMPLETED. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_sessions
+               SET status  = 'COMPLETED',
+                   version = version + 1
+             WHERE id       = :id
+               AND status  IN ('OPEN', 'FULL')
+               AND end_time < :now
+            """, nativeQuery = true)
+    int completeSession(@Param("id") UUID id, @Param("now") Instant now);
+
     // CAS increment confirmed_count; also flips OPEN→FULL when count reaches capacity.
     // Returns 1 if updated, 0 if capacity exhausted or session not found/wrong state.
     @Modifying(clearAutomatically = true, flushAutomatically = true)

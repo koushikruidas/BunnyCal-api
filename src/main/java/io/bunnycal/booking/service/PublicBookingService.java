@@ -992,6 +992,32 @@ public class PublicBookingService {
         return new PublicBookingStatusResponse(registrationId, "CANCELLED", null, null, null);
     }
 
+    /**
+     * Guest self-reschedule for a group event: moves their registration to another
+     * session of the same event type.
+     *
+     * <p>The target is constrained to the same event type by construction — it is
+     * resolved from the same {@code username}/{@code slug} pair — so a guest cannot
+     * hop into an unrelated event. Capacity, session state, and start-time checks are
+     * enforced in {@link SessionService#moveRegistration}.
+     */
+    private PublicBookingStatusResponse rescheduleGroupRegistration(
+            PublicBookingTargetResolver.ResolvedTarget target,
+            UUID registrationId,
+            PublicRescheduleRequest request,
+            String guestCapabilityToken) {
+        var result = sessionService.moveRegistration(
+                registrationId, target.userId(), request.startTime(), guestCapabilityToken);
+
+        OpsLoggers.BOOKING.info(
+                "group_registration_moved registrationId={} sourceSessionId={} targetSessionId={} hostId={} eventTypeId={} newStartUtc={}",
+                registrationId, result.sourceSessionId(), result.targetSessionId(),
+                target.userId(), target.eventTypeId(), result.startTime());
+
+        return new PublicBookingStatusResponse(
+                registrationId, "CONFIRMED", result.startTime(), result.endTime(), null);
+    }
+
     @Transactional
     public PublicBookingStatusResponse reschedule(String username,
                                                   String eventTypeSlug,
@@ -1004,7 +1030,8 @@ public class PublicBookingService {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
 
         if (target.kind() == EventKind.GROUP) {
-            throw new CustomException(ErrorCode.GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED);
+            // For GROUP the path id is a registration id, matching the cancel path.
+            return rescheduleGroupRegistration(target, bookingId, request, guestCapabilityToken);
         }
         if (target.kind() == EventKind.COLLECTIVE) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,

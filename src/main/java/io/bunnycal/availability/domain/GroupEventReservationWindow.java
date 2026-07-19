@@ -108,6 +108,19 @@ public class GroupEventReservationWindow {
     @Column(name = "occurrence_count")
     private Integer occurrenceCount;
 
+    /**
+     * Lifecycle state. Only ACTIVE windows generate slots or block other event types;
+     * RETIRED windows are retained so sessions they generated keep resolvable lineage.
+     */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 16)
+    private ReservationWindowStatus status = ReservationWindowStatus.ACTIVE;
+
+    /** When this window was retired; null while ACTIVE. */
+    @Column(name = "retired_at")
+    private Instant retiredAt;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

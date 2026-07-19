@@ -6,13 +6,18 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.session.domain.RegistrationStatus;
 import io.bunnycal.session.domain.SessionStatus;
+import io.bunnycal.session.dto.PinnedSessionResponse;
+import io.bunnycal.session.dto.SeriesCancelPreviewResponse;
+import io.bunnycal.session.dto.SeriesOperationResponse;
 import io.bunnycal.session.dto.SessionDetailResponse;
 import io.bunnycal.session.dto.SessionPageResponse;
 import io.bunnycal.session.dto.SessionRegistrationPageResponse;
 import io.bunnycal.session.service.SessionService;
 import io.bunnycal.session.service.SessionQueryService;
+import io.bunnycal.session.service.SessionSeriesService;
 import io.bunnycal.sync.state.SyncJobStatus;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -32,10 +37,14 @@ public class SessionController {
 
     private final SessionQueryService sessionQueryService;
     private final SessionService sessionService;
+    private final SessionSeriesService sessionSeriesService;
 
-    public SessionController(SessionQueryService sessionQueryService, SessionService sessionService) {
+    public SessionController(SessionQueryService sessionQueryService,
+                             SessionService sessionService,
+                             SessionSeriesService sessionSeriesService) {
         this.sessionQueryService = sessionQueryService;
         this.sessionService = sessionService;
+        this.sessionSeriesService = sessionSeriesService;
     }
 
     @GetMapping("/event-types/{eventTypeId}/sessions")
@@ -67,6 +76,64 @@ public class SessionController {
         return ResponseEntity.ok(ApiResponse.success(sessionQueryService.listSessionsForHost(
                 requesterId, requesterId, eventTypeId, status, from, to, syncStatus, cursor, limit)));
     }
+
+    /** Booked sessions that stayed behind when the recurrence rule changed. */
+    @GetMapping("/event-types/{eventTypeId}/sessions/pinned")
+    public ResponseEntity<ApiResponse<List<PinnedSessionResponse>>> listPinnedSessions(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID requesterId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                sessionSeriesService.listPinnedSessions(requesterId, eventTypeId)));
+    }
+
+    /**
+     * Queues pinned sessions to move onto the schedule their rule now describes.
+     *
+     * <p>Returns as soon as the work is queued: a long-running class can have hundreds
+     * of booked sessions, and each move is a calendar write plus a notification batch.
+     */
+    @PostMapping("/event-types/{eventTypeId}/sessions/move-pinned")
+    public ResponseEntity<ApiResponse<SeriesOperationResponse>> movePinnedSessions(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId,
+            @RequestBody(required = false) MovePinnedSessionsRequest request) {
+        UUID requesterId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(sessionSeriesService.movePinnedSessions(
+                requesterId, eventTypeId,
+                request != null ? request.sessionIds() : null,
+                request != null ? request.startTime() : null)));
+    }
+
+    /** What a series cancel would affect — call before {@link #cancelSeries}. */
+    @GetMapping("/event-types/{eventTypeId}/sessions/cancel-series/preview")
+    public ResponseEntity<ApiResponse<SeriesCancelPreviewResponse>> previewCancelSeries(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId,
+            @RequestParam(name = "from", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from) {
+        UUID requesterId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                sessionSeriesService.previewCancelSeries(requesterId, eventTypeId, from)));
+    }
+
+    /**
+     * Cancels every upcoming session for this event type. Destructive and wide-reaching;
+     * clients should confirm against the preview first.
+     */
+    @PostMapping("/event-types/{eventTypeId}/sessions/cancel-series")
+    public ResponseEntity<ApiResponse<SeriesOperationResponse>> cancelSeries(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId,
+            @RequestParam(name = "from", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from) {
+        UUID requesterId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                sessionSeriesService.cancelSeries(requesterId, eventTypeId, from)));
+    }
+
+    /** Body for the bulk move; both fields optional (all pinned, rule-derived times). */
+    public record MovePinnedSessionsRequest(List<UUID> sessionIds, Instant startTime) {}
 
     @PostMapping("/sessions/{sessionId}/cancel")
     public ResponseEntity<ApiResponse<SessionDetailResponse>> cancelSession(

@@ -128,6 +128,27 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
             nativeQuery = true)
     int cancelRegistration(@Param("id") UUID id, @Param("version") long version);
 
+    // CAS repoint a CONFIRMED registration to a different session (guest reschedule).
+    //
+    // Restricted to CONFIRMED deliberately: a PENDING registration is an unconfirmed
+    // hold that holds no seat, so "moving" one would decrement a seat the source
+    // session never reserved. Those are cancelled and re-held instead.
+    @Modifying
+    @Query(value = """
+            UPDATE session_registrations
+               SET session_id = :targetSessionId,
+                   version    = version + 1
+             WHERE id         = :id
+               AND version    = :version
+               AND session_id = :sourceSessionId
+               AND status     = 'CONFIRMED'
+            """,
+            nativeQuery = true)
+    int moveRegistration(@Param("id") UUID id,
+                         @Param("version") long version,
+                         @Param("sourceSessionId") UUID sourceSessionId,
+                         @Param("targetSessionId") UUID targetSessionId);
+
     // Bulk cancel all active registrations for a session (host cancel path).
     @Modifying
     @Query(value = """

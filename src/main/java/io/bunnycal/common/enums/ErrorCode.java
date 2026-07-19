@@ -39,6 +39,11 @@ public enum ErrorCode {
             "Booking is not in the expected state or version — concurrent update may have occurred."),
     CONFERENCING_DISCONNECT_NOT_SUPPORTED("CONFERENCING_DISCONNECT_NOT_SUPPORTED",
             "This conferencing provider cannot be disconnected on its own."),
+    /**
+     * @deprecated No longer thrown — group attendees can now move between sessions.
+     *     Retained so older clients that switch on this code still resolve it.
+     */
+    @Deprecated
     GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED("GROUP_ATTENDEE_RESCHEDULE_NOT_SUPPORTED",
             "Group event attendees cannot reschedule. Cancel your registration and re-book."),
     SESSION_CAPACITY_FULL("SESSION_CAPACITY_FULL",

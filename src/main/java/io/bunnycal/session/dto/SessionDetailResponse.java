@@ -25,6 +25,11 @@ public record SessionDetailResponse(
         boolean past,
         SessionSyncStatusResponse sync
 ) {
+    // No over-capacity flag: sessions snapshot capacity when materialized and it is
+    // never rewritten, so lowering an event type's capacity cannot push an existing
+    // session past its own ceiling. The DB check (confirmed_count <= capacity) makes
+    // that state unrepresentable, which is why no guest ever needs evicting.
+
     public SessionSummaryResponse toSummary() {
         return new SessionSummaryResponse(
                 sessionId,

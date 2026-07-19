@@ -105,6 +105,7 @@ public class SessionNotificationService {
             case "REGISTRATION_CANCELLED" -> handleRegistrationCancelled(event, payload);
             case "SESSION_CANCELLED" -> handleSessionCancelled(event, payload);
             case "SESSION_RESCHEDULED" -> handleSessionRescheduled(event, payload);
+            case "REGISTRATION_MOVED" -> handleRegistrationMoved(event, payload);
             default -> log.info("session_notification_skip_unsupported_type eventId={} eventType={}",
                     event.getId(), event.getEventType());
         }
@@ -218,15 +219,92 @@ public class SessionNotificationService {
         }
     }
 
+    /**
+     * A guest moved themselves to another session.
+     *
+     * <p>Only the moving guest is emailed. The other attendees on both sessions are
+     * unaffected — their own meeting time did not change, and notifying them every
+     * time someone reschedules would be noise. Their calendar entries still get the
+     * corrected attendee list through the sync jobs the dispatcher enqueues for both
+     * sessions.
+     *
+     * <p>Two ICS parts are sent: a CANCEL for the session left behind so it drops out
+     * of the guest's calendar, and a REQUEST for the new one. Sending only the REQUEST
+     * would leave a phantom event at the old time.
+     */
+    private void handleRegistrationMoved(OutboxEvent event, SessionOutboxPayload payload) {
+        String guestEmail = payload.newAttendeeEmail();
+        if (guestEmail == null || guestEmail.isBlank()) {
+            return;
+        }
+        UUID targetSessionId = payload.sessionId();
+        ConferenceDetails conferenceDetails = resolveConferenceDetails(targetSessionId);
+
+        List<GroupAttendee> targetAttendees = payload.allConfirmedAttendees() != null
+                ? payload.allConfirmedAttendees().stream()
+                        .map(a -> new GroupAttendee(a.name(), a.email()))
+                        .toList()
+                : List.of(new GroupAttendee(payload.newAttendeeName(), guestEmail));
+
+        if (payload.sourceSessionId() != null && payload.previousStartTime() != null) {
+            String cancelIcs = icsInviteGenerator.buildGroupCancel(
+                    payload.sourceSessionId(), payload.eventName(), null,
+                    payload.previousStartTime(), payload.previousEndTime(),
+                    calendarOrganizerName, calendarOrganizerEmail,
+                    List.of(new GroupAttendee(payload.newAttendeeName(), guestEmail)),
+                    payload.calendarSequence(), null);
+            sendWithDedup(event, guestEmail, cancelIcs, "CANCEL",
+                    "Your previous booking was released: " + payload.eventName(),
+                    movedAwayBody(payload.eventName()),
+                    "REGISTRATION_MOVED_CANCEL");
+        }
+
+        String requestIcs = icsInviteGenerator.buildGroupRequest(
+                targetSessionId, payload.eventName(),
+                buildSessionDescription(payload.allConfirmedAttendees()),
+                payload.startTime(), payload.endTime(),
+                calendarOrganizerName, calendarOrganizerEmail,
+                targetAttendees, payload.calendarSequence(), conferenceDetails);
+
+        sendWithDedup(event, guestEmail, requestIcs, "REQUEST",
+                "Your booking was rescheduled: " + payload.eventName(),
+                rescheduledBody(payload.eventName(), conferenceDetails),
+                "REGISTRATION_MOVED_REQUEST");
+
+        if (groupHostNotificationService != null) {
+            groupHostNotificationService.handleRegistrationConfirmed(event, payload);
+        }
+    }
+
+    private String movedAwayBody(String eventName) {
+        return "Your earlier booking for " + eventName + " has been released "
+                + "because you moved to a different session. A separate email confirms the new time.";
+    }
+
     // ── Delivery ───────────────────────────────────────────────────────────────
 
     private void sendWithDedup(OutboxEvent event, String recipient, String ics, String method,
                                 String subject, String body) {
+        sendWithDedup(event, recipient, ics, method, subject, body, event.getEventType());
+    }
+
+    /**
+     * As {@link #sendWithDedup(OutboxEvent, String, String, String, String, String)},
+     * but with an explicit dedup discriminator.
+     *
+     * <p>The dedup claim is keyed on (event, recipient, discriminator). An event that
+     * legitimately sends the same recipient two different emails — REGISTRATION_MOVED
+     * sends a CANCEL for the old session and a REQUEST for the new one — must pass
+     * distinct discriminators, or the second send is silently swallowed as a duplicate
+     * while each still keeps its own at-least-once protection.
+     */
+    private void sendWithDedup(OutboxEvent event, String recipient, String ics, String method,
+                                String subject, String body, String dedupKey) {
         if (event.getId() == null) return;
-        boolean claimed = dedupService.claim(event.getId(), recipient, event.getEventType());
+        boolean claimed = dedupService.claim(event.getId(), recipient, dedupKey);
         if (!claimed) {
             log.info("session_notification_send_skipped_duplicate eventId={} recipient={} eventType={}",
-                    event.getId(), recipient, event.getEventType());
+                    event.getId(), recipient, dedupKey);
             OpsLoggers.NOTIFICATION.info(
                     "notification_send_skipped bookingId={} eventId={} recipient={} role={} channel=email eventType={} reasonCode={}",
                     null, event.getId(), OpsLogSupport.maskEmail(recipient), "GROUP_ATTENDEE", event.getEventType(),
@@ -241,7 +319,9 @@ public class SessionNotificationService {
                     "notification_send_success bookingId={} eventId={} recipient={} role={} channel=email eventType={} hasIcs={} conferenceProvider={}",
                     null, event.getId(), OpsLogSupport.maskEmail(recipient), "GROUP_ATTENDEE", event.getEventType(), true, "SESSION");
         } catch (Exception ex) {
-            dedupService.release(event.getId(), recipient, event.getEventType());
+            // Release the same key that was claimed, or the retry finds a stale claim
+            // and silently drops the message.
+            dedupService.release(event.getId(), recipient, dedupKey);
             log.warn("session_notification_send_failed_retryable eventId={} recipient={} eventType={} message={}",
                     event.getId(), recipient, event.getEventType(), ex.getMessage());
             OpsLoggers.NOTIFICATION.warn(
