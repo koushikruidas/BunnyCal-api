@@ -263,16 +263,48 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                                                            @Param("windowIds") List<UUID> windowIds,
                                                            @Param("now") Instant now);
 
+    interface WindowBookedCountRow {
+        UUID getWindowId();
+        long getBookedCount();
+    }
+
     /**
-     * Future sessions for an event type that have drifted from their rule — either the
-     * host moved them or the rule changed underneath them. Surfaced to the host so the
-     * divergence is visible rather than silent.
+     * Per-window count of booked future sessions still following their rule.
+     *
+     * <p>Same predicate as {@link #findBookedFutureSessionsForWindows} — deliberately, since
+     * this drives the warning shown <em>before</em> an edit and must count exactly the sessions
+     * that edit would pin. Windows with no booked sessions are absent rather than zero.
+     */
+    @Query(value = """
+            SELECT reservation_window_id AS windowId,
+                   COUNT(*)              AS bookedCount
+            FROM event_sessions
+            WHERE event_type_id         = :eventTypeId
+              AND reservation_window_id IS NOT NULL
+              AND detached_at IS NULL
+              AND confirmed_count > 0
+              AND start_time > :now
+              AND status IN ('OPEN', 'FULL')
+            GROUP BY reservation_window_id
+            """, nativeQuery = true)
+    List<WindowBookedCountRow> countBookedFutureSessionsByWindow(@Param("eventTypeId") UUID eventTypeId,
+                                                                 @Param("now") Instant now);
+
+    /**
+     * Future sessions left behind when their recurrence rule changed.
+     *
+     * <p>Restricted to {@code RULE_CHANGED} deliberately. {@code detached_at IS NOT NULL}
+     * alone conflates two opposite situations: the rule moved out from under the session,
+     * and the <em>host</em> deliberately moved the session ({@code HOST_RESCHEDULED}). Only
+     * the first is an unresolved consequence needing the host's attention — offering to move
+     * a host-rescheduled session back onto the rule proposes undoing a choice they just made,
+     * and the prompt would never clear because nothing about it is pending.
      */
     @Query(value = """
             SELECT *
             FROM event_sessions
             WHERE event_type_id = :eventTypeId
-              AND detached_at IS NOT NULL
+              AND detached_reason = 'RULE_CHANGED'
               AND confirmed_count > 0
               AND start_time > :now
               AND status IN ('OPEN', 'FULL')

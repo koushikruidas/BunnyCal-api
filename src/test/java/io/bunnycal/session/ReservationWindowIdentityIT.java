@@ -12,11 +12,14 @@ import io.bunnycal.availability.dto.ReservationWindowResponse;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.availability.service.GroupEventReservationWindowService;
 import io.bunnycal.common.exception.CustomException;
+import java.sql.Timestamp;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.Instant;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +40,7 @@ class ReservationWindowIdentityIT extends AbstractSessionIT {
 
     @Autowired private GroupEventReservationWindowService windowService;
     @Autowired private GroupEventReservationWindowRepository windowRepository;
+    @Autowired private io.bunnycal.session.service.SessionSeriesService seriesService;
 
     private static final LocalDate ANCHOR = LocalDate.of(2026, 8, 3); // Monday
 
@@ -74,7 +78,83 @@ class ReservationWindowIdentityIT extends AbstractSessionIT {
                 null, day, RecurrenceFrequency.WEEKLY, ANCHOR, RecurrenceEndMode.NONE, null, null);
     }
 
+    /** A booked session materialized under a given window. */
+    private UUID bookedSession(UUID hostId, UUID eventTypeId, UUID windowId, Instant start) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO event_sessions
+                    (id, host_id, event_type_id, reservation_window_id, scheduled_occurrence_start,
+                     start_time, end_time, status, capacity, confirmed_count, version,
+                     calendar_sequence, terminal_intent_epoch, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', 20, 2, 1, 0, 0, NOW(), NOW())
+                """, id, hostId, eventTypeId, windowId, Timestamp.from(start),
+                Timestamp.from(start), Timestamp.from(start.plus(Duration.ofMinutes(30))));
+        return id;
+    }
+
     // ── Tests ──────────────────────────────────────────────────────────────────
+
+    @Test
+    void bookedCounts_areReportedPerWindow() {
+        User host = hostWithWeekdayAvailability();
+        EventType et = groupType(host.getId());
+        List<ReservationWindowResponse> saved = windowService.replaceWindows(
+                host.getId(), et.getId(),
+                List.of(newWindow(DayOfWeek.MONDAY, "10:00", "11:00"),
+                        newWindow(DayOfWeek.TUESDAY, "10:00", "11:00")));
+
+        UUID mondayId = saved.get(0).id();
+        Instant future = Instant.now().plus(Duration.ofDays(7));
+        bookedSession(host.getId(), et.getId(), mondayId, future);
+        bookedSession(host.getId(), et.getId(), mondayId, future.plus(Duration.ofDays(7)));
+
+        Map<UUID, Long> counts = seriesService.countBookedSessionsByWindow(host.getId(), et.getId());
+
+        assertThat(counts).containsEntry(mondayId, 2L);
+        // A window with no bookings is absent rather than zero — the UI treats missing as 0.
+        assertThat(counts).hasSize(1);
+    }
+
+    @Test
+    void bookedCounts_excludeDetachedAndPastSessions() {
+        User host = hostWithWeekdayAvailability();
+        EventType et = groupType(host.getId());
+        List<ReservationWindowResponse> saved = windowService.replaceWindows(
+                host.getId(), et.getId(), List.of(newWindow(DayOfWeek.MONDAY, "10:00", "11:00")));
+        UUID windowId = saved.get(0).id();
+
+        UUID detached = bookedSession(host.getId(), et.getId(), windowId,
+                Instant.now().plus(Duration.ofDays(7)));
+        jdbc.update("UPDATE event_sessions SET detached_at = NOW(), detached_reason = 'RULE_CHANGED' WHERE id = ?",
+                detached);
+        // Already in the past — editing the rule cannot pin what has already happened.
+        bookedSession(host.getId(), et.getId(), windowId, Instant.now().minus(Duration.ofDays(2)));
+
+        assertThat(seriesService.countBookedSessionsByWindow(host.getId(), et.getId())).isEmpty();
+    }
+
+    @Test
+    void editingAWindowInPlace_keepsSessionLineageIntact() {
+        User host = hostWithWeekdayAvailability();
+        EventType et = groupType(host.getId());
+        List<ReservationWindowResponse> saved = windowService.replaceWindows(
+                host.getId(), et.getId(), List.of(newWindow(DayOfWeek.MONDAY, "10:00", "11:00")));
+        UUID windowId = saved.get(0).id();
+        UUID sessionId = bookedSession(host.getId(), et.getId(), windowId,
+                Instant.now().plus(Duration.ofDays(7)));
+
+        // The edit the UI now performs: same id, different day. This is what remove+add
+        // could never do — it sent a null id, so the session was orphaned instead of pinned.
+        windowService.replaceWindows(host.getId(), et.getId(),
+                List.of(window(windowId, DayOfWeek.TUESDAY, "10:00", "11:00")));
+
+        UUID lineage = jdbc.queryForObject(
+                "SELECT reservation_window_id FROM event_sessions WHERE id = ?", UUID.class, sessionId);
+        assertThat(lineage).isEqualTo(windowId);
+        assertThat(jdbc.queryForObject(
+                "SELECT detached_reason FROM event_sessions WHERE id = ?", String.class, sessionId))
+                .isEqualTo("RULE_CHANGED");
+    }
 
     @Test
     void editingOneWindow_preservesTheIdsOfTheOthers() {

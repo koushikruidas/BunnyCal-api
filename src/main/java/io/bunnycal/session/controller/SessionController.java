@@ -22,6 +22,7 @@ import io.bunnycal.sync.state.SyncJobStatus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -92,6 +93,19 @@ public class SessionController {
         UUID requesterId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 sessionSeriesService.listPinnedSessions(requesterId, eventTypeId)));
+    }
+
+    /**
+     * Booked future sessions per reservation window, keyed by window id. Lets the windows
+     * editor warn before an edit that would pin sessions, rather than after.
+     */
+    @GetMapping("/event-types/{eventTypeId}/sessions/booked-counts")
+    public ResponseEntity<ApiResponse<Map<UUID, Long>>> countBookedSessionsByWindow(
+            Authentication authentication,
+            @PathVariable UUID eventTypeId) {
+        UUID requesterId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                sessionSeriesService.countBookedSessionsByWindow(requesterId, eventTypeId)));
     }
 
     /**

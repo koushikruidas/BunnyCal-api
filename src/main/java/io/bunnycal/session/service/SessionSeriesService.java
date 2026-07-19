@@ -14,7 +14,9 @@ import io.bunnycal.session.dto.SeriesOperationResponse;
 import io.bunnycal.session.repository.EventSessionRepository;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -72,6 +74,22 @@ public class SessionSeriesService {
                         s.getDetachedReason() != null ? s.getDetachedReason().name() : null,
                         s.getDetachedAt()))
                 .toList();
+    }
+
+    /**
+     * Booked future sessions per reservation window, for windows that have any.
+     *
+     * <p>Counts sessions still following their rule — the ones an edit to that window would
+     * pin. Distinct from {@link #listPinnedSessions}, which reports sessions that have
+     * <em>already</em> detached.
+     */
+    public Map<UUID, Long> countBookedSessionsByWindow(UUID requesterId, UUID eventTypeId) {
+        requireOwnedEventType(requesterId, eventTypeId);
+        return sessionRepository.countBookedFutureSessionsByWindow(eventTypeId, timeSource.now())
+                .stream()
+                .collect(Collectors.toMap(
+                        EventSessionRepository.WindowBookedCountRow::getWindowId,
+                        EventSessionRepository.WindowBookedCountRow::getBookedCount));
     }
 
     /**

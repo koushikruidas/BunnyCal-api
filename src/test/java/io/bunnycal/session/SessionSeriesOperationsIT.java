@@ -171,6 +171,25 @@ class SessionSeriesOperationsIT extends AbstractSessionIT {
     }
 
     @Test
+    void hostRescheduledSession_isNotOfferedAsPinned() {
+        User host = hostWithFullWeekAvailability();
+        EventType group = createGroupEventType(host.getId(), 10);
+        window(host, group, DayOfWeek.MONDAY);
+        UUID sessionId = bookedSession(host, group, nextDayAt9(DayOfWeek.MONDAY), "alice@test.com");
+
+        // The host moved this session themselves. No rule changed, so there is nothing
+        // pending — offering "move to the new schedule" would propose undoing their choice,
+        // and the prompt would never clear.
+        sessionService.rescheduleSession(sessionId, host.getId(),
+                nextDayAt9(DayOfWeek.MONDAY).plus(3, ChronoUnit.HOURS));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT detached_reason FROM event_sessions WHERE id = ?", String.class, sessionId))
+                .isEqualTo("HOST_RESCHEDULED");
+        assertThat(seriesService.listPinnedSessions(host.getId(), group.getId())).isEmpty();
+    }
+
+    @Test
     void removingAWindow_pinsItsBookedSessions() {
         User host = hostWithFullWeekAvailability();
         EventType group = createGroupEventType(host.getId(), 10);
