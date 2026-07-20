@@ -59,6 +59,34 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
     List<EventSession> findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
             UUID eventTypeId, Instant rangeStart, Instant rangeEnd);
 
+    /**
+     * Sessions whose rule-generated occurrence falls in the range, wherever they now sit.
+     *
+     * <p>Deliberately keyed on {@code scheduled_occurrence_start} rather than {@code start_time}.
+     * A host-rescheduled session has moved away from the occurrence the recurrence produced, and
+     * the public group grid still generates that vacated occurrence from the rule. Without this
+     * query the grid cannot tell that the occurrence was moved, so it re-offers the old time as a
+     * brand-new empty session while the real one — with its guests — sits elsewhere.
+     *
+     * <p>The range therefore bounds the <em>occurrence</em>, not the session: a session moved from
+     * inside the range to outside it must still be returned, because suppressing its origin slot is
+     * the entire point.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id             = :eventTypeId
+              AND scheduled_occurrence_start IS NOT NULL
+              AND scheduled_occurrence_start >= :rangeStart
+              AND scheduled_occurrence_start <  :rangeEnd
+              AND start_time <> scheduled_occurrence_start
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY scheduled_occurrence_start ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findMovedSessionsByOccurrenceRange(@Param("eventTypeId") UUID eventTypeId,
+                                                          @Param("rangeStart") Instant rangeStart,
+                                                          @Param("rangeEnd") Instant rangeEnd);
+
     @Query(value = """
             SELECT
                 s.id AS sessionId,

@@ -118,6 +118,15 @@ public class PublicGroupSessionQueryService {
                 .stream()
                 .collect(LinkedHashMap::new, (map, session) -> map.put(session.getStartTime(), session), Map::putAll);
 
+        // Occurrences the host moved elsewhere. The recurrence rule still generates the
+        // original time, so without this the vacated slot reappears as a fresh empty
+        // session while its guests sit at the new time.
+        Set<Instant> movedAwayOccurrences = eventSessionRepository
+                .findMovedSessionsByOccurrenceRange(target.eventTypeId(), rangeStart, rangeEnd)
+                .stream()
+                .map(EventSession::getScheduledOccurrenceStart)
+                .collect(java.util.stream.Collectors.toCollection(HashSet::new));
+
         Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId =
                 loadConfirmedRegistrations(persistedSessionsByStart.values());
         Map<LocalDate, Set<String>> bookableKeysByDate =
@@ -140,7 +149,8 @@ public class PublicGroupSessionQueryService {
                     derivedSessions,
                     persistedSessionsByStart,
                     confirmedRegistrationsBySessionId,
-                    bookableKeys));
+                    bookableKeys,
+                    movedAwayOccurrences));
         }
 
         return new PublicGroupSessionsResponse(
@@ -188,7 +198,8 @@ public class PublicGroupSessionQueryService {
                                                    List<DerivedSession> derivedSessions,
                                                    Map<Instant, EventSession> persistedSessionsByStart,
                                                    Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId,
-                                                   Set<String> bookableKeys) {
+                                                   Set<String> bookableKeys,
+                                                   Set<Instant> movedAwayOccurrences) {
         if (derivedSessions.isEmpty()) {
             return new PublicGroupDateCardResponse(
                     date,
@@ -212,6 +223,12 @@ public class PublicGroupSessionQueryService {
 
         for (DerivedSession derived : derivedSessions) {
             EventSession persisted = persistedSessionsByStart.get(derived.startTime());
+            // The rule still emits this occurrence, but the session it produced was moved
+            // away. Drop it unless something else has since materialized at the same time
+            // — that row is a real session and owns the slot on its own terms.
+            if (persisted == null && movedAwayOccurrences.contains(derived.startTime())) {
+                continue;
+            }
             int capacity = persisted != null && persisted.getCapacity() > 0 ? persisted.getCapacity() : defaultCapacity;
             int bookedCount = persisted != null ? Math.max(persisted.getConfirmedCount(), 0) : 0;
             int spotsLeft = Math.max(capacity - bookedCount, 0);

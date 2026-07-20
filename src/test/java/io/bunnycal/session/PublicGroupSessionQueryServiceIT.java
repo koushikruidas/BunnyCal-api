@@ -25,6 +25,7 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
 
     @Autowired private PublicGroupSessionQueryService publicGroupSessionQueryService;
     @Autowired private PublicBookingService publicBookingService;
+    @Autowired private io.bunnycal.session.service.SessionService sessionService;
 
     private static final LocalDate TEST_DATE = nextMonday(7);
 
@@ -148,6 +149,49 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
         assertThat(date.sessions()).hasSize(1);
         assertThat(date.sessions().get(0).bookable()).isFalse();
         assertThat(date.sessions().get(0).spotsLeft()).isZero();
+    }
+
+    /**
+     * A host-rescheduled session must not leave its original time behind as a bookable
+     * empty session. The recurrence rule keeps generating the vacated occurrence, so the
+     * grid has to recognise that the session it produced now sits elsewhere — otherwise
+     * guests see the old time offered with 0 bookings while the real session, holding
+     * their peers' registrations, has moved.
+     */
+    @Test
+    void hostRescheduledSession_doesNotLeaveVacatedSlotBookable() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 10, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "guest@test.com", "Guest Zero"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+
+        // Move it to 10:00, which the same window also generates.
+        Instant newStart = TEST_DATE.atTime(10, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), newStart);
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+
+        PublicGroupDateCardResponse date = response.dates().get(0);
+        assertThat(date.sessions())
+                .as("the vacated 09:00 occurrence must not be re-offered")
+                .noneMatch(session -> session.startTime().equals(originalStart));
+
+        PublicGroupSessionCardResponse moved = date.sessions().stream()
+                .filter(session -> session.startTime().equals(newStart))
+                .findFirst()
+                .orElseThrow();
+        assertThat(moved.bookedCount()).isEqualTo(1);
+        assertThat(moved.sessionId()).isEqualTo(sessionId.toString());
     }
 
     private User createHostWithAvailability() {
