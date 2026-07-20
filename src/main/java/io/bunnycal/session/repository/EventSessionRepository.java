@@ -20,6 +20,8 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
         String getEventTypeSlug();
         Instant getStartTime();
         Instant getEndTime();
+        /** Where the rule placed this occurrence; differs from startTime once the host moved it. */
+        Instant getScheduledOccurrenceStart();
         String getStatus();
         int getCapacity();
         int getConfirmedCount();
@@ -96,6 +98,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                 et.slug AS eventTypeSlug,
                 s.start_time AS startTime,
                 s.end_time AS endTime,
+                s.scheduled_occurrence_start AS scheduledOccurrenceStart,
                 s.status AS status,
                 s.capacity AS capacity,
                 s.confirmed_count AS confirmedCount,
@@ -180,6 +183,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                 et.slug AS eventTypeSlug,
                 s.start_time AS startTime,
                 s.end_time AS endTime,
+                s.scheduled_occurrence_start AS scheduledOccurrenceStart,
                 s.status AS status,
                 s.capacity AS capacity,
                 s.confirmed_count AS confirmedCount,
