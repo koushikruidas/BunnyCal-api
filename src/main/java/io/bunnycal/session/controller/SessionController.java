@@ -195,7 +195,7 @@ public class SessionController {
 
         Duration duration = Duration.between(detail.startTime(), detail.endTime());
         RescheduleConflicts conflicts = rescheduleConflictService.check(
-                requesterId, startTime, startTime.plus(duration), sessionId);
+                requesterId, detail.eventTypeId(), startTime, startTime.plus(duration), sessionId);
 
         return ResponseEntity.ok(ApiResponse.success(new RescheduleConflictResponse(
                 conflicts.hasHard(),

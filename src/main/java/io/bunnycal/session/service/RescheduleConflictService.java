@@ -39,6 +39,17 @@ public class RescheduleConflictService {
      * @param excludeSessionId the session being moved, so it never conflicts with itself
      */
     public RescheduleConflicts check(UUID hostId, Instant start, Instant end, UUID excludeSessionId) {
+        return check(hostId, null, start, end, excludeSessionId);
+    }
+
+    /**
+     * @param eventTypeId the moving session's event type. Supplying it also reports exact-start
+     *        collisions with cancelled sessions, which are invisible to the overlap check but
+     *        still fatal to the write. Null skips that check.
+     * @param excludeSessionId the session being moved, so it never conflicts with itself
+     */
+    public RescheduleConflicts check(UUID hostId, UUID eventTypeId,
+                                     Instant start, Instant end, UUID excludeSessionId) {
         if (hostId == null || start == null || end == null || !start.isBefore(end)) {
             return RescheduleConflicts.none();
         }
@@ -48,6 +59,19 @@ public class RescheduleConflictService {
         for (EventSession s : sessionRepository.findOverlappingSessions(hostId, start, end, excludeSessionId)) {
             hard.add(new RescheduleConflicts.Conflict(
                     "Group session", s.getStartTime(), s.getEndTime(), "GROUP_SESSION"));
+        }
+
+        // event_sessions_unique_slot is UNIQUE (host_id, event_type_id, start_time) with no status
+        // predicate, so a CANCELLED session still owns its exact start time. The overlap scan above
+        // deliberately skips cancelled sessions -- right for "is the host busy?", wrong for "can
+        // this row be written". Without this the dialog reports the time free, enables Confirm, and
+        // the write then fails on a collision the host was never shown.
+        if (eventTypeId != null) {
+            sessionRepository.findByHostIdAndEventTypeIdAndStartTime(hostId, eventTypeId, start)
+                    .filter(existing -> !existing.getId().equals(excludeSessionId))
+                    .ifPresent(existing -> hard.add(new RescheduleConflicts.Conflict(
+                            "Another meeting for this event starts at this exact time",
+                            existing.getStartTime(), existing.getEndTime(), "SLOT_TAKEN")));
         }
 
         // Covers 1:1, round-robin and collective in one predicate — see

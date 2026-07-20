@@ -237,6 +237,56 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
                         .isEqualTo(ErrorCode.SLOT_UNAVAILABLE));
     }
 
+    /**
+     * The preview must refuse whatever the write refuses. A cancelled session is invisible to the
+     * overlap scan but still owns its exact start time, so without this the dialog reports the slot
+     * free, enables Confirm, and the host gets an error on a time they were told was available.
+     */
+    @Test
+    @DisplayName("preview reports an exact-start collision the overlap scan cannot see")
+    void previewReportsExactStartCollisionWithCancelledSession() {
+        User host = createHost();
+        EventType et = createGroupEventType(host.getId(), 10);
+        Instant base = nextHour();
+        UUID moving = insertSession(host.getId(), et.getId(), base, base.plus(Duration.ofHours(1)));
+
+        Instant target = base.plus(Duration.ofHours(3));
+        UUID cancelled = insertSession(host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)));
+        jdbc.update("UPDATE event_sessions SET status = 'CANCELLED' WHERE id = ?", cancelled);
+
+        // Without the event type the check cannot consult the constraint, so it still sees nothing.
+        assertThat(conflictService.check(host.getId(), target, target.plus(Duration.ofHours(1)), moving).hasHard())
+                .as("overlap scan alone cannot see a cancelled session")
+                .isFalse();
+
+        RescheduleConflicts conflicts = conflictService.check(
+                host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)), moving);
+        assertThat(conflicts.hasHard())
+                .as("the dialog must not offer a time the write will reject")
+                .isTrue();
+        assertThat(conflicts.hard()).anySatisfy(conflict ->
+                assertThat(conflict.source()).isEqualTo("SLOT_TAKEN"));
+
+        // And the two paths agree: what the preview flags, the write refuses.
+        assertThatThrownBy(() -> sessionService.rescheduleSession(moving, host.getId(), target))
+                .isInstanceOf(CustomException.class);
+    }
+
+    @Test
+    @DisplayName("the moving session's own start time is not a collision with itself")
+    void previewDoesNotFlagTheMovingSessionAgainstItself() {
+        User host = createHost();
+        EventType et = createGroupEventType(host.getId(), 10);
+        Instant base = nextHour();
+        UUID moving = insertSession(host.getId(), et.getId(), base, base.plus(Duration.ofHours(1)));
+
+        // Re-confirming the time it already occupies must stay clean, or the dialog would block
+        // the host from confirming the session's current slot.
+        assertThat(conflictService.check(host.getId(), et.getId(), base, base.plus(Duration.ofHours(1)), moving)
+                .hasHard())
+                .isFalse();
+    }
+
     // ── Availability must never block ────────────────────────────────────────
 
     @Test
