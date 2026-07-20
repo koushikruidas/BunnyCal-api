@@ -218,8 +218,8 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
     }
 
     @Test
-    @DisplayName("landing on a cancelled session's exact start fails cleanly, not with a 500")
-    void exactStartCollisionWithCancelledSessionIsReported() {
+    @DisplayName("the host can move a session onto a slot they previously cancelled")
+    void hostCanRescheduleOntoASlotTheyCancelled() {
         User host = createHost();
         EventType et = createGroupEventType(host.getId(), 10);
         Instant base = nextHour();
@@ -229,8 +229,55 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
         UUID cancelled = insertSession(host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)));
         jdbc.update("UPDATE event_sessions SET status = 'CANCELLED' WHERE id = ?", cancelled);
 
-        // event_sessions_unique_slot has no status predicate, so the cancelled row still owns
-        // this exact start. Must surface as a domain error rather than a constraint violation.
+        // The host cancelled that class and is now choosing to run one at that time again. Whether
+        // that hour is open is their call, and a dead row must not overrule it.
+        assertThatCode(() -> sessionService.rescheduleSession(moving, host.getId(), target))
+                .doesNotThrowAnyException();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT start_time FROM event_sessions WHERE id = ?", Timestamp.class, moving))
+                .isEqualTo(Timestamp.from(target));
+        assertThat(jdbc.queryForObject(
+                "SELECT status FROM event_sessions WHERE id = ?", String.class, cancelled))
+                .as("history is kept — the cancelled session is not resurrected")
+                .isEqualTo("CANCELLED");
+    }
+
+    /**
+     * The counterpart to {@link #hostCanRescheduleOntoASlotTheyCancelled}. Releasing the slot is a
+     * host privilege, not a general reopening: a guest joining that hour must still be refused, or
+     * cancelling a class would silently let strangers book it again.
+     */
+    @Test
+    @DisplayName("a guest still cannot book into a cancelled session")
+    void guestCannotJoinACancelledSlot() {
+        User host = createHost();
+        EventType et = createGroupEventType(host.getId(), 10);
+        Instant start = nextHour();
+        Instant end = start.plus(Duration.ofHours(1));
+
+        UUID cancelled = insertSession(host.getId(), et.getId(), start, end);
+        jdbc.update("UPDATE event_sessions SET status = 'CANCELLED' WHERE id = ?", cancelled);
+
+        assertThatThrownBy(() -> sessionService.joinSession(
+                host.getId(), et.getId(), start, end, 10,
+                "guest@test.com", "Guest", Duration.ofMinutes(15)))
+                .isInstanceOf(CustomException.class)
+                .satisfies(e -> assertThat(((CustomException) e).getErrorCode())
+                        .isEqualTo(ErrorCode.SESSION_CANCELLED));
+    }
+
+    @Test
+    @DisplayName("a live session at the same exact start still blocks")
+    void exactStartCollisionWithLiveSessionIsReported() {
+        User host = createHost();
+        EventType et = createGroupEventType(host.getId(), 10);
+        Instant base = nextHour();
+        UUID moving = insertSession(host.getId(), et.getId(), base, base.plus(Duration.ofHours(1)));
+
+        Instant target = base.plus(Duration.ofHours(3));
+        insertSession(host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)));
+
         assertThatThrownBy(() -> sessionService.rescheduleSession(moving, host.getId(), target))
                 .isInstanceOf(CustomException.class)
                 .satisfies(e -> assertThat(((CustomException) e).getErrorCode())
@@ -238,13 +285,13 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
     }
 
     /**
-     * The preview must refuse whatever the write refuses. A cancelled session is invisible to the
-     * overlap scan but still owns its exact start time, so without this the dialog reports the slot
-     * free, enables Confirm, and the host gets an error on a time they were told was available.
+     * Preview and write must agree in both directions: the dialog must not offer a time the write
+     * refuses, and must not block one the write would accept. A cancelled session is the case that
+     * distinguishes them, since it looks like an occupant but is not one.
      */
     @Test
-    @DisplayName("preview reports an exact-start collision the overlap scan cannot see")
-    void previewReportsExactStartCollisionWithCancelledSession() {
+    @DisplayName("preview does not flag a cancelled session the write would allow")
+    void previewMatchesTheWriteOnCancelledSlots() {
         User host = createHost();
         EventType et = createGroupEventType(host.getId(), 10);
         Instant base = nextHour();
@@ -254,22 +301,32 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
         UUID cancelled = insertSession(host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)));
         jdbc.update("UPDATE event_sessions SET status = 'CANCELLED' WHERE id = ?", cancelled);
 
-        // Without the event type the check cannot consult the constraint, so it still sees nothing.
-        assertThat(conflictService.check(host.getId(), target, target.plus(Duration.ofHours(1)), moving).hasHard())
-                .as("overlap scan alone cannot see a cancelled session")
+        assertThat(conflictService.check(
+                host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)), moving).hasHard())
+                .as("a cancelled class does not occupy its hour against the host who cancelled it")
                 .isFalse();
+
+        // The write agrees — that is the property under test, not the flag on its own.
+        assertThatCode(() -> sessionService.rescheduleSession(moving, host.getId(), target))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("preview reports an exact-start collision with a live session")
+    void previewReportsExactStartCollisionWithLiveSession() {
+        User host = createHost();
+        EventType et = createGroupEventType(host.getId(), 10);
+        Instant base = nextHour();
+        UUID moving = insertSession(host.getId(), et.getId(), base, base.plus(Duration.ofHours(1)));
+
+        Instant target = base.plus(Duration.ofHours(3));
+        insertSession(host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)));
 
         RescheduleConflicts conflicts = conflictService.check(
                 host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)), moving);
-        assertThat(conflicts.hasHard())
-                .as("the dialog must not offer a time the write will reject")
-                .isTrue();
+        assertThat(conflicts.hasHard()).isTrue();
         assertThat(conflicts.hard()).anySatisfy(conflict ->
                 assertThat(conflict.source()).isEqualTo("SLOT_TAKEN"));
-
-        // And the two paths agree: what the preview flags, the write refuses.
-        assertThatThrownBy(() -> sessionService.rescheduleSession(moving, host.getId(), target))
-                .isInstanceOf(CustomException.class);
     }
 
     @Test

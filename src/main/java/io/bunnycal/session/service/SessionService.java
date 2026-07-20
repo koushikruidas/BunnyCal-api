@@ -560,14 +560,22 @@ public class SessionService {
                     "This time overlaps \"" + first.title() + "\" on your connected calendar.");
         }
 
-        // event_sessions_unique_slot is UNIQUE (host_id, event_type_id, start_time) with no
-        // status predicate, so even a CANCELLED session still owns its exact start time. The
-        // overlap check above deliberately ignores cancelled sessions — correct for "is the host
-        // busy?", but it would let this land as a raw constraint violation. Caught here so the
-        // host gets an explanation instead of a 500.
+        // A LIVE session at this exact start is a real collision and stays refused -- it would also
+        // violate event_sessions_unique_live_slot, so this reports it as a domain error rather than
+        // letting the write fail on a constraint.
+        //
+        // A CANCELLED or COMPLETED one is not a collision. The host cancelled that class and is now
+        // choosing to run a session at that time again, which is theirs to decide; the dead row
+        // keeps its status and history but no longer holds the slot (V133).
+        //
+        // Host path only. A guest must not reopen a class the host called off, and cannot:
+        // moveRegistration resolves through findOrCreateSession, which still finds the cancelled
+        // row and rejects with SESSION_CANCELLED.
         sessionRepository
                 .findByHostIdAndEventTypeIdAndStartTime(hostId, session.getEventTypeId(), newStartTime)
                 .filter(existing -> !sessionId.equals(existing.getId()))
+                .filter(existing -> existing.getStatus() != SessionStatus.CANCELLED
+                        && existing.getStatus() != SessionStatus.COMPLETED)
                 .ifPresent(existing -> {
                     throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
                             "Another meeting for this event already starts at this exact time.");
