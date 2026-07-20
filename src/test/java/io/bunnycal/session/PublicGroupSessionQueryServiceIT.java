@@ -194,6 +194,47 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
         assertThat(moved.sessionId()).isEqualTo(sessionId.toString());
     }
 
+    /**
+     * Sessions materialized before lineage tracking have a null occurrence start. Rescheduling
+     * one must seed it from the time being vacated, or the grid has no way to know the slot was
+     * abandoned and re-offers it — the same defect as above, on the rows most likely to hit it.
+     */
+    @Test
+    void legacySessionWithoutLineage_stillSuppressesVacatedSlotAfterReschedule() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 10, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "guest@test.com", "Guest Zero"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+
+        // Reproduce a pre-V131 row: lineage was never recorded.
+        jdbc.update("UPDATE event_sessions SET scheduled_occurrence_start = NULL,"
+                + " reservation_window_id = NULL WHERE id = ?", sessionId);
+
+        Instant newStart = TEST_DATE.atTime(10, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), newStart);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT scheduled_occurrence_start FROM event_sessions WHERE id = ?",
+                java.sql.Timestamp.class, sessionId))
+                .as("the vacated time must be recorded when the session detaches")
+                .isEqualTo(java.sql.Timestamp.from(originalStart));
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+
+        assertThat(response.dates().get(0).sessions())
+                .noneMatch(session -> session.startTime().equals(originalStart));
+    }
+
     private User createHostWithAvailability() {
         User host = createHost();
         jdbc.update("""

@@ -574,6 +574,13 @@ public class SessionService {
                 });
 
         List<SessionRegistration> attendees = registrationRepository.findActiveBySessionId(sessionId);
+        // Sessions materialized before lineage tracking carry a null occurrence start. This
+        // move is the last moment the original time is known, so seed it now rather than lose
+        // it — without this, read paths cannot tell the rule's occurrence from where the
+        // session was moved to, and re-offer the vacated slot as free. Seeding an absent
+        // value, not rewriting a known one, so write-once still holds.
+        Instant originalOccurrenceStart =
+                session.getScheduledOccurrenceStart() == null ? session.getStartTime() : null;
         session.setStartTime(newStartTime);
         session.setEndTime(newEndTime);
         // The session no longer sits where its rule placed it. Lineage
@@ -587,6 +594,9 @@ public class SessionService {
         session.setCalendarSequence(session.getCalendarSequence() + 1);
         session.setVersion(session.getVersion() + 1);
         EventSession updatedSession = sessionRepository.save(session);
+        if (originalOccurrenceStart != null) {
+            sessionRepository.seedScheduledOccurrenceStart(sessionId, originalOccurrenceStart);
+        }
 
         SessionContext context = resolveContext(hostId, session.getEventTypeId());
         outboxPublisher.publish("Session", sessionId, hostId,

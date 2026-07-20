@@ -319,6 +319,29 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                                                                  @Param("now") Instant now);
 
     /**
+     * Seeds the occurrence start for a session that never had one.
+     *
+     * <p>Sessions materialized before lineage tracking carry a null
+     * {@code scheduled_occurrence_start}. The field is mapped {@code updatable = false} so JPA
+     * will not write it — deliberately, since it is write-once — but a null is an absent value
+     * rather than a recorded one, and filling it the moment a session detaches is what keeps
+     * read paths able to distinguish the rule's occurrence from where the host moved the
+     * session to.
+     *
+     * <p>The {@code IS NULL} guard makes this idempotent and preserves write-once: a session
+     * that already knows its origin is never rewritten.
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE event_sessions
+               SET scheduled_occurrence_start = :occurrenceStart
+             WHERE id = :sessionId
+               AND scheduled_occurrence_start IS NULL
+            """, nativeQuery = true)
+    int seedScheduledOccurrenceStart(@Param("sessionId") UUID sessionId,
+                                     @Param("occurrenceStart") Instant occurrenceStart);
+
+    /**
      * Future sessions left behind when their recurrence rule changed.
      *
      * <p>Restricted to {@code RULE_CHANGED} deliberately. {@code detached_at IS NOT NULL}
