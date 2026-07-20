@@ -80,7 +80,7 @@ class GroupHostNotificationServiceTest {
         service = new GroupHostNotificationService(
                 mailSender, userRepository, eventTypeRepository, sessionRepository,
                 digestRepository, recipientResolver, dedupService, timeSource,
-                "no-reply@example.test", Duration.ofHours(24));
+                "no-reply@example.test", "BunnyCal Calendar", Duration.ofHours(24));
     }
 
     @Test
