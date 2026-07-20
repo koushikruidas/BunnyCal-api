@@ -140,7 +140,11 @@ public class PublicGroupSessionQueryService {
                     .sorted(Comparator.comparing(GroupEventReservationWindow::getStartTime)
                             .thenComparing(GroupEventReservationWindow::getEndTime))
                     .toList();
-            List<DerivedSession> derivedSessions = deriveSessionsForDate(date, zoneId, eventType, dayWindows);
+            List<DerivedSession> derivedSessions = mergeOffGridSessions(
+                    deriveSessionsForDate(date, zoneId, eventType, dayWindows),
+                    date,
+                    zoneId,
+                    persistedSessionsByStart);
             Set<String> bookableKeys = bookableKeysByDate.getOrDefault(date, Set.of());
             dateCards.add(toDateCard(
                     date,
@@ -219,7 +223,6 @@ public class PublicGroupSessionQueryService {
         LocalTime nextAvailableStartTime = null;
         boolean anyFillingUp = false;
         boolean anyVisible = false;
-        boolean allVisibleFull = true;
 
         for (DerivedSession derived : derivedSessions) {
             EventSession persisted = persistedSessionsByStart.get(derived.startTime());
@@ -234,7 +237,11 @@ public class PublicGroupSessionQueryService {
             int spotsLeft = Math.max(capacity - bookedCount, 0);
             int occupancyPercent = occupancyPercent(bookedCount, capacity);
             boolean bookable = bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
-            boolean visible = bookable || spotsLeft == 0;
+            // A materialized session with registrants stays visible even when it is neither
+            // bookable nor full: that is the host-moved, off-grid case, and hiding it would
+            // erase a meeting people are actually attending.
+            boolean hasRegistrants = persisted != null && bookedCount > 0;
+            boolean visible = bookable || spotsLeft == 0 || hasRegistrants;
             if (!visible) {
                 continue;
             }
@@ -248,9 +255,6 @@ public class PublicGroupSessionQueryService {
             }
             if (occupancyPercent >= FILLING_UP_THRESHOLD_PERCENT) {
                 anyFillingUp = true;
-            }
-            if (spotsLeft > 0) {
-                allVisibleFull = false;
             }
 
             List<PublicAttendeePreviewResponse> attendeePreview = persisted == null
@@ -289,7 +293,10 @@ public class PublicGroupSessionQueryService {
 
         PublicGroupDateStatus status;
         if (bookableSessionCount == 0) {
-            status = allVisibleFull ? PublicGroupDateStatus.FULLY_BOOKED : PublicGroupDateStatus.NO_SESSIONS;
+            // Nothing open to book. NO_SESSIONS would contradict the cards we are about to
+            // return — an off-grid session with seats left is visible but unbookable, so the
+            // day is closed to new bookings rather than empty.
+            status = PublicGroupDateStatus.FULLY_BOOKED;
         } else if (anyFillingUp) {
             status = PublicGroupDateStatus.FILLING_UP;
         } else {
@@ -396,6 +403,57 @@ public class PublicGroupSessionQueryService {
         }
 
         return sessions.stream()
+                .sorted(Comparator.comparing(DerivedSession::startTime)
+                        .thenComparing(DerivedSession::endTime))
+                .toList();
+    }
+
+    /**
+     * Adds sessions that exist on this date but sit outside the rule's grid.
+     *
+     * <p>A host who reschedules a session to a time no reservation window generates leaves a real
+     * meeting — with real registrants — that the derived grid cannot express. Deriving from the
+     * rule alone would drop it from the page entirely: its guests would find no trace of the
+     * session they hold a seat in, and the day would look emptier than it is.
+     *
+     * <p>These sessions are surfaced but never bookable — {@code bookableKeys} comes from the slot
+     * engine, which restricts GROUP slots to reservation windows, so an off-grid time is correctly
+     * excluded. The host moved one meeting; that is not an invitation to sell more seats at a time
+     * they never opened.
+     */
+    private List<DerivedSession> mergeOffGridSessions(List<DerivedSession> derived,
+                                                      LocalDate date,
+                                                      ZoneId zoneId,
+                                                      Map<Instant, EventSession> persistedSessionsByStart) {
+        Set<Instant> gridStarts = new HashSet<>();
+        for (DerivedSession session : derived) {
+            gridStarts.add(session.startTime());
+        }
+
+        List<DerivedSession> merged = null;
+        for (EventSession persisted : persistedSessionsByStart.values()) {
+            if (gridStarts.contains(persisted.getStartTime())) {
+                continue;
+            }
+            ZonedDateTime start = persisted.getStartTime().atZone(zoneId);
+            if (!start.toLocalDate().equals(date)) {
+                continue;
+            }
+            if (merged == null) {
+                merged = new ArrayList<>(derived);
+            }
+            ZonedDateTime end = persisted.getEndTime().atZone(zoneId);
+            merged.add(new DerivedSession(
+                    date,
+                    persisted.getStartTime(),
+                    persisted.getEndTime(),
+                    start.toLocalTime(),
+                    end.toLocalTime()));
+        }
+        if (merged == null) {
+            return derived;
+        }
+        return merged.stream()
                 .sorted(Comparator.comparing(DerivedSession::startTime)
                         .thenComparing(DerivedSession::endTime))
                 .toList();

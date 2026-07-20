@@ -235,6 +235,52 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
                 .noneMatch(session -> session.startTime().equals(originalStart));
     }
 
+    /**
+     * A session moved to a time no window generates still has registrants, so it must remain
+     * visible on the public page — just not bookable, since the host never opened that time for
+     * booking. Deriving cards from the rule alone would erase a meeting people are attending.
+     */
+    @Test
+    void sessionMovedOffTheRuleGrid_staysVisibleButNotBookable() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 10, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "guest@test.com", "Guest Zero"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+
+        // 14:00 is inside working hours but outside the 09:00-11:00 reservation window,
+        // so the rule generates nothing there.
+        Instant offGridStart = TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), offGridStart);
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+
+        PublicGroupDateCardResponse date = response.dates().get(0);
+        PublicGroupSessionCardResponse moved = date.sessions().stream()
+                .filter(session -> session.startTime().equals(offGridStart))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "off-grid session vanished from the public page: " + date.sessions()));
+
+        assertThat(moved.sessionId()).isEqualTo(sessionId.toString());
+        assertThat(moved.bookedCount()).isEqualTo(1);
+        assertThat(moved.bookable())
+                .as("the host never opened 14:00 for booking")
+                .isFalse();
+        assertThat(date.sessions())
+                .as("the vacated 09:00 slot must not come back")
+                .noneMatch(session -> session.startTime().equals(originalStart));
+    }
+
     private User createHostWithAvailability() {
         User host = createHost();
         jdbc.update("""
