@@ -21,6 +21,7 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
+import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
 import org.springframework.transaction.annotation.Transactional;
@@ -236,10 +237,27 @@ public class PublicGroupSessionQueryService {
             int bookedCount = persisted != null ? Math.max(persisted.getConfirmedCount(), 0) : 0;
             int spotsLeft = Math.max(capacity - bookedCount, 0);
             int occupancyPercent = occupancyPercent(bookedCount, capacity);
-            boolean bookable = bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
+            // A session the host MOVED is bookable at its new time even though the rule generates
+            // nothing there: a half-full class relocated to Wednesday is still selling seats, just
+            // on Wednesday. Without this it displays its seat count and refuses every taker, so a
+            // 2-of-5 class could never reach 5.
+            //
+            // Restricted to moved sessions deliberately. Extending it to every materialized
+            // session would let any existing row override the host's own booking rules -- a
+            // session already sitting beyond maxAdvance would become bookable purely because it
+            // exists. The override answers "the rule no longer describes where this session is",
+            // which is true only once it has moved.
+            //
+            // Safe because the group booking path does not gate on slot generation: it resolves
+            // the session by exact start time and checks capacity and status there. This offers
+            // exactly what joinSession would already have accepted.
+            boolean movedHere = persisted != null
+                    && persisted.getScheduledOccurrenceStart() != null
+                    && !persisted.getStartTime().equals(persisted.getScheduledOccurrenceStart());
+            boolean bookable = (movedHere && spotsLeft > 0 && !isTerminal(persisted))
+                    || bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
             // A materialized session with registrants stays visible even when it is neither
-            // bookable nor full: that is the host-moved, off-grid case, and hiding it would
-            // erase a meeting people are actually attending.
+            // bookable nor full: hiding it would erase a meeting people are actually attending.
             boolean hasRegistrants = persisted != null && bookedCount > 0;
             boolean visible = bookable || spotsLeft == 0 || hasRegistrants;
             if (!visible) {
@@ -599,6 +617,12 @@ public class PublicGroupSessionQueryService {
 
     private static String syntheticSessionId(UUID eventTypeId, Instant startTime, Instant endTime) {
         return "derived:" + eventTypeId + ":" + startTime.toEpochMilli() + ":" + endTime.toEpochMilli();
+    }
+
+    /** Cancelled and completed sessions accept no further registrations, whatever their seat count. */
+    private static boolean isTerminal(EventSession session) {
+        SessionStatus status = session.getStatus();
+        return status == SessionStatus.CANCELLED || status == SessionStatus.COMPLETED;
     }
 
     private static String sessionKey(Instant startTime, Instant endTime) {
