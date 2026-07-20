@@ -14,23 +14,16 @@ import java.time.Instant;
  *
  * <p>Duration is deliberately absent — a reschedule moves one occurrence and preserves its
  * length, so the new end time is derived from the session rather than supplied by the client.
+ *
+ * <p>There is deliberately no "release the original time" option. Whether the vacated hour is
+ * available to other event types is not decidable per-session: the recurring window reserves that
+ * hour from its configuration alone, so releasing a session's hold cannot free a slot the rule
+ * still covers. A control that works only when the origin happens to fall outside its own window
+ * would be indistinguishable from a broken one. The vacated hour therefore always stays blocked,
+ * which is the safe reading of a reschedule anyway. Reopening it means editing the window.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record SessionRescheduleRequest(
         Instant startTime,
-        boolean acknowledgeExternalConflicts,
-        Boolean keepOriginalTimeBlocked) implements ForwardCompatibleRequest {
-
-    /**
-     * Whether the vacated hour stays blocked for the host's other event types.
-     *
-     * <p>Boxed rather than primitive so an omitted field is distinguishable from an explicit
-     * {@code false}: a primitive would default to {@code false} and silently reopen the host's
-     * calendar for every client that has not been updated. Absent means blocked.
-     *
-     * <p>This never affects whether the moved occurrence itself is regenerated — it is not.
-     */
-    public boolean keepOriginalTimeBlockedOrDefault() {
-        return keepOriginalTimeBlocked == null || keepOriginalTimeBlocked;
-    }
+        boolean acknowledgeExternalConflicts) implements ForwardCompatibleRequest {
 }

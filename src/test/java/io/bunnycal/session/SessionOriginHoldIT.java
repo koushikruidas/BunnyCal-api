@@ -85,87 +85,23 @@ class SessionOriginHoldIT extends AbstractSessionIT {
     }
 
     /**
-     * Releasing only lifts the <em>session's</em> hold. It cannot free an hour the recurring
-     * window still reserves — that window blocks other event types from its configuration alone,
-     * with no session involved, so the hour stays occupied whatever this flag says.
+     * The hold is unconditional — there is no host option to release it.
      *
-     * <p>Exercised from an off-window origin (a session previously moved to 11:00, then moved
-     * again) so the session hold is the only thing under test.
+     * <p>Releasing was designed and withdrawn before shipping. The recurring window reserves the
+     * vacated hour from its own configuration, with no session involved, so clearing a session's
+     * hold cannot free a slot the rule still covers. The control would have worked only when the
+     * origin happened to fall outside its own window — indistinguishable, to a host, from a
+     * control that does nothing. This test pins the absence so a future release option has to
+     * confront the window rule rather than reintroduce a flag that silently no-ops.
      */
     @Test
-    @DisplayName("released origin frees the hour when no window still reserves it")
-    void releasedOrigin_freesHourForOtherEventTypes() {
+    @DisplayName("the vacated hour is held with no way to release it")
+    void originHoldIsUnconditional() {
         User host = createHostWithAvailability();
         EventType group = createGroupWithWindow(host.getId());
-        // 11:00 is inside working hours but outside the 09:00-10:00 reservation window.
+        // Off-window, so the reservation window cannot stand in for the hold under test.
         Instant offWindowOrigin = TEST_DATE.atTime(11, 0).toInstant(ZoneOffset.UTC);
         UUID sessionId = bookAndMaterialize(host, group, offWindowOrigin);
-
-        sessionService.rescheduleSession(sessionId, host.getId(),
-                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC),
-                false,
-                false);
-
-        EventType oneOnOne = createDemandDrivenEventType(host.getId(), EventKind.ONE_ON_ONE);
-        assertThat(slotStarts(host.getId(), oneOnOne.getId()))
-                .as("the host explicitly reopened this hour")
-                .contains(offWindowOrigin);
-    }
-
-    @Test
-    @DisplayName("releasing cannot free an hour the recurring window still reserves")
-    void releasedOrigin_cannotOverrideTheReservationWindow() {
-        User host = createHostWithAvailability();
-        EventType group = createGroupWithWindow(host.getId());
-        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
-        UUID sessionId = bookAndMaterialize(host, group, originalStart);
-
-        sessionService.rescheduleSession(sessionId, host.getId(),
-                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC),
-                false,
-                false);
-
-        // The window reserves every Monday 09:00-10:00 for the group event and blocks other
-        // types from its configuration alone. Releasing the session's hold does not retire the
-        // rule, so the hour remains reserved. Freeing it means editing the window.
-        EventType oneOnOne = createDemandDrivenEventType(host.getId(), EventKind.ONE_ON_ONE);
-        assertThat(slotStarts(host.getId(), oneOnOne.getId()))
-                .as("the recurring window still reserves this hour")
-                .doesNotContain(originalStart);
-    }
-
-    // ── Occurrence consumption ───────────────────────────────────────────────
-
-    @Test
-    @DisplayName("the moved occurrence is never regenerated, even when the origin is released")
-    void releasedOrigin_stillDoesNotRegenerateTheOccurrence() {
-        User host = createHostWithAvailability();
-        EventType group = createGroupWithWindow(host.getId());
-        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
-        UUID sessionId = bookAndMaterialize(host, group, originalStart);
-
-        sessionService.rescheduleSession(sessionId, host.getId(),
-                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC),
-                false,
-                false);
-
-        // Releasing the hour lets OTHER events use it; it never resurrects this one. Otherwise a
-        // host who moved this week's class would find a second copy of it back on the old day.
-        assertThat(slotStarts(host.getId(), group.getId()))
-                .as("the owning event consumed this occurrence by moving it")
-                .doesNotContain(originalStart);
-    }
-
-    // ── Defaults ─────────────────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("a reschedule that says nothing about the origin keeps it blocked")
-    void defaultIsBlocked() {
-        User host = createHostWithAvailability();
-        EventType group = createGroupWithWindow(host.getId());
-        // Off-window, so the reservation window cannot stand in for the hold being asserted.
-        Instant originalStart = TEST_DATE.atTime(11, 0).toInstant(ZoneOffset.UTC);
-        UUID sessionId = bookAndMaterialize(host, group, originalStart);
 
         sessionService.rescheduleSession(sessionId, host.getId(),
                 TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC));
@@ -176,12 +112,36 @@ class SessionOriginHoldIT extends AbstractSessionIT {
                 .isTrue();
 
         EventType oneOnOne = createDemandDrivenEventType(host.getId(), EventKind.ONE_ON_ONE);
-        assertThat(slotStarts(host.getId(), oneOnOne.getId())).doesNotContain(originalStart);
+        assertThat(slotStarts(host.getId(), oneOnOne.getId()))
+                .as("the vacated hour stays blocked")
+                .doesNotContain(offWindowOrigin);
     }
 
+    // ── Occurrence consumption ───────────────────────────────────────────────
+
     @Test
-    @DisplayName("the second move's choice wins")
-    void movingTwice_appliesTheLatestChoice() {
+    @DisplayName("the moved occurrence is never regenerated by its own rule")
+    void movedOccurrence_isNotRegenerated() {
+        User host = createHostWithAvailability();
+        EventType group = createGroupWithWindow(host.getId());
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        UUID sessionId = bookAndMaterialize(host, group, originalStart);
+
+        sessionService.rescheduleSession(sessionId, host.getId(),
+                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC));
+
+        // Consumption is separate from the hold: the rule must not put a second copy of this
+        // class back on the old day, whatever the hour's availability to other events.
+        assertThat(slotStarts(host.getId(), group.getId()))
+                .as("the owning event consumed this occurrence by moving it")
+                .doesNotContain(originalStart);
+    }
+
+    // ── Lineage ──────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("the hold follows the origin, not intermediate positions")
+    void movingTwice_holdsOnlyTheOriginalOccurrence() {
         User host = createHostWithAvailability();
         EventType group = createGroupWithWindow(host.getId());
         // Off-window, isolating the hold from the reservation window.
@@ -189,15 +149,15 @@ class SessionOriginHoldIT extends AbstractSessionIT {
         UUID sessionId = bookAndMaterialize(host, group, originalStart);
 
         sessionService.rescheduleSession(sessionId, host.getId(),
-                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC), false, false);
+                TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC));
         sessionService.rescheduleSession(sessionId, host.getId(),
-                TEST_DATE.atTime(15, 0).toInstant(ZoneOffset.UTC), false, true);
+                TEST_DATE.atTime(15, 0).toInstant(ZoneOffset.UTC));
 
         // Lineage still points at the original occurrence, so the hold applies there — not to the
         // intermediate 14:00, which was never an occurrence of anything.
         EventType oneOnOne = createDemandDrivenEventType(host.getId(), EventKind.ONE_ON_ONE);
         List<Instant> starts = slotStarts(host.getId(), oneOnOne.getId());
-        assertThat(starts).as("re-blocked by the second move").doesNotContain(originalStart);
+        assertThat(starts).as("still held after a second move").doesNotContain(originalStart);
         assertThat(starts).as("14:00 was never an origin").contains(TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC));
     }
 

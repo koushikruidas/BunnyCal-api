@@ -279,7 +279,9 @@ public class SlotService {
             sessionBlockerWindows.add(new BookingWindow(occurrenceStart, occurrenceEnd));
         }
 
-        // Origin holds: time a rescheduled session vacated but the host chose to keep blocked.
+        // Origin holds: time a rescheduled session vacated, which stays blocked for every other
+        // event type. A host moves a session because they cannot make that time, so leaving the
+        // hour open would invite exactly the double-booking the move was meant to avoid.
         // The session is already blocking at its new position via the query above; this adds the
         // hour it left. A host moves a session because they cannot make that time, so leaving it
         // open would invite exactly the double-booking the move was meant to avoid. Hosts can opt
