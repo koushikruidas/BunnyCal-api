@@ -319,6 +319,39 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                                                                  @Param("now") Instant now);
 
     /**
+     * Origin holds overlapping the range: time vacated by a reschedule that the host kept blocked.
+     *
+     * <p>Returns windows at the occurrence's <em>original</em> position, which is the whole point —
+     * the session itself has moved and is already blocking wherever it landed. Without this, moving
+     * a session silently opens the hour it left to every other event type, and a host who moved a
+     * class because they are busy at that time gets booked into it by someone else.
+     *
+     * <p>Deliberately carries <b>no</b> self-reuse carve-out, unlike
+     * {@link #findAvailabilityBlockingSessionsInRange}. That query lets an event type reuse its own
+     * non-full sessions, which is right for occupancy but wrong here: an origin hold expresses host
+     * unavailability, which is not specific to an event type. The owning event is kept out of its
+     * vacated slot by occurrence consumption in the read paths, not by this blocker, so the two
+     * mechanisms cannot double-count.
+     *
+     * <p>The occurrence's end is derived as {@code scheduled_occurrence_start + (end_time -
+     * start_time)}: duration travels with the session, and only its position changed.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE host_id                     = :hostId
+              AND origin_blocks_other_events  = TRUE
+              AND scheduled_occurrence_start IS NOT NULL
+              AND start_time <> scheduled_occurrence_start
+              AND status IN ('OPEN', 'FULL')
+              AND scheduled_occurrence_start < :rangeEnd
+              AND scheduled_occurrence_start + (end_time - start_time) > :rangeStart
+            """, nativeQuery = true)
+    List<EventSession> findOriginHoldsInRange(@Param("hostId") UUID hostId,
+                                              @Param("rangeStart") Instant rangeStart,
+                                              @Param("rangeEnd") Instant rangeEnd);
+
+    /**
      * Seeds the occurrence start for a session that never had one.
      *
      * <p>Sessions materialized before lineage tracking carry a null

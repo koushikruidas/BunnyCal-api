@@ -18,5 +18,19 @@ import java.time.Instant;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record SessionRescheduleRequest(
         Instant startTime,
-        boolean acknowledgeExternalConflicts) implements ForwardCompatibleRequest {
+        boolean acknowledgeExternalConflicts,
+        Boolean keepOriginalTimeBlocked) implements ForwardCompatibleRequest {
+
+    /**
+     * Whether the vacated hour stays blocked for the host's other event types.
+     *
+     * <p>Boxed rather than primitive so an omitted field is distinguishable from an explicit
+     * {@code false}: a primitive would default to {@code false} and silently reopen the host's
+     * calendar for every client that has not been updated. Absent means blocked.
+     *
+     * <p>This never affects whether the moved occurrence itself is regenerated — it is not.
+     */
+    public boolean keepOriginalTimeBlockedOrDefault() {
+        return keepOriginalTimeBlocked == null || keepOriginalTimeBlocked;
+    }
 }

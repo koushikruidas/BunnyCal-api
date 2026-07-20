@@ -177,7 +177,8 @@ public class SessionController {
         UUID requesterId = extractUserId(authentication);
         sessionQueryService.getSessionDetail(requesterId, sessionId);
         sessionService.rescheduleSession(sessionId, requesterId, request.startTime(),
-                request.acknowledgeExternalConflicts());
+                request.acknowledgeExternalConflicts(),
+                request.keepOriginalTimeBlockedOrDefault());
         return ResponseEntity.ok(ApiResponse.success(sessionQueryService.getSessionDetail(requesterId, sessionId)));
     }
 

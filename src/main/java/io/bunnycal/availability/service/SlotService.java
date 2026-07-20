@@ -44,6 +44,7 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.DateTimeUtils;
 import io.bunnycal.common.time.TimeConversionService;
 import java.time.DayOfWeek;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -264,6 +265,31 @@ public class SlotService {
         sessionBlockerWindows = new ArrayList<>(blockingSessions.size());
         for (EventSession session : blockingSessions) {
             sessionBlockerWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
+        }
+
+        // Occurrence consumption: an occurrence this event type moved elsewhere is spent, and the
+        // rule must not regenerate it. Unconditional — releasing the origin lets OTHER event types
+        // use the hour, never this one. Otherwise a host who moved this week's class to Wednesday
+        // would find a second copy of it still bookable on Tuesday.
+        for (EventSession moved : eventSessionRepository.findMovedSessionsByOccurrenceRange(
+                eventType.getId(), dayStartUtc, dayEndUtc)) {
+            Instant occurrenceStart = moved.getScheduledOccurrenceStart();
+            Instant occurrenceEnd = occurrenceStart.plus(
+                    Duration.between(moved.getStartTime(), moved.getEndTime()));
+            sessionBlockerWindows.add(new BookingWindow(occurrenceStart, occurrenceEnd));
+        }
+
+        // Origin holds: time a rescheduled session vacated but the host chose to keep blocked.
+        // The session is already blocking at its new position via the query above; this adds the
+        // hour it left. A host moves a session because they cannot make that time, so leaving it
+        // open would invite exactly the double-booking the move was meant to avoid. Hosts can opt
+        // out per reschedule, which clears origin_blocks_other_events and drops the row here.
+        for (EventSession moved : eventSessionRepository.findOriginHoldsInRange(
+                host.getId(), dayStartUtc, dayEndUtc)) {
+            Instant occurrenceStart = moved.getScheduledOccurrenceStart();
+            Instant occurrenceEnd = occurrenceStart.plus(
+                    Duration.between(moved.getStartTime(), moved.getEndTime()));
+            sessionBlockerWindows.add(new BookingWindow(occurrenceStart, occurrenceEnd));
         }
 
         // Group Event Reservation Windows: recurring windows a GROUP event type

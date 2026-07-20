@@ -85,6 +85,16 @@ tasks.named('test') {
     maxHeapSize = '2g'
     forkEvery = 800
 
+    // spring.mail.host has no default: an unset SMTP host must fail loudly at startup rather
+    // than silently falling back to a decommissioned provider. Tests never send mail, but the
+    // context still has to start, so supply a placeholder here. Set once for the whole suite
+    // rather than in each of the ~23 IT base classes.
+    //
+    // Host only. Setting SPRING_MAIL_USERNAME/PASSWORD here would leak into
+    // MailTransportConfigurationTest, which builds environments that deliberately omit them to
+    // assert the legacy AWS_SES_* fallback still resolves.
+    environment 'SPRING_MAIL_HOST', 'localhost'
+
     testLogging {
         events "passed", "failed", "skipped"
     }
