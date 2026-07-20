@@ -51,6 +51,7 @@ public class GroupHostNotificationService {
     private final NotificationSendDedupService dedupService;
     private final TimeSource timeSource;
     private final String fromAddress;
+    private final String fromName;
     private final Duration digestDelay;
 
     public GroupHostNotificationService(
@@ -63,6 +64,7 @@ public class GroupHostNotificationService {
             NotificationSendDedupService dedupService,
             TimeSource timeSource,
             @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
+            @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName,
             @Value("${group.host-notifications.digest-delay:PT24H}") Duration digestDelay) {
         this.mailSender = mailSender;
         this.userRepository = userRepository;
@@ -73,6 +75,7 @@ public class GroupHostNotificationService {
         this.dedupService = dedupService;
         this.timeSource = timeSource;
         this.fromAddress = fromAddress;
+        this.fromName = fromName;
         this.digestDelay = digestDelay;
     }
 
@@ -296,7 +299,11 @@ public class GroupHostNotificationService {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-            helper.setFrom(fromAddress);
+            if (fromName != null && !fromName.isBlank()) {
+                helper.setFrom(fromAddress, fromName);
+            } else {
+                helper.setFrom(fromAddress);
+            }
             helper.setReplyTo(fromAddress);
             helper.setTo(recipient);
             helper.setSubject(subject);

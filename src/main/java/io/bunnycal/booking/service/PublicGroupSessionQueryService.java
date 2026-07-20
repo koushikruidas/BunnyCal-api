@@ -21,6 +21,7 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
+import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
 import org.springframework.transaction.annotation.Transactional;
@@ -118,6 +119,15 @@ public class PublicGroupSessionQueryService {
                 .stream()
                 .collect(LinkedHashMap::new, (map, session) -> map.put(session.getStartTime(), session), Map::putAll);
 
+        // Occurrences the host moved elsewhere. The recurrence rule still generates the
+        // original time, so without this the vacated slot reappears as a fresh empty
+        // session while its guests sit at the new time.
+        Set<Instant> movedAwayOccurrences = eventSessionRepository
+                .findMovedSessionsByOccurrenceRange(target.eventTypeId(), rangeStart, rangeEnd)
+                .stream()
+                .map(EventSession::getScheduledOccurrenceStart)
+                .collect(java.util.stream.Collectors.toCollection(HashSet::new));
+
         Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId =
                 loadConfirmedRegistrations(persistedSessionsByStart.values());
         Map<LocalDate, Set<String>> bookableKeysByDate =
@@ -131,7 +141,11 @@ public class PublicGroupSessionQueryService {
                     .sorted(Comparator.comparing(GroupEventReservationWindow::getStartTime)
                             .thenComparing(GroupEventReservationWindow::getEndTime))
                     .toList();
-            List<DerivedSession> derivedSessions = deriveSessionsForDate(date, zoneId, eventType, dayWindows);
+            List<DerivedSession> derivedSessions = mergeOffGridSessions(
+                    deriveSessionsForDate(date, zoneId, eventType, dayWindows),
+                    date,
+                    zoneId,
+                    persistedSessionsByStart);
             Set<String> bookableKeys = bookableKeysByDate.getOrDefault(date, Set.of());
             dateCards.add(toDateCard(
                     date,
@@ -140,7 +154,8 @@ public class PublicGroupSessionQueryService {
                     derivedSessions,
                     persistedSessionsByStart,
                     confirmedRegistrationsBySessionId,
-                    bookableKeys));
+                    bookableKeys,
+                    movedAwayOccurrences));
         }
 
         return new PublicGroupSessionsResponse(
@@ -188,7 +203,8 @@ public class PublicGroupSessionQueryService {
                                                    List<DerivedSession> derivedSessions,
                                                    Map<Instant, EventSession> persistedSessionsByStart,
                                                    Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId,
-                                                   Set<String> bookableKeys) {
+                                                   Set<String> bookableKeys,
+                                                   Set<Instant> movedAwayOccurrences) {
         if (derivedSessions.isEmpty()) {
             return new PublicGroupDateCardResponse(
                     date,
@@ -208,16 +224,42 @@ public class PublicGroupSessionQueryService {
         LocalTime nextAvailableStartTime = null;
         boolean anyFillingUp = false;
         boolean anyVisible = false;
-        boolean allVisibleFull = true;
 
         for (DerivedSession derived : derivedSessions) {
             EventSession persisted = persistedSessionsByStart.get(derived.startTime());
+            // The rule still emits this occurrence, but the session it produced was moved
+            // away. Drop it unless something else has since materialized at the same time
+            // — that row is a real session and owns the slot on its own terms.
+            if (persisted == null && movedAwayOccurrences.contains(derived.startTime())) {
+                continue;
+            }
             int capacity = persisted != null && persisted.getCapacity() > 0 ? persisted.getCapacity() : defaultCapacity;
             int bookedCount = persisted != null ? Math.max(persisted.getConfirmedCount(), 0) : 0;
             int spotsLeft = Math.max(capacity - bookedCount, 0);
             int occupancyPercent = occupancyPercent(bookedCount, capacity);
-            boolean bookable = bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
-            boolean visible = bookable || spotsLeft == 0;
+            // A session the host MOVED is bookable at its new time even though the rule generates
+            // nothing there: a half-full class relocated to Wednesday is still selling seats, just
+            // on Wednesday. Without this it displays its seat count and refuses every taker, so a
+            // 2-of-5 class could never reach 5.
+            //
+            // Restricted to moved sessions deliberately. Extending it to every materialized
+            // session would let any existing row override the host's own booking rules -- a
+            // session already sitting beyond maxAdvance would become bookable purely because it
+            // exists. The override answers "the rule no longer describes where this session is",
+            // which is true only once it has moved.
+            //
+            // Safe because the group booking path does not gate on slot generation: it resolves
+            // the session by exact start time and checks capacity and status there. This offers
+            // exactly what joinSession would already have accepted.
+            boolean movedHere = persisted != null
+                    && persisted.getScheduledOccurrenceStart() != null
+                    && !persisted.getStartTime().equals(persisted.getScheduledOccurrenceStart());
+            boolean bookable = (movedHere && spotsLeft > 0 && !isTerminal(persisted))
+                    || bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
+            // A materialized session with registrants stays visible even when it is neither
+            // bookable nor full: hiding it would erase a meeting people are actually attending.
+            boolean hasRegistrants = persisted != null && bookedCount > 0;
+            boolean visible = bookable || spotsLeft == 0 || hasRegistrants;
             if (!visible) {
                 continue;
             }
@@ -231,9 +273,6 @@ public class PublicGroupSessionQueryService {
             }
             if (occupancyPercent >= FILLING_UP_THRESHOLD_PERCENT) {
                 anyFillingUp = true;
-            }
-            if (spotsLeft > 0) {
-                allVisibleFull = false;
             }
 
             List<PublicAttendeePreviewResponse> attendeePreview = persisted == null
@@ -272,7 +311,10 @@ public class PublicGroupSessionQueryService {
 
         PublicGroupDateStatus status;
         if (bookableSessionCount == 0) {
-            status = allVisibleFull ? PublicGroupDateStatus.FULLY_BOOKED : PublicGroupDateStatus.NO_SESSIONS;
+            // Nothing open to book. NO_SESSIONS would contradict the cards we are about to
+            // return — an off-grid session with seats left is visible but unbookable, so the
+            // day is closed to new bookings rather than empty.
+            status = PublicGroupDateStatus.FULLY_BOOKED;
         } else if (anyFillingUp) {
             status = PublicGroupDateStatus.FILLING_UP;
         } else {
@@ -379,6 +421,57 @@ public class PublicGroupSessionQueryService {
         }
 
         return sessions.stream()
+                .sorted(Comparator.comparing(DerivedSession::startTime)
+                        .thenComparing(DerivedSession::endTime))
+                .toList();
+    }
+
+    /**
+     * Adds sessions that exist on this date but sit outside the rule's grid.
+     *
+     * <p>A host who reschedules a session to a time no reservation window generates leaves a real
+     * meeting — with real registrants — that the derived grid cannot express. Deriving from the
+     * rule alone would drop it from the page entirely: its guests would find no trace of the
+     * session they hold a seat in, and the day would look emptier than it is.
+     *
+     * <p>These sessions are surfaced but never bookable — {@code bookableKeys} comes from the slot
+     * engine, which restricts GROUP slots to reservation windows, so an off-grid time is correctly
+     * excluded. The host moved one meeting; that is not an invitation to sell more seats at a time
+     * they never opened.
+     */
+    private List<DerivedSession> mergeOffGridSessions(List<DerivedSession> derived,
+                                                      LocalDate date,
+                                                      ZoneId zoneId,
+                                                      Map<Instant, EventSession> persistedSessionsByStart) {
+        Set<Instant> gridStarts = new HashSet<>();
+        for (DerivedSession session : derived) {
+            gridStarts.add(session.startTime());
+        }
+
+        List<DerivedSession> merged = null;
+        for (EventSession persisted : persistedSessionsByStart.values()) {
+            if (gridStarts.contains(persisted.getStartTime())) {
+                continue;
+            }
+            ZonedDateTime start = persisted.getStartTime().atZone(zoneId);
+            if (!start.toLocalDate().equals(date)) {
+                continue;
+            }
+            if (merged == null) {
+                merged = new ArrayList<>(derived);
+            }
+            ZonedDateTime end = persisted.getEndTime().atZone(zoneId);
+            merged.add(new DerivedSession(
+                    date,
+                    persisted.getStartTime(),
+                    persisted.getEndTime(),
+                    start.toLocalTime(),
+                    end.toLocalTime()));
+        }
+        if (merged == null) {
+            return derived;
+        }
+        return merged.stream()
                 .sorted(Comparator.comparing(DerivedSession::startTime)
                         .thenComparing(DerivedSession::endTime))
                 .toList();
@@ -524,6 +617,12 @@ public class PublicGroupSessionQueryService {
 
     private static String syntheticSessionId(UUID eventTypeId, Instant startTime, Instant endTime) {
         return "derived:" + eventTypeId + ":" + startTime.toEpochMilli() + ":" + endTime.toEpochMilli();
+    }
+
+    /** Cancelled and completed sessions accept no further registrations, whatever their seat count. */
+    private static boolean isTerminal(EventSession session) {
+        SessionStatus status = session.getStatus();
+        return status == SessionStatus.CANCELLED || status == SessionStatus.COMPLETED;
     }
 
     private static String sessionKey(Instant startTime, Instant endTime) {

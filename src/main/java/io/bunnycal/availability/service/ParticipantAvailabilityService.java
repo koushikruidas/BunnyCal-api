@@ -30,6 +30,7 @@ import io.bunnycal.common.time.TimeConversionService;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.repository.EventSessionRepository;
 import java.time.DayOfWeek;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -147,6 +148,18 @@ public class ParticipantAvailabilityService {
         List<BookingWindow> sessionBlockerWindows = new ArrayList<>(blockingSessions.size());
         for (EventSession session : blockingSessions) {
             sessionBlockerWindows.add(new BookingWindow(session.getStartTime(), session.getEndTime()));
+        }
+
+        // 7b. Origin holds: an hour this participant vacated by rescheduling a session, and chose
+        //     to keep blocked. Round robin and collective build their slots here rather than from
+        //     the host's own availability, so a hold applied only in SlotService would leave the
+        //     hour open on exactly the multi-host events most likely to fill it.
+        for (EventSession moved : eventSessionRepository.findOriginHoldsInRange(
+                participantUserId, dayStartUtc, dayEndUtc)) {
+            Instant occurrenceStart = moved.getScheduledOccurrenceStart();
+            sessionBlockerWindows.add(new BookingWindow(
+                    occurrenceStart,
+                    occurrenceStart.plus(Duration.between(moved.getStartTime(), moved.getEndTime()))));
         }
 
         // 8. Reservation window blockers for participant's OTHER event types.

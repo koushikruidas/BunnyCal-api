@@ -46,6 +46,7 @@ class SessionControllerTest {
         SessionDetailResponse detail = new SessionDetailResponse(
                 sessionId, hostId, UUID.randomUUID(), "Group Workshop", "group-workshop",
                 Instant.parse("2026-06-01T10:00:00Z"), Instant.parse("2026-06-01T11:00:00Z"),
+                null,
                 "CANCELLED", 3, 0, 0, 3, 0, 0d, 2L, 1L,
                 Instant.parse("2026-05-01T00:00:00Z"), Instant.parse("2026-05-02T00:00:00Z"),
                 false, SessionSyncStatusResponse.empty(false));
@@ -67,6 +68,7 @@ class SessionControllerTest {
         SessionDetailResponse detail = new SessionDetailResponse(
                 sessionId, hostId, UUID.randomUUID(), "Group Workshop", "group-workshop",
                 Instant.parse("2026-06-01T10:00:00Z"), Instant.parse("2026-06-01T11:00:00Z"),
+                null,
                 "OPEN", 3, 1, 0, 1, 0, 33.3333, 2L, 1L,
                 Instant.parse("2026-05-01T00:00:00Z"), Instant.parse("2026-05-02T00:00:00Z"),
                 false, SessionSyncStatusResponse.empty(false));
@@ -103,6 +105,7 @@ class SessionControllerTest {
         SessionDetailResponse detail = new SessionDetailResponse(
                 sessionId, hostId, UUID.randomUUID(), "Group Workshop", "group-workshop",
                 Instant.parse("2026-06-01T10:00:00Z"), Instant.parse("2026-06-01T11:00:00Z"),
+                null,
                 "OPEN", 3, 1, 0, 1, 0, 33.3333, 1L, 0L,
                 Instant.parse("2026-05-01T00:00:00Z"), Instant.parse("2026-05-02T00:00:00Z"),
                 false, SessionSyncStatusResponse.empty(false));

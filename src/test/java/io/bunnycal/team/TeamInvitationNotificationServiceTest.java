@@ -30,7 +30,8 @@ class TeamInvitationNotificationServiceTest {
         TeamInvitationNotificationService service = new TeamInvitationNotificationService(
                 mailSender,
                 objectMapper,
-                "no-reply@example.test");
+                "no-reply@example.test",
+                "BunnyCal Calendar");
 
         OutboxEvent event = outboxEvent(
                 TeamInvitationNotificationService.AGGREGATE_TYPE_INVITATION,
@@ -61,7 +62,8 @@ class TeamInvitationNotificationServiceTest {
         TeamInvitationNotificationService service = new TeamInvitationNotificationService(
                 mailSender,
                 objectMapper,
-                "no-reply@example.test");
+                "no-reply@example.test",
+                "BunnyCal Calendar");
 
         OutboxEvent event = outboxEvent(
                 TeamInvitationNotificationService.AGGREGATE_TYPE_MEMBER,

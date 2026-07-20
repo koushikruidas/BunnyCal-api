@@ -30,16 +30,19 @@ public class EventTypeLifecycleNotificationService {
     private final ObjectMapper objectMapper;
     private final UserRepository userRepository;
     private final String fromAddress;
+    private final String fromName;
 
     public EventTypeLifecycleNotificationService(
             JavaMailSender mailSender,
             ObjectMapper objectMapper,
             UserRepository userRepository,
-            @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress) {
+            @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress,
+            @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName) {
         this.mailSender = mailSender;
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
         this.fromAddress = fromAddress;
+        this.fromName = fromName;
     }
 
     public void handleOutboxEvent(OutboxEvent event) {
@@ -128,7 +131,11 @@ public class EventTypeLifecycleNotificationService {
         try {
             var message = mailSender.createMimeMessage();
             var helper = new MimeMessageHelper(message, "UTF-8");
-            helper.setFrom(fromAddress);
+            if (fromName != null && !fromName.isBlank()) {
+                helper.setFrom(fromAddress, fromName);
+            } else {
+                helper.setFrom(fromAddress);
+            }
             helper.setTo(to);
             helper.setSubject(subject);
             helper.setText(body, false);

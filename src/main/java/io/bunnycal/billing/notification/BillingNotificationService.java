@@ -42,13 +42,16 @@ public class BillingNotificationService {
     private final JavaMailSender mailSender;
     private final ObjectMapper objectMapper;
     private final String fromAddress;
+    private final String fromName;
 
     public BillingNotificationService(JavaMailSender mailSender,
                                       ObjectMapper objectMapper,
-                                      @Value("${billing.notifications.from:billing@bunnycal.local}") String fromAddress) {
+                                      @Value("${billing.notifications.from:billing@bunnycal.local}") String fromAddress,
+                                      @Value("${billing.notifications.from-name:BunnyCal Billing}") String fromName) {
         this.mailSender = mailSender;
         this.objectMapper = objectMapper;
         this.fromAddress = fromAddress;
+        this.fromName = fromName;
     }
 
     public static boolean supportsAggregateType(String aggregateType) {
@@ -83,7 +86,11 @@ public class BillingNotificationService {
     private void send(String to, String subject, String body) throws Exception {
         var message = mailSender.createMimeMessage();
         var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-        helper.setFrom(fromAddress);
+        if (fromName != null && !fromName.isBlank()) {
+            helper.setFrom(fromAddress, fromName);
+        } else {
+            helper.setFrom(fromAddress);
+        }
         helper.setTo(to);
         helper.setSubject(subject);
         helper.setText(body, false);

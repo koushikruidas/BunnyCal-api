@@ -20,6 +20,8 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
         String getEventTypeSlug();
         Instant getStartTime();
         Instant getEndTime();
+        /** Where the rule placed this occurrence; differs from startTime once the host moved it. */
+        Instant getScheduledOccurrenceStart();
         String getStatus();
         int getCapacity();
         int getConfirmedCount();
@@ -59,6 +61,34 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
     List<EventSession> findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
             UUID eventTypeId, Instant rangeStart, Instant rangeEnd);
 
+    /**
+     * Sessions whose rule-generated occurrence falls in the range, wherever they now sit.
+     *
+     * <p>Deliberately keyed on {@code scheduled_occurrence_start} rather than {@code start_time}.
+     * A host-rescheduled session has moved away from the occurrence the recurrence produced, and
+     * the public group grid still generates that vacated occurrence from the rule. Without this
+     * query the grid cannot tell that the occurrence was moved, so it re-offers the old time as a
+     * brand-new empty session while the real one — with its guests — sits elsewhere.
+     *
+     * <p>The range therefore bounds the <em>occurrence</em>, not the session: a session moved from
+     * inside the range to outside it must still be returned, because suppressing its origin slot is
+     * the entire point.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id             = :eventTypeId
+              AND scheduled_occurrence_start IS NOT NULL
+              AND scheduled_occurrence_start >= :rangeStart
+              AND scheduled_occurrence_start <  :rangeEnd
+              AND start_time <> scheduled_occurrence_start
+              AND status IN ('OPEN', 'FULL')
+            ORDER BY scheduled_occurrence_start ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findMovedSessionsByOccurrenceRange(@Param("eventTypeId") UUID eventTypeId,
+                                                          @Param("rangeStart") Instant rangeStart,
+                                                          @Param("rangeEnd") Instant rangeEnd);
+
     @Query(value = """
             SELECT
                 s.id AS sessionId,
@@ -68,6 +98,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                 et.slug AS eventTypeSlug,
                 s.start_time AS startTime,
                 s.end_time AS endTime,
+                s.scheduled_occurrence_start AS scheduledOccurrenceStart,
                 s.status AS status,
                 s.capacity AS capacity,
                 s.confirmed_count AS confirmedCount,
@@ -152,6 +183,7 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
                 et.slug AS eventTypeSlug,
                 s.start_time AS startTime,
                 s.end_time AS endTime,
+                s.scheduled_occurrence_start AS scheduledOccurrenceStart,
                 s.status AS status,
                 s.capacity AS capacity,
                 s.confirmed_count AS confirmedCount,
@@ -289,6 +321,62 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             """, nativeQuery = true)
     List<WindowBookedCountRow> countBookedFutureSessionsByWindow(@Param("eventTypeId") UUID eventTypeId,
                                                                  @Param("now") Instant now);
+
+    /**
+     * Origin holds overlapping the range: time vacated by a reschedule that the host kept blocked.
+     *
+     * <p>Returns windows at the occurrence's <em>original</em> position, which is the whole point —
+     * the session itself has moved and is already blocking wherever it landed. Without this, moving
+     * a session silently opens the hour it left to every other event type, and a host who moved a
+     * class because they are busy at that time gets booked into it by someone else.
+     *
+     * <p>Deliberately carries <b>no</b> self-reuse carve-out, unlike
+     * {@link #findAvailabilityBlockingSessionsInRange}. That query lets an event type reuse its own
+     * non-full sessions, which is right for occupancy but wrong here: an origin hold expresses host
+     * unavailability, which is not specific to an event type. The owning event is kept out of its
+     * vacated slot by occurrence consumption in the read paths, not by this blocker, so the two
+     * mechanisms cannot double-count.
+     *
+     * <p>The occurrence's end is derived as {@code scheduled_occurrence_start + (end_time -
+     * start_time)}: duration travels with the session, and only its position changed.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE host_id                     = :hostId
+              AND origin_blocks_other_events  = TRUE
+              AND scheduled_occurrence_start IS NOT NULL
+              AND start_time <> scheduled_occurrence_start
+              AND status IN ('OPEN', 'FULL')
+              AND scheduled_occurrence_start < :rangeEnd
+              AND scheduled_occurrence_start + (end_time - start_time) > :rangeStart
+            """, nativeQuery = true)
+    List<EventSession> findOriginHoldsInRange(@Param("hostId") UUID hostId,
+                                              @Param("rangeStart") Instant rangeStart,
+                                              @Param("rangeEnd") Instant rangeEnd);
+
+    /**
+     * Seeds the occurrence start for a session that never had one.
+     *
+     * <p>Sessions materialized before lineage tracking carry a null
+     * {@code scheduled_occurrence_start}. The field is mapped {@code updatable = false} so JPA
+     * will not write it — deliberately, since it is write-once — but a null is an absent value
+     * rather than a recorded one, and filling it the moment a session detaches is what keeps
+     * read paths able to distinguish the rule's occurrence from where the host moved the
+     * session to.
+     *
+     * <p>The {@code IS NULL} guard makes this idempotent and preserves write-once: a session
+     * that already knows its origin is never rewritten.
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE event_sessions
+               SET scheduled_occurrence_start = :occurrenceStart
+             WHERE id = :sessionId
+               AND scheduled_occurrence_start IS NULL
+            """, nativeQuery = true)
+    int seedScheduledOccurrenceStart(@Param("sessionId") UUID sessionId,
+                                     @Param("occurrenceStart") Instant occurrenceStart);
 
     /**
      * Future sessions left behind when their recurrence rule changed.

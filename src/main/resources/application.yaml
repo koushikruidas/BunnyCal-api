@@ -55,8 +55,8 @@ spring:
     validate-on-migrate: true
 
   mail:
-    host: email-smtp.ap-south-1.amazonaws.com
-    port: 587
+    host: ${SPRING_MAIL_HOST}
+    port: ${SPRING_MAIL_PORT:587}
     username: ${SPRING_MAIL_USERNAME:${AWS_SES_SMTP_USERNAME}}
     password: ${SPRING_MAIL_PASSWORD:${AWS_SES_SMTP_PASSWORD}}
     properties:
@@ -305,8 +305,8 @@ booking:
     enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
     # From is aligned with the iTIP ORGANIZER identity at send time (Outlook treats
     # From != ORGANIZER as a foreign invite). Keep this mailbox SPF/DKIM/DMARC-aligned.
-    from: ${BOOKING_NOTIFICATIONS_FROM:calendar@logpulse.dev}
-    calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL:calendar@logpulse.dev}
+    from: ${BOOKING_NOTIFICATIONS_FROM:calendar@bunnycal.io}
+    calendar-organizer-email: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_EMAIL:calendar@bunnycal.io}
     calendar-organizer-name: ${BOOKING_NOTIFICATIONS_CALENDAR_ORGANIZER_NAME:BunnyCal Calendar}
     # Debug only: when set to a directory path, the fully rendered outbound MIME
     # message is written as a .eml file before SES send, for raw cross-client diffing.
@@ -339,7 +339,11 @@ billing:
     cron: ${BILLING_DUNNING_CRON:0 30 * * * *}
   notifications:
     enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
-    from: ${BILLING_NOTIFICATIONS_FROM:billing@logpulse.dev}
+    # Billing keeps its own From identity, separate from booking/calendar mail. A spam
+    # complaint on a dunning notice must not degrade the sending reputation of booking
+    # confirmations, so the two streams stay on distinct mailboxes and display names.
+    from: ${BILLING_NOTIFICATIONS_FROM:billing@bunnycal.io}
+    from-name: ${BILLING_NOTIFICATIONS_FROM_NAME:BunnyCal Billing}
   # Processor / Merchant-of-Record fee rate (basis points; 500 = 5%) used to ESTIMATE fees
   # and net in the admin Revenue report. Per-transaction fees are not persisted, so this is
   # an estimate. 0 (default) = not configured: the report shows fees/net as unavailable.

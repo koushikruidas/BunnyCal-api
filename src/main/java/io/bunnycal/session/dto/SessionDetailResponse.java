@@ -11,6 +11,8 @@ public record SessionDetailResponse(
         String eventTypeSlug,
         Instant startTime,
         Instant endTime,
+        /** Where the rule placed this occurrence; differs from startTime once the host moved it. */
+        Instant scheduledOccurrenceStart,
         String status,
         int capacity,
         int confirmedCount,
@@ -39,6 +41,7 @@ public record SessionDetailResponse(
                 eventTypeSlug,
                 startTime,
                 endTime,
+                scheduledOccurrenceStart,
                 status,
                 capacity,
                 confirmedCount,

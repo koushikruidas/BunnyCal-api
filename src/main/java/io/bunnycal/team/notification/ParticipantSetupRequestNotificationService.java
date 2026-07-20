@@ -23,14 +23,17 @@ public class ParticipantSetupRequestNotificationService {
     private final JavaMailSender mailSender;
     private final ObjectMapper objectMapper;
     private final String fromAddress;
+    private final String fromName;
 
     public ParticipantSetupRequestNotificationService(
             JavaMailSender mailSender,
             ObjectMapper objectMapper,
-            @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress) {
+            @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress,
+            @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName) {
         this.mailSender = mailSender;
         this.objectMapper = objectMapper;
         this.fromAddress = fromAddress;
+        this.fromName = fromName;
     }
 
     public void handleOutboxEvent(OutboxEvent event) {
@@ -54,7 +57,11 @@ public class ParticipantSetupRequestNotificationService {
     private void send(ParticipantSetupRequestOutboxPayload payload) throws Exception {
         var message = mailSender.createMimeMessage();
         var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-        helper.setFrom(fromAddress);
+        if (fromName != null && !fromName.isBlank()) {
+            helper.setFrom(fromAddress, fromName);
+        } else {
+            helper.setFrom(fromAddress);
+        }
         helper.setTo(payload.targetEmail());
         helper.setSubject("Action required: set up your scheduling profile on BunnyCal");
         helper.setText(buildBody(payload), false);

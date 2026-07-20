@@ -4,6 +4,7 @@ import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.calendar.domain.CalendarEvent;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.session.domain.EventSession;
+import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.repository.EventSessionRepository;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,6 +40,17 @@ public class RescheduleConflictService {
      * @param excludeSessionId the session being moved, so it never conflicts with itself
      */
     public RescheduleConflicts check(UUID hostId, Instant start, Instant end, UUID excludeSessionId) {
+        return check(hostId, null, start, end, excludeSessionId);
+    }
+
+    /**
+     * @param eventTypeId the moving session's event type. Supplying it also reports exact-start
+     *        collisions with a live session of that type, naming the clash more precisely than the
+     *        overlap scan would. Null skips that check.
+     * @param excludeSessionId the session being moved, so it never conflicts with itself
+     */
+    public RescheduleConflicts check(UUID hostId, UUID eventTypeId,
+                                     Instant start, Instant end, UUID excludeSessionId) {
         if (hostId == null || start == null || end == null || !start.isBefore(end)) {
             return RescheduleConflicts.none();
         }
@@ -48,6 +60,23 @@ public class RescheduleConflictService {
         for (EventSession s : sessionRepository.findOverlappingSessions(hostId, start, end, excludeSessionId)) {
             hard.add(new RescheduleConflicts.Conflict(
                     "Group session", s.getStartTime(), s.getEndTime(), "GROUP_SESSION"));
+        }
+
+        // Exact-start collision with a LIVE session of the same event type. The overlap scan above
+        // would normally catch it, but this names the collision precisely where that would only
+        // report overlapping times -- and preview and write must agree on every rejection.
+        //
+        // Terminal sessions are excluded to match the write: a cancelled class no longer holds its
+        // slot against the host who cancelled it, so flagging it here would block a move the write
+        // would have allowed.
+        if (eventTypeId != null) {
+            sessionRepository.findByHostIdAndEventTypeIdAndStartTime(hostId, eventTypeId, start)
+                    .filter(existing -> !existing.getId().equals(excludeSessionId))
+                    .filter(existing -> existing.getStatus() != SessionStatus.CANCELLED
+                            && existing.getStatus() != SessionStatus.COMPLETED)
+                    .ifPresent(existing -> hard.add(new RescheduleConflicts.Conflict(
+                            "Another meeting for this event starts at this exact time",
+                            existing.getStartTime(), existing.getEndTime(), "SLOT_TAKEN")));
         }
 
         // Covers 1:1, round-robin and collective in one predicate — see
