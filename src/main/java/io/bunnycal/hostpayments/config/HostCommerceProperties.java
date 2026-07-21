@@ -1,6 +1,7 @@
 package io.bunnycal.hostpayments.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 @ConfigurationProperties(prefix = "commerce")
 public record HostCommerceProperties(
@@ -8,6 +9,10 @@ public record HostCommerceProperties(
         String frontendBaseUrl,
         Stripe stripe,
         Paypal paypal) {
+
+    @ConstructorBinding
+    public HostCommerceProperties {
+    }
 
     public HostCommerceProperties(boolean enabled, String frontendBaseUrl, Stripe stripe) {
         this(enabled, frontendBaseUrl, stripe, null);
