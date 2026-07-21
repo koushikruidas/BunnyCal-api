@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/host-payments/webhooks/stripe")
+@RequestMapping("/api/host-payments/webhooks")
 @ConditionalOnProperty(name = "commerce.enabled", havingValue = "true")
 public class HostCommerceWebhookController {
     private final HostPaymentProviderRegistry providers;
@@ -31,21 +31,25 @@ public class HostCommerceWebhookController {
         this.metrics = metrics;
     }
 
-    @PostMapping
-    public ResponseEntity<Void> webhook(@RequestBody byte[] payload,
+    @PostMapping("/{providerName}")
+    public ResponseEntity<Void> webhook(@org.springframework.web.bind.annotation.PathVariable String providerName,
+                                        @RequestBody byte[] payload,
                                         @RequestHeader Map<String, String> headers) {
+        PaymentProviderType providerType;
+        try {
+            providerType = PaymentProviderType.valueOf(providerName.toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException invalidProvider) {
+            return ResponseEntity.notFound().build();
+        }
         HostPaymentProvider.VerifiedWebhook event;
         try {
-            HostPaymentProvider provider = providers.require(PaymentProviderType.STRIPE);
-            String signature = headers.entrySet().stream()
-                    .filter(e -> "stripe-signature".equalsIgnoreCase(e.getKey()))
-                    .map(Map.Entry::getValue).findFirst().orElse("");
-            event = provider.verifyWebhook(payload, signature);
-        } catch (HostPaymentProviderException invalid) {
-            metrics.webhook(PaymentProviderType.STRIPE, "invalid_signature");
+            HostPaymentProvider provider = providers.require(providerType);
+            event = provider.verifyWebhook(payload, headers);
+        } catch (HostPaymentProviderException | IllegalStateException invalid) {
+            metrics.webhook(providerType, "invalid_signature");
             return ResponseEntity.badRequest().build();
         }
-        service.ingest(PaymentProviderType.STRIPE, event);
+        service.ingest(providerType, event);
         return ResponseEntity.ok().build();
     }
 }

@@ -33,6 +33,7 @@ class PaymentConnectionServiceTest {
     @Mock UserRepository users;
     @Mock HostPaymentProviderRegistry providers;
     @Mock HostPaymentProvider stripe;
+    @Mock HostPaymentProvider paypal;
     @Mock PaymentAuditService audit;
     private PaymentConnectionService service;
 
@@ -98,6 +99,27 @@ class PaymentConnectionServiceTest {
         assertThat(response.chargesEnabled()).isTrue();
         assertThat(response.payoutsEnabled()).isTrue();
         assertThat(response.detailsSubmitted()).isTrue();
+    }
+
+    @Test
+    void paypalRefreshReplacesTemporaryTrackingIdWithMerchantId() {
+        UUID hostId = UUID.randomUUID();
+        HostPaymentConnection connection = HostPaymentConnection.builder()
+                .userId(hostId).provider(PaymentProviderType.PAYPAL)
+                .providerAccountId("bunnycal_tracking_1")
+                .status(PaymentConnectionStatus.ONBOARDING)
+                .build();
+        when(connections.findById(connection.getId())).thenReturn(Optional.of(connection));
+        when(providers.require(PaymentProviderType.PAYPAL)).thenReturn(paypal);
+        when(paypal.retrieveConnectedAccount("bunnycal_tracking_1"))
+                .thenReturn(new HostPaymentProvider.ConnectedAccount("PAYPAL_MERCHANT_1", true, true, true, null));
+        when(connections.save(connection)).thenReturn(connection);
+
+        var response = service.refresh(hostId, connection.getId());
+
+        assertThat(response.provider()).isEqualTo("PAYPAL");
+        assertThat(response.status()).isEqualTo("READY");
+        assertThat(connection.getProviderAccountId()).isEqualTo("PAYPAL_MERCHANT_1");
     }
 
     @Test

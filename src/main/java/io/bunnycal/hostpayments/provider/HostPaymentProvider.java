@@ -21,7 +21,13 @@ public interface HostPaymentProvider {
 
     void refundPayment(String providerAccountId, String providerPaymentId, String idempotencyKey);
 
-    VerifiedWebhook verifyWebhook(byte[] payload, String signature);
+    VerifiedWebhook verifyWebhook(byte[] payload, Map<String, String> headers);
+
+    default ProviderPayment completePayment(String providerAccountId, String providerPaymentId) {
+        return retrievePayment(providerAccountId, providerPaymentId);
+    }
+
+    default String publicClientKey() { return null; }
 
     record ConnectedAccount(String accountId, boolean chargesEnabled, boolean payoutsEnabled,
                             boolean detailsSubmitted, String restrictionReason) {
@@ -32,14 +38,25 @@ public interface HostPaymentProvider {
 
     record CreatePayment(UUID paymentId, UUID reservationId, String reservationKind,
                          String providerAccountId, long amountMinor, String currency,
-                         String description, String receiptEmail, String idempotencyKey) {
+                         String description, String receiptEmail, String idempotencyKey,
+                         String returnUrl, String cancelUrl) {
     }
 
-    record CreatedPayment(String providerPaymentId, String clientSecret, ProviderPaymentStatus status) {
+    record CreatedPayment(String providerPaymentId, String clientSecret, String approvalUrl,
+                          ProviderPaymentStatus status) {
+        public CreatedPayment(String providerPaymentId, String clientSecret, ProviderPaymentStatus status) {
+            this(providerPaymentId, clientSecret, null, status);
+        }
     }
 
-    record ProviderPayment(String providerPaymentId, String clientSecret, String chargeId, ProviderPaymentStatus status,
+    record ProviderPayment(String providerPaymentId, String clientSecret, String approvalUrl,
+                           String chargeId, ProviderPaymentStatus status,
                            long amountMinor, String currency, Map<String, String> metadata) {
+        public ProviderPayment(String providerPaymentId, String clientSecret, String chargeId,
+                               ProviderPaymentStatus status, long amountMinor, String currency,
+                               Map<String, String> metadata) {
+            this(providerPaymentId, clientSecret, null, chargeId, status, amountMinor, currency, metadata);
+        }
     }
 
     enum ProviderPaymentStatus {

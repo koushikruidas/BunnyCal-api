@@ -157,7 +157,8 @@ public class HostPaymentLifecycleService {
             var created = provider.createPayment(new HostPaymentProvider.CreatePayment(
                     payment.getId(), reservationId, reservation.kind().name(), payment.getProviderAccountId(),
                     payment.getAmountMinor(), payment.getCurrency(), eventType.getName(), reservation.guestEmail(),
-                    "host-payment-" + reservation.kind() + "-" + reservationId));
+                    "host-payment-" + reservation.kind() + "-" + reservationId,
+                    paymentReturnUrl(username, slug), paymentReturnUrl(username, slug)));
             payment.setProviderPaymentId(created.providerPaymentId());
             payment.setStatus(mapStatus(created.status()));
             paymentRepository.save(payment);
@@ -168,10 +169,10 @@ public class HostPaymentLifecycleService {
                             "amountMinor", payment.getAmountMinor(),
                             "currency", payment.getCurrency(),
                             "status", payment.getStatus().name()));
-            return response(payment, created.clientSecret());
+            return response(payment, created.clientSecret(), created.approvalUrl());
         }
         paymentRepository.save(payment);
-        return response(payment, existing.clientSecret());
+        return response(payment, existing.clientSecret(), existing.approvalUrl());
     }
 
     @Transactional
@@ -182,7 +183,7 @@ public class HostPaymentLifecycleService {
         BookingPayment payment = findForEvent(eventType.getId(), reservationId);
         HostPaymentProvider provider = providers.require(payment.getProvider());
         if (payment.getProviderPaymentId() != null && payment.getStatus() != BookingPaymentStatus.SUCCEEDED) {
-            applyProviderStatus(payment, provider.retrievePayment(payment.getProviderAccountId(), payment.getProviderPaymentId()));
+            applyProviderStatus(payment, provider.completePayment(payment.getProviderAccountId(), payment.getProviderPaymentId()));
             paymentRepository.save(payment);
         }
         if (payment.getStatus() == BookingPaymentStatus.SUCCEEDED) confirmOrCompensate(payment, username, slug);
@@ -381,10 +382,12 @@ public class HostPaymentLifecycleService {
         };
     }
 
-    private PaymentInitializationResponse response(BookingPayment payment, String clientSecret) {
+    private PaymentInitializationResponse response(BookingPayment payment, String clientSecret, String approvalUrl) {
+        HostPaymentProvider provider = providers.require(payment.getProvider());
         return new PaymentInitializationResponse(payment.getId(), payment.getProvider().name(),
-                payment.getProviderAccountId(), properties.stripe().publishableKey(), clientSecret,
-                payment.getAmountMinor(), payment.getCurrency(), payment.getStatus().name(), payment.getExpiresAt());
+                payment.getProviderAccountId(), provider.publicClientKey(), clientSecret,
+                approvalUrl, payment.getAmountMinor(), payment.getCurrency(),
+                payment.getStatus().name(), payment.getExpiresAt());
     }
 
     private PublicPaymentStatusResponse statusResponse(BookingPayment payment) {
@@ -425,6 +428,13 @@ public class HostPaymentLifecycleService {
     private String requireUsername(UUID userId) {
         return userRepository.findById(userId).map(io.bunnycal.auth.domain.user.User::getUsername)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
+    }
+
+    private String paymentReturnUrl(String username, String slug) {
+        String base = properties.frontendBaseUrl() == null ? "http://localhost:5173" : properties.frontendBaseUrl();
+        return base.replaceAll("/+$", "") + "/book/"
+                + java.net.URLEncoder.encode(username, java.nio.charset.StandardCharsets.UTF_8) + "/"
+                + java.net.URLEncoder.encode(slug, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private record Reservation(PaymentReservationKind kind, Instant expiresAt, String guestEmail) {}

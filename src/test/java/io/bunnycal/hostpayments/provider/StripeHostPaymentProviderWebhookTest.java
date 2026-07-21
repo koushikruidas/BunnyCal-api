@@ -37,7 +37,8 @@ class StripeHostPaymentProviderWebhookTest {
         long timestamp = Instant.now().getEpochSecond();
 
         HostPaymentProvider.VerifiedWebhook event = provider.verifyWebhook(
-                payload.getBytes(StandardCharsets.UTF_8), signature(timestamp, payload, SECRET));
+                payload.getBytes(StandardCharsets.UTF_8),
+                java.util.Map.of("Stripe-Signature", signature(timestamp, payload, SECRET)));
 
         assertThat(event.eventId()).isEqualTo("evt_offline_123");
         assertThat(event.eventType()).isEqualTo("payment_intent.succeeded");
@@ -51,7 +52,8 @@ class StripeHostPaymentProviderWebhookTest {
         StripeHostPaymentProvider provider = provider();
         byte[] payload = "{\"id\":\"evt_tampered\"}".getBytes(StandardCharsets.UTF_8);
 
-        assertThatThrownBy(() -> provider.verifyWebhook(payload, "t=1,v1=invalid"))
+        assertThatThrownBy(() -> provider.verifyWebhook(
+                payload, java.util.Map.of("Stripe-Signature", "t=1,v1=invalid")))
                 .isInstanceOf(HostPaymentProviderException.class);
     }
 

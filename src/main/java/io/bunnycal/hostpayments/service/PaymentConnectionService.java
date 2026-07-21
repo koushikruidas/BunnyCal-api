@@ -39,15 +39,15 @@ public class PaymentConnectionService {
     }
 
     @Transactional
-    public String startStripeOnboarding(UUID userId) {
-        HostPaymentProvider provider = providers.require(PaymentProviderType.STRIPE);
+    public String startOnboarding(UUID userId, PaymentProviderType providerType) {
+        HostPaymentProvider provider = providers.require(providerType);
         var user = userRepository.findById(userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "User not found."));
-        HostPaymentConnection connection = repository.findByUserIdAndProvider(userId, PaymentProviderType.STRIPE)
+        HostPaymentConnection connection = repository.findByUserIdAndProvider(userId, providerType)
                 .orElseGet(() -> {
                     var created = provider.createConnectedAccount(userId, user.getEmail(), user.getName());
                     return repository.save(HostPaymentConnection.builder()
-                            .userId(userId).provider(PaymentProviderType.STRIPE)
+                            .userId(userId).provider(providerType)
                             .providerAccountId(created.accountId()).status(PaymentConnectionStatus.ONBOARDING)
                             .chargesEnabled(created.chargesEnabled()).payoutsEnabled(created.payoutsEnabled())
                             .detailsSubmitted(created.detailsSubmitted()).restrictionReason(created.restrictionReason())
@@ -63,11 +63,17 @@ public class PaymentConnectionService {
         return provider.createOnboardingLink(connection.getProviderAccountId());
     }
 
+    /** Retained for callers created during the Stripe-only phase. */
+    public String startStripeOnboarding(UUID userId) {
+        return startOnboarding(userId, PaymentProviderType.STRIPE);
+    }
+
     @Transactional
     public PaymentConnectionResponse refresh(UUID userId, UUID connectionId) {
         HostPaymentConnection connection = requireOwned(userId, connectionId);
         HostPaymentProvider provider = providers.require(connection.getProvider());
         var current = provider.retrieveConnectedAccount(connection.getProviderAccountId());
+        connection.setProviderAccountId(current.accountId());
         connection.setChargesEnabled(current.chargesEnabled());
         connection.setPayoutsEnabled(current.payoutsEnabled());
         connection.setDetailsSubmitted(current.detailsSubmitted());

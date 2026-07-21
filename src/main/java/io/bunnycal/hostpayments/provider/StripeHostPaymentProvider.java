@@ -17,11 +17,11 @@ import com.stripe.param.RefundCreateParams;
 import io.bunnycal.hostpayments.config.HostCommerceProperties;
 import io.bunnycal.hostpayments.domain.PaymentProviderType;
 import java.util.Locale;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 @Component
-@ConditionalOnProperty(name = "commerce.enabled", havingValue = "true")
+@org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+        "${commerce.enabled:false} && '${commerce.stripe.secret-key:}' != ''")
 public class StripeHostPaymentProvider implements HostPaymentProvider {
     private final HostCommerceProperties properties;
     private final RequestOptions platformOptions;
@@ -110,7 +110,7 @@ public class StripeHostPaymentProvider implements HostPaymentProvider {
         try {
             PaymentIntent intent = PaymentIntent.retrieve(providerPaymentId, connectedOptions(providerAccountId, null));
             String chargeId = intent.getLatestCharge();
-            return new ProviderPayment(intent.getId(), intent.getClientSecret(), chargeId, mapStatus(intent.getStatus()),
+            return new ProviderPayment(intent.getId(), intent.getClientSecret(), null, chargeId, mapStatus(intent.getStatus()),
                     intent.getAmount(), intent.getCurrency().toUpperCase(Locale.ROOT), intent.getMetadata());
         } catch (StripeException e) {
             throw new HostPaymentProviderException("retrievePayment", e);
@@ -138,9 +138,12 @@ public class StripeHostPaymentProvider implements HostPaymentProvider {
     }
 
     @Override
-    public VerifiedWebhook verifyWebhook(byte[] payload, String signature) {
+    public VerifiedWebhook verifyWebhook(byte[] payload, java.util.Map<String, String> headers) {
         try {
             String raw = new String(payload, java.nio.charset.StandardCharsets.UTF_8);
+            String signature = headers.entrySet().stream()
+                    .filter(entry -> "stripe-signature".equalsIgnoreCase(entry.getKey()))
+                    .map(java.util.Map.Entry::getValue).findFirst().orElse("");
             Event event = Webhook.constructEvent(raw, signature, properties.stripe().webhookSecret());
             String paymentIntentId = null;
             Long amountRefunded = null;
@@ -160,6 +163,9 @@ public class StripeHostPaymentProvider implements HostPaymentProvider {
             throw new HostPaymentProviderException("verifyWebhook", e);
         }
     }
+
+    @Override
+    public String publicClientKey() { return properties.stripe().publishableKey(); }
 
     private RequestOptions connectedOptions(String accountId, String idempotencyKey) {
         RequestOptions.RequestOptionsBuilder builder = RequestOptions.builder()

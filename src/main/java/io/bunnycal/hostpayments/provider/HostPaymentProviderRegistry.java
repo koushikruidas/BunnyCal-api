@@ -4,6 +4,7 @@ import io.bunnycal.hostpayments.domain.PaymentProviderType;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -27,5 +28,9 @@ public class HostPaymentProviderRegistry {
         HostPaymentProvider provider = providers.get(type);
         if (provider == null) throw new IllegalStateException("Host payment provider is not configured: " + type);
         return provider;
+    }
+
+    public Set<PaymentProviderType> availableTypes() {
+        return providers.keySet();
     }
 }

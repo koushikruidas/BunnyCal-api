@@ -4,6 +4,8 @@ import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.hostpayments.dto.PaymentConnectionResponse;
+import io.bunnycal.hostpayments.domain.PaymentProviderType;
+import io.bunnycal.hostpayments.provider.HostPaymentProviderRegistry;
 import io.bunnycal.hostpayments.service.PaymentConnectionService;
 import java.util.List;
 import java.util.Map;
@@ -23,17 +25,36 @@ import org.springframework.web.bind.annotation.RestController;
 @ConditionalOnProperty(name = "commerce.enabled", havingValue = "true")
 public class PaymentConnectionController {
     private final PaymentConnectionService service;
+    private final HostPaymentProviderRegistry providers;
 
-    public PaymentConnectionController(PaymentConnectionService service) { this.service = service; }
+    public PaymentConnectionController(PaymentConnectionService service, HostPaymentProviderRegistry providers) {
+        this.service = service;
+        this.providers = providers;
+    }
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<PaymentConnectionResponse>>> list(Authentication auth) {
         return ResponseEntity.ok(ApiResponse.success(service.list(userId(auth))));
     }
 
-    @PostMapping("/stripe/onboarding")
-    public ResponseEntity<ApiResponse<Map<String, String>>> onboard(Authentication auth) {
-        return ResponseEntity.ok(ApiResponse.success(Map.of("redirectUrl", service.startStripeOnboarding(userId(auth)))));
+    @GetMapping("/providers")
+    public ResponseEntity<ApiResponse<List<String>>> providers() {
+        return ResponseEntity.ok(ApiResponse.success(providers.availableTypes().stream().map(Enum::name).sorted().toList()));
+    }
+
+    @PostMapping("/{providerName}/onboarding")
+    public ResponseEntity<ApiResponse<Map<String, String>>> onboard(Authentication auth,
+                                                                    @PathVariable String providerName) {
+        PaymentProviderType provider;
+        try { provider = PaymentProviderType.valueOf(providerName.toUpperCase(java.util.Locale.ROOT)); }
+        catch (IllegalArgumentException exception) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Unsupported payment provider.");
+        }
+        if (!providers.availableTypes().contains(provider)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "Payment provider is not configured.");
+        }
+        return ResponseEntity.ok(ApiResponse.success(Map.of(
+                "redirectUrl", service.startOnboarding(userId(auth), provider))));
     }
 
     @PostMapping("/{id}/refresh")

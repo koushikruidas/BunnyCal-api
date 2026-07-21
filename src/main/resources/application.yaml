@@ -385,6 +385,15 @@ commerce:
     webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:}
     onboarding-return-url: ${COMMERCE_STRIPE_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=connected}
     onboarding-refresh-url: ${COMMERCE_STRIPE_ONBOARDING_REFRESH_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=refresh}
+  paypal:
+    enabled: ${COMMERCE_PAYPAL_ENABLED:false}
+    client-id: ${COMMERCE_PAYPAL_CLIENT_ID:}
+    client-secret: ${COMMERCE_PAYPAL_CLIENT_SECRET:}
+    partner-merchant-id: ${COMMERCE_PAYPAL_PARTNER_MERCHANT_ID:}
+    partner-attribution-id: ${COMMERCE_PAYPAL_PARTNER_ATTRIBUTION_ID:}
+    webhook-id: ${COMMERCE_PAYPAL_WEBHOOK_ID:}
+    onboarding-return-url: ${COMMERCE_PAYPAL_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=paypal}
+    api-base-url: ${COMMERCE_PAYPAL_API_BASE_URL:https://api-m.sandbox.paypal.com}
   reconciliation:
     fixed-delay-ms: ${COMMERCE_RECONCILIATION_FIXED_DELAY_MS:30000}
 
