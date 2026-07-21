@@ -63,8 +63,11 @@ import io.bunnycal.form.dto.AnswerSnapshot;
 import io.bunnycal.common.enums.AuthProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.bunnycal.hostpayments.service.EventPaymentConfigService;
+import io.bunnycal.hostpayments.service.HostPaymentLifecycleService;
 
 @Service
 public class PublicBookingService {
@@ -78,6 +81,12 @@ public class PublicBookingService {
     // gains the same holiday-day-off check as slot listing.
     @Autowired(required = false)
     private HolidayDayOffService holidayDayOffService;
+
+    @Autowired(required = false)
+    private HostPaymentLifecycleService hostPaymentLifecycleService;
+
+    @Autowired(required = false)
+    private EventPaymentConfigService eventPaymentConfigService;
 
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
@@ -251,6 +260,7 @@ public class PublicBookingService {
                 .map(Enum::name)
                 .toList();
 
+        var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
         return new PublicEventInfoResponse(
                 target.eventName(),
                 target.duration().toMinutes(),
@@ -263,13 +273,20 @@ public class PublicBookingService {
                 eventType.getKind(),
                 eventType.isPublished(),
                 participants,
-                availableDays
+                availableDays,
+                payment != null && payment.enabled(),
+                payment == null ? null : payment.amountMinor(),
+                payment == null ? null : payment.currency(),
+                payment == null ? null : payment.provider()
         );
     }
 
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        if (eventPaymentConfigService != null) {
+            eventPaymentConfigService.requireBookable(target.eventTypeId(), target.userId());
+        }
 
         // Unpublished event types: page is reachable but slots are empty.
         EventType currentEventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
@@ -401,6 +418,9 @@ public class PublicBookingService {
         // accept NEW bookings (Spec Ch5 §11/§14-16). Existing bookings are untouched (this only
         // runs on the create/hold path). Neutral rejection, no billing detail leaked (Principle 9).
         requireOwnerEntitledForBooking(target);
+        if (eventPaymentConfigService != null) {
+            eventPaymentConfigService.requireBookable(target.eventTypeId(), target.userId());
+        }
 
         PublicHoldResponse response;
         if (target.kind() == EventKind.GROUP) {
@@ -418,7 +438,18 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
 
-        return response;
+        var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
+        if (payment == null) return response;
+        if (hostPaymentLifecycleService != null) {
+            var terms = hostPaymentLifecycleService.snapshotTerms(
+                    target.eventTypeId(), target.userId(), response.bookingId(),
+                    target.kind() == EventKind.GROUP
+                            ? io.bunnycal.hostpayments.domain.PaymentReservationKind.SESSION_REGISTRATION
+                            : io.bunnycal.hostpayments.domain.PaymentReservationKind.BOOKING,
+                    response.expiresAt());
+            return response.withPayment(terms.amountMinor(), terms.currency(), terms.provider());
+        }
+        return response.withPayment(payment.amountMinor(), payment.currency(), payment.provider());
     }
 
     private void requirePublished(UUID eventTypeId) {
@@ -626,13 +657,36 @@ public class PublicBookingService {
                 result.expiresAt(),
                 start,
                 end,
-                result.sessionId()
+                result.sessionId(),
+                false, null, null, null
         );
     }
 
     @Transactional
     public PublicConfirmResponse confirm(String username, String eventTypeSlug, UUID bookingId) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        if (hostPaymentLifecycleService != null) {
+            hostPaymentLifecycleService.requirePaidIfConfigured(target.eventTypeId(), bookingId);
+        } else if (eventPaymentConfigService != null && eventPaymentConfigService.response(target.eventTypeId()) != null) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Payments are temporarily unavailable for this event.");
+        }
+        return confirmCore(target, bookingId);
+    }
+
+    /**
+     * Provider-webhook entry point. Verification and amount/account matching happen in the host
+     * payments domain before this method is called. REQUIRES_NEW isolates a failed booking
+     * confirmation so the caller can durably record REFUND_REQUIRED instead of inheriting a
+     * rollback-only transaction.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public PublicConfirmResponse confirmAfterVerifiedPayment(String username, String eventTypeSlug, UUID bookingId) {
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        return confirmCore(target, bookingId);
+    }
+
+    private PublicConfirmResponse confirmCore(PublicBookingTargetResolver.ResolvedTarget target, UUID bookingId) {
         BookingLogContext context = buildConfirmContext(target, bookingId);
         long startedAtNanos = System.nanoTime();
         try {

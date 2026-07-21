@@ -27,11 +27,14 @@ import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.experience.repository.BookingExperienceRepository;
 import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.hostpayments.service.EventPaymentConfigService;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,7 +53,9 @@ public class EventTypeService {
     private final EntitlementService entitlementService;
     private final GroupEventReservationWindowRepository reservationWindowRepository;
     private final EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
+    private final EventPaymentConfigService eventPaymentConfigService;
 
+    @Autowired
     public EventTypeService(EventTypeRepository eventTypeRepository,
                             UserRepository userRepository,
                             SessionUserResolver sessionUserResolver,
@@ -61,7 +66,8 @@ public class EventTypeService {
                             BookingExperienceRepository experienceRepository,
                             EntitlementService entitlementService,
                             GroupEventReservationWindowRepository reservationWindowRepository,
-                            EventAvailabilityWindowRepository eventAvailabilityWindowRepository) {
+                            EventAvailabilityWindowRepository eventAvailabilityWindowRepository,
+                            @Nullable EventPaymentConfigService eventPaymentConfigService) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
         this.sessionUserResolver = sessionUserResolver;
@@ -73,6 +79,24 @@ public class EventTypeService {
         this.entitlementService = entitlementService;
         this.reservationWindowRepository = reservationWindowRepository;
         this.eventAvailabilityWindowRepository = eventAvailabilityWindowRepository;
+        this.eventPaymentConfigService = eventPaymentConfigService;
+    }
+
+    /** Back-compatible constructor for focused unit tests that do not exercise payments. */
+    public EventTypeService(EventTypeRepository eventTypeRepository,
+                            UserRepository userRepository,
+                            SessionUserResolver sessionUserResolver,
+                            EventTypeOrchestrationNormalizer orchestrationNormalizer,
+                            PublishReadinessService publishReadinessService,
+                            OutboxPublisher outboxPublisher,
+                            TimeSource timeSource,
+                            BookingExperienceRepository experienceRepository,
+                            EntitlementService entitlementService,
+                            GroupEventReservationWindowRepository reservationWindowRepository,
+                            EventAvailabilityWindowRepository eventAvailabilityWindowRepository) {
+        this(eventTypeRepository, userRepository, sessionUserResolver, orchestrationNormalizer,
+                publishReadinessService, outboxPublisher, timeSource, experienceRepository,
+                entitlementService, reservationWindowRepository, eventAvailabilityWindowRepository, null);
     }
 
 
@@ -126,6 +150,7 @@ public class EventTypeService {
                 .build();
 
         EventType saved = eventTypeRepository.save(eventType);
+        if (eventPaymentConfigService != null) eventPaymentConfigService.apply(userId, saved.getId(), request.payment());
         OpsLoggers.HOST.info(
                 "event_type_created hostId={} eventTypeId={} eventTypeKind={} eventTypeName=\"{}\" slug={} durationMin={} published={}",
                 userId, saved.getId(), saved.getKind(), saved.getName(), saved.getSlug(),
@@ -176,6 +201,7 @@ public class EventTypeService {
         }
 
         EventType saved = eventTypeRepository.save(eventType);
+        if (eventPaymentConfigService != null) eventPaymentConfigService.apply(actingUserId, saved.getId(), request.payment());
         OpsLoggers.HOST.info(
                 "event_type_updated hostId={} eventTypeId={} eventTypeKind={} conferencingProvider={}",
                 actingUserId, saved.getId(), saved.getKind(), saved.getConferencingProvider());
@@ -219,6 +245,9 @@ public class EventTypeService {
     @Transactional
     public PublishReadinessResponse publish(UUID actingUserId, UUID eventTypeId) {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
+        if (eventPaymentConfigService != null) {
+            eventPaymentConfigService.requireBookable(eventTypeId, actingUserId);
+        }
         PublishReadinessService.CollectiveReadinessSummary summary =
                 publishReadinessService.evaluate(eventType);
 
@@ -415,7 +444,8 @@ public class EventTypeService {
                 (int) eventType.getSlotInterval().toMinutes(),
                 (int) eventType.getMinNotice().toMinutes(),
                 (int) eventType.getMaxAdvance().toDays(),
-                (int) eventType.getHoldDuration().toMinutes()
+                (int) eventType.getHoldDuration().toMinutes(),
+                eventPaymentConfigService == null ? null : eventPaymentConfigService.response(eventType.getId())
         );
     }
 

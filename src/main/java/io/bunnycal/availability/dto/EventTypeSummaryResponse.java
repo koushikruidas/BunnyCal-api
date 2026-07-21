@@ -7,6 +7,7 @@ import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
+import io.bunnycal.hostpayments.dto.EventPaymentResponse;
 
 public record EventTypeSummaryResponse(
         UUID id,
@@ -36,12 +37,13 @@ public record EventTypeSummaryResponse(
         int slotIntervalMinutes,
         int minNoticeMinutes,
         int maxAdvanceDays,
-        int holdDurationMinutes
+        int holdDurationMinutes,
+        @JsonInclude(JsonInclude.Include.NON_NULL) EventPaymentResponse payment
 ) {
     public EventTypeSummaryResponse(UUID id, String name, String slug, String link) {
         this(id, name, slug, link, EventKind.ONE_ON_ONE, 1, GroupHostNotificationMode.SMART_SUMMARY, 30, true, false,
                 null, null, null, EventAvailabilityMode.INHERIT, List.of(),
-                null, null, 0, 0, 30, 0, 30, 10);
+                null, null, 0, 0, 30, 0, 30, 10, null);
     }
 
     public record AvailabilityWindowResponse(

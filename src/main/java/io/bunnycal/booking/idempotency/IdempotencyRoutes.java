@@ -9,4 +9,5 @@ public final class IdempotencyRoutes {
     public static final String PUBLIC_BOOK_HOLD = "POST:public.book.hold";
     public static final String PUBLIC_BOOK_CANCEL = "POST:public.book.cancel";
     public static final String PUBLIC_BOOK_RESCHEDULE = "POST:public.book.reschedule";
+    public static final String PUBLIC_BOOK_PAYMENT = "POST:public.book.payment";
 }

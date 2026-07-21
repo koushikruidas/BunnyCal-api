@@ -5,6 +5,7 @@ import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.common.api.ForwardCompatibleRequest;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.util.List;
+import io.bunnycal.hostpayments.dto.EventPaymentRequest;
 
 // Legacy fields (organizerCalendarConnectionId, orchestrationProvider, calendarProvider,
 // conferencingProvider, customConferenceUrl) are silently ignored via @JsonIgnoreProperties.
@@ -27,7 +28,8 @@ public record CreateEventTypeRequest(
         ProjectionDestinationRequest projectionDestination,
         EventKind kind,
         Integer capacity,
-        GroupHostNotificationMode groupHostNotificationMode
+        GroupHostNotificationMode groupHostNotificationMode,
+        EventPaymentRequest payment
 ) implements ForwardCompatibleRequest {
     public CreateEventTypeRequest(
             String name,
@@ -44,7 +46,7 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, null, null, null, null, null, null);
+                slug, null, null, null, null, null, null, null);
     }
 
     public CreateEventTypeRequest(
@@ -65,7 +67,7 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, availabilityCalendars, conference, projectionDestination, null, null, null);
+                slug, availabilityCalendars, conference, projectionDestination, null, null, null, null);
     }
 
     /** Back-compatible constructor used by callers compiled before Group host notification settings. */
@@ -89,7 +91,7 @@ public record CreateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                slug, availabilityCalendars, conference, projectionDestination, kind, capacity, null);
+                slug, availabilityCalendars, conference, projectionDestination, kind, capacity, null, null);
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

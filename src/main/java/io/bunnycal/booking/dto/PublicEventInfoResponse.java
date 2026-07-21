@@ -21,6 +21,10 @@ public record PublicEventInfoResponse(
          * enabled it, and offered a weekday they had turned off. Only the days are exposed, not
          * the hours.
          */
-        List<String> availableDays
+        List<String> availableDays,
+        boolean paymentRequired,
+        Long paymentAmountMinor,
+        String paymentCurrency,
+        String paymentProvider
 ) {
 }

@@ -37,7 +37,11 @@ public class PaymentAuditLog {
     @Builder.Default
     private UUID id = UUID.randomUUID();
 
+    @Builder.Default
     @Column(nullable = false, length = 32)
+    private String domain = "SUBSCRIPTION_BILLING";
+
+    @Column(nullable = false, length = 64)
     private String actor;
 
     @Column(name = "entity_type", nullable = false, length = 64)

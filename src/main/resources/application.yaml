@@ -375,6 +375,19 @@ billing:
     # When true, the API targets test.dodopayments.com; otherwise live.dodopayments.com.
     test-mode: ${DODO_TEST_MODE:true}
 
+# Host-direct event commerce. Kept separate from BunnyCal subscription billing.
+commerce:
+  enabled: ${COMMERCE_ENABLED:false}
+  frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+  stripe:
+    secret-key: ${COMMERCE_STRIPE_SECRET_KEY:asdlkfajsdoihaujsdnaasldjf}
+    publishable-key: ${COMMERCE_STRIPE_PUBLISHABLE_KEY:asdljfasodihlksdufoaieoasidjsald;asdidsajdf}
+    webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:asldjfqowejsaodihfairh3298eadifjmap9e}
+    onboarding-return-url: ${COMMERCE_STRIPE_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=connected}
+    onboarding-refresh-url: ${COMMERCE_STRIPE_ONBOARDING_REFRESH_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=refresh}
+  reconciliation:
+    fixed-delay-ms: ${COMMERCE_RECONCILIATION_FIXED_DELAY_MS:30000}
+
 draft:
   ttl:
     days: ${DRAFT_TTL_DAYS:21}
