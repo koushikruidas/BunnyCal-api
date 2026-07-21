@@ -254,8 +254,16 @@ public class PublicGroupSessionQueryService {
             boolean movedHere = persisted != null
                     && persisted.getScheduledOccurrenceStart() != null
                     && !persisted.getStartTime().equals(persisted.getScheduledOccurrenceStart());
-            boolean bookable = (movedHere && spotsLeft > 0 && !isTerminal(persisted))
-                    || bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime()));
+            // A cancelled or completed session is never bookable, however the slot arose.
+            // The recurrence rule keeps emitting the occurrence after a host cancels the single
+            // session sitting on it, so the slot stays in bookableKeys — SlotService derives
+            // times from the rule and does not read session state. Without this guard the grid
+            // offered the slot, and the click failed at joinSession with SESSION_CANCELLED,
+            // which resolves the cancelled row by exact start time.
+            boolean terminal = persisted != null && isTerminal(persisted);
+            boolean bookable = !terminal
+                    && ((movedHere && spotsLeft > 0)
+                        || bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime())));
             // A materialized session with registrants stays visible even when it is neither
             // bookable nor full: hiding it would erase a meeting people are actually attending.
             boolean hasRegistrants = persisted != null && bookedCount > 0;
