@@ -312,6 +312,13 @@ booking:
     # message is written as a .eml file before SES send, for raw cross-client diffing.
     # Leave empty to disable (no prod impact).
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
+    email-template:
+      # Absolute URL of the bunny mascot shown in the branded HTML header. Served by this
+      # service from src/main/resources/static/assets/email/bunny.png, so the default works
+      # anywhere the API is publicly reachable. Mail clients fetch it over the internet —
+      # a localhost URL simply renders as a blank slot, which the layout tolerates.
+      # Leave empty to send the header band without the mascot.
+      mascot-url: ${BOOKING_NOTIFICATIONS_MASCOT_URL:http://localhost:8080/assets/email/bunny.png}
 
 billing:
   # Master switch for the SaaS subscription billing module. Disabled by default so

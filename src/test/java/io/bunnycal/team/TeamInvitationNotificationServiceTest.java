@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.booking.outbox.OutboxEventStatus;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.common.email.BrandedMailSender;
 import io.bunnycal.team.notification.TeamInvitationNotificationService;
 import jakarta.mail.internet.MimeMessage;
 import java.util.LinkedHashMap;
@@ -28,7 +29,7 @@ class TeamInvitationNotificationServiceTest {
         when(mailSender.createMimeMessage()).thenReturn(new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
 
         TeamInvitationNotificationService service = new TeamInvitationNotificationService(
-                mailSender,
+                new BrandedMailSender(mailSender, "", "https://app.example.test"),
                 objectMapper,
                 "no-reply@example.test",
                 "BunnyCal Calendar");
@@ -50,7 +51,7 @@ class TeamInvitationNotificationServiceTest {
         MimeMessage sent = messageCaptor.getValue();
         assertThat(sent.getAllRecipients()[0].toString()).isEqualTo("invitee@example.test");
         assertThat(sent.getSubject()).contains("revoked");
-        assertThat(sent.getContent().toString()).contains("Host Admin revoked your pending invitation");
+        assertThat(mimeText(sent)).contains("revoked your pending invitation");
     }
 
     @Test
@@ -60,7 +61,7 @@ class TeamInvitationNotificationServiceTest {
         when(mailSender.createMimeMessage()).thenReturn(new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
 
         TeamInvitationNotificationService service = new TeamInvitationNotificationService(
-                mailSender,
+                new BrandedMailSender(mailSender, "", "https://app.example.test"),
                 objectMapper,
                 "no-reply@example.test",
                 "BunnyCal Calendar");
@@ -82,8 +83,18 @@ class TeamInvitationNotificationServiceTest {
         MimeMessage sent = messageCaptor.getValue();
         assertThat(sent.getAllRecipients()[0].toString()).isEqualTo("member@example.test");
         assertThat(sent.getSubject()).contains("removed from Engineering Team");
-        assertThat(sent.getContent().toString()).contains("Hi Alex,");
-        assertThat(sent.getContent().toString()).contains("removed you from the team");
+        assertThat(mimeText(sent)).contains("Hi Alex,");
+        assertThat(mimeText(sent)).contains("removed you from the team");
+    }
+
+    /**
+     * Serialises the full MIME message. The branded sender emits multipart/alternative
+     * (text + HTML), so assertions look at the whole tree rather than a single body.
+     */
+    private static String mimeText(MimeMessage message) throws Exception {
+        var out = new java.io.ByteArrayOutputStream();
+        message.writeTo(out);
+        return out.toString(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private static OutboxEvent outboxEvent(String aggregateType, String eventType, Map<String, Object> payload) throws Exception {

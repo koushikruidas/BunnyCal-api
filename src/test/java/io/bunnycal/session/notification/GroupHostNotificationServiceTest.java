@@ -78,7 +78,8 @@ class GroupHostNotificationServiceTest {
                 new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
 
         service = new GroupHostNotificationService(
-                mailSender, userRepository, eventTypeRepository, sessionRepository,
+                new io.bunnycal.common.email.BrandedMailSender(mailSender, "", "https://app.example.test"),
+                userRepository, eventTypeRepository, sessionRepository,
                 digestRepository, recipientResolver, dedupService, timeSource,
                 "no-reply@example.test", "BunnyCal Calendar", Duration.ofHours(24));
     }
