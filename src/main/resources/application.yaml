@@ -380,9 +380,9 @@ commerce:
   enabled: ${COMMERCE_ENABLED:false}
   frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
   stripe:
-    secret-key: ${COMMERCE_STRIPE_SECRET_KEY:asdlkfajsdoihaujsdnaasldjf}
-    publishable-key: ${COMMERCE_STRIPE_PUBLISHABLE_KEY:asdljfasodihlksdufoaieoasidjsald;asdidsajdf}
-    webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:asldjfqowejsaodihfairh3298eadifjmap9e}
+    secret-key: ${COMMERCE_STRIPE_SECRET_KEY:}
+    publishable-key: ${COMMERCE_STRIPE_PUBLISHABLE_KEY:}
+    webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:}
     onboarding-return-url: ${COMMERCE_STRIPE_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=connected}
     onboarding-refresh-url: ${COMMERCE_STRIPE_ONBOARDING_REFRESH_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=refresh}
   reconciliation:
