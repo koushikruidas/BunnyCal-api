@@ -12,6 +12,10 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface BookingPaymentRepository extends JpaRepository<BookingPayment, UUID> {
     Optional<BookingPayment> findByReservationKindAndReservationId(PaymentReservationKind kind, UUID reservationId);
+    Optional<BookingPayment> findByReservationKindAndReservationIdAndEventOwnerId(
+            PaymentReservationKind kind, UUID reservationId, UUID eventOwnerId);
+    List<BookingPayment> findByReservationKindAndReservationIdInAndEventOwnerId(
+            PaymentReservationKind kind, List<UUID> reservationIds, UUID eventOwnerId);
     Optional<BookingPayment> findByProviderAndProviderAccountIdAndProviderPaymentId(
             PaymentProviderType provider, String accountId, String providerPaymentId);
     List<BookingPayment> findTop200ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(

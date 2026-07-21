@@ -7,6 +7,8 @@ import io.bunnycal.booking.dto.MeetingSummaryResponse;
 import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.hostpayments.domain.PaymentReservationKind;
+import io.bunnycal.hostpayments.service.HostPaymentQueryService;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -25,6 +27,9 @@ public class MeetingQueryService {
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final TimeSource timeSource;
+
+    @Autowired(required = false)
+    private HostPaymentQueryService hostPaymentQueryService;
 
     @Autowired
     public MeetingQueryService(BookingRepository bookingRepository,
@@ -95,7 +100,11 @@ public class MeetingQueryService {
                 row.getExternalLifecycleReason(),
                 Boolean.TRUE.equals(row.getReconcileSuppressed()),
                 "EXTERNAL_ACTION_REQUIRED".equals(row.getExternalLifecycleState())
-                        || "PROVIDER_STATE_ORPHANED".equals(row.getExternalLifecycleState())
+                        || "PROVIDER_STATE_ORPHANED".equals(row.getExternalLifecycleState()),
+                hostPaymentQueryService == null
+                        ? null
+                        : hostPaymentQueryService.findForReservation(
+                                hostId, PaymentReservationKind.BOOKING, bookingId)
         );
     }
 

@@ -8,6 +8,9 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
+import io.bunnycal.hostpayments.domain.PaymentReservationKind;
+import io.bunnycal.hostpayments.dto.HostBookingPaymentResponse;
+import io.bunnycal.hostpayments.service.HostPaymentQueryService;
 import io.bunnycal.session.domain.SessionStatus;
 import io.bunnycal.session.dto.SessionDetailResponse;
 import io.bunnycal.session.dto.SessionPageResponse;
@@ -27,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +47,9 @@ public class SessionQueryService {
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final TimeSource timeSource;
+
+    @Autowired(required = false)
+    private HostPaymentQueryService hostPaymentQueryService;
 
     public SessionQueryService(EventTypeRepository eventTypeRepository,
                                EventSessionRepository sessionRepository,
@@ -115,12 +122,19 @@ public class SessionQueryService {
         Map<UUID, List<QuestionnaireResponse>> responsesByRegistration = questionnaireResponsesByRegistration(
                 requesterId,
                 pageRows.stream().map(SessionRegistrationRepository.SessionRegistrationRow::getRegistrationId).toList());
+        Map<UUID, HostBookingPaymentResponse> paymentsByRegistration = hostPaymentQueryService == null
+                ? Map.of()
+                : hostPaymentQueryService.findForReservations(
+                        requesterId,
+                        PaymentReservationKind.SESSION_REGISTRATION,
+                        pageRows.stream().map(SessionRegistrationRepository.SessionRegistrationRow::getRegistrationId).toList());
 
         return new SessionRegistrationPageResponse(
                 pageRows.stream()
                         .map(row -> toRegistration(
                                 row,
-                                responsesByRegistration.getOrDefault(row.getRegistrationId(), List.of())))
+                                responsesByRegistration.getOrDefault(row.getRegistrationId(), List.of()),
+                                paymentsByRegistration.get(row.getRegistrationId())))
                         .toList(),
                 nextRegistrationCursor(rows, safeLimit),
                 rows.size() > safeLimit);
@@ -216,7 +230,8 @@ public class SessionQueryService {
     }
 
     private SessionRegistrationResponse toRegistration(SessionRegistrationRepository.SessionRegistrationRow row,
-                                                         List<QuestionnaireResponse> questionnaireResponses) {
+                                                         List<QuestionnaireResponse> questionnaireResponses,
+                                                         HostBookingPaymentResponse payment) {
         return new SessionRegistrationResponse(
                 row.getRegistrationId(),
                 row.getSessionId(),
@@ -230,7 +245,8 @@ public class SessionQueryService {
                 row.getUpdatedAt(),
                 row.getVersion() == null ? 0L : row.getVersion(),
                 Boolean.TRUE.equals(row.getExpired()),
-                questionnaireResponses == null ? Collections.emptyList() : questionnaireResponses);
+                questionnaireResponses == null ? Collections.emptyList() : questionnaireResponses,
+                payment);
     }
 
     private SessionSyncStatusResponse toSyncStatus(EventSessionRepository.SessionSummaryRow row) {
