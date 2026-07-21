@@ -4,6 +4,7 @@ import io.bunnycal.hostpayments.provider.HostPaymentProvider;
 import io.bunnycal.hostpayments.provider.HostPaymentProviderException;
 import io.bunnycal.hostpayments.provider.HostPaymentProviderRegistry;
 import io.bunnycal.hostpayments.domain.PaymentProviderType;
+import io.bunnycal.hostpayments.service.HostCommerceMetrics;
 import io.bunnycal.hostpayments.service.HostCommerceWebhookService;
 import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -20,10 +21,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class HostCommerceWebhookController {
     private final HostPaymentProviderRegistry providers;
     private final HostCommerceWebhookService service;
+    private final HostCommerceMetrics metrics;
 
-    public HostCommerceWebhookController(HostPaymentProviderRegistry providers, HostCommerceWebhookService service) {
+    public HostCommerceWebhookController(HostPaymentProviderRegistry providers,
+                                         HostCommerceWebhookService service,
+                                         HostCommerceMetrics metrics) {
         this.providers = providers;
         this.service = service;
+        this.metrics = metrics;
     }
 
     @PostMapping
@@ -37,6 +42,7 @@ public class HostCommerceWebhookController {
                     .map(Map.Entry::getValue).findFirst().orElse("");
             event = provider.verifyWebhook(payload, signature);
         } catch (HostPaymentProviderException invalid) {
+            metrics.webhook(PaymentProviderType.STRIPE, "invalid_signature");
             return ResponseEntity.badRequest().build();
         }
         service.ingest(PaymentProviderType.STRIPE, event);

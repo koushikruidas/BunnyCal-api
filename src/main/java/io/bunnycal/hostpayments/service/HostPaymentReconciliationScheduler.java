@@ -23,14 +23,17 @@ public class HostPaymentReconciliationScheduler {
     private final HostPaymentProviderRegistry providers;
     private final HostPaymentLifecycleService lifecycleService;
     private final PaymentAuditService auditService;
+    private final HostCommerceMetrics metrics;
 
     public HostPaymentReconciliationScheduler(BookingPaymentRepository repository, HostPaymentProviderRegistry providers,
                                               HostPaymentLifecycleService lifecycleService,
-                                              PaymentAuditService auditService) {
+                                              PaymentAuditService auditService,
+                                              HostCommerceMetrics metrics) {
         this.repository = repository;
         this.providers = providers;
         this.lifecycleService = lifecycleService;
         this.auditService = auditService;
+        this.metrics = metrics;
     }
 
     @Scheduled(fixedDelayString = "${commerce.reconciliation.fixed-delay-ms:30000}")
@@ -40,6 +43,7 @@ public class HostPaymentReconciliationScheduler {
                 List.of(BookingPaymentStatus.CANCEL_REQUESTED, BookingPaymentStatus.REFUND_REQUIRED),
                 Instant.now().minus(5, ChronoUnit.SECONDS));
         for (var payment : due) {
+            String operation = payment.getStatus() == BookingPaymentStatus.REFUND_REQUIRED ? "refund" : "cancel";
             try {
                 HostPaymentProvider provider = providers.require(payment.getProvider());
                 String auditAction;
@@ -65,9 +69,11 @@ public class HostPaymentReconciliationScheduler {
                     auditAction = "PAYMENT_REFUNDED";
                 }
                 repository.save(payment);
+                metrics.reconciliation(payment.getProvider(), operation, "succeeded");
                 auditService.recordHostCommerce(PaymentAuditService.ACTOR_SYSTEM, "BookingPayment", payment.getId(),
                         auditAction, null, java.util.Map.of("status", payment.getStatus().name()));
             } catch (RuntimeException retryLater) {
+                metrics.reconciliation(payment.getProvider(), operation, "retry");
                 // Leave the durable state unchanged; the next sweep retries with the same provider idempotency key.
                 log.warn("host_payment_compensation_retry paymentId={} status={} provider={}",
                         payment.getId(), payment.getStatus(), payment.getProvider(), retryLater);
@@ -86,7 +92,9 @@ public class HostPaymentReconciliationScheduler {
                 try {
                     lifecycleService.handleProviderPayment(payment.getProvider(), payment.getProviderAccountId(),
                             payment.getProviderPaymentId(), "reconciliation", null, null);
+                    metrics.reconciliation(payment.getProvider(), "status", "succeeded");
                 } catch (RuntimeException retryLater) {
+                    metrics.reconciliation(payment.getProvider(), "status", "retry");
                     // Keep the last known state and retry on the next sweep.
                     log.warn("host_payment_reconciliation_retry paymentId={} status={} provider={}",
                             payment.getId(), payment.getStatus(), payment.getProvider(), retryLater);

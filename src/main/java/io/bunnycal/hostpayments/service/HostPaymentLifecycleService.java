@@ -24,6 +24,7 @@ import io.bunnycal.session.repository.EventSessionRepository;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +44,9 @@ public class HostPaymentLifecycleService {
     private final HostCommerceProperties properties;
     private final ObjectProvider<PublicBookingService> publicBookingService;
     private final PaymentAuditService auditService;
+
+    @Autowired(required = false)
+    private HostCommerceMetrics metrics;
 
     public HostPaymentLifecycleService(
             BookingPaymentRepository paymentRepository,
@@ -359,6 +363,9 @@ public class HostPaymentLifecycleService {
     private void auditTransition(BookingPayment payment, BookingPaymentStatus before,
                                  String action, String actor) {
         if (before == payment.getStatus()) return;
+        if (metrics != null) {
+            metrics.transition(payment.getProvider(), before, payment.getStatus(), action);
+        }
         auditService.recordHostCommerce(actor, "BookingPayment", payment.getId(), action,
                 java.util.Map.of("status", before.name()),
                 java.util.Map.of("status", payment.getStatus().name()));
