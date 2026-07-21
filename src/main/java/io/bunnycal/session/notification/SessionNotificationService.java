@@ -6,6 +6,9 @@ import io.bunnycal.booking.notification.IcsInviteGenerator;
 import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.CalendarMimeAssembler;
+import io.bunnycal.common.email.EmailTemplate;
 import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.common.logging.OpsLogSupport;
 import io.bunnycal.common.logging.OpsLoggers;
@@ -45,6 +48,8 @@ public class SessionNotificationService {
     private final String fromAddress;
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
+    private final BrandedMailSender brandedMailSender;
+    private final boolean brandedCalendarHtml;
 
     @Autowired
     public SessionNotificationService(JavaMailSender mailSender,
@@ -59,7 +64,10 @@ public class SessionNotificationService {
                                        String calendarOrganizerEmail,
                                        @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}")
                                        String calendarOrganizerName,
-                                       @Nullable GroupHostNotificationService groupHostNotificationService) {
+                                       @Nullable GroupHostNotificationService groupHostNotificationService,
+                                       BrandedMailSender brandedMailSender,
+                                       @Value("${booking.notifications.email-template.calendar-html-enabled:false}")
+                                       boolean brandedCalendarHtml) {
         this.mailSender = mailSender;
         this.icsInviteGenerator = icsInviteGenerator;
         this.manageLinkService = manageLinkService;
@@ -71,6 +79,8 @@ public class SessionNotificationService {
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
         this.calendarOrganizerName = calendarOrganizerName;
+        this.brandedMailSender = brandedMailSender;
+        this.brandedCalendarHtml = brandedCalendarHtml;
     }
 
     public SessionNotificationService(JavaMailSender mailSender,
@@ -82,8 +92,10 @@ public class SessionNotificationService {
                                       String fromAddress,
                                       String calendarOrganizerEmail,
                                       String calendarOrganizerName) {
+        // Branded calendar HTML off: callers of this overload assert the legacy MIME shape.
         this(mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository, objectMapper,
-                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail, calendarOrganizerName, null);
+                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail,
+                calendarOrganizerName, null, new BrandedMailSender(mailSender, "", ""), false);
     }
 
     public void handleSessionOutboxEvent(OutboxEvent event) {
@@ -347,39 +359,39 @@ public class SessionNotificationService {
         helper.setSubject(subject);
         if (ics != null && method != null) {
             message.setHeader("X-MS-OLK-FORCEINSPECTOROPEN", "TRUE");
-            MimeBodyPart textPart = new MimeBodyPart();
-            textPart.setText(bodyText, StandardCharsets.UTF_8.name(), "plain");
-
-            MimeBodyPart calendarPart = new MimeBodyPart();
-            calendarPart.setContent(ics, "text/calendar; charset=UTF-8; method=" + method);
-            calendarPart.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            calendarPart.setHeader("Content-Transfer-Encoding", "8bit");
-            calendarPart.setHeader("Content-Class", "urn:content-classes:calendarmessage");
-
-            MimeMultipart alternative = new MimeMultipart("alternative");
-            alternative.addBodyPart(textPart);
-            alternative.addBodyPart(calendarPart);
-
-            MimeBodyPart alternativeWrapper = new MimeBodyPart();
-            alternativeWrapper.setContent(alternative);
-
-            MimeBodyPart icsAttachment = new MimeBodyPart();
-            icsAttachment.setContent(ics, "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setFileName("invite.ics");
-            icsAttachment.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Disposition", "attachment; filename=\"invite.ics\"");
-            icsAttachment.setHeader("Content-Transfer-Encoding", "8bit");
-
-            MimeMultipart mixed = new MimeMultipart("mixed");
-            mixed.addBodyPart(alternativeWrapper);
-            mixed.addBodyPart(icsAttachment);
-
-            message.setContent(mixed);
+            // The invite was previously carried TWICE here — inline inside the alternative and
+            // again as an invite.ics attachment with the same UID and method. Outlook honours
+            // both and creates one calendar entry per copy; Gmail hid it by de-duplicating on
+            // UID. BookingNotificationService fixed the same bug; this path had not been.
+            if (brandedCalendarHtml) {
+                CalendarMimeAssembler.buildBranded(
+                        message, bodyText, calendarTemplate(subject, bodyText).renderHtml(), ics, method);
+            } else {
+                CalendarMimeAssembler.buildTextOnly(message, bodyText, ics, method);
+            }
+        } else if (brandedCalendarHtml) {
+            helper.setText(bodyText, calendarTemplate(subject, bodyText).renderHtml());
         } else {
             helper.setText(bodyText, false);
         }
         message.saveChanges();
         mailSender.send(message);
+    }
+
+    /**
+     * Branded HTML counterpart to the session body.
+     *
+     * <p>Session bodies are assembled upstream as pre-formatted text whose line structure carries
+     * meaning (session time, guest list, occupancy), so they are placed in a monospaced block
+     * rather than re-parsed into fields.
+     */
+    private EmailTemplate calendarTemplate(String subject, String bodyText) {
+        return brandedMailSender.template()
+                .eyebrow("Group session")
+                .headline(subject)
+                .preformatted(bodyText)
+                .footerReason("you're receiving this because you're on this session")
+                .build();
     }
 
     // ── Payload parsing ────────────────────────────────────────────────────────

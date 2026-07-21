@@ -1,0 +1,36 @@
+Date: Tue, 21 Jul 2026 22:21:46 +0530 (IST)
+From: BunnyCal Calendar <calendar@bunnycal.io>
+To: guest@example.com
+Message-ID: <2094411587.4.1784652706600@localhost>
+Subject: Confirmed: Discovery Call
+MIME-Version: 1.0
+Content-Type: multipart/alternative; 
+	boundary="----=_Part_3_1547425104.1784652706599"
+
+------=_Part_3_1547425104.1784652706599
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 7bit
+
+Your meeting is confirmed.
+
+Event: Discovery Call
+------=_Part_3_1547425104.1784652706599
+Content-Type: text/calendar; charset=UTF-8; method=REQUEST; name="invite.ics"
+Content-Transfer-Encoding: 8bit
+Content-Class: urn:content-classes:calendarmessage
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//BunnyCal//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:demo-uid-123@example.com
+DTSTAMP:20260801T090000Z
+DTSTART:20260801T100000Z
+DTEND:20260801T103000Z
+SUMMARY:Discovery Call
+ORGANIZER;CN=BunnyCal Calendar:mailto:calendar@bunnycal.io
+ATTENDEE;CN=Guest;RSVP=TRUE:mailto:guest@example.com
+END:VEVENT
+END:VCALENDAR
+------=_Part_3_1547425104.1784652706599--

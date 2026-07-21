@@ -319,6 +319,18 @@ booking:
       # a localhost URL simply renders as a blank slot, which the layout tolerates.
       # Leave empty to send the header band without the mascot.
       mascot-url: ${BOOKING_NOTIFICATIONS_MASCOT_URL:http://localhost:8080/assets/email/bunny.png}
+      # Applies the branded HTML template to the two emails that carry a calendar invite
+      # (booking + session). Restructures their MIME from
+      #   multipart/alternative(text, calendar)
+      # to
+      #   multipart/mixed(multipart/alternative(text, html), calendar)
+      # so the invite no longer competes with the body for the client's chosen rendering.
+      #
+      # OFF by default: whether Outlook still auto-renders the invite cannot be proven by
+      # unit tests — it needs real mail sent to real Outlook/Gmail/Apple Mail accounts.
+      # Enable in a test environment, verify with booking.notifications.debug-eml-dir and
+      # a live send, then roll forward. Reverting is a single env-var flip.
+      calendar-html-enabled: ${BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED:false}
 
 billing:
   # Master switch for the SaaS subscription billing module. Disabled by default so
