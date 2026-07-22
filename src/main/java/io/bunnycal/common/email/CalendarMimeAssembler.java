@@ -25,11 +25,16 @@ import java.nio.charset.StandardCharsets;
  *
  * <pre>
  * multipart/mixed
- * ├── multipart/alternative
- * │   ├── text/plain     (fallback)
- * │   └── text/html      (branded body)
+ * ├── multipart/related
+ * │   ├── multipart/alternative
+ * │   │   ├── text/plain     (fallback)
+ * │   │   └── text/html      (branded body)
+ * │   └── image/png          (inline mascot — see EmailMascot)
  * └── text/calendar; method=REQUEST   (inline — no Content-Disposition)
  * </pre>
+ *
+ * <p>The {@code related} layer collapses away when the mascot asset is unavailable, leaving the
+ * alternative directly under the mixed container.</p>
  *
  * <p>Outlook still processes the invite because the part carries
  * {@code Content-Class: urn:content-classes:calendarmessage} and no attachment disposition.
@@ -74,23 +79,14 @@ public final class CalendarMimeAssembler {
                                     String htmlBody,
                                     String ics,
                                     String method) throws Exception {
-        MimeBodyPart textPart = new MimeBodyPart();
-        textPart.setText(textBody, StandardCharsets.UTF_8.name(), "plain");
+        // The body group — alternative(text, html), wrapped in related(…, mascot) when the
+        // mascot is embedded. See BrandedMimeAssembler.
+        MimeBodyPart bodyWrapper = new MimeBodyPart();
+        bodyWrapper.setContent(BrandedMimeAssembler.buildContent(textBody, htmlBody));
 
-        MimeBodyPart htmlPart = new MimeBodyPart();
-        htmlPart.setContent(htmlBody, "text/html; charset=UTF-8");
-
-        // Body representations compete here; HTML is last so clients prefer it.
-        MimeMultipart alternative = new MimeMultipart("alternative");
-        alternative.addBodyPart(textPart);
-        alternative.addBodyPart(htmlPart);
-
-        MimeBodyPart alternativeWrapper = new MimeBodyPart();
-        alternativeWrapper.setContent(alternative);
-
-        // The calendar sits OUTSIDE the alternative, so it never competes with the body.
+        // The calendar sits OUTSIDE the body group, so it never competes with the body.
         MimeMultipart mixed = new MimeMultipart("mixed");
-        mixed.addBodyPart(alternativeWrapper);
+        mixed.addBodyPart(bodyWrapper);
         mixed.addBodyPart(calendarPart(ics, method));
 
         message.setContent(mixed);

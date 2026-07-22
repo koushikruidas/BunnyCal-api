@@ -59,9 +59,11 @@ class CalendarMimeAssemblerTest {
         assertTrue(root.getContentType().toLowerCase(Locale.ROOT).contains("multipart/mixed"));
         assertEquals(2, root.getCount());
 
-        // [0] is the alternative wrapper, holding exactly text + html and NO calendar.
-        MimeMultipart alternative = (MimeMultipart) root.getBodyPart(0).getContent();
-        assertTrue(alternative.getContentType().toLowerCase(Locale.ROOT).contains("multipart/alternative"));
+        // [0] is the body group. It is wrapped in multipart/related when the mascot is embedded,
+        // so find the alternative rather than assuming a fixed depth.
+        MimeMultipart bodyGroup = (MimeMultipart) root.getBodyPart(0).getContent();
+        MimeMultipart alternative = findAlternative(bodyGroup);
+        assertNotNull(alternative, "branded body must contain a multipart/alternative");
         assertEquals(2, alternative.getCount());
         assertEquals(0, countCalendarParts(alternative),
                 "calendar must not sit inside the alternative — it would compete with the HTML body");
@@ -73,6 +75,18 @@ class CalendarMimeAssemblerTest {
 
         // [1] is the calendar, as a sibling.
         assertTrue(root.getBodyPart(1).getContentType().toLowerCase(Locale.ROOT).contains("text/calendar"));
+    }
+
+    @Test
+    void branded_embedsTheMascotAlongsideTheBody() throws Exception {
+        MimeMessage m = newMessage();
+        CalendarMimeAssembler.buildBranded(m, "t", "<html>h</html>", ICS, "REQUEST");
+        m.saveChanges();
+
+        // Calendar mail gets the same inline mascot as every other branded email.
+        MimeMultipart bodyGroup = (MimeMultipart) ((MimeMultipart) m.getContent()).getBodyPart(0).getContent();
+        assertTrue(bodyGroup.getContentType().toLowerCase(Locale.ROOT).contains("multipart/related"));
+        assertTrue(bodyGroup.getBodyPart(1).getContentType().toLowerCase(Locale.ROOT).contains("image/png"));
     }
 
     @Test
@@ -130,6 +144,22 @@ class CalendarMimeAssemblerTest {
 
         BodyPart calendar = ((MimeMultipart) m.getContent()).getBodyPart(1);
         assertTrue(header(calendar, "Content-Type").toLowerCase(Locale.ROOT).contains("method=cancel"));
+    }
+
+    /** Depth-first search for the alternative, so the optional 'related' layer is transparent. */
+    private static MimeMultipart findAlternative(MimeMultipart multipart) throws Exception {
+        if (multipart.getContentType().toLowerCase(Locale.ROOT).contains("multipart/alternative")) {
+            return multipart;
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            if (multipart.getBodyPart(i).getContent() instanceof MimeMultipart nested) {
+                MimeMultipart found = findAlternative(nested);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     private static String header(BodyPart part, String name) throws Exception {

@@ -131,7 +131,7 @@ class BookingNotificationBrandedHtmlTest {
 
         // The invite is still carried, exactly once, and still outside the alternative.
         assertEquals(1, countCalendarParts(root));
-        MimeMultipart alternative = (MimeMultipart) root.getBodyPart(0).getContent();
+        MimeMultipart alternative = findAlternative((MimeMultipart) root.getBodyPart(0).getContent());
         assertEquals(0, countCalendarParts(alternative));
 
         // Both bodies present; HTML carries the brand chrome.
@@ -184,6 +184,22 @@ class BookingNotificationBrandedHtmlTest {
                 .status(OutboxEventStatus.PENDING)
                 .attemptCount(0)
                 .build();
+    }
+
+    /** Depth-first search, so the multipart/related mascot layer is transparent to these tests. */
+    private static MimeMultipart findAlternative(MimeMultipart multipart) throws Exception {
+        if (multipart.getContentType().toLowerCase(Locale.ROOT).contains("multipart/alternative")) {
+            return multipart;
+        }
+        for (int i = 0; i < multipart.getCount(); i++) {
+            if (multipart.getBodyPart(i).getContent() instanceof MimeMultipart nested) {
+                MimeMultipart found = findAlternative(nested);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
     }
 
     private static int countCalendarParts(MimeMultipart multipart) throws Exception {

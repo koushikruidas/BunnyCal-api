@@ -31,8 +31,22 @@ public class BrandedMailSender {
             @Value("${booking.notifications.email-template.mascot-url:}") String mascotUrl,
             @Value("${app.public-base-url:}") String appBaseUrl) {
         this.mailSender = mailSender;
-        this.mascotUrl = mascotUrl;
+        this.mascotUrl = resolveMascotUrl(mascotUrl);
         this.appBaseUrl = appBaseUrl;
+    }
+
+    /**
+     * Prefers the embedded {@code cid:} mascot over any configured URL.
+     *
+     * <p>An explicitly configured URL still wins when the bundled asset is missing, so the
+     * setting remains an escape hatch; otherwise embedding is always the better answer — see
+     * {@link EmailMascot} for why remote image URLs do not survive real mail clients.
+     */
+    private static String resolveMascotUrl(String configured) {
+        if (EmailMascot.isAvailable()) {
+            return EmailMascot.CID_URL;
+        }
+        return configured;
     }
 
     /**
@@ -62,8 +76,8 @@ public class BrandedMailSender {
                      String subject,
                      EmailTemplate template) throws Exception {
         MimeMessage message = mailSender.createMimeMessage();
-        // multipart=true so the helper builds multipart/alternative for the text+HTML pair.
-        MimeMessageHelper helper = new MimeMessageHelper(message, true, StandardCharsets.UTF_8.name());
+        // Headers only; the body tree is assembled below so the mascot can be embedded.
+        MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
 
         if (fromName != null && !fromName.isBlank()) {
             helper.setFrom(fromAddress, fromName);
@@ -72,9 +86,8 @@ public class BrandedMailSender {
         }
         helper.setTo(to);
         helper.setSubject(subject);
-        // Order matters: text first, HTML second. Clients render the LAST part they understand,
-        // so this makes HTML the preferred body and text the fallback.
-        helper.setText(template.renderText(), template.renderHtml());
+
+        BrandedMimeAssembler.build(message, template.renderText(), template.renderHtml());
 
         message.saveChanges();
         mailSender.send(message);
