@@ -43,6 +43,9 @@ import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.session.service.ConfirmRegistrationResult;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
+import io.bunnycal.session.occurrence.EffectiveGroupOccurrence;
+import io.bunnycal.session.occurrence.GroupOccurrenceResolver;
+import io.bunnycal.session.occurrence.OccurrenceBookabilityReason;
 import io.bunnycal.booking.repository.CollectiveParticipantHoldRepository;
 import io.bunnycal.sync.FencingTokenGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -81,6 +84,11 @@ public class PublicBookingService {
     // gains the same holiday-day-off check as slot listing.
     @Autowired(required = false)
     private HolidayDayOffService holidayDayOffService;
+
+    // Group-only recurrence/session projection. Field injection keeps the established test
+    // constructors stable; the production Spring context always provides it.
+    @Autowired
+    private GroupOccurrenceResolver groupOccurrenceResolver;
 
     @Autowired(required = false)
     private HostPaymentLifecycleService hostPaymentLifecycleService;
@@ -627,15 +635,16 @@ public class PublicBookingService {
     private PublicHoldResponse holdGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
                                                      PublicBookRequest request,
                                                      InviteeAuthContext inviteeAuth) {
-        Instant start = request.startTime();
-        Instant end = start.plus(target.duration());
+        EffectiveGroupOccurrence occurrence = requireBookableGroupOccurrence(target, request.startTime());
+        Instant start = occurrence.effectiveStart();
+        Instant end = occurrence.effectiveEnd();
 
         JoinSessionResult result = sessionService.joinSession(
                 target.userId(),
                 target.eventTypeId(),
                 start,
                 end,
-                target.capacity(),
+                occurrence.capacity(),
                 normalizeGuestEmail(request.guestEmail()),
                 normalizeGuestName(request.guestName()),
                 normalizeNotes(request.notes()),
@@ -1060,8 +1069,14 @@ public class PublicBookingService {
             UUID registrationId,
             PublicRescheduleRequest request,
             String guestCapabilityToken) {
+        EffectiveGroupOccurrence occurrence = requireBookableGroupOccurrence(target, request.startTime());
         var result = sessionService.moveRegistration(
-                registrationId, target.userId(), request.startTime(), guestCapabilityToken);
+                registrationId,
+                target.userId(),
+                occurrence.effectiveStart(),
+                occurrence.effectiveEnd(),
+                occurrence.capacity(),
+                guestCapabilityToken);
 
         OpsLoggers.BOOKING.info(
                 "group_registration_moved registrationId={} sourceSessionId={} targetSessionId={} hostId={} eventTypeId={} newStartUtc={}",
@@ -1070,6 +1085,30 @@ public class PublicBookingService {
 
         return new PublicBookingStatusResponse(
                 registrationId, "CONFIRMED", result.startTime(), result.endTime(), null);
+    }
+
+    private EffectiveGroupOccurrence requireBookableGroupOccurrence(
+            PublicBookingTargetResolver.ResolvedTarget target,
+            Instant requestedStart) {
+        if (groupOccurrenceResolver == null) {
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                    "Group occurrence resolution is unavailable.");
+        }
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        EffectiveGroupOccurrence occurrence = groupOccurrenceResolver
+                .resolveBookingTarget(target.userId(), eventType, target.timezone(), requestedStart)
+                .orElseThrow(() -> new CustomException(
+                        ErrorCode.SLOT_UNAVAILABLE, "This session is no longer available."));
+        if (occurrence.isBookable()) {
+            return occurrence;
+        }
+        if (occurrence.reason() == OccurrenceBookabilityReason.SESSION_CANCELLED) {
+            throw new CustomException(ErrorCode.SESSION_CANCELLED);
+        }
+        if (occurrence.reason() == OccurrenceBookabilityReason.CAPACITY_FULL) {
+            throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
+        }
+        throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This session is no longer available.");
     }
 
     @Transactional

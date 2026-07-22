@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -13,18 +14,19 @@ import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.RecurrenceFrequency;
 import io.bunnycal.availability.domain.ScheduleType;
-import io.bunnycal.availability.dto.SlotDto;
-import io.bunnycal.availability.dto.SlotRequest;
-import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
-import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.dto.PublicGroupSessionCardResponse;
 import io.bunnycal.booking.dto.PublicGroupSessionsResponse;
 import io.bunnycal.availability.domain.EventKind;
-import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionStatus;
-import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
+import io.bunnycal.session.occurrence.EffectiveGroupOccurrence;
+import io.bunnycal.session.occurrence.GroupOccurrenceResolver;
+import io.bunnycal.session.occurrence.OccurrenceBookability;
+import io.bunnycal.session.occurrence.OccurrenceBookabilityReason;
+import io.bunnycal.session.occurrence.OccurrenceKey;
+import io.bunnycal.session.occurrence.OccurrencePlacement;
+import io.bunnycal.session.occurrence.OccurrenceVisibility;
 import io.bunnycal.common.time.TimeConversionService;
 import java.time.DayOfWeek;
 import java.time.Duration;
@@ -41,10 +43,8 @@ import org.junit.jupiter.api.Test;
  * Regression coverage for a host cancelling ONE session of a recurring group event.
  *
  * <p>The recurrence rule keeps emitting the occurrence after the session on it is cancelled, and
- * {@link SlotService} derives bookable times from the rule alone — it never reads session state.
- * The grid therefore has to apply the terminal-status check itself; when it did not, the slot was
- * advertised as bookable and the click failed at {@code joinSession} with {@code SESSION_CANCELLED},
- * because that path resolves the cancelled row by exact start time.
+ * The occurrence resolver owns terminal status; this test keeps the public formatter from
+ * accidentally turning a non-bookable effective occurrence back into an advertised slot.
  */
 class PublicGroupSessionCancelledSlotTest {
 
@@ -57,10 +57,9 @@ class PublicGroupSessionCancelledSlotTest {
 
     private final PublicBookingTargetResolver targetResolver = mock(PublicBookingTargetResolver.class);
     private final BookingEventTypeResolver eventTypeResolver = mock(BookingEventTypeResolver.class);
-    private final SlotService slotService = mock(SlotService.class);
+    private final GroupOccurrenceResolver occurrenceResolver = mock(GroupOccurrenceResolver.class);
     private final GroupEventReservationWindowRepository windowRepository =
             mock(GroupEventReservationWindowRepository.class);
-    private final EventSessionRepository sessionRepository = mock(EventSessionRepository.class);
     private final SessionRegistrationRepository registrationRepository =
             mock(SessionRegistrationRepository.class);
     private final TimeConversionService timeConversionService = mock(TimeConversionService.class);
@@ -69,8 +68,8 @@ class PublicGroupSessionCancelledSlotTest {
 
     @BeforeEach
     void setUp() {
-        service = new PublicGroupSessionQueryService(targetResolver, eventTypeResolver, slotService,
-                windowRepository, sessionRepository, registrationRepository, timeConversionService);
+        service = new PublicGroupSessionQueryService(targetResolver, eventTypeResolver, occurrenceResolver,
+                windowRepository, registrationRepository, timeConversionService);
 
         when(targetResolver.resolve(any(), any())).thenReturn(new PublicBookingTargetResolver.ResolvedTarget(
                 HOST_ID, EVENT_TYPE_ID, "Host", "host", TZ, "host@example.com", null,
@@ -102,19 +101,14 @@ class PublicGroupSessionCancelledSlotTest {
                         .recurrenceEndMode(RecurrenceEndMode.NONE)
                         .build()));
 
-        lenient().when(sessionRepository.findMovedSessionsByOccurrenceRange(any(), any(), any()))
-                .thenReturn(List.of());
         lenient().when(registrationRepository.findConfirmedBySessionIds(any())).thenReturn(List.of());
-
-        // The rule still emits this occurrence — SlotService has no notion of session status.
-        lenient().when(slotService.getSlots(any())).thenAnswer(invocation -> slotResponse(List.of(slot(SLOT_START, SLOT_END))));
+        lenient().when(occurrenceResolver.countRuleOccurrences(any(), any(), any(), any())).thenReturn(1);
     }
 
     @Test
     void cancelledSession_isNotOfferedAsBookable() {
-        when(sessionRepository.findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                any(), any(), any()))
-                .thenReturn(List.of(session(SessionStatus.CANCELLED, 0)));
+        when(occurrenceResolver.resolveRange(any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of(occurrence(SessionStatus.CANCELLED, 0, false)));
 
         PublicGroupSessionsResponse response = service.getGroupSessions("host", "group-hours-2", DATE, 1);
 
@@ -126,9 +120,8 @@ class PublicGroupSessionCancelledSlotTest {
     @Test
     void openSessionOnTheSameSlot_isStillBookable() {
         // Guards against over-correcting: the ordinary case must keep working.
-        when(sessionRepository.findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                any(), any(), any()))
-                .thenReturn(List.of(session(SessionStatus.OPEN, 2)));
+        when(occurrenceResolver.resolveRange(any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of(occurrence(SessionStatus.OPEN, 2, true)));
 
         PublicGroupSessionsResponse response = service.getGroupSessions("host", "group-hours-2", DATE, 1);
 
@@ -141,9 +134,8 @@ class PublicGroupSessionCancelledSlotTest {
     @Test
     void slotWithNoMaterializedSession_isStillBookable() {
         // The common path: nobody has booked yet, so no row exists at all.
-        when(sessionRepository.findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                any(), any(), any()))
-                .thenReturn(List.of());
+        when(occurrenceResolver.resolveRange(any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of(virtualOccurrence(SLOT_START, SLOT_END)));
 
         PublicGroupSessionsResponse response = service.getGroupSessions("host", "group-hours-2", DATE, 1);
 
@@ -154,9 +146,8 @@ class PublicGroupSessionCancelledSlotTest {
 
     @Test
     void completedSession_isNotOfferedAsBookable() {
-        when(sessionRepository.findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                any(), any(), any()))
-                .thenReturn(List.of(session(SessionStatus.COMPLETED, 4)));
+        when(occurrenceResolver.resolveRange(any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of(occurrence(SessionStatus.COMPLETED, 4, false)));
 
         PublicGroupSessionsResponse response = service.getGroupSessions("host", "group-hours-2", DATE, 1);
 
@@ -168,22 +159,12 @@ class PublicGroupSessionCancelledSlotTest {
     @Test
     void cancellingOneOccurrence_leavesTheNextWeekBookable() {
         // The whole point of cancelling a single session: the series continues.
-        when(sessionRepository.findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                any(), any(), any()))
-                .thenReturn(List.of(session(SessionStatus.CANCELLED, 0)));
-
         Instant nextWeekStart = SLOT_START.plus(Duration.ofDays(7));
         Instant nextWeekEnd = SLOT_END.plus(Duration.ofDays(7));
-        lenient().when(slotService.getSlots(any())).thenAnswer(invocation -> {
-            LocalDate requested = ((SlotRequest) invocation.getArgument(0)).date();
-            if (DATE.equals(requested)) {
-                return slotResponse(List.of(slot(SLOT_START, SLOT_END)));
-            }
-            if (DATE.plusDays(7).equals(requested)) {
-                return slotResponse(List.of(slot(nextWeekStart, nextWeekEnd)));
-            }
-            return slotResponse(List.of());
-        });
+        when(occurrenceResolver.resolveRange(any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.of(
+                        occurrence(SessionStatus.CANCELLED, 0, false),
+                        virtualOccurrence(nextWeekStart, nextWeekEnd)));
 
         PublicGroupSessionsResponse response = service.getGroupSessions("host", "group-hours-2", DATE, 8);
 
@@ -196,26 +177,24 @@ class PublicGroupSessionCancelledSlotTest {
         assertTrue(nextWeekBookable, "cancelling one session must not close the rest of the series");
     }
 
-    private static SlotDto slot(Instant start, Instant end) {
-        return new SlotDto(start.toString(), start, end, true, null);
+    private static EffectiveGroupOccurrence occurrence(
+            SessionStatus status, int confirmedCount, boolean bookable) {
+        return new EffectiveGroupOccurrence(
+                new OccurrenceKey(EVENT_TYPE_ID, SLOT_START), null, SLOT_START, SLOT_START, SLOT_END,
+                UUID.randomUUID(), OccurrencePlacement.RULE_DERIVED, status,
+                confirmedCount > 0 || bookable ? OccurrenceVisibility.VISIBLE : OccurrenceVisibility.HIDDEN,
+                bookable ? OccurrenceBookability.BOOKABLE : OccurrenceBookability.UNBOOKABLE,
+                bookable ? OccurrenceBookabilityReason.AVAILABLE
+                        : status == SessionStatus.CANCELLED
+                                ? OccurrenceBookabilityReason.SESSION_CANCELLED
+                                : OccurrenceBookabilityReason.SESSION_COMPLETED,
+                5, confirmedCount);
     }
 
-    private static SlotResponse slotResponse(List<SlotDto> slots) {
-        return new SlotResponse(HOST_ID, EVENT_TYPE_ID, DATE, TZ, 1L, Instant.EPOCH, false,
-                slots, io.bunnycal.availability.dto.AvailabilityStatus.AVAILABLE);
-    }
-
-    private static EventSession session(SessionStatus status, int confirmedCount) {
-        return EventSession.builder()
-                .id(UUID.randomUUID())
-                .hostId(HOST_ID)
-                .eventTypeId(EVENT_TYPE_ID)
-                .startTime(SLOT_START)
-                .endTime(SLOT_END)
-                .scheduledOccurrenceStart(SLOT_START)
-                .capacity(5)
-                .confirmedCount(confirmedCount)
-                .status(status)
-                .build();
+    private static EffectiveGroupOccurrence virtualOccurrence(Instant start, Instant end) {
+        return new EffectiveGroupOccurrence(
+                new OccurrenceKey(EVENT_TYPE_ID, start), null, start, start, end, null,
+                OccurrencePlacement.RULE_DERIVED, null, OccurrenceVisibility.VISIBLE,
+                OccurrenceBookability.BOOKABLE, OccurrenceBookabilityReason.AVAILABLE, 5, 0);
     }
 }

@@ -5,11 +5,8 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.ScheduleType;
-import io.bunnycal.availability.dto.SlotDto;
-import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.engine.RecurrenceWindowFilter;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
-import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.booking.dto.PublicAttendeePreviewResponse;
 import io.bunnycal.booking.dto.PublicGroupDateCardResponse;
 import io.bunnycal.booking.dto.PublicGroupDateStatus;
@@ -19,14 +16,12 @@ import io.bunnycal.booking.dto.PublicGroupSessionsResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
-import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
-import io.bunnycal.session.domain.SessionStatus;
-import io.bunnycal.session.repository.EventSessionRepository;
 import io.bunnycal.session.repository.SessionRegistrationRepository;
+import io.bunnycal.session.occurrence.EffectiveGroupOccurrence;
+import io.bunnycal.session.occurrence.GroupOccurrenceResolver;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.DayOfWeek;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -34,12 +29,8 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -60,24 +51,21 @@ public class PublicGroupSessionQueryService {
 
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final BookingEventTypeResolver bookingEventTypeResolver;
-    private final SlotService slotService;
+    private final GroupOccurrenceResolver groupOccurrenceResolver;
     private final GroupEventReservationWindowRepository reservationWindowRepository;
-    private final EventSessionRepository eventSessionRepository;
     private final SessionRegistrationRepository sessionRegistrationRepository;
     private final TimeConversionService timeConversionService;
 
     public PublicGroupSessionQueryService(PublicBookingTargetResolver publicBookingTargetResolver,
                                           BookingEventTypeResolver bookingEventTypeResolver,
-                                          SlotService slotService,
+                                          GroupOccurrenceResolver groupOccurrenceResolver,
                                           GroupEventReservationWindowRepository reservationWindowRepository,
-                                          EventSessionRepository eventSessionRepository,
                                           SessionRegistrationRepository sessionRegistrationRepository,
                                           TimeConversionService timeConversionService) {
         this.publicBookingTargetResolver = publicBookingTargetResolver;
         this.bookingEventTypeResolver = bookingEventTypeResolver;
-        this.slotService = slotService;
+        this.groupOccurrenceResolver = groupOccurrenceResolver;
         this.reservationWindowRepository = reservationWindowRepository;
-        this.eventSessionRepository = eventSessionRepository;
         this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.timeConversionService = timeConversionService;
     }
@@ -110,52 +98,23 @@ public class PublicGroupSessionQueryService {
         List<GroupEventReservationWindow> allWindows =
                 reservationWindowRepository.findByEventTypeId(target.eventTypeId());
 
-        Instant rangeStart = timeConversionService.dayStartUtc(effectiveStartDate, target.timezone());
-        Instant rangeEnd = timeConversionService.dayStartUtc(effectiveStartDate.plusDays(effectiveDays), target.timezone());
-
-        Map<Instant, EventSession> persistedSessionsByStart = eventSessionRepository
-                .findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
-                        target.eventTypeId(), rangeStart, rangeEnd)
-                .stream()
-                .collect(LinkedHashMap::new, (map, session) -> map.put(session.getStartTime(), session), Map::putAll);
-
-        // Occurrences the host moved elsewhere. The recurrence rule still generates the
-        // original time, so without this the vacated slot reappears as a fresh empty
-        // session while its guests sit at the new time.
-        Set<Instant> movedAwayOccurrences = eventSessionRepository
-                .findMovedSessionsByOccurrenceRange(target.eventTypeId(), rangeStart, rangeEnd)
-                .stream()
-                .map(EventSession::getScheduledOccurrenceStart)
-                .collect(java.util.stream.Collectors.toCollection(HashSet::new));
-
+        List<EffectiveGroupOccurrence> occurrences = groupOccurrenceResolver.resolveRange(
+                target.userId(), eventType, target.timezone(), effectiveStartDate, effectiveDays);
         Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId =
-                loadConfirmedRegistrations(persistedSessionsByStart.values());
-        Map<LocalDate, Set<String>> bookableKeysByDate =
-                loadBookableKeys(target.userId(), target.eventTypeId(), effectiveStartDate, effectiveDays);
+                loadConfirmedRegistrations(occurrences);
 
         List<PublicGroupDateCardResponse> dateCards = new ArrayList<>(effectiveDays);
         for (int offset = 0; offset < effectiveDays; offset++) {
             LocalDate date = effectiveStartDate.plusDays(offset);
-            List<GroupEventReservationWindow> dayWindows = allWindows.stream()
-                    .filter(window -> appliesOn(window, date))
-                    .sorted(Comparator.comparing(GroupEventReservationWindow::getStartTime)
-                            .thenComparing(GroupEventReservationWindow::getEndTime))
+            List<EffectiveGroupOccurrence> dayOccurrences = occurrences.stream()
+                    .filter(occurrence -> occurrence.effectiveStart().atZone(zoneId).toLocalDate().equals(date))
                     .toList();
-            List<DerivedSession> derivedSessions = mergeOffGridSessions(
-                    deriveSessionsForDate(date, zoneId, eventType, dayWindows),
-                    date,
-                    zoneId,
-                    persistedSessionsByStart);
-            Set<String> bookableKeys = bookableKeysByDate.getOrDefault(date, Set.of());
             dateCards.add(toDateCard(
                     date,
+                    zoneId,
                     target.eventTypeId(),
-                    target.capacity(),
-                    derivedSessions,
-                    persistedSessionsByStart,
-                    confirmedRegistrationsBySessionId,
-                    bookableKeys,
-                    movedAwayOccurrences));
+                    dayOccurrences,
+                    confirmedRegistrationsBySessionId));
         }
 
         return new PublicGroupSessionsResponse(
@@ -166,10 +125,13 @@ public class PublicGroupSessionQueryService {
                 List.copyOf(dateCards));
     }
 
-    private Map<UUID, List<SessionRegistration>> loadConfirmedRegistrations(Iterable<EventSession> sessions) {
+    private Map<UUID, List<SessionRegistration>> loadConfirmedRegistrations(
+            List<EffectiveGroupOccurrence> occurrences) {
         List<UUID> sessionIds = new ArrayList<>();
-        for (EventSession session : sessions) {
-            sessionIds.add(session.getId());
+        for (EffectiveGroupOccurrence occurrence : occurrences) {
+            if (occurrence.sessionId() != null) {
+                sessionIds.add(occurrence.sessionId());
+            }
         }
         if (sessionIds.isEmpty()) {
             return Map.of();
@@ -181,31 +143,15 @@ public class PublicGroupSessionQueryService {
         return grouped;
     }
 
-    private Map<LocalDate, Set<String>> loadBookableKeys(UUID userId,
-                                                         UUID eventTypeId,
-                                                         LocalDate startDate,
-                                                         int days) {
-        Map<LocalDate, Set<String>> keysByDate = new HashMap<>();
-        for (int offset = 0; offset < days; offset++) {
-            LocalDate date = startDate.plusDays(offset);
-            Set<String> keys = new HashSet<>();
-            for (SlotDto slot : slotService.getSlots(new SlotRequest(userId, eventTypeId, date)).slots()) {
-                keys.add(sessionKey(slot.start(), slot.end()));
-            }
-            keysByDate.put(date, keys);
-        }
-        return keysByDate;
-    }
-
     private PublicGroupDateCardResponse toDateCard(LocalDate date,
+                                                   ZoneId zoneId,
                                                    UUID eventTypeId,
-                                                   int defaultCapacity,
-                                                   List<DerivedSession> derivedSessions,
-                                                   Map<Instant, EventSession> persistedSessionsByStart,
-                                                   Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId,
-                                                   Set<String> bookableKeys,
-                                                   Set<Instant> movedAwayOccurrences) {
-        if (derivedSessions.isEmpty()) {
+                                                   List<EffectiveGroupOccurrence> occurrences,
+                                                   Map<UUID, List<SessionRegistration>> confirmedRegistrationsBySessionId) {
+        List<EffectiveGroupOccurrence> visibleOccurrences = occurrences.stream()
+                .filter(EffectiveGroupOccurrence::isVisible)
+                .toList();
+        if (visibleOccurrences.isEmpty()) {
             return new PublicGroupDateCardResponse(
                     date,
                     PublicGroupDateStatus.NO_SESSIONS,
@@ -217,82 +163,43 @@ public class PublicGroupSessionQueryService {
                     List.of());
         }
 
-        List<PublicGroupSessionCardResponse> sessions = new ArrayList<>(derivedSessions.size());
+        List<PublicGroupSessionCardResponse> sessions = new ArrayList<>(visibleOccurrences.size());
         int bookableSessionCount = 0;
         int totalCapacity = 0;
         int totalBooked = 0;
         LocalTime nextAvailableStartTime = null;
         boolean anyFillingUp = false;
-        boolean anyVisible = false;
-
-        for (DerivedSession derived : derivedSessions) {
-            EventSession persisted = persistedSessionsByStart.get(derived.startTime());
-            // The rule still emits this occurrence, but the session it produced was moved
-            // away. Drop it unless something else has since materialized at the same time
-            // — that row is a real session and owns the slot on its own terms.
-            if (persisted == null && movedAwayOccurrences.contains(derived.startTime())) {
-                continue;
-            }
-            int capacity = persisted != null && persisted.getCapacity() > 0 ? persisted.getCapacity() : defaultCapacity;
-            int bookedCount = persisted != null ? Math.max(persisted.getConfirmedCount(), 0) : 0;
+        for (EffectiveGroupOccurrence occurrence : visibleOccurrences) {
+            int capacity = occurrence.capacity();
+            int bookedCount = occurrence.confirmedCount();
             int spotsLeft = Math.max(capacity - bookedCount, 0);
             int occupancyPercent = occupancyPercent(bookedCount, capacity);
-            // A session the host MOVED is bookable at its new time even though the rule generates
-            // nothing there: a half-full class relocated to Wednesday is still selling seats, just
-            // on Wednesday. Without this it displays its seat count and refuses every taker, so a
-            // 2-of-5 class could never reach 5.
-            //
-            // Restricted to moved sessions deliberately. Extending it to every materialized
-            // session would let any existing row override the host's own booking rules -- a
-            // session already sitting beyond maxAdvance would become bookable purely because it
-            // exists. The override answers "the rule no longer describes where this session is",
-            // which is true only once it has moved.
-            //
-            // Safe because the group booking path does not gate on slot generation: it resolves
-            // the session by exact start time and checks capacity and status there. This offers
-            // exactly what joinSession would already have accepted.
-            boolean movedHere = persisted != null
-                    && persisted.getScheduledOccurrenceStart() != null
-                    && !persisted.getStartTime().equals(persisted.getScheduledOccurrenceStart());
-            // A cancelled or completed session is never bookable, however the slot arose.
-            // The recurrence rule keeps emitting the occurrence after a host cancels the single
-            // session sitting on it, so the slot stays in bookableKeys — SlotService derives
-            // times from the rule and does not read session state. Without this guard the grid
-            // offered the slot, and the click failed at joinSession with SESSION_CANCELLED,
-            // which resolves the cancelled row by exact start time.
-            boolean terminal = persisted != null && isTerminal(persisted);
-            boolean bookable = !terminal
-                    && ((movedHere && spotsLeft > 0)
-                        || bookableKeys.contains(sessionKey(derived.startTime(), derived.endTime())));
-            // A materialized session with registrants stays visible even when it is neither
-            // bookable nor full: hiding it would erase a meeting people are actually attending.
-            boolean hasRegistrants = persisted != null && bookedCount > 0;
-            boolean visible = bookable || spotsLeft == 0 || hasRegistrants;
-            if (!visible) {
-                continue;
-            }
-
-            anyVisible = true;
+            boolean bookable = occurrence.isBookable();
             if (bookable) {
                 bookableSessionCount++;
-                if (nextAvailableStartTime == null || derived.startLocalTime().isBefore(nextAvailableStartTime)) {
-                    nextAvailableStartTime = derived.startLocalTime();
+                LocalTime localStart = occurrence.effectiveStart().atZone(zoneId).toLocalTime();
+                if (nextAvailableStartTime == null || localStart.isBefore(nextAvailableStartTime)) {
+                    nextAvailableStartTime = localStart;
                 }
             }
             if (occupancyPercent >= FILLING_UP_THRESHOLD_PERCENT) {
                 anyFillingUp = true;
             }
 
-            List<PublicAttendeePreviewResponse> attendeePreview = persisted == null
+            List<PublicAttendeePreviewResponse> attendeePreview = occurrence.sessionId() == null
                     ? List.of()
-                    : toAttendeePreview(confirmedRegistrationsBySessionId.getOrDefault(persisted.getId(), List.of()));
+                    : toAttendeePreview(confirmedRegistrationsBySessionId.getOrDefault(
+                            occurrence.sessionId(), List.of()));
             int additionalAttendeeCount = Math.max(bookedCount - attendeePreview.size(), 0);
+            ZonedDateTime localStart = occurrence.effectiveStart().atZone(zoneId);
+            ZonedDateTime localEnd = occurrence.effectiveEnd().atZone(zoneId);
             sessions.add(new PublicGroupSessionCardResponse(
-                    persisted != null ? persisted.getId().toString() : syntheticSessionId(eventTypeId, derived.startTime(), derived.endTime()),
-                    derived.startTime(),
-                    derived.endTime(),
-                    derived.startLocalTime(),
-                    derived.endLocalTime(),
+                    occurrence.sessionId() != null ? occurrence.sessionId().toString()
+                            : syntheticSessionId(eventTypeId, occurrence.effectiveStart(), occurrence.effectiveEnd()),
+                    occurrence.effectiveStart(),
+                    occurrence.effectiveEnd(),
+                    localStart.toLocalTime(),
+                    localEnd.toLocalTime(),
                     capacity,
                     bookedCount,
                     spotsLeft,
@@ -303,18 +210,6 @@ public class PublicGroupSessionQueryService {
 
             totalCapacity += capacity;
             totalBooked += bookedCount;
-        }
-
-        if (!anyVisible) {
-            return new PublicGroupDateCardResponse(
-                    date,
-                    PublicGroupDateStatus.NO_SESSIONS,
-                    0,
-                    0,
-                    0,
-                    0,
-                    null,
-                    List.of());
         }
 
         PublicGroupDateStatus status;
@@ -330,9 +225,9 @@ public class PublicGroupSessionQueryService {
         }
 
         return new PublicGroupDateCardResponse(
-                derivedSessions.get(0).date(),
+                date,
                 status,
-                derivedSessions.size(),
+                sessions.size(),
                 bookableSessionCount,
                 totalCapacity,
                 totalBooked,
@@ -376,9 +271,8 @@ public class PublicGroupSessionQueryService {
         DayOfWeek weekday = distinctWeekday(windows);
         int sessionCountPerOccurrence = firstOccurrenceDate == null
                 ? 0
-                : deriveSessionsForDate(firstOccurrenceDate, zoneId, eventType, windows.stream()
-                        .filter(window -> appliesOn(window, firstOccurrenceDate))
-                        .toList()).size();
+                : groupOccurrenceResolver.countRuleOccurrences(
+                        eventType, zoneId.getId(), firstOccurrenceDate, windows);
 
         String label = windows.stream().anyMatch(window -> window.getScheduleType() == ScheduleType.RECURRING)
                 ? "Recurring series"
@@ -394,95 +288,6 @@ public class PublicGroupSessionQueryService {
                 firstSessionStart,
                 lastSessionEnd,
                 sessionCountPerOccurrence);
-    }
-
-    private List<DerivedSession> deriveSessionsForDate(LocalDate date,
-                                                       ZoneId zoneId,
-                                                       EventType eventType,
-                                                       List<GroupEventReservationWindow> windows) {
-        if (windows.isEmpty()) {
-            return List.of();
-        }
-        List<DerivedSession> sessions = new ArrayList<>();
-        ZonedDateTime dayStart = date.atStartOfDay(zoneId);
-        Duration interval = eventType.getSlotInterval();
-        Duration duration = eventType.getDuration();
-
-        for (GroupEventReservationWindow window : windows) {
-            if (window.getStartTime() == null
-                    || window.getEndTime() == null
-                    || !window.getStartTime().isBefore(window.getEndTime())) {
-                continue;
-            }
-            ZonedDateTime windowStart = date.atTime(window.getStartTime()).atZone(zoneId);
-            ZonedDateTime windowEnd = date.atTime(window.getEndTime()).atZone(zoneId);
-            ZonedDateTime slotStart = ceilToGrid(windowStart, dayStart, interval);
-            while (!slotStart.plus(duration).isAfter(windowEnd)) {
-                sessions.add(new DerivedSession(
-                        date,
-                        slotStart.toInstant(),
-                        slotStart.plus(duration).toInstant(),
-                        slotStart.toLocalTime(),
-                        slotStart.plus(duration).toLocalTime()));
-                slotStart = slotStart.plus(interval);
-            }
-        }
-
-        return sessions.stream()
-                .sorted(Comparator.comparing(DerivedSession::startTime)
-                        .thenComparing(DerivedSession::endTime))
-                .toList();
-    }
-
-    /**
-     * Adds sessions that exist on this date but sit outside the rule's grid.
-     *
-     * <p>A host who reschedules a session to a time no reservation window generates leaves a real
-     * meeting — with real registrants — that the derived grid cannot express. Deriving from the
-     * rule alone would drop it from the page entirely: its guests would find no trace of the
-     * session they hold a seat in, and the day would look emptier than it is.
-     *
-     * <p>These sessions are surfaced but never bookable — {@code bookableKeys} comes from the slot
-     * engine, which restricts GROUP slots to reservation windows, so an off-grid time is correctly
-     * excluded. The host moved one meeting; that is not an invitation to sell more seats at a time
-     * they never opened.
-     */
-    private List<DerivedSession> mergeOffGridSessions(List<DerivedSession> derived,
-                                                      LocalDate date,
-                                                      ZoneId zoneId,
-                                                      Map<Instant, EventSession> persistedSessionsByStart) {
-        Set<Instant> gridStarts = new HashSet<>();
-        for (DerivedSession session : derived) {
-            gridStarts.add(session.startTime());
-        }
-
-        List<DerivedSession> merged = null;
-        for (EventSession persisted : persistedSessionsByStart.values()) {
-            if (gridStarts.contains(persisted.getStartTime())) {
-                continue;
-            }
-            ZonedDateTime start = persisted.getStartTime().atZone(zoneId);
-            if (!start.toLocalDate().equals(date)) {
-                continue;
-            }
-            if (merged == null) {
-                merged = new ArrayList<>(derived);
-            }
-            ZonedDateTime end = persisted.getEndTime().atZone(zoneId);
-            merged.add(new DerivedSession(
-                    date,
-                    persisted.getStartTime(),
-                    persisted.getEndTime(),
-                    start.toLocalTime(),
-                    end.toLocalTime()));
-        }
-        if (merged == null) {
-            return derived;
-        }
-        return merged.stream()
-                .sorted(Comparator.comparing(DerivedSession::startTime)
-                        .thenComparing(DerivedSession::endTime))
-                .toList();
     }
 
     private boolean appliesOn(GroupEventReservationWindow window, LocalDate date) {
@@ -627,35 +432,4 @@ public class PublicGroupSessionQueryService {
         return "derived:" + eventTypeId + ":" + startTime.toEpochMilli() + ":" + endTime.toEpochMilli();
     }
 
-    /** Cancelled and completed sessions accept no further registrations, whatever their seat count. */
-    private static boolean isTerminal(EventSession session) {
-        SessionStatus status = session.getStatus();
-        return status == SessionStatus.CANCELLED || status == SessionStatus.COMPLETED;
-    }
-
-    private static String sessionKey(Instant startTime, Instant endTime) {
-        return startTime.toEpochMilli() + ":" + endTime.toEpochMilli();
-    }
-
-    private static ZonedDateTime ceilToGrid(ZonedDateTime value, ZonedDateTime anchor, Duration step) {
-        if (!value.isAfter(anchor)) {
-            return anchor;
-        }
-        long stepMillis = step.toMillis();
-        long deltaMillis = ChronoUnit.MILLIS.between(anchor, value);
-        long remainder = deltaMillis % stepMillis;
-        if (remainder == 0) {
-            return value;
-        }
-        return value.plus(Duration.ofMillis(stepMillis - remainder));
-    }
-
-    private record DerivedSession(
-            LocalDate date,
-            Instant startTime,
-            Instant endTime,
-            LocalTime startLocalTime,
-            LocalTime endLocalTime
-    ) {
-    }
 }

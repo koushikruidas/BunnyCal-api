@@ -241,6 +241,13 @@ class SessionRescheduleConflictIT extends AbstractSessionIT {
                 "SELECT status FROM event_sessions WHERE id = ?", String.class, cancelled))
                 .as("history is kept — the cancelled session is not resurrected")
                 .isEqualTo("CANCELLED");
+
+        var join = sessionService.joinSession(
+                host.getId(), et.getId(), target, target.plus(Duration.ofHours(1)), 10,
+                "new-guest@test.com", "New Guest", Duration.ofMinutes(15));
+        assertThat(join.sessionId())
+                .as("exact-time lookup must prefer the live moved session over terminal history")
+                .isEqualTo(moving);
     }
 
     /**

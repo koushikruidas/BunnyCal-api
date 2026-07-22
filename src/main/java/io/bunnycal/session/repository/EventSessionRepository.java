@@ -55,11 +55,52 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
             nativeQuery = true)
     void acquireSlotLock(@Param("hostId") String hostId, @Param("startEpoch") String startEpoch);
 
-    Optional<EventSession> findByHostIdAndEventTypeIdAndStartTime(
-            UUID hostId, UUID eventTypeId, Instant startTime);
+    /**
+     * Operational owner of an exact Group start.
+     *
+     * <p>A host may deliberately move a live session onto the time of an older terminal row. The
+     * partial live-slot constraint permits that historical overlap, so an unqualified derived
+     * query can return two rows and fail with an incorrect-result-size exception. Prefer the live
+     * row; retain the terminal fallback so guest booking into a cancelled-only slot is still
+     * rejected rather than silently recreating it.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE host_id = :hostId
+              AND event_type_id = :eventTypeId
+              AND start_time = :startTime
+            ORDER BY CASE WHEN status IN ('OPEN', 'FULL') THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+            """, nativeQuery = true)
+    Optional<EventSession> findByHostIdAndEventTypeIdAndStartTime(@Param("hostId") UUID hostId,
+                                                                  @Param("eventTypeId") UUID eventTypeId,
+                                                                  @Param("startTime") Instant startTime);
 
     List<EventSession> findByEventTypeIdAndStartTimeGreaterThanEqualAndStartTimeLessThanOrderByStartTimeAsc(
             UUID eventTypeId, Instant rangeStart, Instant rangeEnd);
+
+    /**
+     * Sessions relevant to an effective-occurrence projection.
+     *
+     * <p>The destination decides whether a materialized session is rendered, while the original
+     * occurrence decides whether a rule-generated slot must be consumed. Reading both sides in
+     * one query prevents a moved session from falling through the seam at a range boundary.
+     */
+    @Query(value = """
+            SELECT *
+            FROM event_sessions
+            WHERE event_type_id = :eventTypeId
+              AND (
+                    (start_time >= :rangeStart AND start_time < :rangeEnd)
+                 OR (scheduled_occurrence_start >= :rangeStart
+                     AND scheduled_occurrence_start < :rangeEnd)
+              )
+            ORDER BY start_time ASC, id ASC
+            """, nativeQuery = true)
+    List<EventSession> findEffectiveOccurrenceSessionsInRange(@Param("eventTypeId") UUID eventTypeId,
+                                                               @Param("rangeStart") Instant rangeStart,
+                                                               @Param("rangeEnd") Instant rangeEnd);
 
     /**
      * Sessions whose rule-generated occurrence falls in the range, wherever they now sit.
@@ -82,7 +123,6 @@ public interface EventSessionRepository extends JpaRepository<EventSession, UUID
               AND scheduled_occurrence_start >= :rangeStart
               AND scheduled_occurrence_start <  :rangeEnd
               AND start_time <> scheduled_occurrence_start
-              AND status IN ('OPEN', 'FULL')
             ORDER BY scheduled_occurrence_start ASC, id ASC
             """, nativeQuery = true)
     List<EventSession> findMovedSessionsByOccurrenceRange(@Param("eventTypeId") UUID eventTypeId,
