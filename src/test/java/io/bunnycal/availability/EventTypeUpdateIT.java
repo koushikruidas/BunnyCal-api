@@ -9,6 +9,7 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupHostNotificationMode;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
 import io.bunnycal.availability.dto.UpdateEventTypeRequest;
@@ -85,6 +86,7 @@ class EventTypeUpdateIT {
     @Autowired UserRepository userRepository;
     @Autowired EventTypeRepository eventTypeRepository;
     @Autowired EventTypeService eventTypeService;
+    @Autowired SlotCacheVersionService slotCacheVersionService;
     @Autowired CalendarConnectionRepository connectionRepository;
     @Autowired BookingOwnershipService ownershipService;
     @Autowired BookingOwnershipRepository ownershipRepository;
@@ -99,6 +101,7 @@ class EventTypeUpdateIT {
     void update_changesNonCalendarFields() {
         User owner = createUser("owner@test.com");
         EventType et = persistEventType(owner.getId(), "demo");
+        long slotVersionBefore = slotCacheVersionService.getCurrentVersion(owner.getId());
 
         EventTypeSummaryResponse response = eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
                 "Renamed", "Updated note", "Phone call", 45, 10, 15, 20, 180, 90, 12, null));
@@ -114,6 +117,9 @@ class EventTypeUpdateIT {
         assertThat(response.minNoticeMinutes()).isEqualTo(180);
         assertThat(response.maxAdvanceDays()).isEqualTo(90);
         assertThat(response.holdDurationMinutes()).isEqualTo(12);
+        assertThat(slotCacheVersionService.getCurrentVersion(owner.getId()))
+                .as("slot-affecting template changes invalidate cached availability")
+                .isGreaterThan(slotVersionBefore);
     }
 
     @Test
@@ -128,6 +134,18 @@ class EventTypeUpdateIT {
         assertThat(reloaded.getName()).isEqualTo("Renamed");
         assertThat(reloaded.getDuration()).as("duration was not mentioned, so it survives")
                 .isEqualTo(Duration.ofMinutes(30));
+    }
+
+    @Test
+    void update_nameOnlyDoesNotInvalidateSlotCache() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistEventType(owner.getId(), "demo");
+        long slotVersionBefore = slotCacheVersionService.getCurrentVersion(owner.getId());
+
+        eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
+                "Renamed", null, null, null, null, null, null, null, null, null, null));
+
+        assertThat(slotCacheVersionService.getCurrentVersion(owner.getId())).isEqualTo(slotVersionBefore);
     }
 
     @Test

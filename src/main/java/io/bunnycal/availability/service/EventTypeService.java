@@ -10,6 +10,7 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupEventReservationWindow;
 import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.ScheduleType;
+import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.UpdateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeSummaryResponse;
@@ -53,6 +54,7 @@ public class EventTypeService {
     private final EntitlementService entitlementService;
     private final GroupEventReservationWindowRepository reservationWindowRepository;
     private final EventAvailabilityWindowRepository eventAvailabilityWindowRepository;
+    private final SlotCacheVersionService slotCacheVersionService;
     private final EventPaymentConfigService eventPaymentConfigService;
 
     @Autowired
@@ -67,6 +69,7 @@ public class EventTypeService {
                             EntitlementService entitlementService,
                             GroupEventReservationWindowRepository reservationWindowRepository,
                             EventAvailabilityWindowRepository eventAvailabilityWindowRepository,
+                            SlotCacheVersionService slotCacheVersionService,
                             @Nullable EventPaymentConfigService eventPaymentConfigService) {
         this.eventTypeRepository = eventTypeRepository;
         this.userRepository = userRepository;
@@ -79,6 +82,7 @@ public class EventTypeService {
         this.entitlementService = entitlementService;
         this.reservationWindowRepository = reservationWindowRepository;
         this.eventAvailabilityWindowRepository = eventAvailabilityWindowRepository;
+        this.slotCacheVersionService = slotCacheVersionService;
         this.eventPaymentConfigService = eventPaymentConfigService;
     }
 
@@ -96,7 +100,7 @@ public class EventTypeService {
                             EventAvailabilityWindowRepository eventAvailabilityWindowRepository) {
         this(eventTypeRepository, userRepository, sessionUserResolver, orchestrationNormalizer,
                 publishReadinessService, outboxPublisher, timeSource, experienceRepository,
-                entitlementService, reservationWindowRepository, eventAvailabilityWindowRepository, null);
+                entitlementService, reservationWindowRepository, eventAvailabilityWindowRepository, null, null);
     }
 
 
@@ -202,10 +206,27 @@ public class EventTypeService {
 
         EventType saved = eventTypeRepository.save(eventType);
         if (eventPaymentConfigService != null) eventPaymentConfigService.apply(actingUserId, saved.getId(), request.payment());
+        if (slotCacheVersionService != null && changesSlotProjection(request)) {
+            slotCacheVersionService.bumpVersionAfterCommit(saved.getUserId());
+        }
         OpsLoggers.HOST.info(
                 "event_type_updated hostId={} eventTypeId={} eventTypeKind={} conferencingProvider={}",
                 actingUserId, saved.getId(), saved.getKind(), saved.getConferencingProvider());
         return toSummary(saved, ensureUsername(user));
+    }
+
+    /**
+     * These fields are consumed directly by slot generation. Cached availability must move to a
+     * new version after the transaction commits or public pages keep serving the old slot length
+     * and grid until the cache TTL expires.
+     */
+    private static boolean changesSlotProjection(UpdateEventTypeRequest request) {
+        return request.durationMinutes() != null
+                || request.bufferBeforeMinutes() != null
+                || request.bufferAfterMinutes() != null
+                || request.slotIntervalMinutes() != null
+                || request.minNoticeMinutes() != null
+                || request.maxAdvanceDays() != null;
     }
 
     private static void validateUpdate(EventType eventType, UpdateEventTypeRequest request) {
