@@ -42,7 +42,7 @@ class BookingExperienceDeleteGuardTest {
     @BeforeEach
     void setUp() {
         service = new BookingExperienceService(experienceRepository, eventTypeRepository, formRepository,
-                entitlementService);
+                entitlementService, "https://www.bunnycal.io");
     }
 
     private BookingExperience experience(ExperienceStatus status) {

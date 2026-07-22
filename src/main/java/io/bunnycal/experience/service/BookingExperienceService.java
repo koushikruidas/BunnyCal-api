@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,15 +28,26 @@ public class BookingExperienceService {
     private final EventTypeRepository eventTypeRepository;
     private final FormRepository formRepository;
     private final EntitlementService entitlementService;
+    /** Origin the widget script and embed iframe are served from — the web app, not the API. */
+    private final String webBaseUrl;
 
     public BookingExperienceService(BookingExperienceRepository experienceRepository,
                                     EventTypeRepository eventTypeRepository,
                                     FormRepository formRepository,
-                                    EntitlementService entitlementService) {
+                                    EntitlementService entitlementService,
+                                    @Value("${app.public-base-url:http://localhost:5173}") String webBaseUrl) {
         this.experienceRepository = experienceRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.formRepository = formRepository;
         this.entitlementService = entitlementService;
+        this.webBaseUrl = stripTrailingSlash(webBaseUrl);
+    }
+
+    private static String stripTrailingSlash(String url) {
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
     public BookingExperienceResponse createExperience(UUID ownerId, CreateExperienceRequest request) {
@@ -131,15 +143,22 @@ public class BookingExperienceService {
         experienceRepository.save(experience);
     }
 
+    /**
+     * Builds the copy-paste embed snippet.
+     *
+     * <p>The script origin is the WEB app ({@code app.public-base-url}), not this API: widget.js
+     * and the /embed/ iframe it injects are both served by the frontend. It was previously
+     * hardcoded to a domain that does not resolve, so every copied snippet was dead on arrival.
+     */
     public String getEmbedSnippet(UUID ownerId, UUID experienceId) {
         BookingExperience experience = requireOwned(ownerId, experienceId);
         return String.format(
-                "<script src=\"https://app.bunnycal.io/widget.js\"></script>\n" +
+                "<script src=\"%s/widget.js\"></script>\n" +
                 "<div id=\"bunnycal-widget\"></div>\n" +
                 "<script>\n" +
                 "  BunnyCal.init({ experienceSlug: '%s', containerId: 'bunnycal-widget' });\n" +
                 "</script>",
-                experience.getSlug());
+                webBaseUrl, experience.getSlug());
     }
 
     private BookingExperience requireOwned(UUID ownerId, UUID experienceId) {
