@@ -47,7 +47,7 @@ class BookingExperienceActivateTest {
     @BeforeEach
     void setUp() {
         service = new BookingExperienceService(experienceRepository, eventTypeRepository, formRepository,
-                entitlementService);
+                entitlementService, "https://www.bunnycal.io");
     }
 
     private BookingExperience archivedExperience(UUID attachedFormId) {
