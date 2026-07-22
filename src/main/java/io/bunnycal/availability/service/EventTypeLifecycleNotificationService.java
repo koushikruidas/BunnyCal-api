@@ -4,13 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.EmailTemplate;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
 /**
@@ -26,19 +26,19 @@ public class EventTypeLifecycleNotificationService {
 
     private static final Logger log = LoggerFactory.getLogger(EventTypeLifecycleNotificationService.class);
 
-    private final JavaMailSender mailSender;
+    private final BrandedMailSender brandedMailSender;
     private final ObjectMapper objectMapper;
     private final UserRepository userRepository;
     private final String fromAddress;
     private final String fromName;
 
     public EventTypeLifecycleNotificationService(
-            JavaMailSender mailSender,
+            BrandedMailSender brandedMailSender,
             ObjectMapper objectMapper,
             UserRepository userRepository,
             @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress,
             @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName) {
-        this.mailSender = mailSender;
+        this.brandedMailSender = brandedMailSender;
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
         this.fromAddress = fromAddress;
@@ -61,13 +61,13 @@ public class EventTypeLifecycleNotificationService {
         }
 
         String subject = buildSubject(event.getEventType(), payload);
-        String body = buildBody(event.getEventType(), payload);
-        if (subject == null || body == null) {
+        EmailTemplate template = buildTemplate(event.getEventType(), payload);
+        if (subject == null || template == null) {
             log.info("event_type_lifecycle_notification_no_template eventType={}", event.getEventType());
             return;
         }
 
-        sendEmail(ownerEmail, subject, body, event.getId());
+        sendEmail(ownerEmail, subject, template, event.getId());
     }
 
     private String resolveOwnerEmail(EventTypeLifecycleOutboxPayload payload) {
@@ -91,55 +91,66 @@ public class EventTypeLifecycleNotificationService {
         };
     }
 
-    private String buildBody(String eventType, EventTypeLifecycleOutboxPayload payload) {
+    private EmailTemplate buildTemplate(String eventType, EventTypeLifecycleOutboxPayload payload) {
+        String name = payload.eventTypeName();
+        EmailTemplate.Builder b = brandedMailSender.template()
+                .detail("Event", name)
+                .footerReason("you're receiving this because you own this event type");
+
         return switch (eventType) {
-            case EventTypeLifecycleOutboxPayload.EVENT_AUTO_UNPUBLISHED ->
-                    "Your event \"" + payload.eventTypeName() + "\" has been automatically unpublished "
-                    + "because one or more participants are no longer ready.\n\n"
-                    + "Reason: " + payload.reason() + "\n\n"
-                    + buildParticipantSnapshotBlock(payload.participantSnapshots())
-                    + "No existing bookings have been affected. "
-                    + "Please review your participant setup and republish when ready.";
-            case EventTypeLifecycleOutboxPayload.EVENT_REPUBLISHED ->
-                    "Your event \"" + payload.eventTypeName() + "\" is now published and accepting bookings again.\n\n"
-                    + "All participants are ready.";
-            case EventTypeLifecycleOutboxPayload.EVENT_READINESS_DEGRADED ->
-                    "Your event \"" + payload.eventTypeName() + "\" is experiencing a temporary calendar issue.\n\n"
-                    + "Bookings continue but may show reduced availability until the issue is resolved.\n\n"
-                    + buildParticipantSnapshotBlock(payload.participantSnapshots())
-                    + "No action is required — we are retrying automatically.";
-            case EventTypeLifecycleOutboxPayload.EVENT_PARTICIPANT_REMOVED_WITH_FUTURE_BOOKINGS ->
-                    payload.reason() + "\n\n"
-                    + "The removed participant's existing confirmed bookings are not affected and "
-                    + "will continue as scheduled. Guests can still manage or cancel their bookings.";
+            case EventTypeLifecycleOutboxPayload.EVENT_AUTO_UNPUBLISHED -> {
+                b.eyebrow("Event unpublished")
+                 .headline("\"" + name + "\" was unpublished")
+                 .paragraph("Your event **" + name + "** has been automatically unpublished because "
+                         + "one or more participants are no longer ready.")
+                 .detail("Reason", payload.reason())
+                 .paragraph("No existing bookings have been affected. Review your participant setup "
+                         + "and republish when ready.");
+                addSnapshots(b, payload.participantSnapshots());
+                yield b.build();
+            }
+            case EventTypeLifecycleOutboxPayload.EVENT_REPUBLISHED -> b
+                    .eyebrow("Event live")
+                    .headline("\"" + name + "\" is live again")
+                    .paragraph("Your event **" + name + "** is now published and accepting bookings again.")
+                    .paragraph("All participants are ready.")
+                    .build();
+            case EventTypeLifecycleOutboxPayload.EVENT_READINESS_DEGRADED -> {
+                b.eyebrow("Calendar issue")
+                 .headline("Calendar issue on \"" + name + "\"")
+                 .paragraph("Your event **" + name + "** is experiencing a temporary calendar issue. "
+                         + "Bookings continue but may show reduced availability until it resolves.");
+                addSnapshots(b, payload.participantSnapshots());
+                b.note("No action is required — we are retrying automatically.");
+                yield b.build();
+            }
+            case EventTypeLifecycleOutboxPayload.EVENT_PARTICIPANT_REMOVED_WITH_FUTURE_BOOKINGS -> b
+                    .eyebrow("Participant removed")
+                    .headline("A removed participant has upcoming bookings")
+                    .paragraph(payload.reason())
+                    .paragraph("The removed participant's existing confirmed bookings are not affected "
+                            + "and will continue as scheduled. Guests can still manage or cancel them.")
+                    .build();
             default -> null;
         };
     }
 
-    private static String buildParticipantSnapshotBlock(
+    private static void addSnapshots(
+            EmailTemplate.Builder b,
             List<EventTypeLifecycleOutboxPayload.ParticipantStatusSnapshot> snapshots) {
-        if (snapshots == null || snapshots.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder("Participant status:\n");
+        if (snapshots == null || snapshots.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
         for (var s : snapshots) {
             String name = s.name() != null ? s.name() : s.userId().toString();
-            sb.append("  - ").append(name).append(": ").append(s.readinessMessage()).append("\n");
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(name).append(" — ").append(s.readinessMessage());
         }
-        return sb + "\n";
+        b.preformatted(sb.toString());
     }
 
-    private void sendEmail(String to, String subject, String body, Object eventId) {
+    private void sendEmail(String to, String subject, EmailTemplate template, Object eventId) {
         try {
-            var message = mailSender.createMimeMessage();
-            var helper = new MimeMessageHelper(message, "UTF-8");
-            if (fromName != null && !fromName.isBlank()) {
-                helper.setFrom(fromAddress, fromName);
-            } else {
-                helper.setFrom(fromAddress);
-            }
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(body, false);
-            mailSender.send(message);
+            brandedMailSender.send(fromAddress, fromName, to, subject, template);
             log.info("event_type_lifecycle_notification_sent to={} subject={} eventId={}", to, subject, eventId);
         } catch (Exception ex) {
             log.error("event_type_lifecycle_notification_send_failed to={} eventId={} error={}",

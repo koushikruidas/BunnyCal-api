@@ -35,6 +35,20 @@ public class PaymentAuditService {
                 .build());
     }
 
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void recordHostCommerce(String actor, String entityType, UUID entityId, String action,
+                                   Object before, Object after) {
+        repository.save(PaymentAuditLog.builder()
+                .domain("HOST_COMMERCE")
+                .actor(actor)
+                .entityType(entityType)
+                .entityId(entityId)
+                .action(action)
+                .beforeJson(toJson(before))
+                .afterJson(toJson(after))
+                .build());
+    }
+
     public static String userActor(UUID userId) {
         return "USER:" + userId;
     }

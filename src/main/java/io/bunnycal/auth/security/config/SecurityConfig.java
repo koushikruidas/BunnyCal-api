@@ -142,6 +142,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/announcements/active").permitAll()
                         // Provider webhooks authenticate via signature, not JWT. Must precede /api/**.
                         .requestMatchers("/api/billing/webhooks/**").permitAll()
+                        .requestMatchers("/api/host-payments/webhooks/**").permitAll()
                         // Admin API requires an admin role. Must precede the generic /api/** rule.
                         .requestMatchers("/api/admin/**")
                             .hasAnyRole("ADMIN", "SUPER_ADMIN", "SUPPORT", "FINANCE", "OPERATIONS")

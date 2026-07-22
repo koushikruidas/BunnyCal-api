@@ -9,6 +9,10 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.outbox.OutboxEvent;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.BrandedMimeAssembler;
+import io.bunnycal.common.email.CalendarMimeAssembler;
+import io.bunnycal.common.email.EmailTemplate;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.ownership.BookingOwnership;
@@ -96,6 +100,8 @@ public class BookingNotificationService {
     private final String calendarOrganizerEmail;
     private final String calendarOrganizerName;
     private final String debugEmlDir;
+    private final BrandedMailSender brandedMailSender;
+    private final boolean brandedCalendarHtml;
     private final Duration guestManageTokenTtl;
 
     @Autowired
@@ -124,6 +130,9 @@ public class BookingNotificationService {
                                       @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}")
                                       String calendarOrganizerName,
                                       @Value("${booking.notifications.debug-eml-dir:}") String debugEmlDir,
+                                      BrandedMailSender brandedMailSender,
+                                      @Value("${booking.notifications.email-template.calendar-html-enabled:false}")
+                                      boolean brandedCalendarHtml,
                                       @Value("${booking.public.capability-token-ttl-days:14}") long capabilityTokenTtlDays) {
         this.bookingRepository = bookingRepository;
         this.userRepository = userRepository;
@@ -148,6 +157,8 @@ public class BookingNotificationService {
         this.calendarOrganizerEmail = calendarOrganizerEmail;
         this.calendarOrganizerName = calendarOrganizerName;
         this.debugEmlDir = debugEmlDir == null ? "" : debugEmlDir.trim();
+        this.brandedMailSender = brandedMailSender;
+        this.brandedCalendarHtml = brandedCalendarHtml;
         this.guestManageTokenTtl = Duration.ofDays(Math.max(1L, capabilityTokenTtlDays));
     }
 
@@ -173,12 +184,15 @@ public class BookingNotificationService {
                                       String calendarOrganizerName,
                                       String debugEmlDir,
                                       long capabilityTokenTtlDays) {
+        // Branded calendar HTML is off in this overload: callers that use it predate the
+        // template and assert against the legacy text-only MIME shape.
         this(bookingRepository, userRepository, eventTypeRepository, bookingAssignmentRepository, mailSender,
                 icsInviteGenerator, bookingManageLinkService, guestCapabilityTokenService, recipientResolver,
                 deliverabilityPolicy, notificationSendDedupService, conferencingCoordinator, conferencingResolver,
                 conferencingEventMappingRepository, calendarConnectionRepository, bookingOwnershipRepository, null,
                 new BookingSubmissionFormatter(new ObjectMapper()), notificationsEnabled, fromAddress,
-                calendarOrganizerEmail, calendarOrganizerName, debugEmlDir, capabilityTokenTtlDays);
+                calendarOrganizerEmail, calendarOrganizerName, debugEmlDir,
+                new BrandedMailSender(mailSender, "", ""), false, capabilityTokenTtlDays);
     }
 
     public void handleOutboxEvent(OutboxEvent event) {
@@ -650,22 +664,21 @@ public class BookingNotificationService {
         String textBody = body(summary, eventType, manageLink, conferenceDetails, submissionDescription, when);
 
         if (ics != null && method != null) {
-            MimeBodyPart textPart = new MimeBodyPart();
-            textPart.setText(textBody, StandardCharsets.UTF_8.name(), "plain");
-
-            MimeBodyPart calendarInline = new MimeBodyPart();
-            calendarInline.setContent(ics, "text/calendar; charset=UTF-8; method=" + method);
-            // Outlook auto-render requires the calendar part to appear as an
-            // alternative body, not as a file attachment.
-            calendarInline.setHeader("Content-Type", "text/calendar; charset=UTF-8; method=" + method + "; name=\"invite.ics\"");
-            calendarInline.setHeader("Content-Transfer-Encoding", "8bit");
-            calendarInline.setHeader("Content-Class", "urn:content-classes:calendarmessage");
-
-            MimeMultipart alternative = new MimeMultipart("alternative");
-            alternative.addBodyPart(textPart);
-            alternative.addBodyPart(calendarInline);
-
-            message.setContent(alternative);
+            // See CalendarMimeAssembler for why the branded shape moves the calendar part out
+            // of the multipart/alternative instead of adding HTML alongside it.
+            if (brandedCalendarHtml) {
+                String html = calendarTemplate(summary, eventType, manageLink, conferenceDetails,
+                        submissionDescription, when).renderHtml();
+                CalendarMimeAssembler.buildBranded(message, textBody, html, ics, method);
+            } else {
+                CalendarMimeAssembler.buildTextOnly(message, textBody, ics, method);
+            }
+        } else if (brandedCalendarHtml) {
+            // No invite (e.g. the projection owner): still send the branded body, via the
+            // assembler so it carries the inline mascot like every other branded email.
+            EmailTemplate template = calendarTemplate(summary, eventType, manageLink, conferenceDetails,
+                    submissionDescription, when);
+            BrandedMimeAssembler.build(message, textBody, template.renderHtml());
         } else {
             helper.setText(textBody, false);
         }
@@ -919,6 +932,57 @@ public class BookingNotificationService {
             builder.append("\n\nManage your booking:\n").append(manageLink);
         }
         return builder.toString();
+    }
+
+    /**
+     * Branded HTML counterpart to {@link #body}. Carries the same substance — lifecycle
+     * sentence, when, submission answers, join link, manage link — in the shared layout.
+     *
+     * <p>Only rendered when {@code booking.notifications.email-template.calendar-html-enabled}
+     * is on; the plain-text body is always sent as the alternative.
+     */
+    private EmailTemplate calendarTemplate(String summary,
+                                           String eventType,
+                                           String manageLink,
+                                           ConferenceDetails conferenceDetails,
+                                           String submissionDescription,
+                                           @org.springframework.lang.Nullable String when) {
+        boolean cancelled = "BOOKING_CANCELLED".equals(eventType)
+                || "BOOKING_EXTERNAL_TERMINATED".equals(eventType);
+        boolean rescheduled = "BOOKING_UPDATED".equals(eventType);
+
+        EmailTemplate.Builder b = brandedMailSender.template()
+                .eyebrow(cancelled ? "Meeting cancelled" : rescheduled ? "Meeting rescheduled" : "Meeting confirmed")
+                .headline(summary)
+                .paragraph(cancelled
+                        ? "Your meeting has been cancelled."
+                        : rescheduled
+                                ? "Your meeting has been rescheduled. The updated details are below."
+                                : "Your meeting is confirmed. The details are below.")
+                .detail("Event", summary);
+
+        if (when != null && !when.isBlank()) {
+            b.detail("When", when);
+        }
+        if (submissionDescription != null && !submissionDescription.isBlank()) {
+            b.preformatted(submissionDescription.trim());
+        }
+
+        String joinUrl = conferenceDetails == null ? null : conferenceDetails.joinUrl();
+        if (joinUrl != null && !joinUrl.isBlank() && !cancelled) {
+            b.primaryAction("Join the meeting", joinUrl);
+            if (manageLink != null && !manageLink.isBlank()) {
+                b.secondaryAction("Manage booking", manageLink);
+            }
+        } else if (manageLink != null && !manageLink.isBlank() && !cancelled) {
+            b.primaryAction("Manage booking", manageLink);
+        }
+
+        if (!cancelled && manageLink != null && !manageLink.isBlank()) {
+            b.note("Need to cancel or reschedule? Use the manage link above.");
+        }
+        b.footerReason("you're receiving this because you're on this booking");
+        return b.build();
     }
 
     private String buildBookingDescription(Booking booking) {

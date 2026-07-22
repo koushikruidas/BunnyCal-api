@@ -7,13 +7,13 @@ import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.notification.NotificationRecipientResolver;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.EmailTemplate;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.repository.EventSessionRepository;
-import jakarta.mail.internet.MimeMessage;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -29,8 +29,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
 /** Plain-text host notifications for GROUP registration activity; attendee ICS mail stays separate. */
@@ -42,7 +40,7 @@ public class GroupHostNotificationService {
     private static final DateTimeFormatter SESSION_TIME = DateTimeFormatter
             .ofPattern("EEE, MMM d, yyyy 'at' h:mm a z", Locale.ENGLISH);
 
-    private final JavaMailSender mailSender;
+    private final BrandedMailSender brandedMailSender;
     private final UserRepository userRepository;
     private final EventTypeRepository eventTypeRepository;
     private final EventSessionRepository sessionRepository;
@@ -55,7 +53,7 @@ public class GroupHostNotificationService {
     private final Duration digestDelay;
 
     public GroupHostNotificationService(
-            JavaMailSender mailSender,
+            BrandedMailSender brandedMailSender,
             UserRepository userRepository,
             EventTypeRepository eventTypeRepository,
             EventSessionRepository sessionRepository,
@@ -66,7 +64,7 @@ public class GroupHostNotificationService {
             @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
             @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName,
             @Value("${group.host-notifications.digest-delay:PT24H}") Duration digestDelay) {
-        this.mailSender = mailSender;
+        this.brandedMailSender = brandedMailSender;
         this.userRepository = userRepository;
         this.eventTypeRepository = eventTypeRepository;
         this.sessionRepository = sessionRepository;
@@ -192,12 +190,19 @@ public class GroupHostNotificationService {
         else if (reopened) subject = "Spot reopened: " + eventName;
         else subject = (confirmation ? "New registration: " : "Registration cancelled: ") + eventName;
 
-        String body = (confirmation ? "A guest registered for your group event." : "A guest cancelled their group registration.")
-                + "\n\nEvent: " + eventName
-                + "\nSession: " + formatSessionTime(payload.startTime(), host.get().getTimezone())
-                + "\nGuest: " + displayGuest(payload)
-                + "\nOccupancy: " + Math.max(0, confirmedCount) + " / " + Math.max(0, capacity);
-        sendPlainWithDedup(event.getId(), recipient.get(), "GROUP_HOST_" + activityType, subject, body);
+        EmailTemplate template = brandedMailSender.template()
+                .eyebrow(confirmation ? "New registration" : "Registration cancelled")
+                .headline(subject)
+                .paragraph(confirmation
+                        ? "A guest registered for your group event."
+                        : "A guest cancelled their group registration.")
+                .detail("Event", eventName)
+                .detail("Session", formatSessionTime(payload.startTime(), host.get().getTimezone()))
+                .detail("Guest", displayGuest(payload))
+                .detail("Occupancy", Math.max(0, confirmedCount) + " / " + Math.max(0, capacity))
+                .footerReason("you're receiving this because you host this group event")
+                .build();
+        sendBrandedWithDedup(event.getId(), recipient.get(), "GROUP_HOST_" + activityType, subject, template);
     }
 
     /** Sends all due rolling daily digests. Called by the locked scheduler. */
@@ -234,7 +239,14 @@ public class GroupHostNotificationService {
         boolean claimed = dedupService.claim(batchId, recipient.get(), dedupType);
         if (claimed) {
             try {
-                sendPlain(recipient.get(), "Group booking digest: " + eventName, body);
+                sendBranded(recipient.get(), "Group booking digest: " + eventName,
+                        brandedMailSender.template()
+                                .eyebrow("Daily digest")
+                                .headline("Activity on " + eventName)
+                                .paragraph("Here's what happened on your group event since the last digest.")
+                                .preformatted(body)
+                                .footerReason("you're receiving this because you host this group event")
+                                .build());
             } catch (RuntimeException ex) {
                 dedupService.release(batchId, recipient.get(), dedupType);
                 throw ex;
@@ -280,35 +292,24 @@ public class GroupHostNotificationService {
         return body.toString();
     }
 
-    private void sendPlainWithDedup(UUID outboxEventId,
-                                    String recipient,
-                                    String dedupType,
-                                    String subject,
-                                    String body) {
+    private void sendBrandedWithDedup(UUID outboxEventId,
+                                      String recipient,
+                                      String dedupType,
+                                      String subject,
+                                      EmailTemplate template) {
         boolean claimed = dedupService.claim(outboxEventId, recipient, dedupType);
         if (!claimed) return;
         try {
-            sendPlain(recipient, subject, body);
+            sendBranded(recipient, subject, template);
         } catch (RuntimeException ex) {
             dedupService.release(outboxEventId, recipient, dedupType);
             throw ex;
         }
     }
 
-    private void sendPlain(String recipient, String subject, String body) {
+    private void sendBranded(String recipient, String subject, EmailTemplate template) {
         try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-            if (fromName != null && !fromName.isBlank()) {
-                helper.setFrom(fromAddress, fromName);
-            } else {
-                helper.setFrom(fromAddress);
-            }
-            helper.setReplyTo(fromAddress);
-            helper.setTo(recipient);
-            helper.setSubject(subject);
-            helper.setText(body, false);
-            mailSender.send(message);
+            brandedMailSender.send(fromAddress, fromName, recipient, subject, template);
         } catch (Exception ex) {
             throw new IllegalStateException("group host notification delivery failed", ex);
         }

@@ -2,18 +2,17 @@ package io.bunnycal.team.notification;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.booking.outbox.OutboxEvent;
-import java.nio.charset.StandardCharsets;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.EmailTemplate;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
 /**
- * Sends plain-text team notification emails when invitation/member lifecycle
+ * Sends branded team notification emails when invitation/member lifecycle
  * outbox events are dispatched. Intentionally simple — no ICS, no dedup.
  */
 @Service
@@ -29,17 +28,17 @@ public class TeamInvitationNotificationService {
     public static final String AGGREGATE_TYPE_INVITATION = "TeamInvitation";
     public static final String AGGREGATE_TYPE_MEMBER = "TeamMember";
 
-    private final JavaMailSender mailSender;
+    private final BrandedMailSender brandedMailSender;
     private final ObjectMapper objectMapper;
     private final String fromAddress;
     private final String fromName;
 
     public TeamInvitationNotificationService(
-            JavaMailSender mailSender,
+            BrandedMailSender brandedMailSender,
             ObjectMapper objectMapper,
             @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress,
             @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName) {
-        this.mailSender = mailSender;
+        this.brandedMailSender = brandedMailSender;
         this.objectMapper = objectMapper;
         this.fromAddress = fromAddress;
         this.fromName = fromName;
@@ -71,18 +70,12 @@ public class TeamInvitationNotificationService {
     }
 
     private void send(String eventType, TeamNotificationOutboxPayload payload) throws Exception {
-        var message = mailSender.createMimeMessage();
-        var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-        if (fromName != null && !fromName.isBlank()) {
-            helper.setFrom(fromAddress, fromName);
-        } else {
-            helper.setFrom(fromAddress);
-        }
-        helper.setTo(payload.recipientEmail());
-        helper.setSubject(buildSubject(eventType, payload));
-        helper.setText(buildBody(eventType, payload), false);
-        message.saveChanges();
-        mailSender.send(message);
+        brandedMailSender.send(
+                fromAddress,
+                fromName,
+                payload.recipientEmail(),
+                buildSubject(eventType, payload),
+                buildTemplate(eventType, payload));
     }
 
     private static String buildSubject(String eventType, TeamNotificationOutboxPayload p) {
@@ -94,26 +87,47 @@ public class TeamInvitationNotificationService {
         };
     }
 
-    private static String buildBody(String eventType, TeamNotificationOutboxPayload p) {
+    private EmailTemplate buildTemplate(String eventType, TeamNotificationOutboxPayload p) {
         String greeting = p.recipientName() != null && !p.recipientName().isBlank()
-                ? "Hi " + p.recipientName() + ",\n\n"
-                : "Hi,\n\n";
+                ? "Hi " + p.recipientName() + ","
+                : "Hi,";
         String actor = p.actorName() != null && !p.actorName().isBlank() ? p.actorName() : "A team admin";
+        String team = p.teamName();
+
+        EmailTemplate.Builder b = brandedMailSender.template().greeting(greeting);
 
         return switch (eventType) {
-            case EVENT_TYPE_INVITATION_CREATED -> greeting
-                    + actor + " has invited you to join the team \"" + p.teamName() + "\" on BunnyCal.\n\n"
-                    + "Accept the invitation:\n" + p.acceptUrl() + "\n\n"
-                    + "This invitation expires in 7 days. If you didn't expect this email, you can safely ignore it.";
-            case EVENT_TYPE_INVITATION_REVOKED -> greeting
-                    + actor + " revoked your pending invitation to join the team \"" + p.teamName() + "\" on BunnyCal.\n\n"
-                    + "If this seems unexpected, contact the team owner or admin for details.\n\n"
-                    + "— BunnyCal";
-            case EVENT_TYPE_MEMBER_REMOVED -> greeting
-                    + actor + " removed you from the team \"" + p.teamName() + "\" on BunnyCal.\n\n"
-                    + "You no longer have access to this team and will not participate in future team scheduling activities.\n\n"
-                    + "If this seems unexpected, contact the team owner or admin for details.\n\n"
-                    + "— BunnyCal";
+            case EVENT_TYPE_INVITATION_CREATED -> b
+                    .eyebrow("Team invitation")
+                    .headline(actor + " invited you to " + team)
+                    .paragraph("**" + actor + "** has invited you to join the team **" + team
+                            + "** on BunnyCal. Accepting adds you to the team's shared event types "
+                            + "and booking rotations.")
+                    .detail("Team", team)
+                    .primaryAction("Accept invitation", p.acceptUrl())
+                    .note("This invitation expires in **7 days**. If you weren't expecting it, "
+                            + "you can safely ignore this email.")
+                    .footerReason("you're receiving this because someone invited you to a team")
+                    .build();
+            case EVENT_TYPE_INVITATION_REVOKED -> b
+                    .eyebrow("Invitation revoked")
+                    .headline("Your invitation to " + team + " was revoked")
+                    .paragraph("**" + actor + "** revoked your pending invitation to join the team **"
+                            + team + "** on BunnyCal.")
+                    .paragraph("If this seems unexpected, contact the team owner or admin for details.")
+                    .detail("Team", team)
+                    .footerReason("you're receiving this because you had a pending team invitation")
+                    .build();
+            case EVENT_TYPE_MEMBER_REMOVED -> b
+                    .eyebrow("Team membership")
+                    .headline("You've been removed from " + team)
+                    .paragraph("**" + actor + "** removed you from the team **" + team + "** on BunnyCal.")
+                    .paragraph("You no longer have access to this team and will not participate in "
+                            + "future team scheduling activities.")
+                    .paragraph("If this seems unexpected, contact the team owner or admin for details.")
+                    .detail("Team", team)
+                    .footerReason("you're receiving this because you were a member of this team")
+                    .build();
             default -> throw new IllegalArgumentException("Unsupported team notification event type: " + eventType);
         };
     }

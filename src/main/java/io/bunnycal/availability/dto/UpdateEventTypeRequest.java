@@ -3,6 +3,7 @@ package io.bunnycal.availability.dto;
 import io.bunnycal.availability.domain.GroupHostNotificationMode;
 import io.bunnycal.common.api.ForwardCompatibleRequest;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import io.bunnycal.hostpayments.dto.EventPaymentRequest;
 
 /**
  * Partial update of an event type. Every field is optional: an absent (null) field leaves the stored
@@ -26,8 +27,21 @@ public record UpdateEventTypeRequest(
         Integer holdDurationMinutes,
         CreateEventTypeRequest.ConferenceRequest conference,
         Integer capacity,
-        GroupHostNotificationMode groupHostNotificationMode
+        GroupHostNotificationMode groupHostNotificationMode,
+        EventPaymentRequest payment
 ) implements ForwardCompatibleRequest {
+    /** Back-compatible constructor used before paid-event configuration was added. */
+    public UpdateEventTypeRequest(
+            String name, String description, String location, Integer durationMinutes,
+            Integer bufferBeforeMinutes, Integer bufferAfterMinutes, Integer slotIntervalMinutes,
+            Integer minNoticeMinutes, Integer maxAdvanceDays, Integer holdDurationMinutes,
+            CreateEventTypeRequest.ConferenceRequest conference, Integer capacity,
+            GroupHostNotificationMode groupHostNotificationMode) {
+        this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
+                slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
+                conference, capacity, groupHostNotificationMode, null);
+    }
+
     /** Back-compatible constructor for existing partial-update callers. */
     public UpdateEventTypeRequest(
             String name,
@@ -44,6 +58,6 @@ public record UpdateEventTypeRequest(
     ) {
         this(name, description, location, durationMinutes, bufferBeforeMinutes, bufferAfterMinutes,
                 slotIntervalMinutes, minNoticeMinutes, maxAdvanceDays, holdDurationMinutes,
-                conference, null, null);
+                conference, null, null, null);
     }
 }

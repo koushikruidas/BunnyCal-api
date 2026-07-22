@@ -281,6 +281,20 @@ public class SessionService {
                                                     UUID hostId,
                                                     Instant targetStartTime,
                                                     String rawToken) {
+        return moveRegistration(registrationId, hostId, targetStartTime, null, null, rawToken);
+    }
+
+    /**
+     * Public Group rescheduling supplies the target occurrence snapshot so a rule edit cannot make
+     * the booking command recreate that occurrence with a different duration or capacity.
+     */
+    @Transactional
+    public MoveRegistrationResult moveRegistration(UUID registrationId,
+                                                    UUID hostId,
+                                                    Instant targetStartTime,
+                                                    Instant projectedTargetEndTime,
+                                                    Integer projectedTargetCapacity,
+                                                    String rawToken) {
         if (registrationId == null || hostId == null || targetStartTime == null) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "registrationId, hostId and startTime are required.");
@@ -319,8 +333,12 @@ public class SessionService {
 
         EventType eventType = eventTypeRepository.findById(source.getEventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Event type not found."));
-        Instant targetEndTime = targetStartTime.plus(
-                Duration.between(source.getStartTime(), source.getEndTime()));
+        Instant targetEndTime = projectedTargetEndTime != null
+                ? projectedTargetEndTime
+                : targetStartTime.plus(Duration.between(source.getStartTime(), source.getEndTime()));
+        int targetCapacity = projectedTargetCapacity != null && projectedTargetCapacity > 0
+                ? projectedTargetCapacity
+                : eventType.getCapacity();
 
         // Lock both slots in a fixed order so opposing swaps cannot deadlock.
         Instant firstLock = source.getStartTime().isBefore(targetStartTime)
@@ -333,7 +351,7 @@ public class SessionService {
         // Materializes the target if this is its first booking — same path, and the
         // same lineage stamping, as any other first registration.
         EventSession target = findOrCreateSession(hostId, source.getEventTypeId(),
-                targetStartTime, targetEndTime, eventType.getCapacity());
+                targetStartTime, targetEndTime, targetCapacity);
         if (target.getId().equals(source.getId())) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "The new meeting time matches the current one.");

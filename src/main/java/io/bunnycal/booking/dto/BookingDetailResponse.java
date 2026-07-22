@@ -1,5 +1,6 @@
 package io.bunnycal.booking.dto;
 
+import io.bunnycal.hostpayments.dto.HostBookingPaymentResponse;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -23,6 +24,7 @@ public record BookingDetailResponse(
         String externalLifecycleState,
         String externalLifecycleReason,
         boolean reconcileSuppressed,
-        boolean actionRequired
+        boolean actionRequired,
+        HostBookingPaymentResponse payment
 ) {
 }

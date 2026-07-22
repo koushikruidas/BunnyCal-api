@@ -2,14 +2,13 @@ package io.bunnycal.team.notification;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.bunnycal.booking.outbox.OutboxEvent;
-import java.nio.charset.StandardCharsets;
+import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.EmailTemplate;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -20,17 +19,17 @@ public class ParticipantSetupRequestNotificationService {
     public static final String EVENT_TYPE    = "PARTICIPANT_SETUP_REQUEST_SENT";
     public static final String AGGREGATE_TYPE = "ParticipantSetupRequest";
 
-    private final JavaMailSender mailSender;
+    private final BrandedMailSender brandedMailSender;
     private final ObjectMapper objectMapper;
     private final String fromAddress;
     private final String fromName;
 
     public ParticipantSetupRequestNotificationService(
-            JavaMailSender mailSender,
+            BrandedMailSender brandedMailSender,
             ObjectMapper objectMapper,
             @Value("${booking.notifications.from:no-reply@bunnycal.local}") String fromAddress,
             @Value("${booking.notifications.calendar-organizer-name:BunnyCal Calendar}") String fromName) {
-        this.mailSender = mailSender;
+        this.brandedMailSender = brandedMailSender;
         this.objectMapper = objectMapper;
         this.fromAddress = fromAddress;
         this.fromName = fromName;
@@ -55,34 +54,35 @@ public class ParticipantSetupRequestNotificationService {
     }
 
     private void send(ParticipantSetupRequestOutboxPayload payload) throws Exception {
-        var message = mailSender.createMimeMessage();
-        var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
-        if (fromName != null && !fromName.isBlank()) {
-            helper.setFrom(fromAddress, fromName);
-        } else {
-            helper.setFrom(fromAddress);
-        }
-        helper.setTo(payload.targetEmail());
-        helper.setSubject("Action required: set up your scheduling profile on BunnyCal");
-        helper.setText(buildBody(payload), false);
-        message.saveChanges();
-        mailSender.send(message);
+        brandedMailSender.send(
+                fromAddress,
+                fromName,
+                payload.targetEmail(),
+                "Action required: set up your scheduling profile on BunnyCal",
+                buildTemplate(payload));
     }
 
-    private static String buildBody(ParticipantSetupRequestOutboxPayload p) {
+    private EmailTemplate buildTemplate(ParticipantSetupRequestOutboxPayload p) {
         String inviter = p.ownerName() != null && !p.ownerName().isBlank() ? p.ownerName() : "A team owner";
         String greeting = p.targetName() != null && !p.targetName().isBlank()
                 ? "Hi " + p.targetName() + "," : "Hi,";
-        return greeting + "\n\n"
-                + inviter + " has added you to a Round Robin scheduling pool"
-                + (p.teamName() != null ? " on the \"" + p.teamName() + "\" team" : "")
-                + " on BunnyCal.\n\n"
-                + "To start receiving bookings, please complete your setup:\n\n"
-                + "  1. Connect your calendar\n"
-                + "  2. Configure your availability schedule\n\n"
-                + "Complete setup here:\n" + p.setupUrl() + "\n\n"
-                + "If you have any questions, reply to this email or contact your team owner.\n\n"
-                + "— BunnyCal";
+
+        // No "Team" detail row here: the team name already appears in the opening paragraph,
+        // and a detail panel would render between that sentence and the numbered steps it
+        // introduces, breaking the read.
+        return brandedMailSender.template()
+                .eyebrow("Action required")
+                .headline("Finish setting up your scheduling profile")
+                .greeting(greeting)
+                .paragraph("**" + inviter + "** has added you to a Round Robin scheduling pool"
+                        + (p.teamName() != null ? " on the **" + p.teamName() + "** team" : "")
+                        + " on BunnyCal.")
+                .paragraph("Before bookings can reach you, there are two things to set up:")
+                .preformatted("1.  Connect your calendar\n2.  Configure your availability schedule")
+                .primaryAction("Complete setup", p.setupUrl())
+                .note("Questions? Reply to this email or contact your team owner.")
+                .footerReason("you're receiving this because you were added to a scheduling pool")
+                .build();
     }
 
     @SuppressWarnings("unchecked")

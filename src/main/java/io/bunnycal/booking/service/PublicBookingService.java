@@ -43,6 +43,9 @@ import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.session.service.ConfirmRegistrationResult;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
+import io.bunnycal.session.occurrence.EffectiveGroupOccurrence;
+import io.bunnycal.session.occurrence.GroupOccurrenceResolver;
+import io.bunnycal.session.occurrence.OccurrenceBookabilityReason;
 import io.bunnycal.booking.repository.CollectiveParticipantHoldRepository;
 import io.bunnycal.sync.FencingTokenGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -63,8 +66,11 @@ import io.bunnycal.form.dto.AnswerSnapshot;
 import io.bunnycal.common.enums.AuthProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.beans.factory.annotation.Value;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.bunnycal.hostpayments.service.EventPaymentConfigService;
+import io.bunnycal.hostpayments.service.HostPaymentLifecycleService;
 
 @Service
 public class PublicBookingService {
@@ -78,6 +84,17 @@ public class PublicBookingService {
     // gains the same holiday-day-off check as slot listing.
     @Autowired(required = false)
     private HolidayDayOffService holidayDayOffService;
+
+    // Group-only recurrence/session projection. Field injection keeps the established test
+    // constructors stable; the production Spring context always provides it.
+    @Autowired
+    private GroupOccurrenceResolver groupOccurrenceResolver;
+
+    @Autowired(required = false)
+    private HostPaymentLifecycleService hostPaymentLifecycleService;
+
+    @Autowired(required = false)
+    private EventPaymentConfigService eventPaymentConfigService;
 
     private final PublicBookingTargetResolver publicBookingTargetResolver;
     private final SlotService slotService;
@@ -251,6 +268,7 @@ public class PublicBookingService {
                 .map(Enum::name)
                 .toList();
 
+        var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
         return new PublicEventInfoResponse(
                 target.eventName(),
                 target.duration().toMinutes(),
@@ -263,13 +281,20 @@ public class PublicBookingService {
                 eventType.getKind(),
                 eventType.isPublished(),
                 participants,
-                availableDays
+                availableDays,
+                payment != null && payment.enabled(),
+                payment == null ? null : payment.amountMinor(),
+                payment == null ? null : payment.currency(),
+                payment == null ? null : payment.provider()
         );
     }
 
     @Transactional(readOnly = true)
     public SlotResponse availability(String username, String eventTypeSlug, LocalDate date) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        if (eventPaymentConfigService != null) {
+            eventPaymentConfigService.requireBookable(target.eventTypeId(), target.userId());
+        }
 
         // Unpublished event types: page is reachable but slots are empty.
         EventType currentEventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
@@ -401,6 +426,9 @@ public class PublicBookingService {
         // accept NEW bookings (Spec Ch5 §11/§14-16). Existing bookings are untouched (this only
         // runs on the create/hold path). Neutral rejection, no billing detail leaked (Principle 9).
         requireOwnerEntitledForBooking(target);
+        if (eventPaymentConfigService != null) {
+            eventPaymentConfigService.requireBookable(target.eventTypeId(), target.userId());
+        }
 
         PublicHoldResponse response;
         if (target.kind() == EventKind.GROUP) {
@@ -418,7 +446,18 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
 
-        return response;
+        var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
+        if (payment == null) return response;
+        if (hostPaymentLifecycleService != null) {
+            var terms = hostPaymentLifecycleService.snapshotTerms(
+                    target.eventTypeId(), target.userId(), response.bookingId(),
+                    target.kind() == EventKind.GROUP
+                            ? io.bunnycal.hostpayments.domain.PaymentReservationKind.SESSION_REGISTRATION
+                            : io.bunnycal.hostpayments.domain.PaymentReservationKind.BOOKING,
+                    response.expiresAt());
+            return response.withPayment(terms.amountMinor(), terms.currency(), terms.provider());
+        }
+        return response.withPayment(payment.amountMinor(), payment.currency(), payment.provider());
     }
 
     private void requirePublished(UUID eventTypeId) {
@@ -596,15 +635,16 @@ public class PublicBookingService {
     private PublicHoldResponse holdGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,
                                                      PublicBookRequest request,
                                                      InviteeAuthContext inviteeAuth) {
-        Instant start = request.startTime();
-        Instant end = start.plus(target.duration());
+        EffectiveGroupOccurrence occurrence = requireBookableGroupOccurrence(target, request.startTime());
+        Instant start = occurrence.effectiveStart();
+        Instant end = occurrence.effectiveEnd();
 
         JoinSessionResult result = sessionService.joinSession(
                 target.userId(),
                 target.eventTypeId(),
                 start,
                 end,
-                target.capacity(),
+                occurrence.capacity(),
                 normalizeGuestEmail(request.guestEmail()),
                 normalizeGuestName(request.guestName()),
                 normalizeNotes(request.notes()),
@@ -626,13 +666,36 @@ public class PublicBookingService {
                 result.expiresAt(),
                 start,
                 end,
-                result.sessionId()
+                result.sessionId(),
+                false, null, null, null
         );
     }
 
     @Transactional
     public PublicConfirmResponse confirm(String username, String eventTypeSlug, UUID bookingId) {
         PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        if (hostPaymentLifecycleService != null) {
+            hostPaymentLifecycleService.requirePaidIfConfigured(target.eventTypeId(), bookingId);
+        } else if (eventPaymentConfigService != null && eventPaymentConfigService.response(target.eventTypeId()) != null) {
+            throw new CustomException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Payments are temporarily unavailable for this event.");
+        }
+        return confirmCore(target, bookingId);
+    }
+
+    /**
+     * Provider-webhook entry point. Verification and amount/account matching happen in the host
+     * payments domain before this method is called. REQUIRES_NEW isolates a failed booking
+     * confirmation so the caller can durably record REFUND_REQUIRED instead of inheriting a
+     * rollback-only transaction.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public PublicConfirmResponse confirmAfterVerifiedPayment(String username, String eventTypeSlug, UUID bookingId) {
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        return confirmCore(target, bookingId);
+    }
+
+    private PublicConfirmResponse confirmCore(PublicBookingTargetResolver.ResolvedTarget target, UUID bookingId) {
         BookingLogContext context = buildConfirmContext(target, bookingId);
         long startedAtNanos = System.nanoTime();
         try {
@@ -1006,8 +1069,14 @@ public class PublicBookingService {
             UUID registrationId,
             PublicRescheduleRequest request,
             String guestCapabilityToken) {
+        EffectiveGroupOccurrence occurrence = requireBookableGroupOccurrence(target, request.startTime());
         var result = sessionService.moveRegistration(
-                registrationId, target.userId(), request.startTime(), guestCapabilityToken);
+                registrationId,
+                target.userId(),
+                occurrence.effectiveStart(),
+                occurrence.effectiveEnd(),
+                occurrence.capacity(),
+                guestCapabilityToken);
 
         OpsLoggers.BOOKING.info(
                 "group_registration_moved registrationId={} sourceSessionId={} targetSessionId={} hostId={} eventTypeId={} newStartUtc={}",
@@ -1016,6 +1085,30 @@ public class PublicBookingService {
 
         return new PublicBookingStatusResponse(
                 registrationId, "CONFIRMED", result.startTime(), result.endTime(), null);
+    }
+
+    private EffectiveGroupOccurrence requireBookableGroupOccurrence(
+            PublicBookingTargetResolver.ResolvedTarget target,
+            Instant requestedStart) {
+        if (groupOccurrenceResolver == null) {
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                    "Group occurrence resolution is unavailable.");
+        }
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+        EffectiveGroupOccurrence occurrence = groupOccurrenceResolver
+                .resolveBookingTarget(target.userId(), eventType, target.timezone(), requestedStart)
+                .orElseThrow(() -> new CustomException(
+                        ErrorCode.SLOT_UNAVAILABLE, "This session is no longer available."));
+        if (occurrence.isBookable()) {
+            return occurrence;
+        }
+        if (occurrence.reason() == OccurrenceBookabilityReason.SESSION_CANCELLED) {
+            throw new CustomException(ErrorCode.SESSION_CANCELLED);
+        }
+        if (occurrence.reason() == OccurrenceBookabilityReason.CAPACITY_FULL) {
+            throw new CustomException(ErrorCode.SESSION_CAPACITY_FULL);
+        }
+        throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This session is no longer available.");
     }
 
     @Transactional

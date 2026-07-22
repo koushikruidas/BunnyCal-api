@@ -1,6 +1,7 @@
 package io.bunnycal.session;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.availability.domain.EventKind;
@@ -11,6 +12,8 @@ import io.bunnycal.booking.dto.PublicGroupSessionCardResponse;
 import io.bunnycal.booking.dto.PublicGroupSessionsResponse;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.booking.service.PublicGroupSessionQueryService;
+import io.bunnycal.common.enums.ErrorCode;
+import io.bunnycal.common.exception.CustomException;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -335,6 +338,111 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
                 "SELECT COUNT(*) FROM event_sessions WHERE event_type_id = ?",
                 Integer.class, eventType.getId()))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void movedSessionAcrossRangeBoundary_suppressesOriginAndAppearsOnlyAtDestination() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 5, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var first = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "first@test.com", "First Guest"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), first.bookingId());
+        Instant destination = TEST_DATE.plusDays(7).atTime(14, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(first.sessionId(), host.getId(), destination);
+
+        PublicGroupSessionsResponse originRange = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+        assertThat(originRange.dates().get(0).sessions())
+                .noneMatch(session -> session.startTime().equals(originalStart));
+        assertThat(originRange.dates().get(0).sessions())
+                .noneMatch(session -> session.startTime().equals(destination));
+
+        PublicGroupSessionsResponse destinationRange = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE.plusDays(7), 1);
+        assertThat(destinationRange.dates().get(0).sessions())
+                .anySatisfy(session -> {
+                    assertThat(session.startTime()).isEqualTo(destination);
+                    assertThat(session.sessionId()).isEqualTo(first.sessionId().toString());
+                });
+    }
+
+    @Test
+    void cancellingMovedSession_keepsOriginalOccurrenceConsumed() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 5, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var first = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "first@test.com", "First Guest"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), first.bookingId());
+        sessionService.rescheduleSession(
+                first.sessionId(), host.getId(), TEST_DATE.atTime(14, 0).toInstant(ZoneOffset.UTC));
+        sessionService.cancelSession(first.sessionId(), host.getId());
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+
+        assertThat(response.dates().get(0).sessions())
+                .noneMatch(session -> session.startTime().equals(originalStart));
+    }
+
+    @Test
+    void movedSessionWaivesMaxAdvanceAndUsesPersistedDurationForBooking() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 5, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var first = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        originalStart, "first@test.com", "First Guest"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), first.bookingId());
+
+        LocalDate farMonday = TEST_DATE.plusDays(42);
+        Instant movedStart = farMonday.atTime(14, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(first.sessionId(), host.getId(), movedStart);
+        jdbc.update("UPDATE event_types SET duration = ? WHERE id = ?",
+                Duration.ofHours(2).getSeconds(), eventType.getId());
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), farMonday, 1);
+        PublicGroupSessionCardResponse moved = response.dates().get(0).sessions().stream()
+                .filter(session -> session.startTime().equals(movedStart))
+                .findFirst()
+                .orElseThrow();
+        assertThat(moved.bookable()).isTrue();
+        assertThat(moved.endTime()).isEqualTo(movedStart.plus(Duration.ofHours(1)));
+
+        var second = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        movedStart, "second@test.com", "Second Guest"));
+        assertThat(second.sessionId()).isEqualTo(first.sessionId());
+        assertThat(second.endTime()).isEqualTo(movedStart.plus(Duration.ofHours(1)));
+    }
+
+    @Test
+    void arbitraryOffGridStartCannotBypassTheEffectiveProjection() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 5, Duration.ZERO, Duration.ofDays(30));
+        insertRecurringWindow(eventType.getId(), "09:00", "11:00");
+        Instant arbitraryStart = TEST_DATE.atTime(14, 17).toInstant(ZoneOffset.UTC);
+
+        assertThatThrownBy(() -> publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(
+                        arbitraryStart, "guest@test.com", "Guest")))
+                .isInstanceOf(CustomException.class)
+                .satisfies(error -> assertThat(((CustomException) error).getErrorCode())
+                        .isEqualTo(ErrorCode.SLOT_UNAVAILABLE));
+
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM event_sessions WHERE event_type_id = ?",
+                Integer.class, eventType.getId())).isZero();
     }
 
     /**

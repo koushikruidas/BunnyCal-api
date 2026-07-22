@@ -312,6 +312,28 @@ booking:
     # message is written as a .eml file before SES send, for raw cross-client diffing.
     # Leave empty to disable (no prod impact).
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:/tmp/bunnycal-eml}
+    email-template:
+      # Fallback URL for the bunny mascot in the branded HTML header.
+      #
+      # Normally UNUSED: the mascot is embedded directly in each message as an inline cid:
+      # image from src/main/resources/static/assets/email/bunny.png, which renders without
+      # any hosting and is not affected by remote-image blocking. This setting only takes
+      # effect if that bundled asset is missing. See EmailMascot for the reasoning.
+      mascot-url: ${BOOKING_NOTIFICATIONS_MASCOT_URL:}
+      # Applies the branded HTML template to the two emails that carry a calendar invite
+      # (booking + session). Restructures their MIME from
+      #   multipart/alternative(text, calendar)
+      # to
+      #   multipart/mixed(multipart/related(alternative(text, html), mascot), calendar)
+      # so the invite no longer competes with the body for the client's chosen rendering.
+      #
+      # ON in dev so the branded shape gets real-world exposure. What unit tests CANNOT
+      # prove is client behaviour: that Outlook still shows the accept/decline banner and
+      # still creates exactly ONE calendar entry. Verify that against a real Outlook,
+      # Gmail and Apple Mail account before enabling in production — set
+      # BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED=false there until then.
+      # booking.notifications.debug-eml-dir dumps the raw .eml for inspection.
+      calendar-html-enabled: ${BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED:true}
 
 billing:
   # Master switch for the SaaS subscription billing module. Disabled by default so
@@ -374,6 +396,28 @@ billing:
     webhook-secret: ${DODO_WEBHOOK_SECRET:}
     # When true, the API targets test.dodopayments.com; otherwise live.dodopayments.com.
     test-mode: ${DODO_TEST_MODE:true}
+
+# Host-direct event commerce. Kept separate from BunnyCal subscription billing.
+commerce:
+  enabled: ${COMMERCE_ENABLED:false}
+  frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
+  stripe:
+    secret-key: ${COMMERCE_STRIPE_SECRET_KEY:}
+    publishable-key: ${COMMERCE_STRIPE_PUBLISHABLE_KEY:}
+    webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:}
+    onboarding-return-url: ${COMMERCE_STRIPE_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=connected}
+    onboarding-refresh-url: ${COMMERCE_STRIPE_ONBOARDING_REFRESH_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=refresh}
+  paypal:
+    enabled: ${COMMERCE_PAYPAL_ENABLED:false}
+    client-id: ${COMMERCE_PAYPAL_CLIENT_ID:}
+    client-secret: ${COMMERCE_PAYPAL_CLIENT_SECRET:}
+    partner-merchant-id: ${COMMERCE_PAYPAL_PARTNER_MERCHANT_ID:}
+    partner-attribution-id: ${COMMERCE_PAYPAL_PARTNER_ATTRIBUTION_ID:}
+    webhook-id: ${COMMERCE_PAYPAL_WEBHOOK_ID:}
+    onboarding-return-url: ${COMMERCE_PAYPAL_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/integrations?payment=paypal}
+    api-base-url: ${COMMERCE_PAYPAL_API_BASE_URL:https://api-m.sandbox.paypal.com}
+  reconciliation:
+    fixed-delay-ms: ${COMMERCE_RECONCILIATION_FIXED_DELAY_MS:30000}
 
 draft:
   ttl:
