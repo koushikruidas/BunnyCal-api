@@ -10,6 +10,7 @@ import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.BrandedMimeAssembler;
 import io.bunnycal.common.email.CalendarMimeAssembler;
 import io.bunnycal.common.email.EmailTemplate;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
@@ -673,10 +674,11 @@ public class BookingNotificationService {
                 CalendarMimeAssembler.buildTextOnly(message, textBody, ics, method);
             }
         } else if (brandedCalendarHtml) {
-            // No invite (e.g. the projection owner): still send the branded body.
+            // No invite (e.g. the projection owner): still send the branded body, via the
+            // assembler so it carries the inline mascot like every other branded email.
             EmailTemplate template = calendarTemplate(summary, eventType, manageLink, conferenceDetails,
                     submissionDescription, when);
-            helper.setText(textBody, template.renderHtml());
+            BrandedMimeAssembler.build(message, textBody, template.renderHtml());
         } else {
             helper.setText(textBody, false);
         }

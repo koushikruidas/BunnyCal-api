@@ -7,6 +7,7 @@ import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
 import io.bunnycal.booking.notification.NotificationSendDedupService;
 import io.bunnycal.booking.outbox.OutboxEvent;
 import io.bunnycal.common.email.BrandedMailSender;
+import io.bunnycal.common.email.BrandedMimeAssembler;
 import io.bunnycal.common.email.CalendarMimeAssembler;
 import io.bunnycal.common.email.EmailTemplate;
 import io.bunnycal.booking.service.BookingSubmissionFormatter;
@@ -370,7 +371,8 @@ public class SessionNotificationService {
                 CalendarMimeAssembler.buildTextOnly(message, bodyText, ics, method);
             }
         } else if (brandedCalendarHtml) {
-            helper.setText(bodyText, calendarTemplate(subject, bodyText).renderHtml());
+            // Routed through the assembler so the body carries the inline mascot.
+            BrandedMimeAssembler.build(message, bodyText, calendarTemplate(subject, bodyText).renderHtml());
         } else {
             helper.setText(bodyText, false);
         }

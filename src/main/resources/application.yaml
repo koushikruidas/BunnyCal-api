@@ -324,14 +324,16 @@ booking:
       # (booking + session). Restructures their MIME from
       #   multipart/alternative(text, calendar)
       # to
-      #   multipart/mixed(multipart/alternative(text, html), calendar)
+      #   multipart/mixed(multipart/related(alternative(text, html), mascot), calendar)
       # so the invite no longer competes with the body for the client's chosen rendering.
       #
-      # OFF by default: whether Outlook still auto-renders the invite cannot be proven by
-      # unit tests — it needs real mail sent to real Outlook/Gmail/Apple Mail accounts.
-      # Enable in a test environment, verify with booking.notifications.debug-eml-dir and
-      # a live send, then roll forward. Reverting is a single env-var flip.
-      calendar-html-enabled: ${BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED:false}
+      # ON in dev so the branded shape gets real-world exposure. What unit tests CANNOT
+      # prove is client behaviour: that Outlook still shows the accept/decline banner and
+      # still creates exactly ONE calendar entry. Verify that against a real Outlook,
+      # Gmail and Apple Mail account before enabling in production — set
+      # BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED=false there until then.
+      # booking.notifications.debug-eml-dir dumps the raw .eml for inspection.
+      calendar-html-enabled: ${BOOKING_NOTIFICATIONS_CALENDAR_HTML_ENABLED:true}
 
 billing:
   # Master switch for the SaaS subscription billing module. Disabled by default so
