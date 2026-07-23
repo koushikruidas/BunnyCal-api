@@ -9,6 +9,7 @@ import io.bunnycal.billing.domain.BillingInterval;
 import io.bunnycal.billing.domain.PlanVisibility;
 import io.bunnycal.billing.domain.SubscriptionPlan;
 import io.bunnycal.billing.repository.SubscriptionPlanRepository;
+import io.bunnycal.billing.repository.SubscriptionRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import java.util.List;
@@ -30,13 +31,16 @@ public class PlanCatalogService {
     private static final String TARGET_TYPE = "PLAN";
 
     private final SubscriptionPlanRepository planRepository;
+    private final SubscriptionRepository subscriptionRepository;
     private final AdminAuditService auditService;
     private final UserRepository userRepository;
 
     public PlanCatalogService(SubscriptionPlanRepository planRepository,
+                              SubscriptionRepository subscriptionRepository,
                               AdminAuditService auditService,
                               UserRepository userRepository) {
         this.planRepository = planRepository;
+        this.subscriptionRepository = subscriptionRepository;
         this.auditService = auditService;
         this.userRepository = userRepository;
     }
@@ -96,6 +100,9 @@ public class PlanCatalogService {
         if (req.providerPriceId() != null) plan.setProviderPriceId(blankToNull(req.providerPriceId()));
         if (req.visibility() != null) plan.setVisibility(req.visibility());
         if (req.sortOrder() != null) plan.setSortOrder(req.sortOrder());
+        if (plan.isDefaultPlan()) {
+            requireDefaultConfiguration(plan);
+        }
 
         SubscriptionPlan saved = planRepository.save(plan);
         audit(adminId, "PLAN_UPDATE", saved.getId(), null, before, PlanDto.from(saved));
@@ -105,10 +112,45 @@ public class PlanCatalogService {
     @Transactional
     public PlanDto setActive(UUID adminId, UUID id, boolean active, String reason) {
         SubscriptionPlan plan = require(id);
+        if (!active && plan.isDefaultPlan()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The default plan can't be deactivated. Make another plan the default first.");
+        }
         PlanDto before = PlanDto.from(plan);
         plan.setActive(active);
         SubscriptionPlan saved = planRepository.save(plan);
         audit(adminId, active ? "PLAN_ACTIVATE" : "PLAN_DEACTIVATE", saved.getId(), reason, before, PlanDto.from(saved));
+        return PlanDto.from(saved);
+    }
+
+    /**
+     * Atomically moves the catalog default. The replacement must already be sellable and linked
+     * to a provider price so checkout can never observe a half-configured default.
+     */
+    @Transactional
+    public PlanDto setDefault(UUID adminId, UUID id, String reason) {
+        SubscriptionPlan target = require(id);
+        if (target.isDefaultPlan()) {
+            return PlanDto.from(target);
+        }
+        if (!target.isActive()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Activate this plan before making it the default.");
+        }
+        requireDefaultConfiguration(target);
+
+        PlanDto targetBefore = PlanDto.from(target);
+        planRepository.findByDefaultPlanTrue().ifPresent(current -> {
+            PlanDto currentBefore = PlanDto.from(current);
+            current.setDefaultPlan(false);
+            SubscriptionPlan savedCurrent = planRepository.saveAndFlush(current);
+            audit(adminId, "PLAN_UNSET_DEFAULT", current.getId(), reason,
+                    currentBefore, PlanDto.from(savedCurrent));
+        });
+
+        target.setDefaultPlan(true);
+        SubscriptionPlan saved = planRepository.save(target);
+        audit(adminId, "PLAN_SET_DEFAULT", saved.getId(), reason, targetBefore, PlanDto.from(saved));
         return PlanDto.from(saved);
     }
 
@@ -118,11 +160,48 @@ public class PlanCatalogService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "visibility is required.");
         }
         SubscriptionPlan plan = require(id);
+        if (plan.isDefaultPlan() && visibility != PlanVisibility.PUBLIC) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The default plan must stay public. Make another plan the default first.");
+        }
         PlanDto before = PlanDto.from(plan);
         plan.setVisibility(visibility);
         SubscriptionPlan saved = planRepository.save(plan);
         audit(adminId, "PLAN_SET_VISIBILITY", saved.getId(), reason, before, PlanDto.from(saved));
         return PlanDto.from(saved);
+    }
+
+    /**
+     * Hard-delete a plan from the catalog. Guarded so a delete can never break billing:
+     * the customer-facing default plan is protected, and any plan referenced by an existing
+     * subscription is refused (deactivate/hide it instead). Recorded to the audit log with a
+     * final before-snapshot.
+     */
+    @Transactional
+    public void delete(UUID adminId, UUID id, String reason) {
+        SubscriptionPlan plan = require(id);
+        if (plan.isDefaultPlan()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The default plan can't be deleted. Make another plan the default first.");
+        }
+        if (subscriptionRepository.existsByPlanId(id)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "This plan is used by existing subscriptions and can't be deleted. Deactivate it instead.");
+        }
+        PlanDto before = PlanDto.from(plan);
+        planRepository.delete(plan);
+        audit(adminId, "PLAN_DELETE", id, reason, before, null);
+    }
+
+    private static void requireDefaultConfiguration(SubscriptionPlan plan) {
+        if (plan.getVisibility() != PlanVisibility.PUBLIC) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "The default plan must be public.");
+        }
+        if (plan.getProviderPriceId() == null || plan.getProviderPriceId().isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Link a Dodo Price ID before making this plan the default.");
+        }
     }
 
     private SubscriptionPlan require(UUID id) {

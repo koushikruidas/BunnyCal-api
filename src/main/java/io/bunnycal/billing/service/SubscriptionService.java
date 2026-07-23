@@ -135,7 +135,7 @@ public class SubscriptionService {
     /** Creates a hosted Checkout session for the default plan and returns the redirect URL. */
     @Transactional
     public CheckoutSession startCheckout(UUID userId) {
-        return startCheckout(userId, null);
+        return startCheckout(userId, null, null);
     }
 
     /**
@@ -147,10 +147,21 @@ public class SubscriptionService {
      */
     @Transactional
     public CheckoutSession startCheckout(UUID userId, String promoCode) {
+        return startCheckout(userId, null, promoCode);
+    }
+
+    /**
+     * Creates checkout for an explicitly selected catalog plan. A null plan id preserves the
+     * default-plan fallback for existing clients and trial upgrade prompts.
+     */
+    @Transactional
+    public CheckoutSession startCheckout(UUID userId, UUID planId, String promoCode) {
         PaymentProvider provider = requireProvider();
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new CustomException(ErrorCode.UNAUTHORIZED));
-        SubscriptionPlan plan = planService.requireDefaultPlan();
+        SubscriptionPlan plan = planId == null
+                ? planService.requireDefaultPlan()
+                : planService.requirePurchasablePlan(planId);
         if (plan.getProviderPriceId() == null || plan.getProviderPriceId().isBlank()) {
             throw new CustomException(ErrorCode.BILLING_PROVIDER_ERROR,
                     "Plan is not linked to a provider price.");
@@ -158,6 +169,10 @@ public class SubscriptionService {
 
         Subscription subscription = ensureSubscription(userId)
                 .orElseGet(() -> reopenForCheckout(userId, plan));
+        if (!plan.getId().equals(subscription.getPlanId())) {
+            subscription.setPlanId(plan.getId());
+            subscriptionRepository.save(subscription);
+        }
 
         String customerId = subscription.getProviderCustomerId();
         if (customerId == null) {

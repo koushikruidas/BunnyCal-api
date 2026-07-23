@@ -2,6 +2,7 @@ package io.bunnycal.billing.controller;
 
 import io.bunnycal.billing.dto.BillingOverviewDto;
 import io.bunnycal.billing.dto.InvoiceDto;
+import io.bunnycal.billing.dto.PurchasablePlanDto;
 import io.bunnycal.billing.service.BillingService;
 import io.bunnycal.billing.service.InvoiceService;
 import io.bunnycal.billing.service.SubscriptionService;
@@ -56,11 +57,18 @@ public class BillingController {
         return ResponseEntity.ok(ApiResponse.success(billingService.getOverview(userId(auth))));
     }
 
+    @GetMapping("/plans")
+    public ResponseEntity<ApiResponse<List<PurchasablePlanDto>>> plans() {
+        return ResponseEntity.ok(ApiResponse.success(
+                planService.purchasablePlans().stream().map(PurchasablePlanDto::from).toList()));
+    }
+
     @PostMapping("/checkout")
     public ResponseEntity<ApiResponse<Map<String, String>>> checkout(
             Authentication auth, @RequestBody(required = false) CheckoutRequest request) {
+        UUID planId = request == null ? null : request.planId();
         String promoCode = request == null ? null : request.promoCode();
-        CheckoutSession session = subscriptionService.startCheckout(userId(auth), promoCode);
+        CheckoutSession session = subscriptionService.startCheckout(userId(auth), planId, promoCode);
         return ResponseEntity.ok(ApiResponse.success(Map.of("redirectUrl", session.redirectUrl())));
     }
 
@@ -68,16 +76,18 @@ public class BillingController {
     public ResponseEntity<ApiResponse<io.bunnycal.billing.dto.DiscountBreakdownDto>> validatePromo(
             Authentication auth, @RequestBody PromoValidateRequest request) {
         UUID uid = userId(auth);
-        var plan = planService.requireDefaultPlan();
+        var plan = request == null || request.planId() == null
+                ? planService.requireDefaultPlan()
+                : planService.requirePurchasablePlan(request.planId());
         var subscription = subscriptionService.findLive(uid).orElse(null);
         return ResponseEntity.ok(ApiResponse.success(
                 promotionService.preview(plan, request == null ? null : request.code(), subscription)));
     }
 
-    public record CheckoutRequest(String promoCode) {
+    public record CheckoutRequest(UUID planId, String promoCode) {
     }
 
-    public record PromoValidateRequest(String code) {
+    public record PromoValidateRequest(UUID planId, String code) {
     }
 
     @PostMapping("/portal")

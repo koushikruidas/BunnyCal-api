@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class BillingService {
 
     private final SubscriptionStateService stateService;
+    private final SubscriptionService subscriptionService;
     private final PlanService planService;
     private final PaymentMethodRepository paymentMethodRepository;
     private final BillingProperties billingProperties;
@@ -26,7 +27,9 @@ public class BillingService {
     @Transactional
     public BillingOverviewDto getOverview(UUID userId) {
         SubscriptionStateDto state = stateService.resolve(userId);
-        SubscriptionPlan plan = planService.requireDefaultPlan();
+        SubscriptionPlan plan = subscriptionService.findLive(userId)
+                .map(subscription -> planService.requireById(subscription.getPlanId()))
+                .orElseGet(planService::requireDefaultPlan);
         BillingOverviewDto.PaymentMethodDto paymentMethod = paymentMethodRepository
                 .findFirstByUserIdAndIsDefaultTrue(userId)
                 .map(pm -> new BillingOverviewDto.PaymentMethodDto(

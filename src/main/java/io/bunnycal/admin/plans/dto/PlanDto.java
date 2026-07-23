@@ -24,6 +24,7 @@ public record PlanDto(
         String providerPriceId,
         PlanVisibility visibility,
         boolean active,
+        boolean defaultPlan,
         int sortOrder,
         Instant createdAt,
         Instant updatedAt) {
@@ -42,6 +43,7 @@ public record PlanDto(
                 p.getProviderPriceId(),
                 p.getVisibility(),
                 p.isActive(),
+                p.isDefaultPlan(),
                 p.getSortOrder(),
                 p.getCreatedAt(),
                 p.getUpdatedAt());

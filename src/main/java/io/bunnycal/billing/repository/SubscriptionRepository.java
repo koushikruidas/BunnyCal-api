@@ -52,6 +52,9 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
     /** Count of subscriptions in a given status — admin dashboard metrics. */
     long countByStatus(SubscriptionStatus status);
 
+    /** Whether any subscription references this plan — guards plan deletion in the admin catalog. */
+    boolean existsByPlanId(UUID planId);
+
     /** Distinct users who hold a live (entitled-or-recoverable) subscription — admin metrics. */
     @Query("""
             select count(distinct s.userId) from Subscription s

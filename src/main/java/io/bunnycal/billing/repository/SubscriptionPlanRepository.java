@@ -1,6 +1,7 @@
 package io.bunnycal.billing.repository;
 
 import io.bunnycal.billing.domain.SubscriptionPlan;
+import io.bunnycal.billing.domain.PlanVisibility;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -12,5 +13,9 @@ public interface SubscriptionPlanRepository extends JpaRepository<SubscriptionPl
 
     Optional<SubscriptionPlan> findByProviderPriceId(String providerPriceId);
 
+    Optional<SubscriptionPlan> findByDefaultPlanTrue();
+
     List<SubscriptionPlan> findByActiveTrueOrderBySortOrderAsc();
+
+    List<SubscriptionPlan> findByActiveTrueAndVisibilityOrderBySortOrderAsc(PlanVisibility visibility);
 }

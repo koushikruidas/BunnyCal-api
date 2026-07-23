@@ -47,4 +47,12 @@ public final class PlanRequests {
 
     public record SetVisibilityRequest(PlanVisibility visibility, String reason) {
     }
+
+    /** Audit reason for selecting the catalog default used by checkout and trials. */
+    public record SetDefaultRequest(String reason) {
+    }
+
+    /** Optional audit reason for a plan deletion. */
+    public record DeletePlanRequest(String reason) {
+    }
 }
