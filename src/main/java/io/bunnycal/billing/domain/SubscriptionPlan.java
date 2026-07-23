@@ -16,8 +16,9 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * A purchasable plan. Phase 1 ships one row ({@code pro_monthly}); adding plans is a
- * data change. Amount is in integer minor units of {@link #currency}.
+ * A purchasable plan. The catalog can hold multiple billing intervals and provider prices.
+ * One row is selected as the application default. Amount is in integer minor units of
+ * {@link #currency}.
  */
 @Getter
 @Setter
@@ -66,6 +67,10 @@ public class SubscriptionPlan extends BaseEntity {
     @Column(nullable = false)
     @Builder.Default
     private boolean active = true;
+
+    @Column(name = "is_default", nullable = false)
+    @Builder.Default
+    private boolean defaultPlan = false;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)

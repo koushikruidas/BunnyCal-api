@@ -1,6 +1,6 @@
 package io.bunnycal.billing.domain;
 
-/** Recurring billing cadence for a plan. Phase 1 uses MONTH; YEAR is schema-ready. */
+/** Recurring billing cadence for an admin-managed monthly or yearly plan. */
 public enum BillingInterval {
     MONTH,
     YEAR

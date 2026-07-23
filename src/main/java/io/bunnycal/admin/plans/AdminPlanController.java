@@ -2,7 +2,9 @@ package io.bunnycal.admin.plans;
 
 import io.bunnycal.admin.plans.dto.PlanDto;
 import io.bunnycal.admin.plans.dto.PlanRequests.CreatePlanRequest;
+import io.bunnycal.admin.plans.dto.PlanRequests.DeletePlanRequest;
 import io.bunnycal.admin.plans.dto.PlanRequests.SetActiveRequest;
+import io.bunnycal.admin.plans.dto.PlanRequests.SetDefaultRequest;
 import io.bunnycal.admin.plans.dto.PlanRequests.SetVisibilityRequest;
 import io.bunnycal.admin.plans.dto.PlanRequests.UpdatePlanRequest;
 import io.bunnycal.common.api.ApiResponse;
@@ -13,6 +15,7 @@ import java.util.UUID;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -72,6 +75,19 @@ public class AdminPlanController {
                                               @RequestBody SetVisibilityRequest req) {
         return ApiResponse.success(
                 planCatalogService.setVisibility(adminId(auth), id, req.visibility(), req.reason()));
+    }
+
+    @PatchMapping("/{id}/default")
+    public ApiResponse<PlanDto> setDefault(Authentication auth, @PathVariable UUID id,
+                                           @RequestBody SetDefaultRequest req) {
+        return ApiResponse.success(planCatalogService.setDefault(adminId(auth), id, req.reason()));
+    }
+
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(Authentication auth, @PathVariable UUID id,
+                                    @RequestBody(required = false) DeletePlanRequest req) {
+        planCatalogService.delete(adminId(auth), id, req == null ? null : req.reason());
+        return ApiResponse.success(null);
     }
 
     private static UUID adminId(Authentication auth) {
