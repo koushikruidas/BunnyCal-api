@@ -2,10 +2,9 @@
 #
 # Caddy terminates TLS and issues/renews certificates automatically for
 # $APP_DOMAIN (api.bunnycal.io in prod) via Let's Encrypt. Only the health
-# probe and the public API surface are proxied; everything else — including
-# the actuator metrics/prometheus endpoints — returns 404 and never reaches
-# the application from the public internet.
-
+# probe, API documentation, and the public API surface are proxied; everything
+# else — including the actuator metrics/prometheus endpoints — returns 404
+# and never reaches the application from the public internet.
 {
 	# Operational hardening: drop the Server banner and disable the admin API
 	# (no local control socket exposed inside the container).
@@ -28,6 +27,18 @@
 	}
 
 	handle /actuator/health* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /swagger-ui/* {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /swagger-ui.html {
+		reverse_proxy bunnycal-api:8080
+	}
+
+	handle /v3/api-docs* {
 		reverse_proxy bunnycal-api:8080
 	}
 
