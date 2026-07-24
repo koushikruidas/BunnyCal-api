@@ -1,11 +1,11 @@
 package io.bunnycal.admin.users;
 
+import io.bunnycal.admin.common.PageResponse;
 import io.bunnycal.admin.users.dto.AdminUserDetailDto;
 import io.bunnycal.admin.users.dto.AdminUserSummaryDto;
 import io.bunnycal.common.api.ApiResponse;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
-import java.util.List;
 import java.util.UUID;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -33,10 +33,16 @@ public class AdminUserController {
         this.service = service;
     }
 
-    /** Search by email (partial), user id, subscription id, or Dodo customer id. */
+    /**
+     * Lists users newest-first. An optional query searches by email (partial), user id,
+     * subscription id, or Dodo customer id.
+     */
     @GetMapping
-    public ApiResponse<List<AdminUserSummaryDto>> search(@RequestParam("q") String q) {
-        return ApiResponse.success(service.search(q));
+    public ApiResponse<PageResponse<AdminUserSummaryDto>> search(
+            @RequestParam(value = "q", required = false) String q,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "10") int size) {
+        return ApiResponse.success(service.search(q, page, size));
     }
 
     @GetMapping("/{id}")
