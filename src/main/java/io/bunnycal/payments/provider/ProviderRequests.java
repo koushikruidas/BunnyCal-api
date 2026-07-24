@@ -22,7 +22,11 @@ public final class ProviderRequests {
             UUID userId,
             String providerCustomerId,
             String providerPriceId,
-            Integer trialDays,
+            /**
+             * Provider-side trial intent. BunnyCal owns trials, so checkout callers pass
+             * {@code 0}; the non-null primitive makes accidentally omitting intent impossible.
+             */
+            int trialDays,
             String successUrl,
             String cancelUrl,
             String providerCouponId) {

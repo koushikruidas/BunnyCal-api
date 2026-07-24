@@ -22,6 +22,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -51,15 +52,24 @@ public class DodoProvider implements PaymentProvider {
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
 
+    @Autowired
     public DodoProvider(DodoProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, buildRestClient(properties));
+    }
+
+    DodoProvider(DodoProperties properties, ObjectMapper objectMapper, RestClient restClient) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.restClient = restClient;
+    }
+
+    private static RestClient buildRestClient(DodoProperties properties) {
         String baseUrl = properties.testMode()
                 ? "https://test.dodopayments.com"
                 : "https://live.dodopayments.com";
         // Build a dedicated, isolated client (RestClient.builder() — NOT the shared singleton
         // RestClient.Builder bean, which other clients mutate via .baseUrl()/.defaultHeader()).
-        this.restClient = RestClient.builder()
+        return RestClient.builder()
                 .baseUrl(baseUrl)
                 .defaultHeader("Authorization", "Bearer " + nullToEmpty(properties.apiKey()))
                 .build();
@@ -112,9 +122,9 @@ public class DodoProvider implements PaymentProvider {
         ObjectNode metadata = body.putObject("metadata");
         metadata.put("user_id", String.valueOf(request.userId()));
 
-        if (request.trialDays() != null && request.trialDays() > 0) {
-            body.putObject("subscription_data").put("trial_period_days", request.trialDays());
-        }
+        // BunnyCal is the trial authority. Always override the Dodo product default so a
+        // dashboard configuration change can never grant or extend a provider-side trial.
+        body.putObject("subscription_data").put("trial_period_days", request.trialDays());
 
         if (request.providerCouponId() != null && !request.providerCouponId().isBlank()) {
             // Dodo applies discounts via a discount code at checkout.

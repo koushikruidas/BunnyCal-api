@@ -1,6 +1,7 @@
 package io.bunnycal.admin.users;
 
 import io.bunnycal.admin.audit.AdminAuditService;
+import io.bunnycal.admin.common.PageResponse;
 import io.bunnycal.admin.subscriptions.AdminSubscriptionService;
 import io.bunnycal.admin.subscriptions.dto.AdminSubscriptionDto;
 import io.bunnycal.admin.users.dto.AdminUserDetailDto;
@@ -19,6 +20,8 @@ import io.bunnycal.common.exception.CustomException;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AdminUserService {
 
     private static final String TARGET_TYPE = "USER";
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final UserRepository userRepository;
     private final SubscriptionRepository subscriptionRepository;
@@ -59,14 +63,15 @@ public class AdminUserService {
     }
 
     /**
-     * Resolves a free-text query to matching users. The query is interpreted as, in order:
-     * a user UUID, a subscription UUID, a provider (Dodo) customer id, then a partial email.
-     * Returns at most a small page; exact-id matches return a single user.
+     * Lists users newest-first, optionally resolving a free-text query. The query is interpreted
+     * as, in order: a user UUID, a subscription UUID, a provider (Dodo) customer id, then a
+     * partial email. Exact-id matches still use the standard page envelope.
      */
     @Transactional(readOnly = true)
-    public List<AdminUserSummaryDto> search(String query) {
+    public PageResponse<AdminUserSummaryDto> search(String query, int page, int size) {
+        PageRequest pageable = page(page, size);
         if (query == null || query.isBlank()) {
-            return List.of();
+            return PageResponse.of(userRepository.findAll(pageable), AdminUserSummaryDto::from);
         }
         String q = query.trim();
 
@@ -75,15 +80,14 @@ public class AdminUserService {
         if (asUuid != null) {
             Optional<User> byId = userRepository.findById(asUuid);
             if (byId.isPresent()) {
-                return List.of(AdminUserSummaryDto.from(byId.get()));
+                return singleResult(byId.get(), pageable);
             }
             // 2. subscription id → owning user
             Optional<UUID> ownerId = subscriptionRepository.findById(asUuid).map(s -> s.getUserId());
             if (ownerId.isPresent()) {
                 return userRepository.findById(ownerId.get())
-                        .map(AdminUserSummaryDto::from)
-                        .map(List::of)
-                        .orElseGet(List::of);
+                        .map(user -> singleResult(user, pageable))
+                        .orElseGet(() -> emptyResult(pageable));
             }
         }
 
@@ -93,15 +97,14 @@ public class AdminUserService {
                 .map(s -> s.getUserId());
         if (byCustomer.isPresent()) {
             return userRepository.findById(byCustomer.get())
-                    .map(AdminUserSummaryDto::from)
-                    .map(List::of)
-                    .orElseGet(List::of);
+                    .map(user -> singleResult(user, pageable))
+                    .orElseGet(() -> emptyResult(pageable));
         }
 
         // 4. partial email
-        return userRepository.findTop20ByEmailContainingIgnoreCaseOrderByEmailAsc(q).stream()
-                .map(AdminUserSummaryDto::from)
-                .toList();
+        return PageResponse.of(
+                userRepository.findByEmailContainingIgnoreCase(q, pageable),
+                AdminUserSummaryDto::from);
     }
 
     @Transactional(readOnly = true)
@@ -201,5 +204,25 @@ public class AdminUserService {
         } catch (IllegalArgumentException e) {
             return null;
         }
+    }
+
+    private static PageRequest page(int page, int size) {
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
+        Sort newestFirst = Sort.by(
+                Sort.Order.desc("createdAt"),
+                Sort.Order.desc("id"));
+        return PageRequest.of(safePage, safeSize, newestFirst);
+    }
+
+    private static PageResponse<AdminUserSummaryDto> singleResult(User user, PageRequest page) {
+        List<AdminUserSummaryDto> items = page.getPageNumber() == 0
+                ? List.of(AdminUserSummaryDto.from(user))
+                : List.of();
+        return new PageResponse<>(items, page.getPageNumber(), page.getPageSize(), 1, 1);
+    }
+
+    private static PageResponse<AdminUserSummaryDto> emptyResult(PageRequest page) {
+        return new PageResponse<>(List.of(), page.getPageNumber(), page.getPageSize(), 0, 0);
     }
 }

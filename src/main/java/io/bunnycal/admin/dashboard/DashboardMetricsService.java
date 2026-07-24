@@ -9,6 +9,7 @@ import io.bunnycal.billing.repository.RefundRepository;
 import io.bunnycal.billing.repository.SubscriptionInvoiceRepository;
 import io.bunnycal.billing.repository.SubscriptionRepository;
 import io.bunnycal.billing.service.PlanService;
+import io.bunnycal.billing.service.TrialLifecycleService;
 import io.bunnycal.common.enums.UserStatus;
 import io.bunnycal.common.time.TimeSource;
 import java.time.Instant;
@@ -32,6 +33,7 @@ public class DashboardMetricsService {
     private final RefundRepository refundRepository;
     private final PaymentTransactionRepository transactionRepository;
     private final PlanService planService;
+    private final TrialLifecycleService trialLifecycleService;
     private final TimeSource timeSource;
 
     public DashboardMetricsService(UserRepository userRepository,
@@ -40,6 +42,7 @@ public class DashboardMetricsService {
                                    RefundRepository refundRepository,
                                    PaymentTransactionRepository transactionRepository,
                                    PlanService planService,
+                                   TrialLifecycleService trialLifecycleService,
                                    TimeSource timeSource) {
         this.userRepository = userRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -47,11 +50,14 @@ public class DashboardMetricsService {
         this.refundRepository = refundRepository;
         this.transactionRepository = transactionRepository;
         this.planService = planService;
+        this.trialLifecycleService = trialLifecycleService;
         this.timeSource = timeSource;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public DashboardMetricsDto metrics() {
+        // Keep persisted lifecycle buckets current even if the scheduled sweep has not run yet.
+        trialLifecycleService.expireElapsedTrials();
         Instant since = timeSource.now().minus(WINDOW_DAYS, ChronoUnit.DAYS);
 
         long totalUsers = userRepository.count();

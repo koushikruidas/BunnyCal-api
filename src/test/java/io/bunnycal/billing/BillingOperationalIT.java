@@ -10,6 +10,7 @@ import io.bunnycal.billing.domain.SubscriptionStatus;
 import io.bunnycal.billing.repository.SubscriptionRepository;
 import io.bunnycal.billing.service.DunningScheduler;
 import io.bunnycal.billing.service.PlanService;
+import io.bunnycal.billing.service.TrialExpirationScheduler;
 import io.bunnycal.billing.service.TrialReminderScheduler;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -75,6 +76,7 @@ class BillingOperationalIT {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired PlanService planService;
     @Autowired TrialReminderScheduler trialReminderScheduler;
+    @Autowired TrialExpirationScheduler trialExpirationScheduler;
     @Autowired DunningScheduler dunningScheduler;
 
     @BeforeEach
@@ -130,5 +132,22 @@ class BillingOperationalIT {
 
         // The 7-day and 3-day subs each produce one reminder; the 20-day one produces none.
         assertThat(billingEvents("TRIAL_ENDING")).isEqualTo(2);
+    }
+
+    @Test
+    void trialExpirationSweepTransitionsOnlyElapsedTrials() {
+        Instant now = Instant.now();
+        Subscription elapsed = sub(
+                SubscriptionStatus.TRIAL, now.minus(1, ChronoUnit.HOURS), null);
+        Subscription active = sub(
+                SubscriptionStatus.TRIAL, now.plus(1, ChronoUnit.DAYS), null);
+
+        trialExpirationScheduler.expireElapsedTrials();
+
+        assertThat(subscriptionRepository.findById(elapsed.getId()).orElseThrow().getStatus())
+                .isEqualTo(SubscriptionStatus.EXPIRED);
+        assertThat(subscriptionRepository.findById(active.getId()).orElseThrow().getStatus())
+                .isEqualTo(SubscriptionStatus.TRIAL);
+        assertThat(billingEvents("SUBSCRIPTION_EXPIRED")).isEqualTo(1);
     }
 }

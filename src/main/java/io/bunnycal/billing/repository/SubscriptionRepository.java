@@ -116,6 +116,10 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
     List<Subscription> findByStatusAndTrialEndBetween(
             SubscriptionStatus status, Instant from, Instant to);
 
+    /** Elapsed trials awaiting their explicit TRIAL -> EXPIRED state transition. */
+    List<Subscription> findByStatusAndTrialEndLessThanEqual(
+            SubscriptionStatus status, Instant cutoff);
+
     /** PAST_DUE subscriptions whose grace window has elapsed — used by dunning (M6). */
     List<Subscription> findByStatusAndGraceUntilBefore(SubscriptionStatus status, Instant cutoff);
 }

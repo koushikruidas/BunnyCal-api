@@ -348,13 +348,14 @@ billing:
   # there is no admin-role system yet, so keep this disabled outside trusted operators.
   admin:
     enabled: ${BILLING_ADMIN_ENABLED:false}
-  # Public-facing trial length for the single Phase-1 plan (days). The plan row in
-  # subscription_plans is the source of truth; this is the seed/default.
-  # 14 days per Product Specification v1.0, Chapter 2 §10 / Chapter 3 BR-002.
-  trial-days: ${BILLING_TRIAL_DAYS:14}
+  # Trial duration is owned exclusively by subscription_plans.trial_days. Each user's
+  # immutable deadline is copied to subscriptions.trial_end when their trial starts.
   # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
   grace-days: ${BILLING_GRACE_DAYS:3}
-  # Trial-ending reminders run daily; dunning sweep runs hourly. ShedLock-guarded.
+  # Trial expiration runs each minute, reminders daily, and dunning hourly. ShedLock-guarded.
+  trial-expiration:
+    # Persists TRIAL -> EXPIRED promptly; entitlement also checks trial_end synchronously.
+    cron: ${BILLING_TRIAL_EXPIRATION_CRON:0 * * * * *}
   trial-reminder:
     cron: ${BILLING_TRIAL_REMINDER_CRON:0 0 9 * * *}
   dunning:

@@ -86,7 +86,7 @@ public class SubscriptionStateService {
         Instant now = timeSource.now();
         return switch (subscription.getStatus()) {
             case ACTIVE -> true;
-            case TRIAL -> subscription.getTrialEnd() == null || now.isBefore(subscription.getTrialEnd());
+            case TRIAL -> subscription.getTrialEnd() != null && now.isBefore(subscription.getTrialEnd());
             case PAST_DUE -> subscription.getGraceUntil() != null && now.isBefore(subscription.getGraceUntil());
             case CANCELLED, EXPIRED, REFUNDED, INCOMPLETE -> false;
         };

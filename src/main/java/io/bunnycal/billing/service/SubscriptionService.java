@@ -10,7 +10,6 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
 import io.bunnycal.payments.audit.PaymentAuditService;
-import io.bunnycal.payments.config.BillingProperties;
 import io.bunnycal.payments.provider.PaymentProvider;
 import io.bunnycal.payments.provider.ProviderRequests.CancelSubscriptionRequest;
 import io.bunnycal.payments.provider.ProviderRequests.CheckoutSession;
@@ -49,10 +48,10 @@ public class SubscriptionService {
     private final UserRepository userRepository;
     private final PlanService planService;
     private final TimeSource timeSource;
-    private final BillingProperties billingProperties;
     private final BillingRedirectProperties redirectProperties;
     private final PaymentAuditService auditService;
     private final PromotionService promotionService;
+    private final TrialLifecycleService trialLifecycleService;
     @Nullable
     private final PaymentProvider paymentProvider;
 
@@ -60,19 +59,19 @@ public class SubscriptionService {
                                UserRepository userRepository,
                                PlanService planService,
                                TimeSource timeSource,
-                               BillingProperties billingProperties,
                                BillingRedirectProperties redirectProperties,
                                PaymentAuditService auditService,
                                PromotionService promotionService,
+                               TrialLifecycleService trialLifecycleService,
                                @Autowired(required = false) @Nullable PaymentProvider paymentProvider) {
         this.subscriptionRepository = subscriptionRepository;
         this.userRepository = userRepository;
         this.planService = planService;
         this.timeSource = timeSource;
-        this.billingProperties = billingProperties;
         this.redirectProperties = redirectProperties;
         this.auditService = auditService;
         this.promotionService = promotionService;
+        this.trialLifecycleService = trialLifecycleService;
         this.paymentProvider = paymentProvider;
     }
 
@@ -93,18 +92,24 @@ public class SubscriptionService {
     public java.util.Optional<Subscription> ensureSubscription(UUID userId) {
         java.util.Optional<Subscription> existing = subscriptionRepository.findLiveByUserId(userId);
         if (existing.isPresent()) {
+            if (trialLifecycleService.expireIfElapsed(existing.get())) {
+                return java.util.Optional.empty();
+            }
             return existing;
         }
         if (subscriptionRepository.existsByUserIdAndTrialConsumedTrue(userId)) {
             return java.util.Optional.empty();
         }
-        return java.util.Optional.of(startTrial(userId));
+        SubscriptionPlan plan = planService.requireDefaultPlan();
+        if (plan.getTrialDays() <= 0) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(startTrial(userId, plan));
     }
 
-    private Subscription startTrial(UUID userId) {
-        SubscriptionPlan plan = planService.requireDefaultPlan();
+    private Subscription startTrial(UUID userId, SubscriptionPlan plan) {
         Instant now = timeSource.now();
-        int trialDays = plan.getTrialDays() > 0 ? plan.getTrialDays() : billingProperties.trialDays();
+        int trialDays = plan.getTrialDays();
         Instant trialEnd = now.plus(trialDays, ChronoUnit.DAYS);
 
         Subscription subscription = Subscription.builder()
@@ -196,14 +201,11 @@ public class SubscriptionService {
             }
         }
 
-        // Only offer trial days at checkout if the user has not already consumed a trial.
-        Integer trialDays = subscription.isTrialConsumed() ? null : plan.getTrialDays();
-
         return provider.createCheckoutSession(new CheckoutSessionRequest(
                 userId,
                 customerId,
                 plan.getProviderPriceId(),
-                trialDays,
+                0,
                 redirectProperties.successUrl(),
                 redirectProperties.cancelUrl(),
                 providerCouponId));

@@ -179,8 +179,6 @@ public class AppSettingsService {
                 "Whether subscription billing is enabled.", objectMapper.getNodeFactory().booleanNode(billing.enabled()));
         add(map, "billing.provider", SettingCategory.BILLING, ValueType.STRING, false,
                 "Active payment provider identifier.", text(billing.provider()));
-        add(map, "billing.trial_days", SettingCategory.BILLING, ValueType.NUMBER, false,
-                "Default trial length in days.", objectMapper.getNodeFactory().numberNode(billing.trialDays()));
         add(map, "billing.grace_days", SettingCategory.BILLING, ValueType.NUMBER, false,
                 "Payment failure grace period in days.", objectMapper.getNodeFactory().numberNode(billing.graceDays()));
         add(map, "billing.fees.processor_percent_bps", SettingCategory.BILLING, ValueType.NUMBER, false,
