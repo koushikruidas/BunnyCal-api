@@ -259,6 +259,92 @@ booking:
     # Debug-only .eml dumping is disabled in production by leaving this empty.
     debug-eml-dir: ${BOOKING_NOTIFICATIONS_DEBUG_EML_DIR:}
 
+billing:
+  # Master switch for the SaaS subscription billing module. Disabled by default so
+  # dev/test boot without provider credentials; enable in environments that have the
+  # active provider's secrets configured. Mirrors the booking.notifications.enabled pattern.
+  enabled: ${BILLING_ENABLED:false}
+  # Active payment provider: "stripe" (direct merchant) or "dodo" (Merchant of Record).
+  # Switching providers is a single env-var change — no code change. Selects which
+  # PaymentProvider bean loads (@ConditionalOnProperty).
+  provider: ${BILLING_PROVIDER:stripe}
+  # Exposes /api/admin/billing (coupons, promo codes, manual discounts). Off by default;
+  # there is no admin-role system yet, so keep this disabled outside trusted operators.
+  admin:
+    enabled: ${BILLING_ADMIN_ENABLED:false}
+  # Trial duration is owned exclusively by subscription_plans.trial_days. Each user's
+  # immutable deadline is copied to subscriptions.trial_end when their trial starts.
+  # Grace window after a failed renewal before access is revoked (PAST_DUE -> EXPIRED).
+  grace-days: ${BILLING_GRACE_DAYS:3}
+  # Trial expiration runs each minute, reminders daily, and dunning hourly. ShedLock-guarded.
+  trial-expiration:
+    # Persists TRIAL -> EXPIRED promptly; entitlement also checks trial_end synchronously.
+    cron: ${BILLING_TRIAL_EXPIRATION_CRON:0 * * * * *}
+  trial-reminder:
+    cron: ${BILLING_TRIAL_REMINDER_CRON:0 0 9 * * *}
+  dunning:
+    cron: ${BILLING_DUNNING_CRON:0 30 * * * *}
+  notifications:
+    enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
+    # Billing keeps its own From identity, separate from booking/calendar mail. A spam
+    # complaint on a dunning notice must not degrade the sending reputation of booking
+    # confirmations, so the two streams stay on distinct mailboxes and display names.
+    from: ${BILLING_NOTIFICATIONS_FROM:billing@bunnycal.io}
+    from-name: ${BILLING_NOTIFICATIONS_FROM_NAME:BunnyCal Billing}
+  # Processor / Merchant-of-Record fee rate (basis points; 500 = 5%) used to ESTIMATE fees
+  # and net in the admin Revenue report. Per-transaction fees are not persisted, so this is
+  # an estimate. 0 (default) = not configured: the report shows fees/net as unavailable.
+  fees:
+    processor-percent-bps: ${BILLING_FEES_PROCESSOR_PERCENT_BPS:0}
+  # Provider-neutral redirect URLs for hosted Checkout / Customer Portal. Identical
+  # regardless of provider. (STRIPE_* env vars are still honored as defaults for
+  # backward compatibility with existing deployments.)
+  redirect:
+    success-url: ${BILLING_SUCCESS_URL:${STRIPE_SUCCESS_URL:${FRONTEND_BASE_URL:}/dashboard/billing?checkout=success}}
+    cancel-url: ${BILLING_CANCEL_URL:${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:}/dashboard/billing?checkout=cancelled}}
+    portal-return-url: ${BILLING_PORTAL_RETURN_URL:${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:}/dashboard/billing}}
+  # Customer-facing document presentation. "direct-merchant" (Stripe) issues a real
+  # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues an internal "Payment
+  # Summary" and names the Merchant of Record that issued the official receipt.
+  invoice-presentation:
+    mode: ${BILLING_INVOICE_MODE:t}
+    seller-name: ${BILLING_SELLER_NAME:BunnyCal}
+    merchant-of-record-name: ${BILLING_MOR_NAME:Dodo Payments}
+  stripe:
+    secret-key: ${STRIPE_SECRET_KEY:}
+    # Signing secret for the webhook endpoint (whsec_...). Verified on every callback.
+    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+  dodo:
+    # Dodo API key (Bearer token). Used for /checkouts, /customers, /subscriptions, /refunds.
+    api-key: ${DODO_API_KEY:}
+    # Standard-Webhooks signing secret used to verify the webhook-signature header.
+    webhook-secret: ${DODO_WEBHOOK_SECRET:}
+    # When true, the API targets test.dodopayments.com; otherwise live.dodopayments.com.
+    test-mode: ${DODO_TEST_MODE:}
+
+# Host-direct event commerce. Kept separate from BunnyCal subscription billing.
+commerce:
+  enabled: ${COMMERCE_ENABLED:false}
+  frontend-base-url: ${FRONTEND_BASE_URL:}
+  stripe:
+    secret-key: ${COMMERCE_STRIPE_SECRET_KEY:}
+    publishable-key: ${COMMERCE_STRIPE_PUBLISHABLE_KEY:}
+    webhook-secret: ${COMMERCE_STRIPE_WEBHOOK_SECRET:}
+    onboarding-return-url: ${COMMERCE_STRIPE_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:}/dashboard/integrations?payment=connected}
+    onboarding-refresh-url: ${COMMERCE_STRIPE_ONBOARDING_REFRESH_URL:${FRONTEND_BASE_URL:}/dashboard/integrations?payment=refresh}
+  paypal:
+    enabled: ${COMMERCE_PAYPAL_ENABLED:false}
+    client-id: ${COMMERCE_PAYPAL_CLIENT_ID:}
+    client-secret: ${COMMERCE_PAYPAL_CLIENT_SECRET:}
+    partner-merchant-id: ${COMMERCE_PAYPAL_PARTNER_MERCHANT_ID:}
+    partner-attribution-id: ${COMMERCE_PAYPAL_PARTNER_ATTRIBUTION_ID:}
+    webhook-id: ${COMMERCE_PAYPAL_WEBHOOK_ID:}
+    onboarding-return-url: ${COMMERCE_PAYPAL_ONBOARDING_RETURN_URL:${FRONTEND_BASE_URL:}/dashboard/integrations?payment=paypal}
+    api-base-url: ${COMMERCE_PAYPAL_API_BASE_URL:https://api-m.sandbox.paypal.com}
+  reconciliation:
+    fixed-delay-ms: ${COMMERCE_RECONCILIATION_FIXED_DELAY_MS:30000}
+
+
 draft:
   ttl:
     days: ${DRAFT_TTL_DAYS:21}
