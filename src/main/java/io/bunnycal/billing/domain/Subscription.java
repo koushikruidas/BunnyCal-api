@@ -18,8 +18,9 @@ import lombok.Setter;
 
 /**
  * A user's subscription. Scoped to a user in Phase 1; {@code teamId} is reserved for
- * future org billing. State transitions originate from webhooks or admin actions; the
- * one-live-subscription-per-user invariant is enforced by a partial unique index.
+ * future org billing. State transitions originate from application lifecycle rules,
+ * verified provider webhooks, or audited admin actions; the one-live-subscription-per-user
+ * invariant is enforced by a partial unique index.
  */
 @Getter
 @Setter

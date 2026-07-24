@@ -87,9 +87,9 @@ public class StripeProvider implements PaymentProvider {
                             .setQuantity(1L)
                             .build());
 
-            if (request.trialDays() != null && request.trialDays() > 0) {
+            if (request.trialDays() > 0) {
                 builder.setSubscriptionData(SessionCreateParams.SubscriptionData.builder()
-                        .setTrialPeriodDays(request.trialDays().longValue())
+                        .setTrialPeriodDays((long) request.trialDays())
                         .build());
             }
 

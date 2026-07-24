@@ -9,10 +9,13 @@ import io.bunnycal.billing.domain.Subscription;
 import io.bunnycal.billing.domain.SubscriptionStatus;
 import io.bunnycal.billing.dto.SubscriptionStateDto;
 import io.bunnycal.billing.repository.SubscriptionRepository;
+import io.bunnycal.billing.service.PlanService;
 import io.bunnycal.billing.service.SubscriptionService;
 import io.bunnycal.billing.service.SubscriptionStateService;
 import io.bunnycal.payments.provider.ProviderWebhookEvent;
 import io.bunnycal.payments.webhook.WebhookEventHandler;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +81,7 @@ class SubscriptionCoreIT {
     @Autowired SubscriptionRepository subscriptionRepository;
     @Autowired SubscriptionService subscriptionService;
     @Autowired SubscriptionStateService stateService;
+    @Autowired PlanService planService;
     @Autowired WebhookEventHandler webhookHandler;
 
     @BeforeEach
@@ -105,6 +109,8 @@ class SubscriptionCoreIT {
         assertThat(state.trialEnd()).isNotNull();
         Subscription sub = subscriptionRepository.findLiveByUserId(user.getId()).orElseThrow();
         assertThat(sub.isTrialConsumed()).isTrue();
+        assertThat(Duration.between(sub.getTrialStart(), sub.getTrialEnd()).toDays())
+                .isEqualTo(planService.requireDefaultPlan().getTrialDays());
     }
 
     @Test
@@ -131,6 +137,43 @@ class SubscriptionCoreIT {
         // No live subscription, but trial already consumed -> no new trial.
         assertThat(subscriptionService.ensureSubscription(user.getId())).isEmpty();
         assertThat(stateService.resolve(user.getId()).status()).isNull();
+    }
+
+    @Test
+    void resolvingAnElapsedTrialPersistsExpiredAndNoLongerReportsTrial() {
+        User user = newUser();
+        Subscription trial = subscriptionService.ensureSubscription(user.getId()).orElseThrow();
+        trial.setTrialEnd(Instant.now().minusSeconds(1));
+        subscriptionRepository.saveAndFlush(trial);
+
+        SubscriptionStateDto state = stateService.resolve(user.getId());
+
+        assertThat(state.status()).isNull();
+        assertThat(state.entitled()).isFalse();
+        assertThat(subscriptionRepository.findById(trial.getId()).orElseThrow().getStatus())
+                .isEqualTo(SubscriptionStatus.EXPIRED);
+    }
+
+    @Test
+    void successfulCheckoutImmediatelyTransitionsTrialToActive() {
+        User user = newUser();
+        Subscription trial = subscriptionService.ensureSubscription(user.getId()).orElseThrow();
+
+        webhookHandler.handle(new ProviderWebhookEvent(
+                "evt_" + UUID.randomUUID(),
+                "subscription.active",
+                io.bunnycal.payments.provider.BillingEventType.CHECKOUT_COMPLETED,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .providerSubscriptionId("sub_upgrade")
+                        .providerCustomerId("cus_upgrade")
+                        .userId(user.getId().toString())
+                        .build()));
+
+        Subscription upgraded = subscriptionRepository.findById(trial.getId()).orElseThrow();
+        assertThat(upgraded.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
+        assertThat(upgraded.getTrialEnd()).isEqualTo(trial.getTrialEnd());
+        assertThat(stateService.resolve(user.getId()).entitled()).isTrue();
     }
 
     @Test

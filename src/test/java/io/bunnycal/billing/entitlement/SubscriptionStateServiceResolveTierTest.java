@@ -37,7 +37,7 @@ class SubscriptionStateServiceResolveTierTest {
 
     private SubscriptionStateService serviceWithBillingEnabled(boolean enabled) {
         BillingProperties props = new BillingProperties(
-                enabled, "stripe", 14, 3, new BillingProperties.Notifications(false, "x@y.z"),
+                enabled, "stripe", 3, new BillingProperties.Notifications(false, "x@y.z"),
                 new BillingProperties.Fees(0));
         lenient().when(timeSource.now()).thenReturn(NOW);
         return new SubscriptionStateService(subscriptionService, props, timeSource);
@@ -79,6 +79,13 @@ class SubscriptionStateServiceResolveTierTest {
     void trialAfterEndResolvesFree() {
         SubscriptionStateService service = serviceWithBillingEnabled(true);
         liveSubscription(sub(SubscriptionStatus.TRIAL, s -> s.setTrialEnd(NOW.minus(1, ChronoUnit.SECONDS))));
+        assertThat(service.resolveTier(userId)).isEqualTo(PlanTier.FREE);
+    }
+
+    @Test
+    void trialWithoutAuthoritativeDeadlineResolvesFree() {
+        SubscriptionStateService service = serviceWithBillingEnabled(true);
+        liveSubscription(sub(SubscriptionStatus.TRIAL, s -> {}));
         assertThat(service.resolveTier(userId)).isEqualTo(PlanTier.FREE);
     }
 

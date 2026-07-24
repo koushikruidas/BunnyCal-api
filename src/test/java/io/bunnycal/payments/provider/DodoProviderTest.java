@@ -12,6 +12,15 @@ import java.util.Map;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestClient;
+
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.content;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /**
  * Unit tests for {@link DodoProvider}'s webhook verification (Standard Webhooks HMAC) and
@@ -62,6 +71,45 @@ class DodoProviderTest {
         assertThat(event.type()).isEqualTo(BillingEventType.CHECKOUT_COMPLETED);
         assertThat(event.data().providerSubscriptionId()).isEqualTo("sub_9");
         assertThat(event.data().userId()).isEqualTo("11111111-1111-1111-1111-111111111111");
+    }
+
+    @Test
+    void checkoutAlwaysOverridesDodoProductTrialWithZeroDays() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider checkoutProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+        String userId = "11111111-1111-1111-1111-111111111111";
+
+        server.expect(requestTo("https://test.dodopayments.com/checkouts"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(content().json("""
+                        {
+                          "product_cart": [{"product_id": "prod_pro", "quantity": 1}],
+                          "customer": {"customer_id": "cus_1"},
+                          "return_url": "https://app.example.test/billing/success",
+                          "metadata": {"user_id": "%s"},
+                          "subscription_data": {"trial_period_days": 0}
+                        }
+                        """.formatted(userId), true))
+                .andRespond(withSuccess(
+                        "{\"session_id\":\"cs_1\",\"checkout_url\":\"https://checkout.example.test/cs_1\"}",
+                        MediaType.APPLICATION_JSON));
+
+        ProviderRequests.CheckoutSession result = checkoutProvider.createCheckoutSession(
+                new ProviderRequests.CheckoutSessionRequest(
+                        java.util.UUID.fromString(userId),
+                        "cus_1",
+                        "prod_pro",
+                        0,
+                        "https://app.example.test/billing/success",
+                        "https://app.example.test/billing/cancel",
+                        null));
+
+        assertThat(result.sessionId()).isEqualTo("cs_1");
+        server.verify();
     }
 
     @Test

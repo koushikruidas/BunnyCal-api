@@ -23,8 +23,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
 /**
- * Webhook-driven subscription state machine. The only authority that flips a subscription
- * between TRIAL/ACTIVE/PAST_DUE/CANCELLED/EXPIRED in response to provider events.
+ * Provider-event side of the subscription state machine. It owns verified billing transitions
+ * such as checkout activation, renewal failure, cancellation, and refund. Application-owned
+ * trial creation and {@code TRIAL -> EXPIRED} live in the billing lifecycle services.
  *
  * <p>Provider-neutral: it switches on the normalized {@link io.bunnycal.payments.provider.BillingEventType}
  * and reads pre-extracted fields from {@link ProviderWebhookEvent.Data}. No provider-specific
@@ -93,8 +94,14 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         if (customerId != null) {
             subscription.setProviderCustomerId(customerId);
         }
+        SubscriptionStatus before = subscription.getStatus();
+        // Checkout has no provider-side trial. A completed checkout therefore starts the
+        // paid subscription immediately and ends any local trial by explicit state change.
+        subscription.setStatus(SubscriptionStatus.ACTIVE);
+        subscription.setCancelAtPeriodEnd(false);
+        subscription.setGraceUntil(null);
         subscriptionRepository.save(subscription);
-        audit(subscription, "CHECKOUT_COMPLETED");
+        audit(subscription, "CHECKOUT_COMPLETED", before);
     }
 
     private void onSubscriptionUpserted(ProviderWebhookEvent.Data data) {

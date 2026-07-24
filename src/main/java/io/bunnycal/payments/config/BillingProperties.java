@@ -16,7 +16,6 @@ public record BillingProperties(
          * bean via {@code @ConditionalOnProperty}. Defaults to {@code stripe}.
          */
         String provider,
-        int trialDays,
         int graceDays,
         Notifications notifications,
         Fees fees) {

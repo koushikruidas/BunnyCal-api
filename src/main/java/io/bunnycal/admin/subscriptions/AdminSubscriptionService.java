@@ -12,7 +12,6 @@ import io.bunnycal.billing.service.SubscriptionStateService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
-import io.bunnycal.payments.config.BillingProperties;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -42,22 +41,19 @@ public class AdminSubscriptionService {
     private final AdminAuditService auditService;
     private final UserRepository userRepository;
     private final TimeSource timeSource;
-    private final BillingProperties billingProperties;
 
     public AdminSubscriptionService(SubscriptionRepository subscriptionRepository,
                                     SubscriptionStateService stateService,
                                     PlanService planService,
                                     AdminAuditService auditService,
                                     UserRepository userRepository,
-                                    TimeSource timeSource,
-                                    BillingProperties billingProperties) {
+                                    TimeSource timeSource) {
         this.subscriptionRepository = subscriptionRepository;
         this.stateService = stateService;
         this.planService = planService;
         this.auditService = auditService;
         this.userRepository = userRepository;
         this.timeSource = timeSource;
-        this.billingProperties = billingProperties;
     }
 
     @Transactional(readOnly = true)
@@ -268,9 +264,7 @@ public class AdminSubscriptionService {
         if (plan.getTrialDays() > 0) {
             return plan.getTrialDays();
         }
-        if (billingProperties.trialDays() > 0) {
-            return billingProperties.trialDays();
-        }
-        return 14;
+        throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                "The default subscription plan does not define a trial duration.");
     }
 }
