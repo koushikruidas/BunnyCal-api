@@ -20,6 +20,7 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.repository.GroupEventReservationWindowRepository;
 import io.bunnycal.billing.entitlement.EntitlementService;
 import io.bunnycal.billing.entitlement.Feature;
+import io.bunnycal.billing.entitlement.LimitKey;
 import io.bunnycal.booking.outbox.OutboxPayloadEnvelope;
 import io.bunnycal.booking.outbox.OutboxPublisher;
 import io.bunnycal.common.enums.ConferencingProviderType;
@@ -108,6 +109,12 @@ public class EventTypeService {
     public EventTypeSummaryResponse create(UUID userId, CreateEventTypeRequest request) {
         validate(request);
         User user = sessionUserResolver.require(userId, "POST:/api/event-types");
+
+        // Enforce the plan's event-type quota (Free = 1, Professional = unlimited). Counted over
+        // active (non-deleted) event types; routed through EntitlementService like every other gate.
+        entitlementService.requireWithinLimit(
+                userId, LimitKey.MAX_EVENT_TYPES,
+                eventTypeRepository.countByUserIdAndDeletedAtIsNull(userId));
 
         String username = ensureUsername(user);
         String slug = uniqueSlug(userId, requestedOrDerivedSlug(request));

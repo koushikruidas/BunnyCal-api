@@ -17,7 +17,9 @@ package io.bunnycal.billing.entitlement;
  */
 public enum LimitKey {
     /** Maximum number of connected calendar integrations (Google/Microsoft). */
-    CONNECTED_CALENDARS;
+    CONNECTED_CALENDARS,
+    /** Maximum number of event types a user may have (Free = 1, Professional = unlimited). */
+    MAX_EVENT_TYPES;
 
     /** Sentinel limit value meaning "no cap". */
     public static final int UNLIMITED = -1;
