@@ -46,7 +46,7 @@ public class TrialLifecycleService {
             return false;
         }
 
-        subscription.setStatus(SubscriptionStatus.EXPIRED);
+        subscription.expire();
         Subscription saved = subscriptionRepository.saveAndFlush(subscription);
         auditService.record(PaymentAuditService.ACTOR_SYSTEM, ENTITY, saved.getId(),
                 "TRIAL_EXPIRED",

@@ -25,18 +25,23 @@ public final class PlanCatalog {
     }
 
     // ── FREE (Spec Ch2 §5: core scheduling only) ──────────────────────────────────────
-    // No premium boolean features. One calendar max (§9). One-to-One + Zoom are baseline.
+    // No premium boolean features. One calendar max (§9) and a single event type.
+    // One-to-One + Zoom are baseline.
     private static final Entitlements FREE = new Entitlements(
             PlanTier.FREE,
             EnumSet.noneOf(Feature.class),
-            Map.of(LimitKey.CONNECTED_CALENDARS, 1));
+            Map.of(
+                    LimitKey.CONNECTED_CALENDARS, 1,
+                    LimitKey.MAX_EVENT_TYPES, 1));
 
     // ── PROFESSIONAL (Spec Ch2 §5: all Version-1 scheduling capabilities) ─────────────
-    // Every boolean feature; unlimited calendar connections (§9).
+    // Every boolean feature; unlimited calendar connections (§9) and unlimited event types.
     private static final Entitlements PROFESSIONAL = new Entitlements(
             PlanTier.PROFESSIONAL,
             EnumSet.allOf(Feature.class),
-            Map.of(LimitKey.CONNECTED_CALENDARS, LimitKey.UNLIMITED));
+            Map.of(
+                    LimitKey.CONNECTED_CALENDARS, LimitKey.UNLIMITED,
+                    LimitKey.MAX_EVENT_TYPES, LimitKey.UNLIMITED));
 
     // ── ENTERPRISE (Spec Ch2 §2.3 / Principle 10) ─────────────────────────────────────
     // Intentionally mirrors PROFESSIONAL in Version 1. Enterprise *extends* Professional and
@@ -45,7 +50,9 @@ public final class PlanCatalog {
     private static final Entitlements ENTERPRISE = new Entitlements(
             PlanTier.ENTERPRISE,
             EnumSet.allOf(Feature.class),
-            Map.of(LimitKey.CONNECTED_CALENDARS, LimitKey.UNLIMITED));
+            Map.of(
+                    LimitKey.CONNECTED_CALENDARS, LimitKey.UNLIMITED,
+                    LimitKey.MAX_EVENT_TYPES, LimitKey.UNLIMITED));
 
     /** The complete entitlement set for a tier. Total over {@link PlanTier}. */
     public static Entitlements forTier(PlanTier tier) {

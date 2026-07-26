@@ -18,7 +18,8 @@ public record BillingProperties(
         String provider,
         int graceDays,
         Notifications notifications,
-        Fees fees) {
+        Fees fees,
+        Reconcile reconcile) {
 
     public BillingProperties {
         if (provider == null || provider.isBlank()) {
@@ -27,9 +28,33 @@ public record BillingProperties(
         if (fees == null) {
             fees = new Fees(0);
         }
+        if (reconcile == null) {
+            reconcile = new Reconcile(0, 0, 0);
+        }
     }
 
     public record Notifications(boolean enabled, String from) {
+    }
+
+    /**
+     * Deferred-webhook reconciliation cron tuning. {@code stalenessMinutes} — how long since the
+     * last provider observation before a non-terminal subscription is re-read (default 60).
+     * {@code checkoutStaleMinutes} — how old an open checkout attempt must be before the cron tries
+     * to resolve/expire it (default 30). {@code batchSize} — max subscriptions re-read per run
+     * (default 100). Zero/negative falls back to the default.
+     */
+    public record Reconcile(int stalenessMinutes, int checkoutStaleMinutes, int batchSize) {
+        public Reconcile {
+            if (stalenessMinutes <= 0) {
+                stalenessMinutes = 60;
+            }
+            if (checkoutStaleMinutes <= 0) {
+                checkoutStaleMinutes = 30;
+            }
+            if (batchSize <= 0) {
+                batchSize = 100;
+            }
+        }
     }
 
     /**

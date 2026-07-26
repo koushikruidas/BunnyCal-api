@@ -24,7 +24,11 @@ import io.bunnycal.payments.provider.ProviderRequests.PortalSession;
 import io.bunnycal.payments.provider.ProviderRequests.PortalSessionRequest;
 import io.bunnycal.payments.provider.ProviderRequests.RefundRequest;
 import io.bunnycal.payments.provider.ProviderRequests.RefundResult;
+import io.bunnycal.payments.provider.ProviderSnapshots.CheckoutSnapshot;
+import io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot;
+import io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot;
 import java.time.Instant;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -153,6 +157,120 @@ public class StripeProvider implements PaymentProvider {
         } catch (StripeException e) {
             throw wrap("refund", e);
         }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Reads (BillingProviderReader) — safe, retryable queries of current Stripe state.
+    // ---------------------------------------------------------------------------------------
+
+    @Override
+    public Optional<SubscriptionSnapshot> getSubscription(String providerSubscriptionId) {
+        try {
+            Subscription s = Subscription.retrieve(providerSubscriptionId, requestOptions);
+            return Optional.of(new SubscriptionSnapshot(
+                    s.getId(),
+                    s.getCustomer(),
+                    s.getMetadata() == null ? null : s.getMetadata().get("user_id"),
+                    mapStatus(s.getStatus()),
+                    Boolean.TRUE.equals(s.getCancelAtPeriodEnd()),
+                    // Period start/end live on subscription items in the current SDK; the webhook
+                    // path already carries them and Dodo is the active provider, so the read
+                    // snapshot leaves them null (observation time is the tiebreak).
+                    null,
+                    null,
+                    null));
+        } catch (com.stripe.exception.InvalidRequestException e) {
+            if (isNotFound(e)) {
+                return Optional.empty();
+            }
+            throw wrap("getSubscription", e);
+        } catch (StripeException e) {
+            throw wrap("getSubscription", e);
+        }
+    }
+
+    @Override
+    public Optional<CheckoutSnapshot> getCheckoutSession(String providerSessionId) {
+        try {
+            com.stripe.model.checkout.Session s =
+                    com.stripe.model.checkout.Session.retrieve(providerSessionId, requestOptions);
+            return Optional.of(new CheckoutSnapshot(
+                    s.getId(),
+                    mapCheckoutStatus(s.getStatus(), s.getPaymentStatus()),
+                    s.getSubscription(),
+                    s.getCustomer(),
+                    s.getPaymentIntent(),
+                    s.getMetadata() == null ? null : s.getMetadata().get("user_id"),
+                    s.getAmountTotal() == null ? 0L : s.getAmountTotal(),
+                    s.getCurrency()));
+        } catch (com.stripe.exception.InvalidRequestException e) {
+            if (isNotFound(e)) {
+                return Optional.empty();
+            }
+            throw wrap("getCheckoutSession", e);
+        } catch (StripeException e) {
+            throw wrap("getCheckoutSession", e);
+        }
+    }
+
+    @Override
+    public Optional<PaymentSnapshot> getPayment(String providerPaymentId) {
+        try {
+            com.stripe.model.PaymentIntent pi =
+                    com.stripe.model.PaymentIntent.retrieve(providerPaymentId, requestOptions);
+            long total = pi.getAmount() == null ? 0L : pi.getAmount();
+            return Optional.of(new PaymentSnapshot(
+                    pi.getId(),
+                    mapPaymentStatus(pi.getStatus()),
+                    null,
+                    pi.getCustomer(),
+                    null,
+                    null,
+                    null,
+                    total,
+                    0L,
+                    total,
+                    pi.getCurrency(),
+                    null,
+                    null));
+        } catch (com.stripe.exception.InvalidRequestException e) {
+            if (isNotFound(e)) {
+                return Optional.empty();
+            }
+            throw wrap("getPayment", e);
+        } catch (StripeException e) {
+            throw wrap("getPayment", e);
+        }
+    }
+
+    private static boolean isNotFound(com.stripe.exception.InvalidRequestException e) {
+        return e.getStatusCode() != null && e.getStatusCode() == 404;
+    }
+
+    private static CheckoutSnapshot.CheckoutStatus mapCheckoutStatus(String sessionStatus, String paymentStatus) {
+        if ("paid".equals(paymentStatus) || "complete".equals(sessionStatus)) {
+            return CheckoutSnapshot.CheckoutStatus.COMPLETED;
+        }
+        if ("expired".equals(sessionStatus)) {
+            return CheckoutSnapshot.CheckoutStatus.EXPIRED;
+        }
+        if ("open".equals(sessionStatus)) {
+            return CheckoutSnapshot.CheckoutStatus.OPEN;
+        }
+        return CheckoutSnapshot.CheckoutStatus.UNKNOWN;
+    }
+
+    private static PaymentSnapshot.PaymentStatus mapPaymentStatus(String status) {
+        if (status == null) {
+            return PaymentSnapshot.PaymentStatus.UNKNOWN;
+        }
+        return switch (status) {
+            case "succeeded" -> PaymentSnapshot.PaymentStatus.SUCCEEDED;
+            case "canceled" -> PaymentSnapshot.PaymentStatus.FAILED;
+            case "processing", "requires_payment_method", "requires_confirmation",
+                    "requires_action", "requires_capture" -> PaymentSnapshot.PaymentStatus.PENDING;
+            default -> PaymentSnapshot.PaymentStatus.UNKNOWN;
+        };
     }
 
     @Override

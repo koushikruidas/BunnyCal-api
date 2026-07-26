@@ -40,6 +40,8 @@ public record ProviderWebhookEvent(
             // Invoice (INVOICE_PAID / INVOICE_FAILED)
             @Nullable String providerInvoiceId,
             @Nullable String providerPaymentIntentId,
+            @Nullable String officialInvoiceNumber,
+            @Nullable String officialInvoiceUrl,
             long subtotalMinor,
             long discountMinor,
             long totalMinor,
@@ -73,6 +75,8 @@ public record ProviderWebhookEvent(
             private Instant currentPeriodEnd;
             private String providerInvoiceId;
             private String providerPaymentIntentId;
+            private String officialInvoiceNumber;
+            private String officialInvoiceUrl;
             private long subtotalMinor;
             private long discountMinor;
             private long totalMinor;
@@ -94,6 +98,8 @@ public record ProviderWebhookEvent(
             public Builder currentPeriodEnd(Instant v) { this.currentPeriodEnd = v; return this; }
             public Builder providerInvoiceId(String v) { this.providerInvoiceId = v; return this; }
             public Builder providerPaymentIntentId(String v) { this.providerPaymentIntentId = v; return this; }
+            public Builder officialInvoiceNumber(String v) { this.officialInvoiceNumber = v; return this; }
+            public Builder officialInvoiceUrl(String v) { this.officialInvoiceUrl = v; return this; }
             public Builder subtotalMinor(long v) { this.subtotalMinor = v; return this; }
             public Builder discountMinor(long v) { this.discountMinor = v; return this; }
             public Builder totalMinor(long v) { this.totalMinor = v; return this; }
@@ -109,7 +115,8 @@ public record ProviderWebhookEvent(
             public Data build() {
                 return new Data(providerSubscriptionId, providerCustomerId, userId, status,
                         cancelAtPeriodEnd, currentPeriodStart, currentPeriodEnd,
-                        providerInvoiceId, providerPaymentIntentId, subtotalMinor, discountMinor,
+                        providerInvoiceId, providerPaymentIntentId, officialInvoiceNumber,
+                        officialInvoiceUrl, subtotalMinor, discountMinor,
                         totalMinor, currency, invoicePeriodStart, invoicePeriodEnd,
                         card, providerPaymentMethodId, refundProviderInvoiceId,
                         providerRefundId, amountRefundedMinor);

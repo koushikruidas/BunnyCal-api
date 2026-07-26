@@ -88,4 +88,26 @@ class EntitlementEnforcementTest {
                 .extracting(e -> ((CustomException) e).getErrorCode())
                 .isEqualTo(ErrorCode.PLAN_LIMIT_REACHED);
     }
+
+    // ── event-type limit (Free = 1, Professional = unlimited) ─────────────────────────
+
+    @Test
+    void freeUserMayCreateTheirFirstEventTypeButNotASecond() {
+        EntitlementServiceImpl service = serviceForTier(PlanTier.FREE);
+        // With 0 event types, creating the first is allowed…
+        assertThatCode(() -> service.requireWithinLimit(userId, LimitKey.MAX_EVENT_TYPES, 0))
+                .doesNotThrowAnyException();
+        // …but with 1 already, a second is blocked.
+        assertThatThrownBy(() -> service.requireWithinLimit(userId, LimitKey.MAX_EVENT_TYPES, 1))
+                .isInstanceOf(CustomException.class)
+                .extracting(e -> ((CustomException) e).getErrorCode())
+                .isEqualTo(ErrorCode.PLAN_LIMIT_REACHED);
+    }
+
+    @Test
+    void professionalUserHasUnlimitedEventTypes() {
+        EntitlementServiceImpl service = serviceForTier(PlanTier.PROFESSIONAL);
+        assertThatCode(() -> service.requireWithinLimit(userId, LimitKey.MAX_EVENT_TYPES, 500))
+                .doesNotThrowAnyException();
+    }
 }

@@ -360,6 +360,14 @@ billing:
     cron: ${BILLING_TRIAL_REMINDER_CRON:0 0 9 * * *}
   dunning:
     cron: ${BILLING_DUNNING_CRON:0 30 * * * *}
+  # Deferred-webhook backstop: re-reads provider state for stale non-terminal subscriptions and
+  # open checkout attempts so a dropped/out-of-order webhook self-heals. ShedLock-guarded; every
+  # 15 min by default.
+  reconcile:
+    cron: ${BILLING_RECONCILE_CRON:0 */15 * * * *}
+    staleness-minutes: ${BILLING_RECONCILE_STALENESS_MINUTES:60}
+    checkout-stale-minutes: ${BILLING_RECONCILE_CHECKOUT_STALE_MINUTES:30}
+    batch-size: ${BILLING_RECONCILE_BATCH_SIZE:100}
   notifications:
     enabled: ${BILLING_NOTIFICATIONS_ENABLED:false}
     # Billing keeps its own From identity, separate from booking/calendar mail. A spam
@@ -380,8 +388,8 @@ billing:
     cancel-url: ${BILLING_CANCEL_URL:${STRIPE_CANCEL_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing?checkout=cancelled}}
     portal-return-url: ${BILLING_PORTAL_RETURN_URL:${STRIPE_PORTAL_RETURN_URL:${FRONTEND_BASE_URL:http://localhost:5173}/dashboard/billing}}
   # Customer-facing document presentation. "direct-merchant" (Stripe) issues a real
-  # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues an internal "Payment
-  # Summary" and names the Merchant of Record that issued the official receipt.
+  # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues a BunnyCal "Payment
+  # Receipt" and names the Merchant of Record that issued the official tax invoice.
   invoice-presentation:
     mode: ${BILLING_INVOICE_MODE:direct-merchant}
     seller-name: ${BILLING_SELLER_NAME:BunnyCal}

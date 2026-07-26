@@ -2,11 +2,13 @@ package io.bunnycal.billing.repository;
 
 import io.bunnycal.billing.domain.Subscription;
 import io.bunnycal.billing.domain.SubscriptionStatus;
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -122,4 +124,51 @@ public interface SubscriptionRepository extends JpaRepository<Subscription, UUID
 
     /** PAST_DUE subscriptions whose grace window has elapsed — used by dunning (M6). */
     List<Subscription> findByStatusAndGraceUntilBefore(SubscriptionStatus status, Instant cutoff);
+
+    /**
+     * Non-terminal subscriptions that are candidates for cron reconciliation: either never
+     * reconciled, or last observed before the cutoff. Terminal states are excluded (never polled).
+     *
+     * <p>A candidate must be re-readable from the provider, which means it needs <em>either</em> a
+     * provider subscription id (read by id) <em>or</em> a provider customer id (read by listing the
+     * customer's subscriptions). The customer-only case is exactly the dropped-webhook incident: a
+     * checkout paid but the activation webhook was lost, so the row is INCOMPLETE with a customer id
+     * but no subscription id yet. Excluding those (requiring a subscription id) would strand them
+     * forever — the reconciliation scheduler resolves the id from the customer.
+     *
+     * <p>Ordered oldest-observed-first so the most stale are refreshed first.
+     */
+    @Query("""
+            select s from Subscription s
+            where (s.providerSubscriptionId is not null or s.providerCustomerId is not null)
+              and s.status in (
+                io.bunnycal.billing.domain.SubscriptionStatus.INCOMPLETE,
+                io.bunnycal.billing.domain.SubscriptionStatus.PAST_DUE,
+                io.bunnycal.billing.domain.SubscriptionStatus.ACTIVE,
+                io.bunnycal.billing.domain.SubscriptionStatus.TRIAL)
+              and (s.providerObservedAt is null or s.providerObservedAt < :cutoff)
+            order by s.providerObservedAt asc nulls first
+            """)
+    List<Subscription> findStaleForReconciliation(@Param("cutoff") Instant cutoff,
+            org.springframework.data.domain.Pageable pageable);
+
+    /**
+     * Fetch-and-lock a subscription for reconciliation, so the redirect-return, webhook, and cron
+     * paths serialize against the same row (on top of the {@code @Version} optimistic guard).
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from Subscription s where s.id = :id")
+    Optional<Subscription> findByIdForUpdate(@Param("id") UUID id);
+
+    /** Lock the live subscription for a user, if any — reconciliation entry when only the user is known. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select s from Subscription s
+            where s.userId = :userId
+              and s.status not in (
+                io.bunnycal.billing.domain.SubscriptionStatus.CANCELLED,
+                io.bunnycal.billing.domain.SubscriptionStatus.EXPIRED,
+                io.bunnycal.billing.domain.SubscriptionStatus.REFUNDED)
+            """)
+    Optional<Subscription> findLiveByUserIdForUpdate(@Param("userId") UUID userId);
 }

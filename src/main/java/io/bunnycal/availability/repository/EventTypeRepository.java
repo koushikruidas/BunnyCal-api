@@ -25,6 +25,8 @@ public interface EventTypeRepository extends JpaRepository<EventType, UUID> {
     Optional<EventType> findByIdAndUserIdAndDeletedAtIsNull(UUID id, UUID userId);
     Optional<EventType> findByUserIdAndSlugAndDeletedAtIsNull(UUID userId, String slug);
     List<EventType> findByUserIdAndDeletedAtIsNullOrderByNameAsc(UUID userId);
+    /** Active (non-deleted) event types a user holds — used to enforce the plan's event-type limit. */
+    long countByUserIdAndDeletedAtIsNull(UUID userId);
     boolean existsByUserIdAndSlugAndDeletedAtIsNull(UUID userId, String slug);
     boolean existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(UUID userId, EventKind kind);
 

@@ -74,7 +74,8 @@ class SubscriptionServiceCheckoutTest {
                 .timezone("UTC")
                 .build()));
         when(planService.requireDefaultPlan()).thenReturn(plan);
-        when(paymentProvider.createCheckoutSession(any())).thenReturn(
+        // Lenient: the duplicate-purchase guard blocks some tests before checkout is created.
+        org.mockito.Mockito.lenient().when(paymentProvider.createCheckoutSession(any())).thenReturn(
                 new ProviderRequests.CheckoutSession("cs_1", "https://checkout.example.test/cs_1"));
     }
 
@@ -109,6 +110,32 @@ class SubscriptionServiceCheckoutTest {
 
         assertCheckoutExplicitlyDisablesProviderTrial();
         verify(subscriptionRepository).existsByUserIdAndTrialConsumedTrue(USER_ID);
+    }
+
+    @Test
+    void checkoutBlockedWhenProviderAlreadyHasLiveSubscriptionForCustomer() {
+        Subscription incomplete = Subscription.builder()
+                .userId(USER_ID)
+                .planId(PLAN_ID)
+                .status(SubscriptionStatus.INCOMPLETE)
+                .trialConsumed(true)
+                .providerCustomerId("cus_1")
+                .build();
+        when(subscriptionRepository.findLiveByUserId(USER_ID)).thenReturn(Optional.of(incomplete));
+        when(trialLifecycleService.expireIfElapsed(incomplete)).thenReturn(false);
+        // Provider reports an already-active subscription for this customer (a missed activation).
+        when(paymentProvider.listSubscriptionsForCustomer("cus_1")).thenReturn(java.util.List.of(
+                new io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot(
+                        "sub_existing", "cus_1", USER_ID.toString(),
+                        io.bunnycal.payments.provider.ProviderWebhookEvent.SubscriptionStatusSignal.ACTIVE,
+                        false, null, null, null)));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.startCheckout(USER_ID))
+                .isInstanceOf(io.bunnycal.common.exception.CustomException.class);
+
+        // Never proceeded to create a provider checkout session.
+        org.mockito.Mockito.verify(paymentProvider, org.mockito.Mockito.never())
+                .createCheckoutSession(any());
     }
 
     private void assertCheckoutExplicitlyDisablesProviderTrial() {

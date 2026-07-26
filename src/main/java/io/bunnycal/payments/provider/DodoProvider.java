@@ -12,12 +12,17 @@ import io.bunnycal.payments.provider.ProviderRequests.CreateCustomerRequest;
 import io.bunnycal.payments.provider.ProviderRequests.CustomerRef;
 import io.bunnycal.payments.provider.ProviderRequests.PortalSession;
 import io.bunnycal.payments.provider.ProviderRequests.PortalSessionRequest;
+import io.bunnycal.payments.provider.ProviderRequests.OfficialInvoiceRef;
 import io.bunnycal.payments.provider.ProviderRequests.RefundRequest;
 import io.bunnycal.payments.provider.ProviderRequests.RefundResult;
+import io.bunnycal.payments.provider.ProviderSnapshots.CheckoutSnapshot;
+import io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot;
+import io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Map;
+import java.util.Optional;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
@@ -172,6 +177,158 @@ public class DodoProvider implements PaymentProvider {
         return new RefundResult(text(response, "refund_id"), text(response, "status"));
     }
 
+    @Override
+    public OfficialInvoiceRef findOfficialInvoice(String providerPaymentId) {
+        JsonNode payment = get("/payments/" + providerPaymentId, "findOfficialInvoice");
+        return new OfficialInvoiceRef(
+                text(payment, "invoice_id"),
+                trustedInvoiceUrl(text(payment, "invoice_url")));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Reads (BillingProviderReader) — safe, retryable queries of current Dodo state.
+    // Reconciliation applies these, not webhook payloads, so a dropped/out-of-order webhook
+    // cannot corrupt local state.
+    // ---------------------------------------------------------------------------------------
+
+    @Override
+    public Optional<SubscriptionSnapshot> getSubscription(String providerSubscriptionId) {
+        JsonNode s = getOrNull("/subscriptions/" + providerSubscriptionId, "getSubscription");
+        if (s == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new SubscriptionSnapshot(
+                text(s, "subscription_id"),
+                customerId(s),
+                text(s.path("metadata"), "user_id"),
+                mapSubscriptionStatus(text(s, "status")),
+                s.path("cancel_at_next_billing_date").asBoolean(false),
+                isoToInstant(text(s, "previous_billing_date")),
+                isoToInstant(text(s, "next_billing_date")),
+                // Dodo does not expose a subscription-level updated_at; observation time is the
+                // tiebreak (recorded by the caller when the read began).
+                null));
+    }
+
+    @Override
+    public Optional<CheckoutSnapshot> getCheckoutSession(String providerSessionId) {
+        JsonNode c = getOrNull("/checkouts/" + providerSessionId, "getCheckoutSession");
+        if (c == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new CheckoutSnapshot(
+                text(c, "session_id"),
+                mapCheckoutStatus(text(c, "status")),
+                text(c, "subscription_id"),
+                customerId(c),
+                text(c, "payment_id"),
+                text(c.path("metadata"), "user_id"),
+                c.path("total_amount").asLong(c.path("amount").asLong(0)),
+                text(c, "currency")));
+    }
+
+    @Override
+    public Optional<PaymentSnapshot> getPayment(String providerPaymentId) {
+        JsonNode p = getOrNull("/payments/" + providerPaymentId, "getPayment");
+        if (p == null) {
+            return Optional.empty();
+        }
+        return Optional.of(mapPayment(p));
+    }
+
+    @Override
+    public java.util.List<PaymentSnapshot> listPaymentsForSubscription(String providerSubscriptionId) {
+        JsonNode root = getOrNull(
+                "/payments?subscription_id=" + providerSubscriptionId, "listPaymentsForSubscription");
+        if (root == null) {
+            return java.util.List.of();
+        }
+        JsonNode items = root.has("items") ? root.path("items") : root.path("data");
+        if (!items.isArray()) {
+            return java.util.List.of();
+        }
+        java.util.List<PaymentSnapshot> result = new java.util.ArrayList<>();
+        for (JsonNode p : items) {
+            result.add(mapPayment(p));
+        }
+        return result;
+    }
+
+    /** Maps one Dodo payment JSON node to the neutral {@link PaymentSnapshot}. */
+    private PaymentSnapshot mapPayment(JsonNode p) {
+        long total = p.path("total_amount").asLong(p.path("amount").asLong(0));
+        long tax = p.path("tax").asLong(0);
+        long subtotal = p.has("recurring_pre_tax_amount")
+                ? p.path("recurring_pre_tax_amount").asLong(0)
+                : Math.max(0, total - tax);
+        return new PaymentSnapshot(
+                text(p, "payment_id"),
+                mapPaymentStatus(text(p, "status")),
+                text(p, "subscription_id"),
+                customerId(p),
+                text(p, "payment_id"),
+                text(p, "invoice_id"),
+                trustedInvoiceUrl(text(p, "invoice_url")),
+                subtotal,
+                Math.max(0, subtotal - total + tax),
+                total,
+                text(p, "currency"),
+                isoToInstant(firstText(p, "previous_billing_date", "created_at")),
+                isoToInstant(text(p, "next_billing_date")));
+    }
+
+    @Override
+    public java.util.List<SubscriptionSnapshot> listSubscriptionsForCustomer(String providerCustomerId) {
+        JsonNode root = getOrNull(
+                "/subscriptions?customer_id=" + providerCustomerId, "listSubscriptionsForCustomer");
+        if (root == null) {
+            return java.util.List.of();
+        }
+        JsonNode items = root.has("items") ? root.path("items") : root.path("data");
+        if (!items.isArray()) {
+            return java.util.List.of();
+        }
+        java.util.List<SubscriptionSnapshot> result = new java.util.ArrayList<>();
+        for (JsonNode s : items) {
+            result.add(new SubscriptionSnapshot(
+                    text(s, "subscription_id"),
+                    customerId(s) != null ? customerId(s) : providerCustomerId,
+                    text(s.path("metadata"), "user_id"),
+                    mapSubscriptionStatus(text(s, "status")),
+                    s.path("cancel_at_next_billing_date").asBoolean(false),
+                    isoToInstant(text(s, "previous_billing_date")),
+                    isoToInstant(text(s, "next_billing_date")),
+                    null));
+        }
+        return result;
+    }
+
+    private static CheckoutSnapshot.CheckoutStatus mapCheckoutStatus(String status) {
+        if (status == null) {
+            return CheckoutSnapshot.CheckoutStatus.UNKNOWN;
+        }
+        return switch (status) {
+            case "open", "pending" -> CheckoutSnapshot.CheckoutStatus.OPEN;
+            case "completed", "succeeded", "active" -> CheckoutSnapshot.CheckoutStatus.COMPLETED;
+            case "expired" -> CheckoutSnapshot.CheckoutStatus.EXPIRED;
+            case "failed", "cancelled" -> CheckoutSnapshot.CheckoutStatus.FAILED;
+            default -> CheckoutSnapshot.CheckoutStatus.UNKNOWN;
+        };
+    }
+
+    private static PaymentSnapshot.PaymentStatus mapPaymentStatus(String status) {
+        if (status == null) {
+            return PaymentSnapshot.PaymentStatus.UNKNOWN;
+        }
+        return switch (status) {
+            case "succeeded", "processed" -> PaymentSnapshot.PaymentStatus.SUCCEEDED;
+            case "failed", "cancelled" -> PaymentSnapshot.PaymentStatus.FAILED;
+            case "pending", "processing", "requires_payment_method" ->
+                    PaymentSnapshot.PaymentStatus.PENDING;
+            default -> PaymentSnapshot.PaymentStatus.UNKNOWN;
+        };
+    }
+
     // ---------------------------------------------------------------------------------------
     // Webhook verification + normalization (Standard Webhooks spec)
     // ---------------------------------------------------------------------------------------
@@ -315,12 +472,28 @@ public class DodoProvider implements PaymentProvider {
                 .providerCustomerId(customerId(data))
                 .providerInvoiceId(text(data, "payment_id"))
                 .providerPaymentIntentId(text(data, "payment_id"))
+                .officialInvoiceNumber(text(data, "invoice_id"))
+                .officialInvoiceUrl(trustedInvoiceUrl(text(data, "invoice_url")))
                 .subtotalMinor(subtotal)
                 .discountMinor(Math.max(0, subtotal - total + tax))
                 .totalMinor(total)
                 .currency(text(data, "currency"))
-                .invoicePeriodStart(isoToInstant(text(data, "previous_billing_date")))
+                // payment.succeeded does not currently include the subscription billing
+                // dates. created_at is the exact charge time and provides a safe period-start
+                // fallback; the domain handler fills the end from subscription state/cadence.
+                .invoicePeriodStart(isoToInstant(firstText(
+                        data, "previous_billing_date", "created_at")))
                 .invoicePeriodEnd(isoToInstant(text(data, "next_billing_date")));
+    }
+
+    private static String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = text(node, field);
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     /** Customer id may be a bare string or a nested object {customer_id: ...}. */
@@ -378,6 +551,57 @@ public class DodoProvider implements PaymentProvider {
             return readJson(response);
         } catch (RestClientException e) {
             throw wrap(op, e);
+        }
+    }
+
+    private JsonNode get(String path, String op) {
+        try {
+            String response = restClient.get()
+                    .uri(path)
+                    .retrieve()
+                    .body(String.class);
+            return readJson(response);
+        } catch (RestClientException e) {
+            throw wrap(op, e);
+        }
+    }
+
+    /**
+     * GET that treats a 404 as "the provider has no such resource" (returns {@code null}) rather
+     * than an error. Used by the reader methods so a not-found subscription/payment/checkout maps
+     * to {@link Optional#empty()} instead of throwing.
+     */
+    private JsonNode getOrNull(String path, String op) {
+        try {
+            String response = restClient.get()
+                    .uri(path)
+                    .retrieve()
+                    .body(String.class);
+            return readJson(response);
+        } catch (org.springframework.web.client.RestClientResponseException re) {
+            if (re.getStatusCode().value() == 404) {
+                return null;
+            }
+            throw wrap(op, re);
+        } catch (RestClientException e) {
+            throw wrap(op, e);
+        }
+    }
+
+    private static String trustedInvoiceUrl(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(raw);
+            return "https".equalsIgnoreCase(uri.getScheme())
+                    && uri.getHost() != null
+                    && (uri.getHost().equals("dodopayments.com")
+                            || uri.getHost().endsWith(".dodopayments.com"))
+                    ? uri.toString()
+                    : null;
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
     }
 

@@ -60,7 +60,7 @@ public class DunningScheduler {
         List<Subscription> lapsed = subscriptionRepository.findByStatusAndGraceUntilBefore(
                 SubscriptionStatus.PAST_DUE, timeSource.now());
         for (Subscription sub : lapsed) {
-            sub.setStatus(SubscriptionStatus.EXPIRED);
+            sub.expire();
             subscriptionRepository.save(sub);
             auditService.record(PaymentAuditService.ACTOR_SYSTEM, "Subscription", sub.getId(),
                     "DUNNING_EXPIRED",

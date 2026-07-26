@@ -30,6 +30,13 @@ class PlanCatalogTest {
         assertThat(free.unlimited(LimitKey.CONNECTED_CALENDARS)).isFalse();
     }
 
+    @Test
+    void freeAllowsExactlyOneEventType() {
+        Entitlements free = PlanCatalog.forTier(PlanTier.FREE);
+        assertThat(free.limit(LimitKey.MAX_EVENT_TYPES)).isEqualTo(1);
+        assertThat(free.unlimited(LimitKey.MAX_EVENT_TYPES)).isFalse();
+    }
+
     // ── PROFESSIONAL: all features; unlimited calendars ───────────────────────────────
 
     @Test
@@ -46,6 +53,12 @@ class PlanCatalogTest {
         Entitlements pro = PlanCatalog.forTier(PlanTier.PROFESSIONAL);
         assertThat(pro.unlimited(LimitKey.CONNECTED_CALENDARS)).isTrue();
         assertThat(pro.limit(LimitKey.CONNECTED_CALENDARS)).isEqualTo(LimitKey.UNLIMITED);
+    }
+
+    @Test
+    void professionalHasUnlimitedEventTypes() {
+        Entitlements pro = PlanCatalog.forTier(PlanTier.PROFESSIONAL);
+        assertThat(pro.unlimited(LimitKey.MAX_EVENT_TYPES)).isTrue();
     }
 
     // ── ENTERPRISE: mirrors PROFESSIONAL in Version 1 (Spec Ch2 §2.3) ──────────────────

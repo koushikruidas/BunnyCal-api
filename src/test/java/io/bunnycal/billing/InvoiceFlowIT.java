@@ -13,6 +13,7 @@ import io.bunnycal.billing.service.InvoiceService;
 import io.bunnycal.billing.service.SubscriptionService;
 import io.bunnycal.payments.provider.ProviderWebhookEvent;
 import io.bunnycal.payments.webhook.WebhookEventHandler;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
@@ -33,6 +34,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * invoice numbers increment, and the PDF renders to non-empty bytes.
  */
 @SpringBootTest(classes = TestApplication.class)
+@org.springframework.context.annotation.Import(
+        io.bunnycal.testsupport.ProgrammableBillingProviderConfig.class)
 @Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
@@ -77,9 +80,11 @@ class InvoiceFlowIT {
     @Autowired SubscriptionService subscriptionService;
     @Autowired InvoiceService invoiceService;
     @Autowired WebhookEventHandler webhookHandler;
+    @Autowired io.bunnycal.testsupport.ProgrammableBillingProvider fakeProvider;
 
     @BeforeEach
     void setUp() {
+        fakeProvider.reset();
         jdbc.execute("TRUNCATE TABLE payment_transactions, subscription_invoices, payment_methods, subscriptions, payment_audit_logs CASCADE");
         jdbc.execute("TRUNCATE TABLE users CASCADE");
     }
@@ -94,6 +99,15 @@ class InvoiceFlowIT {
     }
 
     private ProviderWebhookEvent invoicePaid(String invoiceId, String subId, long total) {
+        // Reconcile-by-read: the handler reads the payment named by the event (pi_<invoiceId>).
+        // Register the SUCCEEDED payment snapshot the provider would return, carrying the invoice id
+        // so the receipt is recorded and de-duplicated on redelivery exactly as before.
+        fakeProvider.putPayment(new io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot(
+                "pi_" + invoiceId,
+                io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot.PaymentStatus.SUCCEEDED,
+                subId, null, invoiceId, null, null, total, 0, total, "inr",
+                java.time.Instant.ofEpochSecond(1735689600L),
+                java.time.Instant.ofEpochSecond(1738368000L)));
         return new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
                 "invoice.paid",
@@ -122,7 +136,7 @@ class InvoiceFlowIT {
         assertThat(invoices).hasSize(1);
         assertThat(invoices.get(0).getStatus()).isEqualTo(InvoiceStatus.PAID);
         assertThat(invoices.get(0).getTotalMinor()).isEqualTo(99900);
-        assertThat(invoices.get(0).getInvoiceNumber()).startsWith("BC-");
+        assertThat(invoices.get(0).getInvoiceNumber()).startsWith("BCR-");
 
         Long txCount = jdbc.queryForObject(
                 "SELECT count(*) FROM payment_transactions WHERE invoice_id = ?", Long.class, invoices.get(0).getId());
@@ -167,5 +181,44 @@ class InvoiceFlowIT {
         assertThat(pdf).isNotEmpty();
         // PDF magic header "%PDF".
         assertThat(new String(pdf, 0, 4)).isEqualTo("%PDF");
+    }
+
+    @Test
+    void invoiceUsesStoredSubscriptionPeriodWhenPaymentOmitsBillingDates() {
+        Subscription sub = subscribedUser("sub_period_fallback", "cus_period_fallback");
+        Instant start = Instant.parse("2026-07-25T02:53:55.226544Z");
+        Instant end = Instant.parse("2027-07-25T02:54:15.237891Z");
+        sub.setCurrentPeriodStart(start);
+        sub.setCurrentPeriodEnd(end);
+        subscriptionRepository.save(sub);
+
+        // Payment read omits the period end; reconciliation fills it from the stored subscription
+        // period end (this test's assertion).
+        fakeProvider.putPayment(new io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot(
+                "pay_period_fallback",
+                io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot.PaymentStatus.SUCCEEDED,
+                "sub_period_fallback", null, "pay_period_fallback", null, null,
+                4800, 0, 4800, "USD", start, null));
+
+        ProviderWebhookEvent event = new ProviderWebhookEvent(
+                "evt_" + UUID.randomUUID(),
+                "payment.succeeded",
+                io.bunnycal.payments.provider.BillingEventType.INVOICE_PAID,
+                "{}",
+                ProviderWebhookEvent.Data.builder()
+                        .providerInvoiceId("pay_period_fallback")
+                        .providerPaymentIntentId("pay_period_fallback")
+                        .providerSubscriptionId("sub_period_fallback")
+                        .currency("USD")
+                        .subtotalMinor(4800)
+                        .totalMinor(4800)
+                        .invoicePeriodStart(start)
+                        .build());
+
+        webhookHandler.handle(event);
+
+        var invoice = invoiceRepository.findByProviderInvoiceId("pay_period_fallback").orElseThrow();
+        assertThat(invoice.getPeriodStart()).isEqualTo(start);
+        assertThat(invoice.getPeriodEnd()).isEqualTo(end);
     }
 }

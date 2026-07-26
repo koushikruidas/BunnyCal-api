@@ -27,6 +27,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * real signature verification (covered separately by StripeProvider unit behaviour).
  */
 @SpringBootTest(classes = TestApplication.class)
+@org.springframework.context.annotation.Import(
+        io.bunnycal.testsupport.ProgrammableBillingProviderConfig.class)
 @Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
