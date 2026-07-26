@@ -7,14 +7,20 @@ import io.bunnycal.billing.domain.Subscription;
 import io.bunnycal.billing.domain.SubscriptionPlan;
 import io.bunnycal.billing.domain.SubscriptionStatus;
 import io.bunnycal.billing.repository.SubscriptionRepository;
+import io.bunnycal.billing.service.BillingReconciliationService;
 import io.bunnycal.billing.service.PlanService;
+import io.bunnycal.billing.service.ReconciliationSource;
 import io.bunnycal.billing.service.SubscriptionStateService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeSource;
+import io.bunnycal.payments.provider.BillingProviderReader;
+import io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,19 +47,30 @@ public class AdminSubscriptionService {
     private final AdminAuditService auditService;
     private final UserRepository userRepository;
     private final TimeSource timeSource;
+    // Present only when billing is enabled (a provider bean exists); refresh degrades to a
+    // local re-read when absent.
+    @Nullable
+    private final BillingProviderReader providerReader;
+    @Nullable
+    private final BillingReconciliationService reconciliationService;
 
     public AdminSubscriptionService(SubscriptionRepository subscriptionRepository,
                                     SubscriptionStateService stateService,
                                     PlanService planService,
                                     AdminAuditService auditService,
                                     UserRepository userRepository,
-                                    TimeSource timeSource) {
+                                    TimeSource timeSource,
+                                    @Autowired(required = false) @Nullable BillingProviderReader providerReader,
+                                    @Autowired(required = false) @Nullable
+                                    BillingReconciliationService reconciliationService) {
         this.subscriptionRepository = subscriptionRepository;
         this.stateService = stateService;
         this.planService = planService;
         this.auditService = auditService;
         this.userRepository = userRepository;
         this.timeSource = timeSource;
+        this.providerReader = providerReader;
+        this.reconciliationService = reconciliationService;
     }
 
     @Transactional(readOnly = true)
@@ -62,15 +79,35 @@ public class AdminSubscriptionService {
     }
 
     /**
-     * Re-reads the local subscription. A placeholder for a true provider fetch: the local row
-     * is the mirror of record today, so "refresh"/"sync" returns the current persisted state.
-     * Kept as an explicit action so the UI affordance and audit entry exist for when a real
-     * provider-side fetch is wired.
+     * Forces a real provider read for this subscription and applies it through reconciliation
+     * (source ADMIN, only-newer-wins). This is the operator's tool for clearing drift on a single
+     * customer's subscription. Degrades to a local re-read when billing has no provider configured
+     * (dev/test) or the subscription has no provider id yet.
      */
     @Transactional
     public AdminSubscriptionDto refresh(UUID adminId, UUID subscriptionId) {
         Subscription sub = require(subscriptionId);
-        audit(adminId, "SUBSCRIPTION_REFRESH", sub.getId(), null, toDto(sub), toDto(sub));
+        AdminSubscriptionDto before = toDto(sub);
+
+        if (providerReader != null && reconciliationService != null
+                && sub.getProviderSubscriptionId() != null) {
+            Instant observedAt = timeSource.now();
+            var snapshot = providerReader.getSubscription(sub.getProviderSubscriptionId());
+            if (snapshot.isPresent()) {
+                SubscriptionSnapshot s = snapshot.get();
+                // Ensure the user id is present so matching never falls back to email.
+                SubscriptionSnapshot enriched = new SubscriptionSnapshot(
+                        s.providerSubscriptionId(), s.providerCustomerId(),
+                        s.userId() != null ? s.userId() : sub.getUserId().toString(),
+                        s.status(), s.cancelAtPeriodEnd(),
+                        s.currentPeriodStart(), s.currentPeriodEnd(), s.providerUpdatedAt());
+                reconciliationService.applySubscriptionSnapshot(
+                        enriched, observedAt, ReconciliationSource.ADMIN);
+                sub = require(subscriptionId); // reload post-reconciliation
+            }
+        }
+
+        audit(adminId, "SUBSCRIPTION_REFRESH", sub.getId(), null, before, toDto(sub));
         return toDto(sub);
     }
 

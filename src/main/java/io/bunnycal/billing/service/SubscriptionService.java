@@ -186,6 +186,12 @@ public class SubscriptionService {
             customerId = ref.providerCustomerId();
             subscription.setProviderCustomerId(customerId);
             subscriptionRepository.save(subscription);
+        } else {
+            // Duplicate-purchase guard: an existing customer may already hold a live subscription at
+            // the provider (e.g. a prior checkout whose webhook we never saw). Block a second
+            // purchase rather than create a duplicate. A provider that cannot list returns empty and
+            // this is a no-op. We never auto-cancel/refund — conflict resolution stays manual.
+            blockIfProviderHasLiveSubscription(provider, customerId);
         }
 
         String providerCouponId = null;
@@ -209,6 +215,30 @@ public class SubscriptionService {
                 redirectProperties.successUrl(),
                 redirectProperties.cancelUrl(),
                 providerCouponId));
+    }
+
+    /**
+     * Blocks checkout when the provider already reports a live subscription for this customer, so a
+     * missed activation webhook can't lead to a duplicate paid subscription. Live = ACTIVE, TRIAL,
+     * or PAST_DUE at the provider. A provider read failure must not block a legitimate purchase, so
+     * a provider error here is logged and allowed through (the redirect/webhook/cron paths still
+     * reconcile, and a genuine duplicate surfaces as a CONFLICT for manual handling).
+     */
+    private void blockIfProviderHasLiveSubscription(PaymentProvider provider, String customerId) {
+        java.util.List<io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot> existing;
+        try {
+            existing = provider.listSubscriptionsForCustomer(customerId);
+        } catch (RuntimeException e) {
+            log.warn("billing.checkout.duplicate_check_failed customer={}", customerId, e);
+            return;
+        }
+        boolean hasLive = existing.stream().anyMatch(s -> switch (s.status()) {
+            case ACTIVE, TRIAL, PAST_DUE -> true;
+            case CANCELLED, INCOMPLETE -> false;
+        });
+        if (hasLive) {
+            throw new CustomException(ErrorCode.SUBSCRIPTION_ALREADY_ACTIVE);
+        }
     }
 
     private Subscription reopenForCheckout(UUID userId, SubscriptionPlan plan) {
@@ -263,7 +293,7 @@ public class SubscriptionService {
         if (atPeriodEnd) {
             subscription.setCancelAtPeriodEnd(true);
         } else {
-            subscription.setStatus(SubscriptionStatus.CANCELLED);
+            subscription.cancel();
             subscription.setCanceledAt(timeSource.now());
         }
         Subscription saved = subscriptionRepository.save(subscription);

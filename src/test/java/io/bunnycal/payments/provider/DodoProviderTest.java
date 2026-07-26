@@ -43,6 +43,8 @@ class DodoProviderTest {
                 + "\"payment_id\":\"pay_1\",\"subscription_id\":\"sub_1\","
                 + "\"customer\":{\"customer_id\":\"cus_1\"},"
                 + "\"total_amount\":99900,\"recurring_pre_tax_amount\":99900,\"currency\":\"INR\","
+                + "\"invoice_id\":\"inv_1\","
+                + "\"invoice_url\":\"https://dodopayments.com/invoices/inv_1\","
                 + "\"next_billing_date\":\"2026-07-01T00:00:00Z\"}}";
         Map<String, String> headers = signedHeaders("msg_1", body);
 
@@ -55,9 +57,26 @@ class DodoProviderTest {
         assertThat(d.providerSubscriptionId()).isEqualTo("sub_1");
         assertThat(d.providerCustomerId()).isEqualTo("cus_1");
         assertThat(d.providerInvoiceId()).isEqualTo("pay_1");
+        assertThat(d.officialInvoiceNumber()).isEqualTo("inv_1");
+        assertThat(d.officialInvoiceUrl()).isEqualTo("https://dodopayments.com/invoices/inv_1");
         assertThat(d.totalMinor()).isEqualTo(99900);
         assertThat(d.subtotalMinor()).isEqualTo(99900);
         assertThat(d.currency()).isEqualTo("INR");
+    }
+
+    @Test
+    void paymentCreatedAtIsUsedWhenDodoOmitsBillingDates() {
+        String body = "{\"type\":\"payment.succeeded\",\"data\":{"
+                + "\"payment_id\":\"pay_dates\",\"subscription_id\":\"sub_dates\","
+                + "\"created_at\":\"2026-07-25T02:53:55.226544Z\","
+                + "\"total_amount\":4800,\"currency\":\"USD\"}}";
+
+        ProviderWebhookEvent event = provider.verifyWebhook(
+                body.getBytes(StandardCharsets.UTF_8), signedHeaders("msg_dates", body));
+
+        assertThat(event.data().invoicePeriodStart())
+                .isEqualTo(java.time.Instant.parse("2026-07-25T02:53:55.226544Z"));
+        assertThat(event.data().invoicePeriodEnd()).isNull();
     }
 
     @Test
@@ -109,6 +128,84 @@ class DodoProviderTest {
                         null));
 
         assertThat(result.sessionId()).isEqualTo("cs_1");
+        server.verify();
+    }
+
+    @Test
+    void resolvesOfficialInvoiceFromPayment() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider invoiceProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+
+        server.expect(requestTo("https://test.dodopayments.com/payments/pay_1"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(
+                        "{\"invoice_id\":\"inv_1\","
+                                + "\"invoice_url\":\"https://dodopayments.com/invoices/inv_1\"}",
+                        MediaType.APPLICATION_JSON));
+
+        ProviderRequests.OfficialInvoiceRef result =
+                invoiceProvider.findOfficialInvoice("pay_1");
+
+        assertThat(result.invoiceNumber()).isEqualTo("inv_1");
+        assertThat(result.downloadUrl()).isEqualTo("https://dodopayments.com/invoices/inv_1");
+        server.verify();
+    }
+
+    @Test
+    void listsPaymentsForSubscriptionAndMapsSucceeded() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider paymentsProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+
+        server.expect(requestTo("https://test.dodopayments.com/payments?subscription_id=sub_1"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"items":[
+                          {"payment_id":"pay_ok","subscription_id":"sub_1","status":"succeeded",
+                           "customer":{"customer_id":"cus_1"},"total_amount":59260,"tax":9043,
+                           "currency":"INR","invoice_id":"inv_ok",
+                           "created_at":"2026-07-25T02:53:55Z"},
+                          {"payment_id":"pay_fail","subscription_id":"sub_1","status":"failed",
+                           "total_amount":59260,"currency":"INR"}
+                        ]}
+                        """, MediaType.APPLICATION_JSON));
+
+        var payments = paymentsProvider.listPaymentsForSubscription("sub_1");
+
+        assertThat(payments).hasSize(2);
+        assertThat(payments.get(0).providerPaymentId()).isEqualTo("pay_ok");
+        assertThat(payments.get(0).status())
+                .isEqualTo(ProviderSnapshots.PaymentSnapshot.PaymentStatus.SUCCEEDED);
+        assertThat(payments.get(0).providerSubscriptionId()).isEqualTo("sub_1");
+        assertThat(payments.get(0).totalMinor()).isEqualTo(59260);
+        assertThat(payments.get(0).currency()).isEqualTo("INR");
+        assertThat(payments.get(1).status())
+                .isEqualTo(ProviderSnapshots.PaymentSnapshot.PaymentStatus.FAILED);
+        server.verify();
+    }
+
+    @Test
+    void listPaymentsForSubscriptionReturnsEmptyOnNotFound() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider paymentsProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+
+        server.expect(requestTo("https://test.dodopayments.com/payments?subscription_id=sub_missing"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(org.springframework.test.web.client.response.MockRestResponseCreators
+                        .withStatus(org.springframework.http.HttpStatus.NOT_FOUND));
+
+        assertThat(paymentsProvider.listPaymentsForSubscription("sub_missing")).isEmpty();
         server.verify();
     }
 

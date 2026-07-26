@@ -39,6 +39,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * provider-neutral events).
  */
 @SpringBootTest(classes = TestApplication.class)
+@org.springframework.context.annotation.Import(
+        io.bunnycal.testsupport.ProgrammableBillingProviderConfig.class)
 @Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
@@ -83,9 +85,11 @@ class SubscriptionCoreIT {
     @Autowired SubscriptionStateService stateService;
     @Autowired PlanService planService;
     @Autowired WebhookEventHandler webhookHandler;
+    @Autowired io.bunnycal.testsupport.ProgrammableBillingProvider fakeProvider;
 
     @BeforeEach
     void setUp() {
+        fakeProvider.reset();
         jdbc.execute("TRUNCATE TABLE subscriptions, payment_audit_logs CASCADE");
         jdbc.execute("TRUNCATE TABLE users CASCADE");
     }
@@ -159,6 +163,13 @@ class SubscriptionCoreIT {
         User user = newUser();
         Subscription trial = subscriptionService.ensureSubscription(user.getId()).orElseThrow();
 
+        // Reconcile-by-read: the handler reads current provider state for the subscription id on
+        // the event, so register the ACTIVE snapshot the provider would return.
+        fakeProvider.putSubscription(new io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot(
+                "sub_upgrade", "cus_upgrade", user.getId().toString(),
+                io.bunnycal.payments.provider.ProviderWebhookEvent.SubscriptionStatusSignal.ACTIVE,
+                false, null, null, null));
+
         webhookHandler.handle(new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
                 "subscription.active",
@@ -183,6 +194,11 @@ class SubscriptionCoreIT {
         sub.setProviderCustomerId("cus_123");
         sub.setProviderSubscriptionId("sub_123");
         subscriptionRepository.save(sub);
+
+        // The handler reads the payment named by the event (invoice id doubles as payment id here).
+        fakeProvider.putPayment(new io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot(
+                "in_core1", io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot.PaymentStatus.SUCCEEDED,
+                "sub_123", "cus_123", "in_core1", null, null, 99900, 0, 99900, "inr", null, null));
 
         ProviderWebhookEvent event = new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
@@ -209,8 +225,15 @@ class SubscriptionCoreIT {
     void invoicePaymentFailedMovesToPastDueWithGrace() {
         User user = newUser();
         Subscription sub = subscriptionService.ensureSubscription(user.getId()).orElseThrow();
+        // A failed renewal must start ACTIVE for the past-due transition to be legal (grace begins
+        // from ACTIVE). Provider now reports the subscription past_due; reconcile reads that.
         sub.setProviderSubscriptionId("sub_456");
+        sub.activate();
         subscriptionRepository.save(sub);
+        fakeProvider.putSubscription(new io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot(
+                "sub_456", null, user.getId().toString(),
+                io.bunnycal.payments.provider.ProviderWebhookEvent.SubscriptionStatusSignal.PAST_DUE,
+                false, null, null, null));
 
         webhookHandler.handle(new ProviderWebhookEvent(
                 "evt_" + UUID.randomUUID(),
@@ -226,5 +249,46 @@ class SubscriptionCoreIT {
         assertThat(after.getGraceUntil()).isNotNull();
         // Entitled during grace.
         assertThat(stateService.isEntitled(after)).isTrue();
+    }
+
+    @Test
+    void staleQueryReturnsCustomerOnlyIncompleteRowSoDroppedWebhooksSelfHeal() {
+        // The dropped-webhook incident: a checkout paid but the activation webhook was lost, so the
+        // row is INCOMPLETE with a customer id but NO subscription id. It must still be a
+        // reconciliation candidate (resolved by customer) — requiring a subscription id would
+        // strand it forever.
+        User user = newUser();
+        Subscription stuck = subscriptionRepository.save(Subscription.builder()
+                .userId(user.getId())
+                .planId(planService.requireDefaultPlan().getId())
+                .status(SubscriptionStatus.INCOMPLETE)
+                .providerSubscriptionId(null)
+                .providerCustomerId("cus_dropped")
+                .trialConsumed(true)
+                .build());
+
+        var candidates = subscriptionRepository.findStaleForReconciliation(
+                Instant.now(), org.springframework.data.domain.PageRequest.of(0, 100));
+
+        assertThat(candidates).extracting(Subscription::getId).contains(stuck.getId());
+    }
+
+    @Test
+    void staleQueryExcludesRowsWithNeitherSubscriptionNorCustomerId() {
+        User user = newUser();
+        Subscription orphan = subscriptionRepository.save(Subscription.builder()
+                .userId(user.getId())
+                .planId(planService.requireDefaultPlan().getId())
+                .status(SubscriptionStatus.INCOMPLETE)
+                .providerSubscriptionId(null)
+                .providerCustomerId(null)
+                .trialConsumed(true)
+                .build());
+
+        var candidates = subscriptionRepository.findStaleForReconciliation(
+                Instant.now(), org.springframework.data.domain.PageRequest.of(0, 100));
+
+        // Nothing to attribute this row to at the provider — never a candidate (never match by email).
+        assertThat(candidates).extracting(Subscription::getId).doesNotContain(orphan.getId());
     }
 }

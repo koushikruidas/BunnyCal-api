@@ -12,8 +12,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code direct-merchant} (Stripe): BunnyCal is the legal seller. The PDF is a real
  *       tax invoice titled "Invoice".</li>
  *   <li>{@code mor-record-only} (Dodo, Paddle, …): the Merchant of Record is the legal seller
- *       and issues the official receipt. Our PDF is an internal record titled "Payment Summary"
- *       that names the MoR and the provider receipt reference.</li>
+ *       and issues the official tax invoice. Our PDF is titled "Payment Receipt" and records
+ *       the payment without duplicating seller or tax information.</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "billing.invoice-presentation")

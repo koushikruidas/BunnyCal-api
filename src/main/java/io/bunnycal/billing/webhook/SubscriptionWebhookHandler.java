@@ -1,20 +1,16 @@
 package io.bunnycal.billing.webhook;
 
 import io.bunnycal.billing.domain.Subscription;
-import io.bunnycal.billing.domain.SubscriptionStatus;
-import io.bunnycal.billing.repository.SubscriptionRepository;
+import io.bunnycal.billing.service.BillingReconciliationService;
+import io.bunnycal.billing.service.ReconciliationSource;
 import io.bunnycal.common.time.TimeSource;
-import io.bunnycal.payments.audit.PaymentAuditService;
-import io.bunnycal.payments.config.BillingProperties;
+import io.bunnycal.payments.provider.BillingProviderReader;
+import io.bunnycal.payments.provider.ProviderSnapshots.PaymentSnapshot;
+import io.bunnycal.payments.provider.ProviderSnapshots.SubscriptionSnapshot;
 import io.bunnycal.payments.provider.ProviderWebhookEvent;
-import io.bunnycal.payments.provider.ProviderWebhookEvent.CardInfo;
-import io.bunnycal.payments.provider.ProviderWebhookEvent.SubscriptionStatusSignal;
 import io.bunnycal.payments.webhook.WebhookEventHandler;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
-import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,140 +42,86 @@ import org.springframework.stereotype.Component;
 public class SubscriptionWebhookHandler implements WebhookEventHandler {
 
     private static final Logger log = LoggerFactory.getLogger(SubscriptionWebhookHandler.class);
-    private static final String ENTITY = "Subscription";
 
-    private final SubscriptionRepository subscriptionRepository;
     private final TimeSource timeSource;
-    private final BillingProperties billingProperties;
-    private final PaymentAuditService auditService;
-    private final io.bunnycal.billing.service.InvoiceService invoiceService;
+    private final BillingReconciliationService reconciliationService;
+    private final BillingProviderReader providerReader;
     private final io.bunnycal.billing.repository.PaymentMethodRepository paymentMethodRepository;
     private final io.bunnycal.billing.service.RefundService refundService;
     private final io.bunnycal.billing.repository.SubscriptionInvoiceRepository invoiceRepository;
     private final io.bunnycal.billing.repository.PaymentTransactionRepository transactionRepository;
-    private final io.bunnycal.billing.notification.BillingEventPublisher billingEventPublisher;
 
     @Override
     public void handle(ProviderWebhookEvent event) {
         ProviderWebhookEvent.Data data = event.data();
         switch (event.type()) {
-            case CHECKOUT_COMPLETED -> onCheckoutCompleted(data);
-            case SUBSCRIPTION_UPSERTED -> onSubscriptionUpserted(data);
-            case SUBSCRIPTION_DELETED -> onSubscriptionDeleted(data);
-            case INVOICE_PAID -> onInvoicePaid(data);
-            case INVOICE_FAILED -> onInvoiceFailed(data);
+            // Subscription lifecycle events trigger a current provider READ rather than mutating
+            // from the payload: Dodo delivers webhooks late/out-of-order, so the authoritative
+            // state comes from BillingReconciliationService applying a fresh snapshot (only-newer
+            // wins). A dropped webhook self-heals on the next read/redirect/cron.
+            case CHECKOUT_COMPLETED, SUBSCRIPTION_UPSERTED, SUBSCRIPTION_DELETED, INVOICE_FAILED ->
+                    reconcileSubscription(data);
+            // A paid invoice event names a specific payment; read that payment and record its
+            // receipt + activation idempotently.
+            case INVOICE_PAID -> reconcilePayment(data);
             case REFUND_PROCESSED -> onRefundProcessed(data);
             case UNKNOWN -> log.info("billing.webhook.ignored rawType={} id={}",
                     event.rawType(), event.providerEventId());
         }
     }
 
-    private void onCheckoutCompleted(ProviderWebhookEvent.Data data) {
+    /**
+     * Reads current provider subscription state and applies it. The webhook payload is used only to
+     * locate which subscription to read (its id, or the customer, or the user in metadata); the
+     * state we persist always comes from the read.
+     */
+    private void reconcileSubscription(ProviderWebhookEvent.Data data) {
         String subscriptionId = data.providerSubscriptionId();
-        String customerId = data.providerCustomerId();
-        String userId = data.userId();
+        // observedAt is captured before the read so the only-newer-wins tiebreak is honest.
+        Instant observedAt = timeSource.now();
         if (subscriptionId == null) {
-            return; // not a subscription checkout
-        }
-
-        Optional<Subscription> bySub = subscriptionRepository.findByProviderSubscriptionId(subscriptionId);
-        Subscription subscription = bySub
-                .or(() -> userId != null ? subscriptionRepository.findLiveByUserId(UUID.fromString(userId)) : Optional.empty())
-                .orElse(null);
-        if (subscription == null) {
-            log.warn("billing.webhook.checkout_no_subscription sub={} userId={}", subscriptionId, userId);
+            // No subscription id on the event (e.g. a checkout without one yet) — nothing to read.
+            log.warn("billing.webhook.no_subscription_id customer={} userId={}",
+                    data.providerCustomerId(), data.userId());
             return;
         }
-        subscription.setProviderSubscriptionId(subscriptionId);
-        if (customerId != null) {
-            subscription.setProviderCustomerId(customerId);
-        }
-        SubscriptionStatus before = subscription.getStatus();
-        // Checkout has no provider-side trial. A completed checkout therefore starts the
-        // paid subscription immediately and ends any local trial by explicit state change.
-        subscription.setStatus(SubscriptionStatus.ACTIVE);
-        subscription.setCancelAtPeriodEnd(false);
-        subscription.setGraceUntil(null);
-        subscriptionRepository.save(subscription);
-        audit(subscription, "CHECKOUT_COMPLETED", before);
-    }
-
-    private void onSubscriptionUpserted(ProviderWebhookEvent.Data data) {
-        String subscriptionId = data.providerSubscriptionId();
-        Subscription subscription = subscriptionRepository.findByProviderSubscriptionId(subscriptionId)
-                .or(() -> linkByCustomer(data.providerCustomerId(), subscriptionId))
-                .orElse(null);
-        if (subscription == null) {
-            log.warn("billing.webhook.subscription_unmatched sub={}", subscriptionId);
+        Optional<SubscriptionSnapshot> snapshot = providerReader.getSubscription(subscriptionId);
+        if (snapshot.isEmpty()) {
+            log.warn("billing.webhook.subscription_read_empty sub={}", subscriptionId);
             return;
         }
-
-        SubscriptionStatus before = subscription.getStatus();
-        subscription.setStatus(mapStatus(data.status()));
-        subscription.setCancelAtPeriodEnd(data.cancelAtPeriodEnd());
-        if (data.currentPeriodStart() != null) {
-            subscription.setCurrentPeriodStart(data.currentPeriodStart());
-        }
-        if (data.currentPeriodEnd() != null) {
-            subscription.setCurrentPeriodEnd(data.currentPeriodEnd());
-        }
-        subscriptionRepository.save(subscription);
-        if (before != subscription.getStatus()) {
-            audit(subscription, "STATUS_" + subscription.getStatus().name(), before);
-        }
+        // Carry metadata the read may not include (userId lives in checkout metadata, not always
+        // on the subscription object) so matching can fall back to it.
+        SubscriptionSnapshot s = snapshot.get();
+        SubscriptionSnapshot enriched = new SubscriptionSnapshot(
+                s.providerSubscriptionId(),
+                s.providerCustomerId() != null ? s.providerCustomerId() : data.providerCustomerId(),
+                s.userId() != null ? s.userId() : data.userId(),
+                s.status(), s.cancelAtPeriodEnd(), s.currentPeriodStart(), s.currentPeriodEnd(),
+                s.providerUpdatedAt());
+        reconciliationService.applySubscriptionSnapshot(enriched, observedAt, ReconciliationSource.WEBHOOK);
     }
 
-    private void onSubscriptionDeleted(ProviderWebhookEvent.Data data) {
-        subscriptionRepository.findByProviderSubscriptionId(data.providerSubscriptionId()).ifPresent(subscription -> {
-            SubscriptionStatus before = subscription.getStatus();
-            if (before == SubscriptionStatus.CANCELLED) {
-                return; // already cancelled; avoid a duplicate email on redelivery
-            }
-            subscription.setStatus(SubscriptionStatus.CANCELLED);
-            subscription.setCanceledAt(timeSource.now());
-            subscriptionRepository.save(subscription);
-            audit(subscription, "SUBSCRIPTION_DELETED", before);
-            billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
-                    io.bunnycal.billing.notification.BillingNotificationService.SUBSCRIPTION_CANCELLED, null);
-        });
-    }
-
-    private void onInvoicePaid(ProviderWebhookEvent.Data data) {
-        linkInvoiceSubscription(data).ifPresent(subscription -> {
-            SubscriptionStatus before = subscription.getStatus();
-            subscription.setStatus(SubscriptionStatus.ACTIVE);
-            subscription.setGraceUntil(null);
-            subscriptionRepository.save(subscription);
-            audit(subscription, "INVOICE_PAID", before);
-
-            // Record the immutable invoice + its payment transaction (idempotent).
-            // Defensive: skip invoice creation if the payload lacks the essentials so a
-            // malformed event still completes the subscription state change (and is marked
-            // PROCESSED) rather than aborting the whole transaction.
-            var input = toPaidInvoiceInput(data);
-            if (input.currency() != null) {
-                // Only notify on first sight of this provider invoice, so a webhook
-                // redelivery does not re-send emails.
-                boolean firstSeen = input.providerInvoiceId() == null
-                        || !invoiceRepository.existsByProviderInvoiceId(input.providerInvoiceId());
-                var saved = invoiceService.recordPaidInvoice(subscription, input);
-                if (firstSeen) {
-                    billingEventPublisher.publishForInvoice(subscription.getUserId(), saved.getId(),
-                            io.bunnycal.billing.notification.BillingNotificationService.INVOICE_GENERATED,
-                            java.util.Map.of("invoiceNumber", saved.getInvoiceNumber()));
-                    // A renewal is a paid invoice on an already-active subscription.
-                    if (before == SubscriptionStatus.ACTIVE) {
-                        billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
-                                io.bunnycal.billing.notification.BillingNotificationService.SUBSCRIPTION_RENEWED, null);
-                    }
-                }
-            } else {
-                log.warn("billing.webhook.invoice_missing_currency sub={}", subscription.getProviderSubscriptionId());
-            }
-
-            // Mirror the card used, if the provider included it (display only).
-            mirrorPaymentMethod(subscription, data);
-        });
+    /**
+     * Reads the specific payment named by an INVOICE_PAID event and records its receipt + activation
+     * through reconciliation (idempotent on the provider invoice id). Also mirrors the card, which
+     * only the webhook payload carries.
+     */
+    private void reconcilePayment(ProviderWebhookEvent.Data data) {
+        String paymentId = data.providerPaymentIntentId() != null
+                ? data.providerPaymentIntentId() : data.providerInvoiceId();
+        Instant observedAt = timeSource.now();
+        if (paymentId == null) {
+            log.warn("billing.webhook.invoice_paid_no_payment_id sub={}", data.providerSubscriptionId());
+            return;
+        }
+        Optional<PaymentSnapshot> snapshot = providerReader.getPayment(paymentId);
+        if (snapshot.isEmpty()) {
+            log.warn("billing.webhook.payment_read_empty payment={}", paymentId);
+            return;
+        }
+        reconciliationService.applyPaymentSnapshot(snapshot.get(), observedAt, ReconciliationSource.WEBHOOK)
+                .ifPresent(subscription -> mirrorPaymentMethod(subscription, data));
     }
 
     private void onRefundProcessed(ProviderWebhookEvent.Data data) {
@@ -214,20 +156,8 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
         return null;
     }
 
-    private io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput toPaidInvoiceInput(ProviderWebhookEvent.Data data) {
-        return new io.bunnycal.billing.service.InvoiceService.PaidInvoiceInput(
-                data.providerInvoiceId(),
-                data.providerPaymentIntentId(),
-                data.subtotalMinor(),
-                data.discountMinor(),
-                data.totalMinor(),
-                upperCurrency(data.currency()),
-                data.invoicePeriodStart(),
-                data.invoicePeriodEnd());
-    }
-
     private void mirrorPaymentMethod(Subscription subscription, ProviderWebhookEvent.Data data) {
-        CardInfo card = data.card();
+        ProviderWebhookEvent.CardInfo card = data.card();
         String pmId = data.providerPaymentMethodId();
         if (pmId == null || card == null) {
             return;
@@ -248,68 +178,4 @@ public class SubscriptionWebhookHandler implements WebhookEventHandler {
                 .build());
     }
 
-    private static String upperCurrency(String currency) {
-        return currency == null ? null : currency.toUpperCase(java.util.Locale.ROOT);
-    }
-
-    private void onInvoiceFailed(ProviderWebhookEvent.Data data) {
-        linkInvoiceSubscription(data).ifPresent(subscription -> {
-            SubscriptionStatus before = subscription.getStatus();
-            subscription.setStatus(SubscriptionStatus.PAST_DUE);
-            if (subscription.getGraceUntil() == null) {
-                subscription.setGraceUntil(timeSource.now().plus(billingProperties.graceDays(), ChronoUnit.DAYS));
-            }
-            subscriptionRepository.save(subscription);
-            audit(subscription, "INVOICE_FAILED", before);
-            // Notify once per transition into PAST_DUE (avoid repeat emails on retries).
-            if (before != SubscriptionStatus.PAST_DUE) {
-                billingEventPublisher.publishForUser(subscription.getUserId(), subscription.getId(),
-                        io.bunnycal.billing.notification.BillingNotificationService.PAYMENT_FAILED, null);
-            }
-        });
-    }
-
-    private Optional<Subscription> linkInvoiceSubscription(ProviderWebhookEvent.Data data) {
-        String subscriptionId = data.providerSubscriptionId();
-        if (subscriptionId == null) {
-            return Optional.empty();
-        }
-        return subscriptionRepository.findByProviderSubscriptionId(subscriptionId)
-                .or(() -> linkByCustomer(data.providerCustomerId(), subscriptionId));
-    }
-
-    /** Attach a provider subscription id to a live subscription matched by customer id. */
-    private Optional<Subscription> linkByCustomer(String customerId, String subscriptionId) {
-        if (customerId == null) {
-            return Optional.empty();
-        }
-        return subscriptionRepository.findLiveByProviderCustomerId(customerId)
-                .map(s -> {
-                    s.setProviderSubscriptionId(subscriptionId);
-                    return subscriptionRepository.save(s);
-                });
-    }
-
-    private static SubscriptionStatus mapStatus(SubscriptionStatusSignal signal) {
-        if (signal == null) {
-            return SubscriptionStatus.INCOMPLETE;
-        }
-        return switch (signal) {
-            case TRIAL -> SubscriptionStatus.TRIAL;
-            case ACTIVE -> SubscriptionStatus.ACTIVE;
-            case PAST_DUE -> SubscriptionStatus.PAST_DUE;
-            case CANCELLED -> SubscriptionStatus.CANCELLED;
-            case INCOMPLETE -> SubscriptionStatus.INCOMPLETE;
-        };
-    }
-
-    private void audit(Subscription s, String action) {
-        audit(s, action, null);
-    }
-
-    private void audit(Subscription s, String action, SubscriptionStatus before) {
-        auditService.record(PaymentAuditService.ACTOR_WEBHOOK, ENTITY, s.getId(), action,
-                before == null ? null : Map.of("status", before.name()),
-                Map.of("status", s.getStatus().name()));
-    }
 }

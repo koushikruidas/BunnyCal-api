@@ -54,6 +54,14 @@ public class SubscriptionInvoice extends BaseEntity {
     @Column(name = "provider_invoice_id", length = 255)
     private String providerInvoiceId;
 
+    /** Legal invoice identifier issued by the Merchant of Record, when applicable. */
+    @Column(name = "official_invoice_number", length = 255)
+    private String officialInvoiceNumber;
+
+    /** Provider-hosted download URL for the Merchant of Record's legal invoice. */
+    @Column(name = "official_invoice_url", length = 2048)
+    private String officialInvoiceUrl;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 24)
     private InvoiceStatus status;

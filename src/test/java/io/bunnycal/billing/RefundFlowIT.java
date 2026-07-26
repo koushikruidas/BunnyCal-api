@@ -46,7 +46,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @SpringBootTest(classes = TestApplication.class)
 @Testcontainers
-@Import(RefundFlowIT.FakeProviderConfig.class)
+@Import(io.bunnycal.testsupport.ProgrammableBillingProviderConfig.class)
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
         "spring.sql.init.mode=never",
@@ -60,44 +60,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         "billing.stripe.webhook-secret=whsec_dummy"
 })
 class RefundFlowIT {
-
-    @TestConfiguration
-    static class FakeProviderConfig {
-        @Bean
-        @Primary
-        PaymentProvider fakePaymentProvider() {
-            return new PaymentProvider() {
-                @Override
-                public ProviderRequests.CustomerRef createCustomer(ProviderRequests.CreateCustomerRequest r) {
-                    return new ProviderRequests.CustomerRef("cus_fake");
-                }
-
-                @Override
-                public ProviderRequests.CheckoutSession createCheckoutSession(ProviderRequests.CheckoutSessionRequest r) {
-                    return new ProviderRequests.CheckoutSession("cs_fake", "https://fake/checkout");
-                }
-
-                @Override
-                public ProviderRequests.PortalSession createPortalSession(ProviderRequests.PortalSessionRequest r) {
-                    return new ProviderRequests.PortalSession("https://fake/portal");
-                }
-
-                @Override
-                public void cancelSubscription(ProviderRequests.CancelSubscriptionRequest r) {
-                }
-
-                @Override
-                public ProviderRequests.RefundResult refund(ProviderRequests.RefundRequest r) {
-                    return new ProviderRequests.RefundResult("re_" + UUID.randomUUID(), "succeeded");
-                }
-
-                @Override
-                public ProviderWebhookEvent verifyWebhook(byte[] payload, java.util.Map<String, String> headers) {
-                    throw new UnsupportedOperationException();
-                }
-            };
-        }
-    }
 
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
     static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
@@ -149,7 +111,8 @@ class RefundFlowIT {
 
         SubscriptionInvoice invoice = invoiceService.recordPaidInvoice(sub,
                 new InvoiceService.PaidInvoiceInput(
-                        "in_" + subId, "pi_" + subId, total, 0, total, "INR", null, null));
+                        "in_" + subId, "pi_" + subId, null, null,
+                        total, 0, total, "INR", null, null));
         return new Fixture(sub, invoice);
     }
 

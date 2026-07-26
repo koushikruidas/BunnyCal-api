@@ -52,4 +52,8 @@ public final class ProviderRequests {
 
     public record RefundResult(String providerRefundId, String status) {
     }
+
+    /** Legal invoice issued by a Merchant of Record for a provider payment. */
+    public record OfficialInvoiceRef(String invoiceNumber, String downloadUrl) {
+    }
 }

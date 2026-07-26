@@ -114,6 +114,8 @@ public enum ErrorCode {
             "The payment provider returned an error. Please try again."),
     SUBSCRIPTION_NOT_FOUND("SUBSCRIPTION_NOT_FOUND",
             "No subscription was found for this account."),
+    SUBSCRIPTION_ALREADY_ACTIVE("SUBSCRIPTION_ALREADY_ACTIVE",
+            "You already have an active subscription."),
     TRIAL_ALREADY_CONSUMED("TRIAL_ALREADY_CONSUMED",
             "A free trial has already been used for this account."),
     PROMO_CODE_INVALID("PROMO_CODE_INVALID",

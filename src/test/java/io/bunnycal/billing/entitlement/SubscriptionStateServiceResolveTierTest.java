@@ -38,7 +38,7 @@ class SubscriptionStateServiceResolveTierTest {
     private SubscriptionStateService serviceWithBillingEnabled(boolean enabled) {
         BillingProperties props = new BillingProperties(
                 enabled, "stripe", 3, new BillingProperties.Notifications(false, "x@y.z"),
-                new BillingProperties.Fees(0));
+                new BillingProperties.Fees(0), null);
         lenient().when(timeSource.now()).thenReturn(NOW);
         return new SubscriptionStateService(subscriptionService, props, timeSource);
     }
