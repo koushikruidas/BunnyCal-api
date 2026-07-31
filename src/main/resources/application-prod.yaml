@@ -230,7 +230,14 @@ app:
   security:
     cors:
       # No localhost origins in production.
-      allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:https://bunnycal.io}
+      #
+      # stage.bunnycal.io is included because staging is a frontend-only preview
+      # that talks to THIS API — there is no separate staging backend (see
+      # BunnyCal-web/.github/workflows/stage-deploy.yml). Without it every
+      # request from staging is rejected with "Invalid CORS request".
+      #
+      # Comma-separated; parsed by SecurityConfig.parseOrigins.
+      allowed-origins: ${APP_SECURITY_CORS_ALLOWED_ORIGINS:https://bunnycal.io,https://stage.bunnycal.io}
       admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:https://admin.bunnycal.io}
   docs:
     # API docs stay private in production unless explicitly enabled.
@@ -307,7 +314,7 @@ billing:
   # tax invoice as BunnyCal. "mor-record-only" (Dodo) issues an internal "Payment
   # Summary" and names the Merchant of Record that issued the official receipt.
   invoice-presentation:
-    mode: ${BILLING_INVOICE_MODE:t}
+    mode: ${BILLING_INVOICE_MODE:}
     seller-name: ${BILLING_SELLER_NAME:BunnyCal}
     merchant-of-record-name: ${BILLING_MOR_NAME:Dodo Payments}
   stripe:
