@@ -27,6 +27,19 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
     public static final String OAUTH_CLIENT_COOKIE = "oauthClient";
     public static final String HOST_CALENDAR_COOKIE = "oauthHostCalendar";
 
+    /**
+     * Remembers the origin the login was started from, so the success handler can send the user
+     * back to the site they actually came from.
+     *
+     * Without this the redirect always went to the single configured {@code FRONTEND_BASE_URL},
+     * which meant signing in on stage.bunnycal.io dropped you on bunnycal.io/dashboard — a
+     * different host, where the staging session does not exist.
+     *
+     * The value is only ever honoured if it matches the configured CORS allowlist (see
+     * OAuth2AuthenticationSuccessHandler), so this cannot be used to redirect somewhere arbitrary.
+     */
+    public static final String OAUTH_ORIGIN_COOKIE = "oauthOrigin";
+
     /** Query param the SPA appends to {@code /oauth2/authorization/{registrationId}}. */
     private static final String CLIENT_PARAM = "client";
     private static final String ADMIN_CLIENT = "admin";
@@ -91,6 +104,49 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         } else {
             clearIntentCookie(response, request, HOST_CALENDAR_COOKIE);
         }
+        rememberOrigin(request, response);
+    }
+
+    /**
+     * Record which site started the flow. The provider redirect lands on the API with no Origin
+     * or Referer from the original SPA, so it has to be captured here, at the point the browser
+     * still has that context.
+     *
+     * Referer is the fallback because a top-level navigation to
+     * {@code /oauth2/authorization/{id}} is not a CORS request and carries no Origin header.
+     */
+    private void rememberOrigin(HttpServletRequest request, HttpServletResponse response) {
+        String origin = request.getHeader("Origin");
+        if (!hasText(origin)) {
+            origin = originOf(request.getHeader("Referer"));
+        }
+        if (hasText(origin)) {
+            addIntentCookie(response, request, OAUTH_ORIGIN_COOKIE, origin);
+        } else {
+            clearIntentCookie(response, request, OAUTH_ORIGIN_COOKIE);
+        }
+    }
+
+    /** Reduce a full URL to scheme://host[:port], or null if it cannot be parsed. */
+    private static String originOf(String url) {
+        if (!hasText(url)) {
+            return null;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            if (uri.getScheme() == null || uri.getHost() == null) {
+                return null;
+            }
+            return uri.getPort() == -1
+                    ? uri.getScheme() + "://" + uri.getHost()
+                    : uri.getScheme() + "://" + uri.getHost() + ":" + uri.getPort();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 
     private static HttpServletResponse currentResponse() {
