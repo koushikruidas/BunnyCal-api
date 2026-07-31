@@ -18,6 +18,7 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +59,13 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
 
     @Value("${auth.oauth2.success-path:/dashboard}")
     private String frontendSuccessPath;
+
+    /**
+     * The same allowlist CORS uses. A login may only be redirected back to an origin on this
+     * list, which is what keeps the origin cookie from becoming an open redirect.
+     */
+    @Value("${app.security.cors.allowed-origins:http://localhost:5173}")
+    private String allowedOrigins;
 
     @Override
     public void onAuthenticationSuccess(
@@ -184,7 +192,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         if (adminLogin) {
             clearOauthClientCookie(request, response);
         }
-        String frontendRedirectUrl = resolveFrontendRedirectUrl(adminLogin);
+        String frontendRedirectUrl = resolveFrontendRedirectUrl(adminLogin, request);
         boolean secureRequest = request.isSecure();
         String sameSite = secureRequest ? "None" : "Lax";
 
@@ -279,7 +287,7 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
      * started the flow is remembered in the {@code oauthClient} cookie set by
      * {@link io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver}.
      */
-    private String resolveFrontendRedirectUrl(boolean adminLogin) {
+    private String resolveFrontendRedirectUrl(boolean adminLogin, HttpServletRequest request) {
         if (adminLogin) {
             if (!hasText(adminBaseUrl)) {
                 throw new IllegalStateException("app.admin-base-url must not be empty");
@@ -292,7 +300,45 @@ public class OAuth2AuthenticationSuccessHandler implements AuthenticationSuccess
         if (!hasText(frontendSuccessPath) || !frontendSuccessPath.startsWith("/")) {
             throw new IllegalStateException("auth.oauth2.success-path must start with '/'");
         }
-        return stripTrailingSlash(frontendBaseUrl) + frontendSuccessPath;
+        return stripTrailingSlash(resolveCustomerBaseUrl(request)) + frontendSuccessPath;
+    }
+
+    /**
+     * Send the user back to the site they signed in from, not to a single hardcoded host.
+     *
+     * Staging (stage.bunnycal.io) is served by the same API as production, so a fixed
+     * FRONTEND_BASE_URL sent every staging login to bunnycal.io/dashboard — a different origin,
+     * where the session cookies just set do not apply.
+     *
+     * The candidate origin comes from a cookie written when the flow started (the provider
+     * redirect arrives with no usable Origin/Referer of its own). It is honoured ONLY when it
+     * appears in the CORS allowlist; anything else falls back to the configured base URL, so an
+     * attacker-supplied cookie cannot turn this into an open redirect.
+     */
+    private String resolveCustomerBaseUrl(HttpServletRequest request) {
+        String origin = readCookie(request, CustomOAuth2AuthorizationRequestResolver.OAUTH_ORIGIN_COOKIE);
+        if (!hasText(origin)) {
+            return frontendBaseUrl;
+        }
+        String candidate = stripTrailingSlash(origin.trim());
+        boolean allowed = Arrays.stream(allowedOrigins.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(OAuth2AuthenticationSuccessHandler::stripTrailingSlash)
+                .anyMatch(candidate::equalsIgnoreCase);
+        return allowed ? candidate : frontendBaseUrl;
+    }
+
+    private static String readCookie(HttpServletRequest request, String name) {
+        if (request.getCookies() == null) {
+            return null;
+        }
+        for (Cookie c : request.getCookies()) {
+            if (name.equals(c.getName())) {
+                return c.getValue();
+            }
+        }
+        return null;
     }
 
     private static String stripTrailingSlash(String url) {

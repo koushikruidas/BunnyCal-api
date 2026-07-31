@@ -63,6 +63,68 @@ class OAuth2AuthenticationSuccessHandlerTest {
         setField(handler, "accessTokenExpirationMs", 3600000L);
         setField(handler, "frontendBaseUrl", "http://localhost:5173");
         setField(handler, "frontendSuccessPath", "/dashboard");
+        setField(handler, "allowedOrigins", "http://localhost:5173,https://stage.bunnycal.io");
+    }
+
+    /**
+     * Builds a request carrying the origin cookie the authorization resolver writes when the
+     * flow starts.
+     */
+    private static MockHttpServletRequest requestFromOrigin(String origin) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setCookies(new jakarta.servlet.http.Cookie(
+                io.bunnycal.auth.security.config.CustomOAuth2AuthorizationRequestResolver
+                        .OAUTH_ORIGIN_COOKIE,
+                origin));
+        return request;
+    }
+
+    private OAuth2AuthenticationToken stubbedLogin(UUID userId) {
+        OAuth2User oauth2User = new DefaultOAuth2User(
+                List.of(new SimpleGrantedAuthority("ROLE_USER")),
+                Map.of("sub", "g-1", "email", "a@b.com", "name", "A B"),
+                "sub");
+        when(identityLinkingService.resolveOrCreateUser(any(), any(), any(), any(), any()))
+                .thenReturn(UserDto.builder().id(userId).email("a@b.com").build());
+        when(adminRoleService.activeRolesForUser(userId)).thenReturn(List.of());
+        when(jwtTokenProvider.generateAccessToken(eq(userId), eq("a@b.com"), any()))
+                .thenReturn("access-token");
+        when(refreshTokenService.createRefreshToken(userId)).thenReturn("refresh-token");
+        return new OAuth2AuthenticationToken(oauth2User, oauth2User.getAuthorities(), "google");
+    }
+
+    /**
+     * Staging is served by this same API, so a login started on stage.bunnycal.io must come back
+     * to stage.bunnycal.io. It previously always landed on the single configured
+     * FRONTEND_BASE_URL — a different origin, where the cookies just set do not apply.
+     */
+    @Test
+    void success_redirectsBackToTheOriginTheLoginStartedFrom() throws Exception {
+        UUID userId = UUID.randomUUID();
+        OAuth2AuthenticationToken authentication = stubbedLogin(userId);
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        handler.onAuthenticationSuccess(
+                requestFromOrigin("https://stage.bunnycal.io"), response, authentication);
+
+        assertEquals("https://stage.bunnycal.io/dashboard", response.getRedirectedUrl());
+    }
+
+    /**
+     * The origin cookie is attacker-controllable, so it is only honoured when it appears in the
+     * CORS allowlist. Anything else must fall back to the configured base URL rather than
+     * becoming an open redirect.
+     */
+    @Test
+    void success_ignoresAnOriginThatIsNotAllowlisted() throws Exception {
+        UUID userId = UUID.randomUUID();
+        OAuth2AuthenticationToken authentication = stubbedLogin(userId);
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        handler.onAuthenticationSuccess(
+                requestFromOrigin("https://evil.example.com"), response, authentication);
+
+        assertEquals("http://localhost:5173/dashboard", response.getRedirectedUrl());
     }
 
     @Test
