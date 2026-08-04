@@ -90,9 +90,9 @@ public class ConferencingIntegrationController {
             return ResponseEntity.status(302).location(errorRedirect("VALIDATION_ERROR")).build();
         }
         try {
-            service.handleCallback(code, state);
+            ConferencingOAuthService.CallbackResult result = service.handleCallback(code, state);
             return ResponseEntity.status(302)
-                    .location(URI.create(frontendSuccessRedirect + "?integrationSuccess=" + service.providerType().externalId()))
+                    .location(resolveSuccessRedirect(result, service.providerType().externalId()))
                     .build();
         } catch (UnsupportedOperationException ex) {
             return ResponseEntity.status(302).location(errorRedirect("oauth_callback_unsupported")).build();
@@ -225,6 +225,67 @@ public class ConferencingIntegrationController {
         String sep = frontendErrorRedirect.contains("?") ? "&" : "?";
         String encoded = URLEncoder.encode(code, StandardCharsets.UTF_8);
         return URI.create(frontendErrorRedirect + sep + "error=" + encoded + "&code=" + encoded);
+    }
+
+    /**
+     * Sends the user back to wherever they started the connect from.
+     *
+     * <p>The {@code returnTo} the caller supplied at connect time is carried through the signed
+     * OAuth state and comes back on {@link ConferencingOAuthService.CallbackResult}. Honouring it
+     * matters because connecting is rarely the goal in itself: a host who hits "Connect Zoom"
+     * midway through creating an event expects to land back on that step with Zoom selected, not
+     * on the integrations page having lost their draft.
+     *
+     * <p>Only the origin is taken from the configured success redirect; the path comes from
+     * {@code returnTo}, which is validated as a relative path so this cannot become an open
+     * redirect. Mirrors {@code CalendarIntegrationController.resolveSuccessRedirect}.
+     */
+    private URI resolveSuccessRedirect(ConferencingOAuthService.CallbackResult result, String providerExternalId) {
+        URI success = URI.create(frontendSuccessRedirect);
+        String origin = success.getScheme() + "://" + success.getAuthority();
+        String returnTo = resolveReturnTo(result, success);
+        return URI.create(origin + appendQueryParam(returnTo, "integrationSuccess", providerExternalId));
+    }
+
+    /**
+     * The caller's {@code returnTo} when present and safe, else the configured success path.
+     * A returnTo that is not a relative path is discarded rather than rejected: the connection
+     * itself already succeeded, so failing the redirect would strand the user for what is only
+     * a navigation hint.
+     */
+    private static String resolveReturnTo(ConferencingOAuthService.CallbackResult result, URI fallback) {
+        if (result != null) {
+            String candidate = normalizeReturnTo(result.returnTo());
+            if (candidate != null) {
+                return candidate;
+            }
+        }
+        String path = fallback.getPath();
+        return path == null || path.isBlank() ? "/" : path;
+    }
+
+    /** Relative paths only — rejects absolute URLs and protocol-relative "//host" forms. */
+    private static String normalizeReturnTo(String returnTo) {
+        if (returnTo == null || returnTo.isBlank()) {
+            return null;
+        }
+        if (!returnTo.startsWith("/") || returnTo.startsWith("//")) {
+            return null;
+        }
+        return returnTo;
+    }
+
+    /** Appends a query param while preserving any fragment, which must stay last. */
+    private static String appendQueryParam(String pathWithQueryAndHash, String key, String value) {
+        int hashIndex = pathWithQueryAndHash.indexOf('#');
+        String pathAndQuery = hashIndex >= 0 ? pathWithQueryAndHash.substring(0, hashIndex) : pathWithQueryAndHash;
+        String hash = hashIndex >= 0 ? pathWithQueryAndHash.substring(hashIndex) : "";
+        String separator = pathAndQuery.contains("?") ? "&" : "?";
+        return pathAndQuery + separator + encode(key) + "=" + encode(value) + hash;
+    }
+
+    private static String encode(String input) {
+        return URLEncoder.encode(input, StandardCharsets.UTF_8);
     }
 
     private static String mapErrorCode(RuntimeException ex) {
