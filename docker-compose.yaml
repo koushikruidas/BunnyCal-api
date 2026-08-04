@@ -1,83 +1,88 @@
+# Production stack. Postgres is NOT here: it runs on a managed provider so that
+# backups, PITR, patching and failover are the provider's problem, not ours.
+# Everything the app needs to reach it comes from SPRING_DATASOURCE_URL in .env,
+# which MUST include sslmode=verify-full — that connection now crosses the public
+# internet rather than a private Docker network.
 services:
-#  bunnycal-api:
-#    image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
-#    logging:
-#      driver: json-file
-#      options:
-#        max-size: "100m"
-#        max-file: "5"
-#    env_file:
-#      - path: .env
-#        required: false
-#    environment:
-#      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-#      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-#      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-#      SPRING_DATA_REDIS_HOST: redis
-#      SPRING_DATA_REDIS_PORT: 6379
-#      APP_EMBED_TOKEN_SECRET: ${APP_EMBED_TOKEN_SECRET}
-#      LOG_DIR: /app/logs
-#    volumes:
-#      - ./logs:/app/logs
-#    restart: unless-stopped
-#    depends_on:
-#      postgres:
-#        condition: service_healthy
-#      redis:
-#        condition: service_started
-#    networks:
-#      - bunnycal
-#
-#  caddy:
-#    image: caddy:2.8-alpine
-#    restart: unless-stopped
-#    stop_grace_period: 30s
-#    logging:
-#      driver: json-file
-#      options:
-#        max-size: "50m"
-#        max-file: "3"
-#    ports:
-#      - "443:443"
-#    env_file:
-#      - path: .env
-#        required: false
-#    environment:
-#      APP_DOMAIN: ${APP_DOMAIN}
-#    volumes:
-#      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-#      - caddy_data:/data
-#      - caddy_config:/config
-#    depends_on:
-#      - bunnycal-api
-#    networks:
-#      - bunnycal
-
-  postgres:
-    image: postgres:16-alpine
+  bunnycal-api:
+    image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      # Managed Postgres: the full URL (host, db, sslmode) lives in .env. There is
+      # no local postgres service to fall back to, so this must be set explicitly.
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL must be set in .env}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME must be set in .env}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD must be set in .env}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      APP_EMBED_TOKEN_SECRET: ${APP_EMBED_TOKEN_SECRET}
+      LOG_DIR: /app/logs
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./logs:/app/logs
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - bunnycal
 
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    ports:
+      - "443:443"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bunnycal-api
+    networks:
+      - bunnycal
+
+  # Pure cache. Nothing here is a source of truth: slot cache (60s TTL), slot
+  # version counters (self-heal to 1) and OAuth access tokens (TTL = expiry - 5m).
+  # Every call site fails open to Postgres, so persistence would only buy us a
+  # warm cache after a restart — not worth the disk I/O or the backup surface.
+  #
+  # No published ports: reachable only from bunnycal-api on the compose network.
   redis:
     image: redis:7-alpine
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     networks:
       - bunnycal
 
@@ -85,6 +90,5 @@ networks:
   bunnycal:
 
 volumes:
-  postgres_data:
-#  caddy_data:
-#  caddy_config:
+  caddy_data:
+  caddy_config:

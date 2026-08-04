@@ -43,6 +43,9 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+      # Empty by default so a local docker Redis without requirepass still works.
+      # Production overrides this and fails fast if it is unset.
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
 
   jpa:
     hibernate:

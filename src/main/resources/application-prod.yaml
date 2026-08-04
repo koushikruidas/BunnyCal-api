@@ -16,11 +16,16 @@ spring:
   # ---------------------------------------------------------------------------
 
   datasource:
-    # Service-name networking inside the Compose network. The full URL is also
-    # injected by docker-compose; this keeps prod correct even if run directly.
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://postgres:5432/${POSTGRES_DB}}
-    username: ${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER}}
-    password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}
+    # Managed Postgres. There is no in-compose `postgres` service to fall back to,
+    # so these are required with no defaults: a missing value must fail fast at
+    # boot rather than hang resolving a hostname that no longer exists.
+    #
+    # The URL MUST carry sslmode=verify-full. This connection leaves the host and
+    # crosses the public internet to the managed provider — unlike the previous
+    # setup, where it never left the Docker bridge network.
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:30}
@@ -37,6 +42,10 @@ spring:
       # Docker service name — no localhost in production.
       host: ${SPRING_DATA_REDIS_HOST:redis}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+      # Required in prod: no default, so boot fails if requirepass is not
+      # configured. Redis is cache-only, but an unauthenticated instance is
+      # still a foothold and must never ship.
+      password: ${SPRING_DATA_REDIS_PASSWORD}
 
   jpa:
     hibernate:
