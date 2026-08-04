@@ -9,6 +9,7 @@ import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
+import io.bunnycal.testsupport.TestDates;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -35,7 +36,9 @@ class SlotGroupAwarenessIT extends AbstractSessionIT {
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
+    // A Monday in the future. Slots are only generated for future dates, so this
+    // must not be a fixed calendar date — see TestDates.
+    private static final LocalDate TEST_DATE = TestDates.nextMonday();
 
     private Instant slotAt(int hour) {
         return TEST_DATE.atTime(hour, 0).toInstant(ZoneOffset.UTC);
