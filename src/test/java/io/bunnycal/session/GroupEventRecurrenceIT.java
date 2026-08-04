@@ -7,6 +7,7 @@ import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotRequest;
 import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.availability.service.SlotService;
+import io.bunnycal.testsupport.TestDates;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -25,22 +26,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * All tests use fixed future dates well within maxAdvance (365 days from now as
  * configured in createGroupType / createOneOnOneType).
  *
- * Date anchors:
- *   ANCHOR_MONDAY  = 2026-08-03 (Monday)
- *   ANCHOR_MONDAY2 = 2026-08-10 (Monday, week after)
- *   ANCHOR_MONDAY3 = 2026-08-17 (Monday, 2 weeks after)
- *   ANCHOR_MONDAY9 = 2026-09-28 (Monday, occurrence #9 from 2026-08-03)
- *   ANCHOR_FRIDAY  = 2026-08-07 (Friday, same week as ANCHOR_MONDAY)
+ * Date anchors, all derived from the next future Monday so the suite does not
+ * start failing once a hardcoded date falls into the past (slots are only
+ * generated for future dates). The offsets between anchors are what the
+ * recurrence assertions depend on, so they are expressed as offsets:
+ *   ANCHOR_MONDAY  = next Monday >= 7 days out
+ *   ANCHOR_MONDAY2 = ANCHOR_MONDAY + 1 week
+ *   ANCHOR_MONDAY3 = ANCHOR_MONDAY + 2 weeks
+ *   ANCHOR_MONDAY9 = ANCHOR_MONDAY + 8 weeks (occurrence #9)
+ *   ANCHOR_FRIDAY  = ANCHOR_MONDAY + 4 days (same week)
  */
 class GroupEventRecurrenceIT extends AbstractSessionIT {
 
     @Autowired private SlotService slotService;
 
-    private static final LocalDate ANCHOR_MONDAY  = LocalDate.of(2026, 8, 3);
-    private static final LocalDate ANCHOR_MONDAY2 = LocalDate.of(2026, 8, 10);
-    private static final LocalDate ANCHOR_MONDAY3 = LocalDate.of(2026, 8, 17);
-    private static final LocalDate ANCHOR_MONDAY9 = LocalDate.of(2026, 9, 28); // week index 8 from 2026-08-03
-    private static final LocalDate ANCHOR_FRIDAY  = LocalDate.of(2026, 8, 7);
+    private static final LocalDate ANCHOR_MONDAY  = TestDates.nextMonday();
+    private static final LocalDate ANCHOR_MONDAY2 = ANCHOR_MONDAY.plusWeeks(1);
+    private static final LocalDate ANCHOR_MONDAY3 = ANCHOR_MONDAY.plusWeeks(2);
+    private static final LocalDate ANCHOR_MONDAY9 = ANCHOR_MONDAY.plusWeeks(8); // occurrence #9
+    private static final LocalDate ANCHOR_FRIDAY  = ANCHOR_MONDAY.plusDays(4);
 
     private Instant slotAt(LocalDate date, int hour, int minute) {
         return date.atTime(hour, minute).toInstant(ZoneOffset.UTC);
@@ -234,9 +238,9 @@ class GroupEventRecurrenceIT extends AbstractSessionIT {
         User host = createHostWithWeekdayAvailability();
         EventType demo = createGroupType(host.getId());
         EventType oneOnOne = createOneOnOneType(host.getId());
-        // 3 occurrences: 2026-08-03 (idx 0), 2026-08-10 (idx 1), 2026-08-17 (idx 2).
-        // ANCHOR_MONDAY3 is idx 2 (last), week after (ANCHOR_MONDAY3+7 = 2026-08-24, idx 3) is out.
-        LocalDate outsideDate = LocalDate.of(2026, 8, 24); // week index 3, outside count=3
+        // 3 occurrences: ANCHOR_MONDAY (idx 0), ANCHOR_MONDAY2 (idx 1), ANCHOR_MONDAY3 (idx 2).
+        // ANCHOR_MONDAY3 is idx 2 (last), so the week after it (idx 3) is outside the count.
+        LocalDate outsideDate = ANCHOR_MONDAY3.plusWeeks(1); // week index 3, outside count=3
         insertRecurringOccurrenceCountWindow(demo.getId(), "MONDAY", "09:00", "12:00",
                 ANCHOR_MONDAY, 3);
 

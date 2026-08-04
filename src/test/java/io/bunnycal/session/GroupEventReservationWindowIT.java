@@ -9,6 +9,8 @@ import io.bunnycal.availability.dto.SlotResponse;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.session.service.JoinSessionResult;
 import io.bunnycal.session.service.SessionService;
+import io.bunnycal.testsupport.TestDates;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -38,9 +40,11 @@ class GroupEventReservationWindowIT extends AbstractSessionIT {
     @Autowired private SlotService slotService;
     @Autowired private SessionService sessionService;
 
-    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 8, 5);  // Wednesday
-    private static final LocalDate THURSDAY  = LocalDate.of(2026, 8, 6);  // Thursday
-    private static final LocalDate FRIDAY    = LocalDate.of(2026, 8, 7);  // Friday
+    // A Wednesday in the future. Must not be a fixed calendar date — see TestDates.
+    private static final LocalDate WEDNESDAY = TestDates.nextWeekday(DayOfWeek.WEDNESDAY);
+    // Derived so all three stay in the SAME week as WEDNESDAY.
+    private static final LocalDate THURSDAY  = WEDNESDAY.plusDays(1);
+    private static final LocalDate FRIDAY    = WEDNESDAY.plusDays(2);
 
     private Instant slotAt(int hour, int minute) {
         return WEDNESDAY.atTime(hour, minute).toInstant(ZoneOffset.UTC);
