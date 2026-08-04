@@ -13,6 +13,7 @@ import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.logging.OpsLoggers;
+import io.bunnycal.conferencing.service.DefaultConferencingReconciler;
 import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,7 @@ public class CalendarConnectionManagementService {
     private final MicrosoftCalendarOAuthService microsoftOAuthService;
     private final SlotCacheVersionService slotCacheVersionService;
     private final NativeConferencingCapabilityService conferencingCapabilityService;
+    private final DefaultConferencingReconciler defaultConferencingReconciler;
     private final AvailabilityCalendarPolicy availabilityPolicy;
     private final MeterRegistry meterRegistry;
 
@@ -279,6 +281,14 @@ public class CalendarConnectionManagementService {
             }
         }
 
+        // Zoom needs no calendar, but it does need a live Zoom connection. Without this check the
+        // default could be set to a provider that cannot mint a link — the same broken state the
+        // calendar-backed branch above exists to prevent.
+        if (!defaultConferencingReconciler.canServe(userId, provider)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    describe(provider) + " is not connected. Connect it first, or choose another option.");
+        }
+
         user.setDefaultConferencingProvider(provider);
         userRepository.save(user);
         OpsLoggers.HOST.info("default_conferencing_changed hostId={} provider={}", userId, provider);
@@ -331,23 +341,26 @@ public class CalendarConnectionManagementService {
                 }, () -> standDownDefaultLinkIfUnservable(userId, null));
     }
 
+    /**
+     * Re-points the default meeting link after a write-back change.
+     *
+     * <p>Delegates to {@link DefaultConferencingReconciler} so the rule for "can this host actually
+     * use this provider" lives in exactly one place. That matters because the rule spans two
+     * subsystems: Meet and Teams depend on the write-back calendar, Zoom on a live Zoom connection,
+     * and a check that knew only about calendars is what let a disconnected Zoom stay the default.
+     *
+     * <p>The reconciler also promotes a servable alternative rather than always dropping to
+     * {@code NONE}: a host whose Google calendar can still mint Meet gets Meet, not "no meeting
+     * link". {@code NONE} remains the outcome when nothing else can serve.
+     *
+     * <p>The {@code writeback} argument is no longer needed — the reconciler reads the current
+     * write-back target itself, which is also correct when a replacement was just promoted.
+     */
     private void standDownDefaultLinkIfUnservable(UUID userId, CalendarConnection writeback) {
-        User user = userRepository.findById(userId).orElse(null);
-        if (user == null) {
-            return;
-        }
-        ConferencingProviderType current = user.getDefaultConferencingProvider();
-        if (current == null || !current.requiresCalendarProvider()) {
-            return;
-        }
-        if (conferencingCapabilityService.canServe(writeback, current)) {
-            return;
-        }
-        user.setDefaultConferencingProvider(ConferencingProviderType.NONE);
-        userRepository.save(user);
-        OpsLoggers.HOST.warn(
-                "default_conferencing_stood_down hostId={} previous={} reason=writeback_cannot_serve_it",
-                userId, current);
+        // The reconciler re-reads the write-back target, so pending changes from this transaction
+        // (a cleared flag, a freshly promoted replacement) must be visible to its query first.
+        connectionRepository.flush();
+        defaultConferencingReconciler.reconcile(userId, "writeback_changed");
     }
 
     /**
