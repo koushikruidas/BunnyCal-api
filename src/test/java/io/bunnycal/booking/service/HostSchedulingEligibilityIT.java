@@ -10,6 +10,7 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.UserStatus;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.session.AbstractSessionIT;
+import io.bunnycal.testsupport.TestDates;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -34,7 +35,9 @@ class HostSchedulingEligibilityIT extends AbstractSessionIT {
     @Autowired private PublicBookingService publicBookingService;
     @Autowired private EventTypeRepository eventTypeRepository;
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
+    // A Monday in the future. Slots are only generated for future dates, so this
+    // must not be a fixed calendar date — see TestDates.
+    private static final LocalDate TEST_DATE = TestDates.nextMonday();
 
     @BeforeEach
     void cleanExtra() {

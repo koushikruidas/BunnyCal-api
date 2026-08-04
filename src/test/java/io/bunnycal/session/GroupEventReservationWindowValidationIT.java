@@ -10,6 +10,7 @@ import io.bunnycal.availability.dto.ReservationWindowRequest;
 import io.bunnycal.availability.service.GroupEventReservationWindowService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.testsupport.TestDates;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -33,7 +34,8 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
     @Autowired private GroupEventReservationWindowService reservationWindowService;
 
-    private static final LocalDate FUTURE_DATE = LocalDate.of(2026, 8, 5); // Wednesday
+    // A Wednesday in the future. Must not be a fixed calendar date — see TestDates.
+    private static final LocalDate FUTURE_DATE = TestDates.nextWeekday(DayOfWeek.WEDNESDAY);
 
     private User hostWithWeekdayAvailability() {
         User host = createHost();

@@ -16,6 +16,7 @@ import io.bunnycal.availability.dto.ReservationWindowRequest;
 import io.bunnycal.TestApplication;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.testsupport.TestDates;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -98,7 +99,9 @@ class AvailabilityOwnershipIT {
     @Autowired private SlotService slotService;
     @Autowired private org.springframework.data.redis.core.StringRedisTemplate redisTemplate;
 
-    private static final LocalDate TEST_DATE = LocalDate.of(2026, 8, 3);  // Monday
+    // A Monday in the future. Slots are only generated for future dates, so this
+    // must not be a fixed calendar date — see TestDates.
+    private static final LocalDate TEST_DATE = TestDates.nextMonday();
 
     @BeforeEach
     void truncate() {
