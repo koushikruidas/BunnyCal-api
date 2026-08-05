@@ -80,6 +80,12 @@ resolving before first boot or certificate issuance fails.
 ```bash
 ssh root@<server-ip>
 
+# Hetzner's Ubuntu image ships without the `universe` component enabled, and
+# awscli, rclone and age all live there. Without this, `apt install awscli`
+# fails with "no installation candidate" even though the package exists.
+apt install -y software-properties-common
+add-apt-repository -y universe
+
 apt update && apt upgrade -y
 apt install -y ca-certificates curl gnupg lsb-release ufw fail2ban unattended-upgrades
 
@@ -318,8 +324,12 @@ Then the nightly logical dump. It needs `age` (encryption) and `rclone`
 
 ```bash
 exit    # back to root
-apt install -y age rclone postgresql-client-17
+apt install -y age rclone postgresql-client-17 awscli
 ```
+
+`awscli` is optional — pgBackRest speaks S3 natively and the dump uses rclone,
+so nothing in the backup path needs it. It is worth having for poking at the
+bucket during an incident. All four packages live in `universe`, enabled in §2.
 
 Configure the rclone remote **as the `bunnycal` user** — the backup service runs
 as `bunnycal`, so a remote configured under root is invisible to it:
