@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# BunnyCal production PostgreSQL 17 tuning — single CPX32 (4 vCPU / 8 GB).
+# BunnyCal production PostgreSQL 17 tuning — single CX43 (8 vCPU / 16 GB).
 #
 # Append to /etc/postgresql/17/main/conf.d/ as `10-bunnycal.conf` rather than
 # editing postgresql.conf directly. Settings in conf.d/ override the defaults
@@ -9,7 +9,7 @@
 #           /etc/postgresql/17/main/conf.d/10-bunnycal.conf
 #   sudo systemctl restart postgresql
 #
-# Postgres shares this box with the JVM (mem_limit 4g), Redis (256 MB cap) and
+# Postgres shares this box with the JVM (mem_limit 7g), Redis (256 MB cap) and
 # Caddy. The memory settings below are that budget's Postgres share — raising
 # them takes RAM from the API. See DEPLOYMENT.md §0.
 # ---------------------------------------------------------------------------
@@ -27,12 +27,33 @@ port = 5432
 max_connections = 100
 
 # --- Memory ----------------------------------------------------------------
-shared_buffers = 1GB
+# ~25% of the box's 16 GB, the long-standing starting point for shared_buffers.
+# The rest of the working set is served from the OS page cache, which Postgres
+# relies on rather than trying to own all of RAM itself.
+shared_buffers = 4GB
+
 # Not an allocation: it tells the planner roughly how much of the OS page cache
 # is likely available for Postgres, so index scans are costed realistically.
-effective_cache_size = 2GB
-work_mem = 8MB
-maintenance_work_mem = 256MB
+# 16 GB total minus the JVM's 8 GB cap, Redis and the OS leaves ~10 GB that the
+# kernel can plausibly be caching for us.
+effective_cache_size = 10GB
+
+# Per sort/hash node, not per query — a single query with several sorts can use
+# a multiple of this. 16MB × max_connections(100) is the theoretical worst case;
+# real usage is far below that because Hikari only opens 30 connections.
+work_mem = 16MB
+
+# VACUUM, CREATE INDEX, ALTER TABLE. Higher makes maintenance markedly faster
+# and is only held during those operations.
+maintenance_work_mem = 512MB
+
+# --- Parallelism -----------------------------------------------------------
+# 8 vCPU. Leaving these at defaults sized for a 2-core box would waste most of
+# the machine on any analytical or reporting query.
+max_worker_processes = 8
+max_parallel_workers = 8
+max_parallel_workers_per_gather = 4
+max_parallel_maintenance_workers = 4
 
 # --- Planner ---------------------------------------------------------------
 # NVMe SSD: random reads cost almost the same as sequential ones. Leaving this

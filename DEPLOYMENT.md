@@ -2,17 +2,30 @@
 
 ## 0) Topology
 
-A single Hetzner CPX32 (4 vCPU / 8 GB / 160 GB) running Ubuntu 24.04 LTS.
+A single Hetzner **CX43** (8 vCPU / 16 GB / 160 GB) in **hel1 (Helsinki)**,
+running Ubuntu 24.04 LTS.
 
 ```
-CPX32
+CX43  —  Helsinki (hel1)
   ├─ Docker
-  │    bunnycal-api   mem_limit 4g      ← heap ~3 GB
+  │    bunnycal-api   mem_limit 7g      ← heap ~5.25 GB, actual use ~3 GB
   │    caddy          :80 + :443, TLS
   │    redis          cache only, 256 MB cap, no published ports
   ├─ PostgreSQL 17    on the HOST (PGDG apt), listen_addresses=localhost
-  └─ pgBackRest       → S3-compatible object storage at a DIFFERENT vendor
+  └─ pgBackRest       → AWS S3 eu-north-1 (Stockholm), a DIFFERENT vendor
 ```
+
+**On the region.** The API previously ran in Ashburn; it now runs in the EU.
+US users see roughly 110–200 ms on API calls, which is an accepted early-stage
+cost trade-off — the CX tier is EU-only and materially cheaper than the CPX/CCX
+equivalents available in Ashburn. The frontend is unaffected: it is served from
+S3 + CloudFront, so US users still hit a nearby CDN edge and only API round
+trips pay the latency.
+
+**GDPR.** The database holds EU user PII and encrypted OAuth tokens. Both backup
+layers therefore stay in the EU (`eu-north-1`, the closest AWS region to hel1).
+Pointing either at a US bucket would create an international personal-data
+transfer requiring a documented lawful basis — avoid it.
 
 **Postgres runs on the host, not in Compose and not managed.** Installing it on
 the host keeps pgBackRest's filesystem access to the data directory
@@ -40,18 +53,30 @@ Postgres out later is a few hours of work using
 [`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md).
 
 **Memory budget.** `Dockerfile` sets `-XX:MaxRAMPercentage=75`, which sizes the
-heap against whatever the container can see. The `mem_limit: 4g` in
+heap against whatever the container can see. The `mem_limit: 7g` in
 `docker-compose.yaml` is therefore **load-bearing** — without it the JVM claims
-~6 GB of the 8 GB and starves Postgres.
+~12 GB of the 16 GB and starves Postgres.
 
-| Component | Budget |
+| Component | Committed |
 |---|---|
-| `bunnycal-api` (`mem_limit: 4g`) | heap ~3 GB |
-| PostgreSQL (`shared_buffers=1GB`) | ~1.5 GB incl. `work_mem` |
-| Redis (capped) | 256 MB |
-| Caddy + Docker + OS + page cache | remainder |
+| `bunnycal-api` (`mem_limit: 7g`) | 7.00 GB (heap ~5.25 GB; actual use ~3 GB) |
+| PostgreSQL `shared_buffers` | 4.00 GB |
+| PostgreSQL `work_mem` × 30 Hikari connections | ~0.47 GB worst case |
+| Redis (capped) | 0.25 GB |
+| Caddy + Docker + OS | ~1.00 GB |
+| **Free for OS page cache** | **~3.3 GB** |
+
+During a `CREATE INDEX`, `maintenance_work_mem` × `max_parallel_maintenance_workers`
+adds a transient 2 GB, leaving ~1.3 GB cached. That headroom is why the API is
+capped at 7g rather than 8g: the JVM never needs the extra gigabyte, and
+`effective_cache_size = 10GB` would otherwise be misinforming the query planner.
 
 Add a 2 GB swapfile as OOM insurance.
+
+**CPU.** 8 vCPU, so Postgres is configured for real parallelism
+(`max_parallel_workers=8`, `max_parallel_workers_per_gather=4`) and pgBackRest
+runs `process-max=4`. Defaults sized for a 2-core box would leave most of the
+machine idle.
 
 **Redis is never backed up.** It holds only TTL'd cache and every call site
 fails open to Postgres; a wipe costs about 60 seconds of slower slot lookups.
@@ -69,7 +94,7 @@ Full step-by-step, from a stock image:
 **[`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md)**.
 
 Summary:
-- Create a **CPX32 running Ubuntu 24.04 LTS** — plain Ubuntu, *not* Hetzner's
+- Create a **CX43 in hel1 running Ubuntu 24.04 LTS** — plain Ubuntu, *not* Hetzner's
   Docker app image. Postgres runs on the host here, so the box is not a pure
   Docker host, and provisioning it ourselves keeps the runbook valid from a
   stock image.

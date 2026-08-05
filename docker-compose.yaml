@@ -12,11 +12,17 @@ services:
     # REQUIRED — do not remove.
     #
     # Dockerfile sets -XX:MaxRAMPercentage=75, which sizes the heap against
-    # whatever memory the container can see. Unconstrained on this 8 GB box the
-    # JVM would claim ~6 GB and starve Postgres, which shares the host. This cap
-    # keeps the heap near 3 GB and leaves room for Postgres (~1.5 GB), Redis
-    # (256 MB), Caddy and the page cache.
-    mem_limit: 4g
+    # whatever memory the container can see. Unconstrained on this 16 GB box the
+    # JVM would claim ~12 GB and starve Postgres, which shares the host.
+    #
+    # 7g caps the heap near 5.25 GB — far above the ~3 GB this workload actually
+    # uses, so it constrains nothing in practice. The extra gigabyte versus 8g
+    # goes to the OS page cache, which Postgres depends on: a CREATE INDEX can
+    # transiently take maintenance_work_mem × max_parallel_maintenance_workers
+    # (2 GB) on top of shared_buffers, and at 8g the worst case left almost
+    # nothing cached — which would make effective_cache_size=10GB a lie to the
+    # query planner.
+    mem_limit: 7g
     logging:
       driver: json-file
       options:

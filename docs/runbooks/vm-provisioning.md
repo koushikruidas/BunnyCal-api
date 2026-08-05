@@ -3,7 +3,8 @@
 Builds the BunnyCal production host from a stock image. Follow top to bottom;
 each step assumes the previous one succeeded.
 
-**Target:** one Hetzner CPX32 (4 vCPU / 8 GB / 160 GB), **Ubuntu 24.04 LTS**.
+**Target:** one Hetzner **CX43** (8 vCPU / 16 GB / 160 GB) in **hel1 (Helsinki)**,
+**Ubuntu 24.04 LTS**.
 
 > Use the plain Ubuntu image, **not** Hetzner's Docker app image. Postgres runs
 > on the host here, so this is not a pure Docker host, and provisioning Docker
@@ -20,10 +21,19 @@ Have these ready. Steps will block without them.
 
 | Item | Where it comes from |
 |---|---|
-| S3-compatible bucket + access key | Backblaze B2 or AWS S3 — **a different vendor than the VM** |
+| S3 bucket in **`eu-north-1`** + a dedicated IAM key scoped to it | AWS — a different vendor than Hetzner, and in the EU (see GDPR note below) |
 | `CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64` | Password manager. **The existing value** — a new one orphans every calendar connection |
 | All other `.env` secrets | Password manager / existing `.env.prod` |
 | DNS control for `api.bunnycal.io` | Registrar |
+
+> **Why `eu-north-1`:** the VM is in Helsinki and the backups contain every
+> user's PII plus their encrypted OAuth tokens. Keeping them in the EU avoids an
+> international personal-data transfer under GDPR, and Stockholm is the closest
+> AWS region so restores run fast.
+>
+> **Use a dedicated IAM user scoped to this bucket only** — do not reuse the
+> frontend deploy credentials. That key can write to the site buckets, and the
+> database host should not be able to deface the website.
 
 Two new secrets get generated in this runbook. **Store both in a password
 manager as you create them:**
@@ -34,7 +44,12 @@ manager as you create them:**
 
 ## 1. Create the server
 
-Hetzner Cloud console → **CPX32**, image **Ubuntu 24.04**, your SSH key.
+Hetzner Cloud console → **CX43**, location **Helsinki (hel1)**, image
+**Ubuntu 24.04**, your SSH key.
+
+> The CX tier is **EU-only**. It is not available in Ashburn or Singapore, where
+> the more expensive CPX/CCX tiers are the alternative. This is the main reason
+> the deployment lives in the EU.
 
 Attach a **cloud firewall** with inbound rules:
 
@@ -269,10 +284,35 @@ docker compose up -d
 docker compose logs -f bunnycal-api    # watch Flyway apply the migrations
 ```
 
-Then the nightly logical dump:
+Then the nightly logical dump. It needs `age` (encryption) and `rclone`
+(upload), neither of which is installed yet:
 
 ```bash
 exit    # back to root
+apt install -y age rclone postgresql-client-17
+```
+
+Configure the rclone remote **as the `bunnycal` user** — the backup service runs
+as `bunnycal`, so a remote configured under root is invisible to it:
+
+```bash
+sudo -u bunnycal rclone config
+#   n) New remote
+#   name> s3-eu-north
+#   Storage> s3        →  provider> AWS
+#   region> eu-north-1
+#   access_key_id / secret_access_key: the same scoped IAM key
+```
+
+Verify it actually works before relying on it:
+
+```bash
+sudo -u bunnycal rclone lsd s3-eu-north:bunnycal-backups
+```
+
+Now install the timer:
+
+```bash
 mkdir -p /var/backups/bunnycal && chown bunnycal:bunnycal /var/backups/bunnycal
 cp /opt/bunnycal/deploy/systemd/bunnycal-backup.* /etc/systemd/system/
 systemctl daemon-reload

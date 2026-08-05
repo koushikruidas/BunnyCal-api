@@ -18,14 +18,25 @@
 # ---------------------------------------------------------------------------
 
 [global]
-# --- Repository: S3-compatible object storage ------------------------------
-# Deliberately at a DIFFERENT vendor than the VM. Backups tied to the same
-# account do not survive a billing lockout, a compromised credential, or an
+# --- Repository: AWS S3, eu-north-1 (Stockholm) ----------------------------
+# Deliberately at a DIFFERENT vendor than the VM (Hetzner). Backups tied to the
+# same account do not survive a billing lockout, a compromised credential, or an
 # account suspension — which is precisely when you need them most.
+#
+# eu-north-1 is chosen for two reasons:
+#   1. GDPR — the VM is in Helsinki and the repository holds every user's PII
+#      and their encrypted OAuth tokens. Keeping backups in the EU avoids an
+#      international personal-data transfer that would need a lawful basis.
+#   2. Latency — Stockholm is the closest AWS region to hel1, so backup and
+#      restore both run at near-LAN speed.
+#
+# Use a dedicated IAM user scoped to THIS BUCKET ONLY. Do not reuse the
+# frontend deploy credentials: that key can write to the site buckets, and a
+# backup host should not be able to deface the website.
 repo1-type=s3
 repo1-s3-bucket=REPLACE_ME
-repo1-s3-endpoint=REPLACE_ME
-repo1-s3-region=REPLACE_ME
+repo1-s3-endpoint=s3.eu-north-1.amazonaws.com
+repo1-s3-region=eu-north-1
 repo1-s3-key=REPLACE_ME
 repo1-s3-key-secret=REPLACE_ME
 repo1-path=/pgbackrest
@@ -57,10 +68,10 @@ spool-path=/var/spool/pgbackrest
 # scheduled one, so a backup starts promptly rather than idling for minutes.
 start-fast=y
 
-# Modest parallelism: this box also runs the JVM and Redis (see the memory
-# budget in DEPLOYMENT.md §0). Raising this trades backup wall-time for CPU
-# that the API needs.
-process-max=2
+# Half the box's 8 vCPU. Backups run at 02:00, but the API's schedulers never
+# stop entirely, so leaving headroom keeps a backup from competing with request
+# handling. Raising this trades backup wall-time for CPU the API may want.
+process-max=4
 
 # Verify checksums on backup. Catches silent disk corruption at backup time
 # rather than during a restore, when it is too late to do anything about it.
