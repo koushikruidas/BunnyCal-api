@@ -239,6 +239,49 @@ docker --version && docker compose version
 docker run --rm hello-world   # must work WITHOUT sudo
 ```
 
+### Clone the repository
+
+Everything from here on copies config out of the repo, so clone it now. `/opt`
+is root-owned, so create and hand over the directory first — then the clone runs
+unprivileged and nothing lands root-owned, which would leave `docker compose`
+and the deploy workflow unable to read `.env` later.
+
+```bash
+sudo mkdir -p /opt/bunnycal
+sudo chown bunnycal:bunnycal /opt/bunnycal
+git clone <repo-url> /opt/bunnycal
+cd /opt/bunnycal
+
+ls -ld /opt/bunnycal    # must show bunnycal bunnycal
+```
+
+### Daemon-wide log rotation
+
+Do this **before** anything is deployed — the daemon config applies at container
+*creation*, so existing containers keep whatever they were started with, and
+restarting the daemon later would bounce a live API.
+
+```bash
+sudo mkdir -p /etc/docker
+sudo cp /opt/bunnycal/deploy/docker/daemon.json /etc/docker/daemon.json
+sudo systemctl restart docker
+docker info --format '{{.LoggingDriver}}'
+```
+
+`docker-compose.yaml` already sets explicit, larger limits on the services whose
+logs are worth keeping (`bunnycal-api` 100m×5, `caddy` 50m×3, `redis` 20m×3), and
+a per-service block overrides the daemon default. This backstop exists for
+everything *else* — ad-hoc `docker run` during debugging, and any container
+started later without a `logging:` block.
+
+Note the limits are **per container**, not global: the three services above can
+reach ~1.7 GB combined before rotation, which is fine on a 160 GB disk. The
+reason any of this matters is that a full disk stops WAL archiving, and Postgres
+will refuse writes rather than lose WAL.
+
+`live-restore: true` keeps containers running across a Docker *daemon* restart,
+so a `docker` upgrade no longer implies an API outage.
+
 ---
 
 ## 4. PostgreSQL 17
@@ -277,18 +320,7 @@ sudo apt install -y postgresql-17 postgresql-contrib-17
 pg_lsclusters
 ```
 
-Apply the tuned config. **This and §5 copy files out of the repository, so clone
-it now** — the clone step in §6 is written up there only because that is where
-`.env` is filled in:
-
-```bash
-sudo mkdir -p /opt/bunnycal
-sudo chown bunnycal:bunnycal /opt/bunnycal
-git clone <repo-url> /opt/bunnycal
-cd /opt/bunnycal
-```
-
-Then, from `/opt/bunnycal`:
+Apply the tuned config, from `/opt/bunnycal` (cloned in §3):
 
 ```bash
 # conf.d/ so a package upgrade rewriting postgresql.conf cannot silently
@@ -396,7 +428,7 @@ Run these **as `bunnycal`**, not root. The deploy workflow and `docker compose`
 both run as this user, so root-owned files here mean the app cannot read its own
 `.env` later.
 
-The repository was already cloned in §4. From `/opt/bunnycal`:
+The repository was already cloned in §3. From `/opt/bunnycal`:
 
 ```bash
 cd /opt/bunnycal

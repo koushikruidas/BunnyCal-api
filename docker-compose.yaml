@@ -102,6 +102,14 @@ services:
   # No published ports: reachable only from bunnycal-api on the compose network.
   redis:
     image: redis:7-alpine
+    # Redis is quiet, but an uncapped log is still an uncapped log — and a full
+    # disk stops WAL archiving, which makes Postgres refuse writes. Small limits
+    # because there is nothing here worth keeping much history of.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     command: >
       redis-server
       --save ""
