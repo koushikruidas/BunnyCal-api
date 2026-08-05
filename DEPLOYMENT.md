@@ -8,7 +8,7 @@ running Ubuntu 24.04 LTS.
 ```
 CX43  —  Helsinki (hel1)
   ├─ Docker
-  │    bunnycal-api   mem_limit 7g      ← heap ~5.25 GB, actual use ~3 GB
+  │    bunnycal-api   mem_limit 6g      ← heap ~4.5 GB, observed use ~3 GB
   │    caddy          :80 + :443, TLS
   │    redis          cache only, 256 MB cap, no published ports
   ├─ PostgreSQL 17    on the HOST (PGDG apt), listen_addresses=localhost
@@ -53,23 +53,43 @@ Postgres out later is a few hours of work using
 [`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md).
 
 **Memory budget.** `Dockerfile` sets `-XX:MaxRAMPercentage=75`, which sizes the
-heap against whatever the container can see. The `mem_limit: 7g` in
+heap against whatever the container can see. The `mem_limit: 6g` in
 `docker-compose.yaml` is therefore **load-bearing** — without it the JVM claims
 ~12 GB of the 16 GB and starves Postgres.
 
 | Component | Committed |
 |---|---|
-| `bunnycal-api` (`mem_limit: 7g`) | 7.00 GB (heap ~5.25 GB; actual use ~3 GB) |
-| PostgreSQL `shared_buffers` | 4.00 GB |
+| `bunnycal-api` (`mem_limit: 6g`) | 6.00 GB (heap ~4.5 GB; observed use ~3 GB) |
+| PostgreSQL `shared_buffers` | 2.00 GB |
 | PostgreSQL `work_mem` × 30 Hikari connections | ~0.47 GB worst case |
 | Redis (capped) | 0.25 GB |
 | Caddy + Docker + OS | ~1.00 GB |
-| **Free for OS page cache** | **~3.3 GB** |
+| **Free for OS page cache** | **~6.3 GB** |
 
 During a `CREATE INDEX`, `maintenance_work_mem` × `max_parallel_maintenance_workers`
-adds a transient 2 GB, leaving ~1.3 GB cached. That headroom is why the API is
-capped at 7g rather than 8g: the JVM never needs the extra gigabyte, and
-`effective_cache_size = 10GB` would otherwise be misinforming the query planner.
+adds a transient 2 GB, still leaving ~4.3 GB cached.
+
+**These numbers are sized against the application, not the machine**, and that is
+deliberate:
+
+- **Postgres is under the usual "25% of RAM" rule** because that rule assumes a
+  *dedicated* database server. Postgres double-caches (a page in `shared_buffers`
+  is usually also in the page cache), and the page cache is elastic where
+  `shared_buffers` is pinned. Larger buffers also mean more dirty pages per
+  checkpoint, which matters on a host that is also serving JVM I/O. The working
+  set today is well under 1 GB.
+- **The API is above its observed usage** because the observed figure is
+  steady-state. Flyway applying 143 migrations on first boot is the memory peak,
+  and G1 collects less efficiently as a heap nears its ceiling — a tight cap
+  costs GC time long before it costs an OOM.
+- **`effective_cache_size = 10GB` allocates nothing.** It is a planner hint
+  describing `shared_buffers` + page cache. Setting it lower does not free
+  memory; it only makes the planner underestimate caching and prefer sequential
+  scans where an index would win.
+
+Tuning order under memory pressure: **`work_mem` first** (per sort node, so it
+multiplies), then the API cap. `shared_buffers` is last — and note it needs a
+restart, whereas `effective_cache_size` is only a reload.
 
 Add a 2 GB swapfile as OOM insurance.
 

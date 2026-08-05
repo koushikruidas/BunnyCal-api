@@ -9,9 +9,10 @@
 #           /etc/postgresql/17/main/conf.d/10-bunnycal.conf
 #   sudo systemctl restart postgresql
 #
-# Postgres shares this box with the JVM (mem_limit 7g), Redis (256 MB cap) and
-# Caddy. The memory settings below are that budget's Postgres share — raising
-# them takes RAM from the API. See DEPLOYMENT.md §0.
+# Postgres shares this box with the JVM (mem_limit 6g), Redis (256 MB cap) and
+# Caddy, leaving ~6.3 GB for the OS page cache. The memory settings below are
+# that budget's Postgres share — raising them takes RAM from the API or, worse,
+# from the page cache Postgres itself depends on. See DEPLOYMENT.md §0.
 # ---------------------------------------------------------------------------
 
 # --- Connections -----------------------------------------------------------
@@ -27,20 +28,33 @@ port = 5432
 max_connections = 100
 
 # --- Memory ----------------------------------------------------------------
-# ~25% of the box's 16 GB, the long-standing starting point for shared_buffers.
-# The rest of the working set is served from the OS page cache, which Postgres
-# relies on rather than trying to own all of RAM itself.
-shared_buffers = 4GB
+# Deliberately BELOW the usual "25% of RAM" starting point, which assumes a
+# DEDICATED database server. This box also runs the JVM, and two things follow:
+#
+#   1. Postgres double-caches. A page in shared_buffers is usually also in the
+#      OS page cache, so 4 GB here would not buy 4 GB of extra coverage — while
+#      the page cache is shared, elastic, and shrinks under pressure instead of
+#      being pinned.
+#   2. Larger shared_buffers means more dirty pages per checkpoint. The bookings
+#      tables churn constantly (holds inserted, expired and confirmed by the
+#      schedulers), so smaller buffers give smoother write behaviour on a host
+#      that is also serving JVM I/O.
+#
+# The working set today is well under 1 GB. Raise this if the dataset grows past
+# a few GB — it needs a RESTART, so it is the expensive one to get wrong.
+shared_buffers = 2GB
 
-# Not an allocation: it tells the planner roughly how much of the OS page cache
-# is likely available for Postgres, so index scans are costed realistically.
-# 16 GB total minus the JVM's 8 GB cap, Redis and the OS leaves ~10 GB that the
-# kernel can plausibly be caching for us.
+# NOT an allocation — a planner hint describing how much cache is plausibly
+# available (shared_buffers + OS page cache). Setting it low does not "free"
+# anything; it only makes the planner underestimate caching and favour
+# sequential scans where an index would win. With ~2 GB pinned above and ~6.5 GB
+# of page cache free, 10 GB is the honest figure. Changing it is a RELOAD.
 effective_cache_size = 10GB
 
-# Per sort/hash node, not per query — a single query with several sorts can use
-# a multiple of this. 16MB × max_connections(100) is the theoretical worst case;
-# real usage is far below that because Hikari only opens 30 connections.
+# Per sort/hash node, not per query or per connection — one query with several
+# sorts can use a multiple of this. With shared_buffers reduced to 2GB this is
+# now proportionally the largest lever on Postgres's footprint, so it is the
+# FIRST setting to revisit under memory pressure, not shared_buffers.
 work_mem = 16MB
 
 # VACUUM, CREATE INDEX, ALTER TABLE. Higher makes maintenance markedly faster

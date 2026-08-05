@@ -15,14 +15,19 @@ services:
     # whatever memory the container can see. Unconstrained on this 16 GB box the
     # JVM would claim ~12 GB and starve Postgres, which shares the host.
     #
-    # 7g caps the heap near 5.25 GB — far above the ~3 GB this workload actually
-    # uses, so it constrains nothing in practice. The extra gigabyte versus 8g
-    # goes to the OS page cache, which Postgres depends on: a CREATE INDEX can
-    # transiently take maintenance_work_mem × max_parallel_maintenance_workers
-    # (2 GB) on top of shared_buffers, and at 8g the worst case left almost
-    # nothing cached — which would make effective_cache_size=10GB a lie to the
-    # query planner.
-    mem_limit: 7g
+    # 6g caps the heap near 4.5 GB — roughly 50% above the ~3 GB this workload
+    # actually uses. That margin is deliberate and not slack:
+    #
+    #   - Flyway applies 143 migrations on first boot against an empty database,
+    #     the highest-memory moment in the app's life, and it happens before
+    #     there is any traffic to observe it under.
+    #   - G1 collects less efficiently as the heap approaches its ceiling, so a
+    #     tight cap costs GC time long before it costs an OOM.
+    #
+    # Sized against the application's observed behaviour rather than against the
+    # machine: the leftover memory is worth more to the OS page cache, which
+    # Postgres depends on, than to a heap that will never reach it.
+    mem_limit: 6g
     logging:
       driver: json-file
       options:

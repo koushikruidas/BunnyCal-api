@@ -334,9 +334,14 @@ curl -sS https://api.bunnycal.io/actuator/health
 nmap -Pn <server-ip>
 psql -h <server-ip> -U bunnycal bunnycal      # must fail to connect
 
-# Memory: API near its 4g cap, Postgres holding its share, host with headroom.
+# Memory: API well under its 6g cap, Postgres ~2.5 GB, several GB page cache.
 docker stats --no-stream
 free -h
+
+# Peak heap during the Flyway run — the app's highest-memory moment, and the
+# one worth checking because it happens before there is traffic to observe.
+# Expect well under the ~4.5 GB ceiling; if it lands close, raise mem_limit.
+docker exec bunnycal-api jcmd 1 GC.heap_info
 
 # Archiving is live. Idle 6 minutes, then confirm a new WAL segment arrived —
 # this proves archive_timeout works, which IS the 5-minute RPO guarantee.
