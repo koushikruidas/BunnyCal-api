@@ -429,19 +429,24 @@ Then the nightly logical dump. It needs `age` (encryption) and `rclone`
 (upload), neither of which is installed yet:
 
 ```bash
-exit    # back to root
-apt install -y age rclone postgresql-client-17 awscli
+sudo apt install -y age rclone postgresql-client-17 awscli
 ```
 
 `awscli` is optional — pgBackRest speaks S3 natively and the dump uses rclone,
 so nothing in the backup path needs it. It is worth having for poking at the
 bucket during an incident. All four packages live in `universe`, enabled in §2.
 
-Configure the rclone remote **as the `bunnycal` user** — the backup service runs
-as `bunnycal`, so a remote configured under root is invisible to it:
+Configure the rclone remote **as `bunnycal`** — the config is stored per-user in
+`~/.config/rclone/`, and `bunnycal-backup.service` runs as `bunnycal`. A remote
+configured under root is invisible to it, and the failure surfaces at 03:00
+rather than now.
 
 ```bash
-sudo -u bunnycal rclone config
+# You should already be bunnycal. Confirm, because this is the step where being
+# in a root shell silently produces a backup that fails every night.
+whoami        # must print: bunnycal
+
+rclone config
 #   n) New remote
 #   name> s3-eu-north
 #   Storage> s3        →  provider> AWS
@@ -449,21 +454,25 @@ sudo -u bunnycal rclone config
 #   access_key_id / secret_access_key: the same scoped IAM key
 ```
 
-Verify it actually works before relying on it:
+Verify it works, and that the config landed in the right home directory:
 
 ```bash
-sudo -u bunnycal rclone lsd s3-eu-north:bunnycal-backups
+rclone listremotes                                   # expect: s3-eu-north:
+ls -l ~/.config/rclone/rclone.conf                   # must be under /home/bunnycal
+rclone lsd s3-eu-north:bunnycal-pgdumps-eunorth1
 ```
 
 Now install the timer:
 
 ```bash
-mkdir -p /var/backups/bunnycal && chown bunnycal:bunnycal /var/backups/bunnycal
-cp /opt/bunnycal/deploy/systemd/bunnycal-backup.* /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now bunnycal-backup.timer
+sudo mkdir -p /var/backups/bunnycal
+sudo chown bunnycal:bunnycal /var/backups/bunnycal
+sudo cp /opt/bunnycal/deploy/systemd/bunnycal-backup.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bunnycal-backup.timer
 
-systemctl start bunnycal-backup.service
+# Always run the first one by hand and read the output.
+sudo systemctl start bunnycal-backup.service
 journalctl -u bunnycal-backup -f
 ```
 
