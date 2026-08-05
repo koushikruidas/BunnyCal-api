@@ -203,21 +203,40 @@ Finally, from the second terminal, confirm `bunnycal` still connects **and** tha
 From Docker's own repository, not Ubuntu's — the packaged version lags and the
 Compose plugin differs.
 
+Run as `bunnycal` with per-command `sudo`, not from a root shell. Steps later in
+this runbook must run as a *specific* user (`rclone config` as `bunnycal`,
+`pgbackrest` as `postgres`), and files written as root in §6 leave `.env` and the
+repo unreadable by the user Compose actually runs as.
+
 ```bash
-install -m 0755 -d /etc/apt/keyrings
+sudo install -m 0755 -d /etc/apt/keyrings
+
+# `sudo` belongs on the WRITING half of each pipe. On the curl/echo half it
+# would fetch as root but still write as bunnycal, which fails confusingly.
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
+  | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
+  | sudo tee /etc/apt/sources.list.d/docker.list
 
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-usermod -aG docker bunnycal
+sudo usermod -aG docker bunnycal
+```
+
+Log out and back in — group membership is only evaluated at login, so `docker`
+fails with a socket permission error until you do:
+
+```bash
+exit
+ssh bunnycal@<server-ip>
+
+groups                        # expect: bunnycal sudo docker
 docker --version && docker compose version
+docker run --rm hello-world   # must work WITHOUT sudo
 ```
 
 ---
@@ -238,18 +257,18 @@ docker --version && docker compose version
 > moves forward.
 
 ```bash
-install -d /usr/share/postgresql-common/pgdg
-curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+sudo install -d /usr/share/postgresql-common/pgdg
+sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
   --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
 
 echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
 https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
-  > /etc/apt/sources.list.d/pgdg.list
+  | sudo tee /etc/apt/sources.list.d/pgdg.list
 
-apt update
+sudo apt update
 
 # Explicit major version. A bare `apt install postgresql` on 26.04 installs 18.
-apt install -y postgresql-17 postgresql-contrib-17
+sudo apt install -y postgresql-17 postgresql-contrib-17
 
 # Confirm exactly one cluster, running 17 on 5432. If 18 also appears here,
 # remove it now (`apt purge postgresql-18`) rather than after data exists —
@@ -258,16 +277,27 @@ apt install -y postgresql-17 postgresql-contrib-17
 pg_lsclusters
 ```
 
-Apply the tuned config (from the repo — clone it first if you prefer, see §6):
+Apply the tuned config. **This and §5 copy files out of the repository, so clone
+it now** — the clone step in §6 is written up there only because that is where
+`.env` is filled in:
+
+```bash
+sudo mkdir -p /opt/bunnycal
+sudo chown bunnycal:bunnycal /opt/bunnycal
+git clone <repo-url> /opt/bunnycal
+cd /opt/bunnycal
+```
+
+Then, from `/opt/bunnycal`:
 
 ```bash
 # conf.d/ so a package upgrade rewriting postgresql.conf cannot silently
 # revert archive_mode and lose your PITR guarantee.
-cp deploy/postgres/postgresql.conf.tuned /etc/postgresql/17/main/conf.d/10-bunnycal.conf
-cp deploy/postgres/pg_hba.conf.example /etc/postgresql/17/main/pg_hba.conf
-chown postgres:postgres /etc/postgresql/17/main/conf.d/10-bunnycal.conf
+sudo cp deploy/postgres/postgresql.conf.tuned /etc/postgresql/17/main/conf.d/10-bunnycal.conf
+sudo cp deploy/postgres/pg_hba.conf.example /etc/postgresql/17/main/pg_hba.conf
+sudo chown postgres:postgres /etc/postgresql/17/main/conf.d/10-bunnycal.conf
 
-systemctl restart postgresql
+sudo systemctl restart postgresql
 ```
 
 Postgres will **fail to start** until pgBackRest exists, because `archive_command`
@@ -297,15 +327,15 @@ password manager now**.
 ## 5. pgBackRest
 
 ```bash
-apt install -y pgbackrest
+sudo apt install -y pgbackrest
 
-mkdir -p /var/log/pgbackrest /var/spool/pgbackrest /etc/pgbackrest
-chown postgres:postgres /var/log/pgbackrest /var/spool/pgbackrest
-chmod 750 /var/log/pgbackrest /var/spool/pgbackrest
+sudo mkdir -p /var/log/pgbackrest /var/spool/pgbackrest /etc/pgbackrest
+sudo chown postgres:postgres /var/log/pgbackrest /var/spool/pgbackrest
+sudo chmod 750 /var/log/pgbackrest /var/spool/pgbackrest
 
-cp deploy/pgbackrest/pgbackrest.conf.example /etc/pgbackrest/pgbackrest.conf
-chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
-chmod 640 /etc/pgbackrest/pgbackrest.conf
+sudo cp deploy/pgbackrest/pgbackrest.conf.example /etc/pgbackrest/pgbackrest.conf
+sudo chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
+sudo chmod 640 /etc/pgbackrest/pgbackrest.conf
 ```
 
 Edit `/etc/pgbackrest/pgbackrest.conf` and replace every `REPLACE_ME`: bucket,
@@ -324,7 +354,7 @@ Confirm the data directory matches `pg1-path`, then initialise:
 ```bash
 sudo -u postgres psql -Atc 'SHOW data_directory'   # expect /var/lib/postgresql/17/main
 
-systemctl restart postgresql          # now succeeds: pgbackrest exists
+sudo systemctl restart postgresql     # now succeeds: pgbackrest exists
 sudo -u postgres pgbackrest --stanza=bunnycal stanza-create
 sudo -u postgres pgbackrest --stanza=bunnycal check
 ```
@@ -343,31 +373,38 @@ sudo -u postgres pgbackrest --stanza=bunnycal info
 Install the timers:
 
 ```bash
-cp deploy/systemd/pgbackrest-*.{service,timer} /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now pgbackrest-full.timer pgbackrest-diff.timer pgbackrest-check.timer
+sudo cp deploy/systemd/pgbackrest-*.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pgbackrest-full.timer pgbackrest-diff.timer pgbackrest-check.timer
 systemctl list-timers 'pgbackrest-*'
 ```
 
 Optional dead-man's switch for the hourly check:
 
 ```bash
-echo 'PGBACKREST_HEALTHCHECK_URL=https://hc-ping.com/<uuid>' > /etc/pgbackrest/healthcheck.env
-chown postgres:postgres /etc/pgbackrest/healthcheck.env
-chmod 640 /etc/pgbackrest/healthcheck.env
+echo 'PGBACKREST_HEALTHCHECK_URL=https://hc-ping.com/<uuid>' \
+  | sudo tee /etc/pgbackrest/healthcheck.env
+sudo chown postgres:postgres /etc/pgbackrest/healthcheck.env
+sudo chmod 640 /etc/pgbackrest/healthcheck.env
 ```
 
 ---
 
 ## 6. The application
 
+Run these **as `bunnycal`**, not root. The deploy workflow and `docker compose`
+both run as this user, so root-owned files here mean the app cannot read its own
+`.env` later.
+
+The repository was already cloned in §4. From `/opt/bunnycal`:
+
 ```bash
-su - bunnycal
-git clone <repo-url> /opt/bunnycal   # or deploy to the path in HETZNER_DEPLOY_PATH
 cd /opt/bunnycal
 
 cp .env.example .env
 chmod 600 .env
+
+ls -l .env    # must show bunnycal bunnycal, not root root
 ```
 
 Fill `.env`. The values that differ from the old managed-Postgres setup:
