@@ -2,37 +2,91 @@
 
 ## 0) Topology
 
+A single Hetzner CPX32 (4 vCPU / 8 GB / 160 GB) running Ubuntu 24.04 LTS.
+
 ```
-App VM (US East)                     Managed Postgres (us-east-1)
-  bunnycal-api                         automated backups + PITR
-  redis   (cache only, no backup)      provider-operated
-  caddy   (TLS termination)
+CPX32
+  ├─ Docker
+  │    bunnycal-api   mem_limit 4g      ← heap ~3 GB
+  │    caddy          :80 + :443, TLS
+  │    redis          cache only, 256 MB cap, no published ports
+  ├─ PostgreSQL 17    on the HOST (PGDG apt), listen_addresses=localhost
+  └─ pgBackRest       → S3-compatible object storage at a DIFFERENT vendor
 ```
 
-**Postgres is NOT in Compose.** It runs on a managed provider so that backups,
-PITR, patching, and failover are the provider's responsibility rather than
-ours. The app reaches it via `SPRING_DATASOURCE_URL`, which **must** include
-`sslmode=verify-full` — unlike the old setup, this connection leaves the host
-and crosses the public internet.
+**Postgres runs on the host, not in Compose and not managed.** Installing it on
+the host keeps pgBackRest's filesystem access to the data directory
+straightforward and keeps the restore path simple. We own backups, PITR, and
+patching — see §9.
 
-**Keep the app VM and the database in the same region.** A booking write makes
-several round trips (`SELECT ... FOR UPDATE` plus partition `EXCLUDE` checks),
-so cross-region latency is multiplied, not merely added.
+The app reaches it over loopback via `host.docker.internal` (mapped by the
+`extra_hosts` entry in `docker-compose.yaml`). `SPRING_DATASOURCE_URL` carries
+**`sslmode=disable`**, which is correct here: the connection never leaves the
+machine, and the local server has no certificate for `verify-full` to check.
+
+> ⚠️ If the database ever moves off this host, `sslmode` must go back to
+> `verify-full` in the same change. Do **not** "restore" `verify-full` while the
+> database is local — boot will fail. Keep the app and database in the same
+> region if they are ever split: a booking write makes several round trips
+> (`SELECT ... FOR UPDATE` plus partition `EXCLUDE` checks), so latency is
+> multiplied rather than merely added.
+
+**Why one VM.** With a single API instance, splitting the database onto its own
+box buys no availability — either machine failing is an outage regardless — while
+adding a private network, a second host to patch, and a network hop on every
+booking write. What makes one VM safe is that backups live at a **different
+vendor**, so losing the box entirely is still a ~5-minute-RPO recovery. Splitting
+Postgres out later is a few hours of work using
+[`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md).
+
+**Memory budget.** `Dockerfile` sets `-XX:MaxRAMPercentage=75`, which sizes the
+heap against whatever the container can see. The `mem_limit: 4g` in
+`docker-compose.yaml` is therefore **load-bearing** — without it the JVM claims
+~6 GB of the 8 GB and starves Postgres.
+
+| Component | Budget |
+|---|---|
+| `bunnycal-api` (`mem_limit: 4g`) | heap ~3 GB |
+| PostgreSQL (`shared_buffers=1GB`) | ~1.5 GB incl. `work_mem` |
+| Redis (capped) | 256 MB |
+| Caddy + Docker + OS + page cache | remainder |
+
+Add a 2 GB swapfile as OOM insurance.
 
 **Redis is never backed up.** It holds only TTL'd cache and every call site
 fails open to Postgres; a wipe costs about 60 seconds of slower slot lookups.
 It runs with persistence disabled, `requirepass` set, and no published ports.
+Distributed locking is ShedLock on JDBC, not Redis.
+
+**One API instance only.** Ten of the 26 `@Scheduled` jobs have no `@SchedulerLock`
+— including `OutboxWorker`, `BookingExpiryScheduler`, and `AccountDeletionWorker`,
+several of which send mail or expire bookings. A second replica would double-run
+them. That, not session state, is what blocks horizontal scaling today.
 
 ## 1) One-time VM setup (Hetzner)
-- Install Docker Engine + Docker Compose plugin.
-- Clone this repo on the VM.
-- Create `.env` from `.env.example` and fill all secrets.
-- Set `APP_DOMAIN` to the production API domain.
-- Ensure DNS A record points to the Hetzner VM.
-- Provision managed Postgres, enable **automated backups and PITR**, and set
-  `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD`.
-- Set `REDIS_PASSWORD` (Compose refuses to start without it).
-- Install the backup timer — see §9.
+
+Full step-by-step, from a stock image:
+**[`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md)**.
+
+Summary:
+- Create a **CPX32 running Ubuntu 24.04 LTS** — plain Ubuntu, *not* Hetzner's
+  Docker app image. Postgres runs on the host here, so the box is not a pure
+  Docker host, and provisioning it ourselves keeps the runbook valid from a
+  stock image.
+- Cloud firewall: allow **80, 443, SSH** and nothing else. Postgres binds to
+  `localhost` and Redis publishes no ports, so neither is reachable off-box by
+  construction rather than by firewall rule.
+- Install Docker Engine + Compose plugin from `download.docker.com`.
+- Install PostgreSQL 17 from the PGDG apt repo; apply
+  `deploy/postgres/postgresql.conf.tuned` and `pg_hba.conf.example`.
+- Install pgBackRest, configure `/etc/pgbackrest/pgbackrest.conf` from
+  `deploy/pgbackrest/pgbackrest.conf.example`, then `stanza-create` and take a
+  first full backup — see §9.
+- Clone this repo, create `.env` from `.env.example`, fill all secrets, set
+  `APP_DOMAIN`, and set `REDIS_PASSWORD` (Compose refuses to start without it).
+- Point the DNS A record at the VM **before** first boot, so Caddy can complete
+  the ACME challenge.
+- Add a 2 GB swapfile.
 
 ## 2) Local verification
 - Build image: `docker build .`
@@ -73,7 +127,8 @@ accepts a SHA tag only and is reserved for rollbacks.
 
 The workflow pulls and recreates only `bunnycal-api`; it does not run `docker
 compose down`, so Redis, Caddy, networks, and volumes remain online. (Postgres
-is managed and external, so it is unaffected by deploys entirely.) It validates
+runs on the host outside Compose entirely, so a deploy never restarts it — that
+separation is deliberate now that the database shares this box.) It validates
 Compose configuration and the public health endpoint before reporting success.
 
 > ### ⚠️ Rollback trap: never roll back past a restored dump's migration level
@@ -127,9 +182,11 @@ sets `BUNNYCAL_IMAGE`. Never commit `.env.prod` or the VM `.env`.
   credentials, or the DB credentials are missing. No insecure defaults exist.
 - `docker compose up` also fails fast if `BUNNYCAL_IMAGE`, `REDIS_PASSWORD`, or
   any of `SPRING_DATASOURCE_URL` / `_USERNAME` / `_PASSWORD` is unset.
-- Neither Postgres nor Redis publishes a host port. Postgres is managed and
-  external; Redis is reachable only from `bunnycal-api` on the Compose network
-  and requires a password.
+- Neither Postgres nor Redis is reachable off-box. Postgres binds to
+  `localhost` only (`listen_addresses` in `postgresql.conf`) and authenticates
+  with `scram-sha-256`; Redis publishes no ports and is reachable only from
+  `bunnycal-api` on the Compose network, with a password required. Both are
+  closed by construction, not merely by firewall rule.
 - Caddy exposes ONLY `/actuator/health` and the public API paths. Metrics,
   `/actuator/prometheus`, and all other actuator endpoints are 404 from the
   internet and only reachable on the internal Docker network.
@@ -153,18 +210,61 @@ Ensure each provider's console has the production redirect URI whitelisted:
 
 Two layers, deliberately covering different failures:
 
-| Layer | Covers | RPO |
+| Layer | Mechanism | Covers | RPO |
+|---|---|---|---|
+| **pgBackRest** | physical base backups + continuous WAL archive | disk failure, bad migration, accidental delete, **total VM loss** | **~5 min** |
+| **Nightly `pg_dump`** | encrypted logical dump, off-site | major-version upgrade, provider migration, **corrupt pgBackRest repo** | ≤ 24 h |
+
+Neither replaces the other, and the distinction is not cosmetic:
+
+**A logical `pg_dump` cannot be the base for WAL replay.** WAL records reference
+physical block addresses inside data files, so replay requires a *physical* base
+backup. Per the PostgreSQL manual, dumps "cannot be used as part of a
+continuous-archiving solution." The 5-minute RPO comes entirely from pgBackRest.
+
+The dump's value is that it is **format-independent**: a pgBackRest repository is
+tied to the PostgreSQL major version and to pgBackRest itself, whereas a
+`pg_dump -Fc` archive restores into any PG16+ anywhere. It is the
+major-version-upgrade mechanism, the provider-migration mechanism, and the only
+thing that survives losing the repository passphrase.
+
+Both must live with a **different vendor** than the VM. Same-vendor backups do
+not survive a billing lockout, a compromised credential, or account suspension.
+
+### Install the pgBackRest timers
+
+Configuration lives in `/etc/pgbackrest/pgbackrest.conf` (template:
+`deploy/pgbackrest/pgbackrest.conf.example`), **not** in `.env` — these units run
+as `postgres`, which must not be able to read the application's secrets.
+
+```bash
+sudo cp deploy/systemd/pgbackrest-*.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pgbackrest-full.timer pgbackrest-diff.timer pgbackrest-check.timer
+
+# Always run the first full backup by hand and read the output:
+sudo systemctl start pgbackrest-full.service
+journalctl -u pgbackrest-full -f
+```
+
+| Unit | Schedule | Purpose |
 |---|---|---|
-| Managed provider backups + PITR | disk failure, bad migration, accidental delete | seconds–minutes |
-| Nightly encrypted `pg_dump`, off-site | **losing the provider account**, cloud migration, major-version upgrade | ≤ 24 h |
+| `pgbackrest-full.timer` | Sun 02:00 | full physical base backup |
+| `pgbackrest-diff.timer` | Mon–Sat 02:00 | differential since the last full |
+| `pgbackrest-check.timer` | hourly | **verifies WAL is actually arriving** |
+| `bunnycal-backup.timer` | daily 03:00 | logical dump, off-site |
 
-The second layer is not redundant. Provider backups are **tied to the
-instance** — delete it and they are deleted too — so they do not protect
-against a billing lockout, a compromised credential, or account suspension.
-For that reason the dump must live with a **different vendor** than the
-database.
+The hourly `check` matters more than it looks. A broken `archive_command` — bad
+credentials, a full spool directory, an expired storage key — is completely
+silent: Postgres keeps serving traffic and the backups keep looking fine, while
+the PITR guarantee is quietly false. The check forces a WAL segment switch and
+confirms it lands in the repository.
 
-### Install the backup timer
+`archive_timeout = 300` in `deploy/postgres/postgresql.conf.tuned` is what
+actually delivers the 5-minute RPO. Without it, a quiet database may not fill a
+16 MB segment for hours, and un-archived WAL is unrecoverable WAL.
+
+### Install the nightly dump timer
 
 ```bash
 sudo mkdir -p /var/backups/bunnycal && sudo chown bunnycal:bunnycal /var/backups/bunnycal
@@ -186,6 +286,13 @@ VM — the script then verifies each dump actually decrypts and that
 `pg_restore` can read it, which catches a wrong age key on the night it breaks
 rather than during an outage.
 
+### ⚠️ The pgBackRest passphrase is unrecoverable
+
+`repo1-cipher-pass` **cannot be changed or recovered after `stanza-create`**.
+Lose it and every backup in that repository is permanently unreadable. Store it
+in a password manager **and** on paper, alongside
+`CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64` (see §1 of the DR runbook).
+
 ### ⚠️ The encryption key is part of the backup
 
 `CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64` encrypts every calendar/Zoom OAuth
@@ -201,13 +308,20 @@ write-only and cannot be read back to verify. Same for `JWT_SECRET`,
 
 ### Monitoring
 
-No monitoring stack. Two external dead-man's-switches:
+No monitoring stack. Three external dead-man's-switches plus a disk alert:
 
-- **Backup** — the script pings `BACKUP_HEALTHCHECK_URL` only after every step
-  succeeds, so a partial backup can never look healthy. No ping → email.
 - **Uptime** — probe `https://api.bunnycal.io/actuator/health` every minute.
   Catches JVM crash, VM offline, Spring startup failure, and database
   unreachable. (Caddy already exposes only this actuator endpoint publicly.)
+- **Logical backup** — the script pings `BACKUP_HEALTHCHECK_URL` only after
+  every step succeeds, so a partial backup can never look healthy.
+- **pgBackRest archive** — `pgbackrest-check.service` pings
+  `PGBACKREST_HEALTHCHECK_URL` (in `/etc/pgbackrest/healthcheck.env`) only after
+  the hourly `check` passes. This is the one that catches a silently broken WAL
+  archive.
+- **Disk space** — alert at 80% on `/`. A full disk stops WAL archiving, and
+  Postgres will refuse writes rather than lose WAL. On a box shared with the JVM
+  and its logs, this is the most likely way the setup breaks.
 
 ### Restoring
 

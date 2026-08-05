@@ -1,0 +1,20 @@
+# Schedule for pgbackrest-check.service — hourly.
+#
+# Hourly rather than daily because the window between "archiving broke" and
+# "you find out" is the window in which your PITR guarantee is quietly false.
+#
+[Unit]
+Description=Run the BunnyCal pgBackRest archive check hourly
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+
+[Timer]
+OnCalendar=hourly
+# Offset off the top of the hour so the check does not collide with the backup
+# timers or with the application's own hourly scheduled jobs.
+RandomizedDelaySec=300
+Persistent=true
+
+Unit=pgbackrest-check.service
+
+[Install]
+WantedBy=timers.target

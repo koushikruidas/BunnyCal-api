@@ -10,19 +10,27 @@ spring:
   # application FAILS FAST at startup when a required value is missing, instead
   # of silently booting with a known-weak default.
   #
-  # Networking uses Docker service names (postgres / redis / otel-collector),
-  # never localhost. All runtime values come from the .env file consumed by
-  # docker-compose.yaml.
+  # Networking: Redis is a Compose service reached by name (`redis`). Postgres
+  # runs on the Docker HOST and is reached via host.docker.internal. All runtime
+  # values come from the .env file consumed by docker-compose.yaml.
   # ---------------------------------------------------------------------------
 
   datasource:
-    # Managed Postgres. There is no in-compose `postgres` service to fall back to,
-    # so these are required with no defaults: a missing value must fail fast at
-    # boot rather than hang resolving a hostname that no longer exists.
+    # Self-hosted Postgres running on the DOCKER HOST (installed from PGDG, not
+    # a container), reached over loopback via host.docker.internal. Required with
+    # no defaults: a missing value must fail fast at boot rather than hang
+    # resolving a hostname that does not exist.
     #
-    # The URL MUST carry sslmode=verify-full. This connection leaves the host and
-    # crosses the public internet to the managed provider — unlike the previous
-    # setup, where it never left the Docker bridge network.
+    # sslmode: this connection never leaves the machine, so sslmode=disable is
+    # correct and TLS would only add handshake cost with nothing to protect
+    # against. This is a deliberate change from the previous managed-Postgres
+    # setup, where the connection crossed the public internet and verify-full
+    # was mandatory.
+    #
+    # ⚠️  If the database is ever moved off this host — a second VM, a managed
+    # provider, anywhere reachable by network — sslmode MUST go back to
+    # verify-full in the same change. Do not "restore" verify-full while the DB
+    # is still local: the local server has no certificate and boot will fail.
     url: ${SPRING_DATASOURCE_URL}
     username: ${SPRING_DATASOURCE_USERNAME}
     password: ${SPRING_DATASOURCE_PASSWORD}

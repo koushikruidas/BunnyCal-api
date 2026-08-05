@@ -10,16 +10,20 @@ called out inline.
 
 | Layer | Covers | RPO | Where |
 |---|---|---|---|
-| **Managed provider backups + PITR** | disk failure, bad migration, accidental `DELETE`, dropped table | seconds–minutes | provider console |
-| **Nightly `pg_dump` (encrypted, off-site)** | losing the provider account, moving cloud, major-version upgrade | ≤ 24 h | `$BACKUP_RCLONE_REMOTE` |
+| **pgBackRest PITR** (physical + WAL) | disk failure, bad migration, accidental `DELETE`, dropped table, **total VM loss** | ~5 min | S3 repo, stanza `bunnycal` |
+| **Nightly `pg_dump`** (encrypted, off-site) | corrupt pgBackRest repo, lost repo passphrase, major-version upgrade, moving cloud | ≤ 24 h | `$BACKUP_RCLONE_REMOTE` |
 
-**Reach for provider PITR first for almost everything.** It is faster, loses less
-data, and needs no local tooling.
+**Reach for pgBackRest PITR first for almost everything.** It loses minutes
+rather than hours and can target an exact moment before the incident.
 
-Use the logical dump only when the provider itself is the problem — account
-suspension, billing lockout, compromised credentials, or a deliberate migration.
-Provider backups are tied to the instance: delete the instance and they go with
-it. That is the exact gap the nightly dump covers.
+Use the logical dump only when pgBackRest itself is the problem — a corrupt
+repository, a lost `repo1-cipher-pass`, an inaccessible storage account — or when
+you are deliberately changing PostgreSQL major version or cloud provider.
+
+**Why both exist:** a logical dump **cannot** be the base for WAL replay (WAL
+references physical block addresses, so replay needs a physical base backup), and
+a pgBackRest repo is tied to both the PostgreSQL major version and to pgBackRest
+itself. Neither layer can do the other's job.
 
 **Redis is never restored.** It holds only TTL'd cache (slot cache, slot version
 counters, OAuth access tokens) and every call site fails open to Postgres. A
@@ -50,24 +54,87 @@ Also required for the app to boot: `JWT_SECRET`,
 `CALENDAR_WEBHOOK_SHARED_SECRET`, `CALENDAR_OAUTH_STATE_SECRET`,
 `APP_EMBED_TOKEN_SECRET`.
 
+### And the one that gates the backups themselves
+
+`repo1-cipher-pass` (in `/etc/pgbackrest/pgbackrest.conf`) encrypts the entire
+pgBackRest repository. It **cannot be changed or recovered after
+`stanza-create`** — without it, every physical backup is permanently unreadable
+and you are down to the nightly logical dump.
+
+If you are rebuilding the host from scratch, restore this file (or at minimum
+this passphrase plus the S3 credentials) **before** attempting §2. Password
+manager and paper, same as the encryption key above.
+
 ---
 
-## 2. Restore from the provider (normal case)
+## 2. Restore with pgBackRest PITR (normal case)
 
-Use the provider console: pick a point in time, restore to a **new** instance,
-then repoint the app. Do not restore in place — keeping the damaged instance
-around preserves evidence and gives you a way back.
+Restore to a **scratch cluster on a spare port first**, verify it, and only then
+promote. Restoring in place destroys your ability to try a different target time
+if you guessed wrong — and during an incident you usually do guess wrong at least
+once.
+
+`scripts/restore/pitr-restore.sh` does the scratch restore and refuses to touch
+the live data directory.
 
 ```bash
-# 1. Restore to a new instance in the provider console (PITR to just before the incident).
-# 2. Point the app at it:
-#    edit SPRING_DATASOURCE_URL in the GitHub `production` env secret PRODUCTION_ENV_FILE
-#    (keep ?sslmode=verify-full)
-# 3. Redeploy:
-gh workflow run deploy-prod.yml
+# 1. Stop the app so nothing writes while you work.
+cd /opt/bunnycal && docker compose stop bunnycal-api
+
+# 2. Restore to just BEFORE the incident (UTC).
+sudo -u postgres /opt/bunnycal/scripts/restore/pitr-restore.sh '2026-08-05 14:29:00+00'
+
+# 3. Verify on the scratch cluster (port 5433) — see §4.
+psql -p 5433 bunnycal
 ```
 
+If the target time was wrong, tear down and try again — the repository is
+untouched:
+
+```bash
+sudo -u postgres /usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/restore-scratch stop
+sudo rm -rf /var/lib/postgresql/restore-scratch
+```
+
+### Promoting the restored cluster
+
+Only once §4 passes.
+
+```bash
+# Stop both clusters.
+sudo -u postgres /usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/restore-scratch stop
+sudo systemctl stop postgresql
+
+# Keep the damaged cluster — it is your evidence and your way back.
+sudo mv /var/lib/postgresql/17/main /var/lib/postgresql/17/main.broken-$(date -u +%Y%m%dT%H%M%SZ)
+sudo mv /var/lib/postgresql/restore-scratch /var/lib/postgresql/17/main
+sudo chown -R postgres:postgres /var/lib/postgresql/17/main
+
+sudo systemctl start postgresql
+docker compose start bunnycal-api
+```
+
+> ⚠️ **Re-enable archiving and take a new full backup immediately.**
+>
+> The restored cluster is on a **new timeline**. Until a fresh full backup
+> exists, your PITR window does not cover the period since the restore — the
+> repository's newest base predates the recovery.
+>
+> ```bash
+> sudo -u postgres pgbackrest --stanza=bunnycal check
+> sudo systemctl start pgbackrest-full.service
+> ```
+>
+> `pitr-restore.sh` starts the scratch cluster with `archive_mode=off` precisely
+> so a divergent timeline cannot pollute the repository before you promote.
+
 Then run the verification in §4 and the reconciliation in §6.
+
+### If the whole VM is gone
+
+Rebuild the host with `docs/runbooks/vm-provisioning.md`, restore
+`/etc/pgbackrest/pgbackrest.conf` (see §1 — you need the passphrase), then run
+the same restore as above with `latest` instead of a timestamp.
 
 ---
 
@@ -172,9 +239,20 @@ key, and reconnecting users is not the fix.
 
 ## 5. Point the app at the restored database — and the Flyway trap
 
+If you promoted in place (§2), the connection string does not change and there is
+nothing to do here — skip to the Flyway trap below.
+
+Only if the database now lives somewhere else:
+
 ```bash
 # Update PRODUCTION_ENV_FILE (GitHub `production` environment secret):
+
+# Same host (promoted in place) — unchanged, loopback, no TLS:
+SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/bunnycal?sslmode=disable
+
+# Moved OFF this host — TLS becomes mandatory again:
 SPRING_DATASOURCE_URL=jdbc:postgresql://<new-host>:5432/bunnycal?sslmode=verify-full
+
 SPRING_DATASOURCE_USERNAME=bunnycal
 SPRING_DATASOURCE_PASSWORD=<password>
 ```
@@ -273,8 +351,8 @@ have. Practical mitigation:
    are logged there.
 4. Contact affected hosts directly and let them re-confirm with their guests.
 
-**This is the reason to prefer provider PITR (RPO seconds) over the nightly dump
-(RPO ≤24 h) whenever the provider is available.**
+**This is the reason to prefer pgBackRest PITR (RPO ~5 min) over the nightly dump
+(RPO ≤24 h) whenever the repository is intact.**
 
 ---
 
@@ -289,9 +367,13 @@ The nightly dump is the migration mechanism — it restores into any PG16+.
 2. Restore per §3, verify per §4.
 3. Write `.env` from the password manager — **the same**
    `CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64` and the other fail-fast secrets.
-4. Repoint `SPRING_DATASOURCE_URL` (keep `sslmode=verify-full`) and redeploy.
+4. Repoint `SPRING_DATASOURCE_URL` and redeploy. **The database is now remote, so
+   `sslmode` must become `verify-full`** — it is `disable` today only because the
+   connection is loopback.
 5. Keep `api.bunnycal.io` pointing at the same place and §6's domain-change work
    does not apply.
+6. Stand up pgBackRest against the new database and take a full backup before
+   decommissioning the old host. Until that exists, PITR coverage has a gap.
 
 ---
 

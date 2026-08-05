@@ -1,0 +1,51 @@
+# Hourly archive health check.
+#
+# THIS IS THE UNIT THAT CATCHES A BROKEN BACKUP BEFORE YOU NEED IT.
+#
+# `pgbackrest check` forces a WAL segment switch and confirms the segment
+# actually arrives in the repository. Without it, a broken archive_command — bad
+# credentials, a full spool directory, an expired object-storage key — is
+# completely silent: Postgres keeps serving traffic, the backups keep looking
+# fine, and the gap only surfaces during a restore, when nothing can be done.
+#
+# The healthcheck URL is pinged ONLY on success, so a failure leaves the
+# dead-man's-switch un-pinged and it alerts. Same contract as the nightly dump.
+#
+[Unit]
+Description=BunnyCal hourly pgBackRest archive check
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+
+# Optional: PGBACKREST_HEALTHCHECK_URL. Kept in its own file rather than the
+# app's .env because this unit runs as postgres, which should not be able to
+# read the application's secrets.
+EnvironmentFile=-/etc/pgbackrest/healthcheck.env
+
+ExecStart=/usr/bin/pgbackrest --stanza=bunnycal check
+# Ping only if the check above succeeded. `-` prefix: a healthcheck provider
+# being briefly unreachable must not mark a genuinely healthy archive as failed.
+ExecStartPost=-/bin/sh -c 'test -n "$PGBACKREST_HEALTHCHECK_URL" && curl -fsS --retry 3 --max-time 30 "$PGBACKREST_HEALTHCHECK_URL" >/dev/null'
+
+TimeoutStartSec=300
+Restart=no
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/postgresql /var/spool/pgbackrest /var/log/pgbackrest
+
+[Install]
+WantedBy=multi-user.target

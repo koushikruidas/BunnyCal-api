@@ -1,11 +1,22 @@
-# Production stack. Postgres is NOT here: it runs on a managed provider so that
-# backups, PITR, patching and failover are the provider's problem, not ours.
-# Everything the app needs to reach it comes from SPRING_DATASOURCE_URL in .env,
-# which MUST include sslmode=verify-full — that connection now crosses the public
-# internet rather than a private Docker network.
+# Production stack. Postgres is NOT here either: it runs directly on the HOST,
+# installed from the PGDG apt repo, so that pgBackRest has straightforward
+# filesystem access to the data directory and the restore path stays simple.
+#
+# The app reaches it over loopback via host.docker.internal (see extra_hosts
+# below). That connection never leaves the machine, so it does NOT use TLS —
+# SPRING_DATASOURCE_URL carries sslmode=disable, which is correct here and would
+# be wrong the moment the database moves off-box. See DEPLOYMENT.md §0.
 services:
   bunnycal-api:
     image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
+    # REQUIRED — do not remove.
+    #
+    # Dockerfile sets -XX:MaxRAMPercentage=75, which sizes the heap against
+    # whatever memory the container can see. Unconstrained on this 8 GB box the
+    # JVM would claim ~6 GB and starve Postgres, which shares the host. This cap
+    # keeps the heap near 3 GB and leaves room for Postgres (~1.5 GB), Redis
+    # (256 MB), Caddy and the page cache.
+    mem_limit: 4g
     logging:
       driver: json-file
       options:
@@ -14,10 +25,17 @@ services:
     env_file:
       - path: .env
         required: false
+    # Maps host.docker.internal to the host's gateway address so the container
+    # can reach the host's Postgres. Preferred over network_mode: host, which
+    # would break Caddy's reverse_proxy to bunnycal-api:8080 by service name.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      # Managed Postgres: the full URL (host, db, sslmode) lives in .env. There is
-      # no local postgres service to fall back to, so this must be set explicitly.
+      # Host Postgres over loopback, e.g.
+      #   jdbc:postgresql://host.docker.internal:5432/bunnycal?sslmode=disable
+      # Required with no default: a missing value must fail fast at boot rather
+      # than silently connect somewhere unintended.
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL must be set in .env}
       SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME must be set in .env}
       SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD must be set in .env}
@@ -45,6 +63,11 @@ services:
         max-size: "50m"
         max-file: "3"
     ports:
+      # 80 is REQUIRED, not just a convenience redirect: Caddy solves the ACME
+      # HTTP-01 challenge on it to issue and renew the Let's Encrypt
+      # certificate. With only 443 published, issuance fails on a fresh host and
+      # renewal fails silently ~60 days later.
+      - "80:80"
       - "443:443"
     env_file:
       - path: .env

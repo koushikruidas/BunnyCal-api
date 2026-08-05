@@ -75,12 +75,20 @@ for bin in pg_dump age rclone; do
   command -v "${bin}" >/dev/null 2>&1 || die "required binary not found: ${bin}"
 done
 
-# Fail early on a plaintext connection. This dump crosses the public internet to
-# a managed provider and contains every user's PII, so an unverified TLS session
-# is not acceptable.
+# Reject a plaintext connection to a REMOTE database. This dump contains every
+# user's PII, so an unverified TLS session over a network is not acceptable.
+#
+# A loopback connection is exempt: Postgres now runs on this same host (see
+# DEPLOYMENT.md §0), the traffic never reaches a network interface, and the
+# local server has no certificate for verify-full to check. If the database is
+# ever moved off-box, the host stops matching localhost here and TLS becomes
+# mandatory again automatically.
 case "${BACKUP_DATABASE_URL}" in
+  *@localhost:*|*@localhost/*|*@127.0.0.1:*|*@127.0.0.1/*|*"@[::1]":*)
+    log "NOTE: loopback database connection — TLS not required."
+    ;;
   *sslmode=verify-full*|*sslmode=verify-ca*) ;;
-  *) die "BACKUP_DATABASE_URL must use sslmode=verify-full (or verify-ca)" ;;
+  *) die "BACKUP_DATABASE_URL is remote and must use sslmode=verify-full (or verify-ca)" ;;
 esac
 
 mkdir -p "${BACKUP_LOCAL_DIR}"
