@@ -168,11 +168,28 @@ Finally, from the second terminal, confirm `bunnycal` still connects **and** tha
 > iptables rules via the `DOCKER-USER` chain and bypasses `ufw` entirely.
 >
 > Confirm the firewall is **attached to the server**, not merely created — an
-> unattached firewall looks configured in the console but filters nothing:
+> unattached firewall looks configured in the console but filters nothing.
+>
+> Run this **from your laptop, not the server** — the point is to see what the
+> outside world can reach:
 >
 > ```bash
-> nmap -Pn <server-ip>    # from your laptop: only 22/80/443 may respond
+> nc -zv -w5 <server-ip> 22      # succeeds
+> nc -zv -w5 <server-ip> 5432    # MUST time out
+> nc -zv -w5 <server-ip> 6379    # MUST time out
 > ```
+>
+> A **timeout** is the correct result and is better than "connection refused":
+> it means the firewall is dropping packets silently. "Refused" would mean the
+> packet reached the host and merely found nothing listening — which is not the
+> same as being filtered.
+>
+> Nothing listens on 5432/6379 until §4 and §6, so this test only becomes
+> meaningful once Postgres and Redis are actually running. Re-run it in §7.
+>
+> (`nmap -Pn <server-ip>` gives the same answer more thoroughly if you have it.
+> Install it on your laptop, not on the server — a port scanner is not something
+> to leave lying around on a production host.)
 >
 > This does not replace `listen_addresses = 'localhost'` in §4. The firewall
 > protects the network edge; that setting means Postgres never binds a public
@@ -421,9 +438,13 @@ journalctl -u bunnycal-backup -f
 # TLS + health. A valid certificate proves port 80 reached Let's Encrypt.
 curl -sS https://api.bunnycal.io/actuator/health
 
-# Only 22/80/443 open; the database must NOT be reachable.
-nmap -Pn <server-ip>
+# --- FROM YOUR LAPTOP, not the server ---------------------------------------
+# Now that Postgres and Redis are actually running, this test is meaningful:
+# it proves they are unreachable from outside rather than merely not started.
+nc -zv -w5 <server-ip> 5432    # MUST time out
+nc -zv -w5 <server-ip> 6379    # MUST time out
 psql -h <server-ip> -U bunnycal bunnycal      # must fail to connect
+# nmap -Pn <server-ip>         # same check, more thorough, if installed
 
 # Memory: API well under its 6g cap, Postgres ~2.5 GB, several GB page cache.
 docker stats --no-stream
