@@ -4,7 +4,15 @@ Builds the BunnyCal production host from a stock image. Follow top to bottom;
 each step assumes the previous one succeeded.
 
 **Target:** one Hetzner **CX43** (8 vCPU / 16 GB / 160 GB) in **hel1 (Helsinki)**,
-**Ubuntu 24.04 LTS**.
+**Ubuntu 26.04 LTS** (`resolute`).
+
+> Both the Docker and PGDG repositories publish a `resolute` suite, so
+> `$(lsb_release -cs)` works unmodified below. Verified: `pgbackrest` ships as
+> `2.59.0-1.pgdg26.04+1`.
+>
+> ⚠️ **Ubuntu 26.04 defaults to PostgreSQL 18.** This deployment pins **17** —
+> see §4 for why — so never run a bare `apt install postgresql`, which would
+> silently install 18 and leave you with two clusters on different ports.
 
 > Use the plain Ubuntu image, **not** Hetzner's Docker app image. Postgres runs
 > on the host here, so this is not a pure Docker host, and provisioning Docker
@@ -45,7 +53,7 @@ manager as you create them:**
 ## 1. Create the server
 
 Hetzner Cloud console → **CX43**, location **Helsinki (hel1)**, image
-**Ubuntu 24.04**, your SSH key.
+**Ubuntu 26.04**, your SSH key.
 
 > The CX tier is **EU-only**. It is not available in Ashburn or Singapore, where
 > the more expensive CPX/CCX tiers are the alternative. This is the main reason
@@ -141,6 +149,19 @@ docker --version && docker compose version
 
 ## 4. PostgreSQL 17
 
+> **Why 17 and not the 18 that Ubuntu 26.04 defaults to.** The test suite runs
+> against PostgreSQL 16 (`postgres:16-alpine` in Testcontainers). 17 is one
+> major version from what is actually validated; 18 would be two, on an OS only
+> months old, with a schema that leans on GiST `EXCLUDE` constraints over
+> partitioned tables — precisely where planner and locking behaviour shifts
+> between majors. PG18 also reworked I/O internals (async I/O), and pgBackRest
+> has far more production mileage against 17.
+>
+> Nothing in the schema requires either version: the migrations use only
+> `btree_gist`, `pgcrypto`, `EXCLUDE` constraints and partitioning. This is a
+> risk decision, not a capability one. Revisit once the Testcontainers image
+> moves forward.
+
 ```bash
 install -d /usr/share/postgresql-common/pgdg
 curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -151,7 +172,15 @@ https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
   > /etc/apt/sources.list.d/pgdg.list
 
 apt update
+
+# Explicit major version. A bare `apt install postgresql` on 26.04 installs 18.
 apt install -y postgresql-17 postgresql-contrib-17
+
+# Confirm exactly one cluster, running 17 on 5432. If 18 also appears here,
+# remove it now (`apt purge postgresql-18`) rather than after data exists —
+# two clusters means the second silently takes port 5433 and every later
+# command in this runbook targets the wrong one.
+pg_lsclusters
 ```
 
 Apply the tuned config (from the repo — clone it first if you prefer, see §6):

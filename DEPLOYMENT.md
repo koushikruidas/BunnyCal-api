@@ -3,7 +3,7 @@
 ## 0) Topology
 
 A single Hetzner **CX43** (8 vCPU / 16 GB / 160 GB) in **hel1 (Helsinki)**,
-running Ubuntu 24.04 LTS.
+running Ubuntu 26.04 LTS (`resolute`).
 
 ```
 CX43  —  Helsinki (hel1)
@@ -114,7 +114,7 @@ Full step-by-step, from a stock image:
 **[`docs/runbooks/vm-provisioning.md`](docs/runbooks/vm-provisioning.md)**.
 
 Summary:
-- Create a **CX43 in hel1 running Ubuntu 24.04 LTS** — plain Ubuntu, *not* Hetzner's
+- Create a **CX43 in hel1 running Ubuntu 26.04 LTS** — plain Ubuntu, *not* Hetzner's
   Docker app image. Postgres runs on the host here, so the box is not a pure
   Docker host, and provisioning it ourselves keeps the runbook valid from a
   stock image.
