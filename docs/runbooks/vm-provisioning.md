@@ -101,6 +101,16 @@ mkdir -p /home/bunnycal/.ssh
 cp /root/.ssh/authorized_keys /home/bunnycal/.ssh/
 chown -R bunnycal:bunnycal /home/bunnycal/.ssh
 chmod 700 /home/bunnycal/.ssh && chmod 600 /home/bunnycal/.ssh/authorized_keys
+
+# ⚠️ REQUIRED before the SSH hardening below. Without sudo rights here,
+# disabling root login leaves NO way to escalate on this box and the only
+# way back in is Hetzner's rescue console.
+usermod -aG sudo bunnycal
+
+# `--disabled-password` above means there is no password for sudo to check.
+# Set one now: SSH stays key-only (PasswordAuthentication no blocks password
+# LOGINS regardless), this only gives sudo a second factor if the key leaks.
+passwd bunnycal
 ```
 
 Swapfile — OOM insurance for a box running a JVM and a database together:
@@ -115,17 +125,42 @@ sysctl -w vm.swappiness=10
 echo 'vm.swappiness=10' >> /etc/sysctl.d/99-bunnycal.conf
 ```
 
-Harden SSH — confirm your key works in a **second terminal** before closing this
-one:
+### Harden SSH — the one step that can lock you out
+
+**Keep the root session open** throughout. In a **second terminal**, prove the
+replacement access path fully works first:
+
+```bash
+ssh bunnycal@<server-ip>
+groups                # must include: sudo
+sudo whoami           # must print: root
+```
+
+`sudo whoami` returning `root` is the gate — it proves you can still administer
+the box once root login is gone. A fresh login is required after `usermod`,
+since group membership is only evaluated at login. **Do not continue until both
+succeed.**
+
+Then, back in the root session:
 
 ```bash
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+# Validate BEFORE restarting. A syntax error plus a restart means sshd does not
+# come back, and the open session is the only thing that can still fix it.
+sshd -t
+
 systemctl restart ssh
+# Ubuntu 26.04 may use socket activation; if the change seems not to apply:
+systemctl restart ssh.socket
 
 systemctl enable --now fail2ban
 dpkg-reconfigure -plow unattended-upgrades
 ```
+
+Finally, from the second terminal, confirm `bunnycal` still connects **and** that
+`ssh root@<server-ip>` is now refused. Only then close the root session.
 
 > **The Hetzner cloud firewall is the authority — `ufw` is deliberately not
 > installed.** It would duplicate rules already enforced at the network edge,
