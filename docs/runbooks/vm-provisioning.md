@@ -87,7 +87,11 @@ apt install -y software-properties-common
 add-apt-repository -y universe
 
 apt update && apt upgrade -y
-apt install -y ca-certificates curl gnupg lsb-release ufw fail2ban unattended-upgrades
+
+# ca-certificates/curl/gnupg/lsb-release are prerequisites for the Docker and
+# PGDG repositories added in §3 and §4 — TLS verification, key fetching, and
+# the `lsb_release -cs` codename those repo URLs interpolate.
+apt install -y ca-certificates curl gnupg lsb-release fail2ban unattended-upgrades
 
 timedatectl set-timezone UTC
 
@@ -123,9 +127,22 @@ systemctl enable --now fail2ban
 dpkg-reconfigure -plow unattended-upgrades
 ```
 
-> `ufw` is installed but the **Hetzner cloud firewall is the authority**. Docker
-> writes its own iptables rules via the `DOCKER-USER` chain and bypasses `ufw`,
-> so a published container port is reachable even when `ufw` says otherwise.
+> **The Hetzner cloud firewall is the authority — `ufw` is deliberately not
+> installed.** It would duplicate rules already enforced at the network edge,
+> and it cannot police Docker's published ports anyway: Docker writes its own
+> iptables rules via the `DOCKER-USER` chain and bypasses `ufw` entirely.
+>
+> Confirm the firewall is **attached to the server**, not merely created — an
+> unattached firewall looks configured in the console but filters nothing:
+>
+> ```bash
+> nmap -Pn <server-ip>    # from your laptop: only 22/80/443 may respond
+> ```
+>
+> This does not replace `listen_addresses = 'localhost'` in §4. The firewall
+> protects the network edge; that setting means Postgres never binds a public
+> interface at all, so the database stays closed by construction even if the
+> firewall is later misconfigured.
 
 ---
 
