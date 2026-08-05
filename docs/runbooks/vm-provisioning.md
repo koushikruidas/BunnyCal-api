@@ -335,7 +335,29 @@ sudo systemctl restart postgresql
 Postgres will **fail to start** until pgBackRest exists, because `archive_command`
 references it. That is expected — continue to §5 and restart after.
 
-Create the role, database, and extensions:
+### Generate the password — use hex, not base64
+
+```bash
+openssl rand -hex 32     # SAVE TO THE PASSWORD MANAGER BEFORE USING IT
+```
+
+**Use `-hex`, not `-base64`.** This password gets embedded in a libpq URI
+(`BACKUP_DATABASE_URL=postgresql://bunnycal:PASSWORD@127.0.0.1:...`), and the
+base64 alphabet includes `/` and `+`, which are URI delimiters. An unencoded `/`
+is read as the start of the database name and the connection fails.
+
+Percent-encoding works (`/`→`%2F`, `+`→`%2B`, `@`→`%40`, `:`→`%3A`), but the
+password is retyped into `.env`, the GitHub `PRODUCTION_ENV_FILE` secret, and
+possibly a restore at 3am — every one a chance to get the encoding wrong, and
+the failure mode is a nightly backup that silently stops working.
+
+`-hex 32` is 64 characters and 256 bits of entropy — *stronger* than the base64
+form, and URL-safe everywhere.
+
+(`repo1-cipher-pass` in §5 lives in an INI file rather than a URI, so base64 is
+fine there.)
+
+### Create the role, database, and extensions
 
 ```bash
 sudo -u postgres psql <<'SQL'
@@ -351,8 +373,33 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 SQL
 ```
 
-Generate the password with `openssl rand -base64 32` and **save it to the
-password manager now**.
+Verify — this exercises the `pg_hba.conf` TCP rules, not just the peer socket:
+
+```bash
+sudo -u postgres psql -d bunnycal -c '\dx'   # btree_gist, pgcrypto, plpgsql
+
+# Single-quoted, no URI, so special characters cannot be misparsed.
+PGPASSWORD='<password>' psql -h 127.0.0.1 -U bunnycal -d bunnycal \
+  -c 'SELECT current_user, current_database();'
+```
+
+### Rotating this password later
+
+```bash
+sudo -u postgres psql -c "ALTER ROLE bunnycal WITH PASSWORD 'new_password';"
+```
+
+Then update **all three** places, or the app and the backup drift apart:
+
+1. `SPRING_DATASOURCE_PASSWORD` in `/opt/bunnycal/.env`
+2. the password embedded inside `BACKUP_DATABASE_URL` in the same file
+3. the GitHub `PRODUCTION_ENV_FILE` secret — **authoritative**, since the deploy
+   workflow overwrites the VM's `.env` from it on every run
+
+Then `docker compose up -d bunnycal-api` to pick it up, and run
+`sudo systemctl start bunnycal-backup.service` once by hand to confirm the dump
+still authenticates. Missing (2) is the classic failure: the app works, and the
+nightly backup breaks silently at 03:00.
 
 ---
 
