@@ -13,6 +13,7 @@ import io.bunnycal.availability.service.EventAvailabilityWindowService;
 import io.bunnycal.availability.service.SlotService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.testsupport.TestDates;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -39,7 +40,12 @@ class EventAvailabilityFilterIT extends AbstractSessionIT {
     @Autowired private SlotService slotService;
     @Autowired private EventAvailabilityWindowService availabilityWindowService;
 
-    private static final LocalDate WEDNESDAY = LocalDate.of(2026, 8, 5);  // Wednesday
+    /**
+     * A Wednesday that is always in the future. Availability only generates
+     * slots for future dates, so a pinned calendar date makes every assertion
+     * here fail once that day passes — see {@link TestDates}.
+     */
+    private static final LocalDate WEDNESDAY = TestDates.nextWeekday(DayOfWeek.WEDNESDAY);
 
     private Instant slotAt(int hour, int minute) {
         return WEDNESDAY.atTime(hour, minute).toInstant(ZoneOffset.UTC);
