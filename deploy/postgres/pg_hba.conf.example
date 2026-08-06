@@ -19,14 +19,22 @@
 local   all             postgres                                peer
 
 # --- Application -----------------------------------------------------------
-# The API connects over loopback TCP from its container via host.docker.internal.
+# The API connects over TCP from its container via host.docker.internal.
 # scram-sha-256, never md5 — md5 is cryptographically broken and PG14+ defaults
 # to scram anyway.
 #
-# Docker's default bridge hands containers addresses in 172.16.0.0/12, so the
-# connection arrives from that range rather than from 127.0.0.1.
+# The connection arrives from the container's own address on the compose
+# network (172.30.0.x), NOT from 127.0.0.1, so the second rule is what actually
+# admits the application.
+#
+# Scoped to the pinned subnet in docker-compose.yaml rather than to Docker's
+# whole 172.16.0.0/12 default range: with the subnet fixed, there is no reason
+# to accept authentication attempts from 1M addresses when 254 will do.
+#
+# ⚠️  Coupled to that subnet — change it here, in docker-compose.yaml, and in
+# listen_addresses (postgresql.conf.tuned) together, or the app cannot connect.
 host    bunnycal        bunnycal        127.0.0.1/32            scram-sha-256
-host    bunnycal        bunnycal        172.16.0.0/12           scram-sha-256
+host    bunnycal        bunnycal        172.30.0.0/24           scram-sha-256
 
 # --- Local tooling ---------------------------------------------------------
 # psql over loopback for maintenance and the PITR drill.

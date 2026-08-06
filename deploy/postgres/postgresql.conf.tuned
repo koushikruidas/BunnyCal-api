@@ -16,10 +16,26 @@
 # ---------------------------------------------------------------------------
 
 # --- Connections -----------------------------------------------------------
-# Loopback only. The API reaches Postgres over the host's local interface; the
-# database is never exposed off-box. This is enforced by construction here, not
-# merely by a firewall rule.
-listen_addresses = 'localhost'
+# Loopback plus the Docker bridge gateway — nothing else.
+#
+# 'localhost' alone is NOT enough. The API runs in a container and reaches the
+# host via host.docker.internal, which resolves to the compose network's
+# gateway (172.30.0.1), not 127.0.0.1. Bound to loopback only, Postgres refuses
+# that connection at the TCP layer — before pg_hba.conf is ever consulted — so
+# the app fails with "Connection refused" and the hba rules look innocent.
+#
+# 172.30.0.1 is the gateway of the PINNED subnet in docker-compose.yaml. It is
+# a host-private address on the bridge, reachable only from containers on this
+# machine; it is not routable from outside and does not depend on the Hetzner
+# firewall for that property.
+#
+# Deliberately NOT '*': the two interfaces that need Postgres are known, so
+# binding them explicitly keeps this correct on its own terms rather than
+# relying on the cloud firewall and pg_hba.conf to compensate for a wide bind.
+#
+# ⚠️  This address is coupled to the compose network's subnet. Change one and
+# you must change the other, along with the host rule in pg_hba.conf.
+listen_addresses = '127.0.0.1,172.30.0.1'
 port = 5432
 
 # HikariCP takes up to 30 (SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE). The rest

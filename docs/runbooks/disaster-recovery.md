@@ -248,7 +248,7 @@ Only if the database now lives somewhere else:
 # Update PRODUCTION_ENV_FILE (GitHub `production` environment secret):
 
 # Same host (promoted in place) — unchanged, loopback, no TLS:
-SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/bunnycal?sslmode=disable
+SPRING_DATASOURCE_URL=jdbc:postgresql://172.30.0.1:5432/bunnycal?sslmode=disable
 
 # Moved OFF this host — TLS becomes mandatory again:
 SPRING_DATASOURCE_URL=jdbc:postgresql://<new-host>:5432/bunnycal?sslmode=verify-full

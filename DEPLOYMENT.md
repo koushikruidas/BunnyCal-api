@@ -32,10 +32,24 @@ the host keeps pgBackRest's filesystem access to the data directory
 straightforward and keeps the restore path simple. We own backups, PITR, and
 patching — see §9.
 
-The app reaches it over loopback via `host.docker.internal` (mapped by the
-`extra_hosts` entry in `docker-compose.yaml`). `SPRING_DATASOURCE_URL` carries
-**`sslmode=disable`**, which is correct here: the connection never leaves the
-machine, and the local server has no certificate for `verify-full` to check.
+The app reaches it at **`172.30.0.1`** — the gateway of the pinned `bunnycal`
+network in `docker-compose.yaml`, which is the host's own address on that
+bridge. `SPRING_DATASOURCE_URL` carries **`sslmode=disable`**, which is correct
+here: the connection never leaves the machine, and the local server has no
+certificate for `verify-full` to check.
+
+Not `host.docker.internal`. With `extra_hosts: host-gateway` that name resolves
+to the **default** bridge gateway (`172.17.0.1`) whatever network the container
+is attached to — so on this stack it points at an interface Postgres does not
+listen on, and connections are refused at the TCP layer before authentication.
+
+Three settings are coupled and must change together:
+
+| Setting | Location |
+|---|---|
+| `subnet: 172.30.0.0/24` | `docker-compose.yaml` |
+| `listen_addresses = '127.0.0.1,172.30.0.1'` | `/etc/postgresql/17/main/conf.d/10-bunnycal.conf` |
+| `host bunnycal bunnycal 172.30.0.0/24` | `/etc/postgresql/17/main/pg_hba.conf` |
 
 > ⚠️ If the database ever moves off this host, `sslmode` must go back to
 > `verify-full` in the same change. Do **not** "restore" `verify-full` while the

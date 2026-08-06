@@ -2,10 +2,18 @@
 # installed from the PGDG apt repo, so that pgBackRest has straightforward
 # filesystem access to the data directory and the restore path stays simple.
 #
-# The app reaches it over loopback via host.docker.internal (see extra_hosts
-# below). That connection never leaves the machine, so it does NOT use TLS —
-# SPRING_DATASOURCE_URL carries sslmode=disable, which is correct here and would
-# be wrong the moment the database moves off-box. See DEPLOYMENT.md §0.
+# The app reaches it at 172.30.0.1 — the gateway of the pinned bunnycal network
+# below, which is the host's own address on that bridge. That connection never
+# leaves the machine, so it does NOT use TLS: SPRING_DATASOURCE_URL carries
+# sslmode=disable, correct here and wrong the moment the DB moves off-box.
+# See DEPLOYMENT.md §0.
+#
+# NOT host.docker.internal. That name (via extra_hosts: host-gateway) resolves
+# to the DEFAULT bridge gateway — 172.17.0.1 — regardless of which network the
+# container is actually attached to. On this stack the container sits on
+# 172.30.0.x, so the name points at an interface Postgres does not listen on and
+# every connection is refused at the TCP layer. The gateway is pinned and
+# therefore stable, so addressing it directly is both simpler and honest.
 services:
   bunnycal-api:
     image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
@@ -36,15 +44,10 @@ services:
     env_file:
       - path: .env
         required: false
-    # Maps host.docker.internal to the host's gateway address so the container
-    # can reach the host's Postgres. Preferred over network_mode: host, which
-    # would break Caddy's reverse_proxy to bunnycal-api:8080 by service name.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      # Host Postgres over loopback, e.g.
-      #   jdbc:postgresql://host.docker.internal:5432/bunnycal?sslmode=disable
+      # Host Postgres via the pinned bridge gateway, e.g.
+      #   jdbc:postgresql://172.30.0.1:5432/bunnycal?sslmode=disable
       # Required with no default: a missing value must fail fast at boot rather
       # than silently connect somewhere unintended.
       SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL must be set in .env}
@@ -129,7 +132,26 @@ services:
       - bunnycal
 
 networks:
+  # Subnet is PINNED, not left to Docker's dynamic allocation.
+  #
+  # Postgres runs on the host and binds listen_addresses to this gateway
+  # (172.30.0.1) and the API connects to that address directly. With a
+  # dynamic subnet, `docker compose down` followed by `docker network prune`
+  # can bring the network back on a different range — the gateway address
+  # changes, Postgres is no longer listening on it, and every connection is
+  # refused at the TCP layer with nothing in the app logs explaining why.
+  #
+  # Changing this subnet REQUIRES a matching update in two places on the host:
+  #   listen_addresses  in /etc/postgresql/17/main/conf.d/10-bunnycal.conf
+  #   the host rule     in /etc/postgresql/17/main/pg_hba.conf
+  # See deploy/postgres/ for both templates.
+  #
+  # /24 = 254 usable addresses; this stack uses three.
   bunnycal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   caddy_data:

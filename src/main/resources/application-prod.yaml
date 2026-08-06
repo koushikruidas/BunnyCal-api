@@ -11,15 +11,21 @@ spring:
   # of silently booting with a known-weak default.
   #
   # Networking: Redis is a Compose service reached by name (`redis`). Postgres
-  # runs on the Docker HOST and is reached via host.docker.internal. All runtime
-  # values come from the .env file consumed by docker-compose.yaml.
+  # runs on the Docker HOST and is reached at the pinned bridge gateway
+  # (172.30.0.1). All runtime values come from the .env file consumed by
+  # docker-compose.yaml.
   # ---------------------------------------------------------------------------
 
   datasource:
     # Self-hosted Postgres running on the DOCKER HOST (installed from PGDG, not
-    # a container), reached over loopback via host.docker.internal. Required with
-    # no defaults: a missing value must fail fast at boot rather than hang
+    # a container), reached at 172.30.0.1 — the gateway of the pinned compose
+    # network, which is the host's address on that bridge. Required with no
+    # defaults: a missing value must fail fast at boot rather than hang
     # resolving a hostname that does not exist.
+    #
+    # NOT host.docker.internal: that name resolves to the DEFAULT bridge gateway
+    # (172.17.0.1) regardless of the container's actual network, which is not an
+    # interface Postgres listens on here.
     #
     # sslmode: this connection never leaves the machine, so sslmode=disable is
     # correct and TLS would only add handshake cost with nothing to protect
@@ -258,6 +264,11 @@ app:
       admin-allowed-origins: ${APP_SECURITY_CORS_ADMIN_ALLOWED_ORIGINS:https://admin.bunnycal.io}
   docs:
     # API docs stay private in production unless explicitly enabled.
+    #
+    # NOTE: this is BunnyCal's own flag. It does NOT disable SpringDoc itself —
+    # see the springdoc block at the end of this file, which must be set
+    # separately. Verified on the live host: with only this flag false,
+    # /v3/api-docs still returned 200 publicly.
     public-enabled: ${APP_DOCS_PUBLIC_ENABLED:false}
   embed:
     token-secret: ${APP_EMBED_TOKEN_SECRET}
@@ -394,3 +405,23 @@ server:
     include-message: never
     include-binding-errors: never
     include-stacktrace: never
+
+# ---------------------------------------------------------------------------
+# SpringDoc / OpenAPI — OFF in production.
+#
+# SpringDoc defaults BOTH of these to true, and app.docs.public-enabled above
+# does not affect them: they are separate switches in a separate namespace.
+# Confirmed on the live host — with app.docs.public-enabled=false,
+# /v3/api-docs returned 200 and /swagger-ui.html returned 302 to anonymous
+# callers on the public domain.
+#
+# A published schema lists every endpoint, parameter and DTO, which is free
+# reconnaissance for anyone probing the API. Defaulted false here rather than
+# set in .env so it holds for every prod deploy even if an env file is
+# incomplete; override per-environment only where docs are genuinely wanted.
+# ---------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    enabled: ${SPRINGDOC_API_DOCS_ENABLED:false}
+  swagger-ui:
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}

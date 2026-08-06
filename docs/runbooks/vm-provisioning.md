@@ -489,7 +489,7 @@ ls -l .env    # must show bunnycal bunnycal, not root root
 Fill `.env`. The values that differ from the old managed-Postgres setup:
 
 ```bash
-SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/bunnycal?sslmode=disable
+SPRING_DATASOURCE_URL=jdbc:postgresql://172.30.0.1:5432/bunnycal?sslmode=disable
 SPRING_DATASOURCE_USERNAME=bunnycal
 SPRING_DATASOURCE_PASSWORD=<the password from §4>
 
