@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------------------
+# pgBackRest configuration for the BunnyCal production database.
+#
+# Install to /etc/pgbackrest/pgbackrest.conf, owned by postgres:postgres, mode
+# 0640. It holds the repository encryption passphrase and the object storage
+# credentials, so it must not be world-readable and must never be committed.
+#
+# This is the LOW-RPO layer: physical base backups plus continuously archived
+# WAL, giving point-in-time recovery to roughly the last five minutes. The
+# nightly pg_dump (scripts/backup/pg-dump-nightly.sh) is a separate, PORTABLE
+# layer that covers different failures — see DEPLOYMENT.md §9.
+#
+# A logical pg_dump CANNOT serve as the base for WAL replay: WAL records
+# reference physical block addresses inside data files, so replay requires a
+# physical base backup. That is what pgBackRest takes here.
+#
+# Verify after any change:  sudo -u postgres pgbackrest --stanza=bunnycal check
+# ---------------------------------------------------------------------------
+
+[global]
+# --- Repository: AWS S3, eu-north-1 (Stockholm) ----------------------------
+# Deliberately at a DIFFERENT vendor than the VM (Hetzner). Backups tied to the
+# same account do not survive a billing lockout, a compromised credential, or an
+# account suspension — which is precisely when you need them most.
+#
+# eu-north-1 is chosen for two reasons:
+#   1. GDPR — the VM is in Helsinki and the repository holds every user's PII
+#      and their encrypted OAuth tokens. Keeping backups in the EU avoids an
+#      international personal-data transfer that would need a lawful basis.
+#   2. Latency — Stockholm is the closest AWS region to hel1, so backup and
+#      restore both run at near-LAN speed.
+#
+# Use a dedicated IAM user scoped to THIS BUCKET ONLY. Do not reuse the
+# frontend deploy credentials: that key can write to the site buckets, and a
+# backup host should not be able to deface the website.
+repo1-type=s3
+repo1-s3-bucket=REPLACE_ME
+repo1-s3-endpoint=s3.eu-north-1.amazonaws.com
+repo1-s3-region=eu-north-1
+repo1-s3-key=REPLACE_ME
+repo1-s3-key-secret=REPLACE_ME
+repo1-path=/pgbackrest
+
+# --- Repository encryption -------------------------------------------------
+# The repository contains every user's PII and their encrypted OAuth tokens.
+#
+# ⚠️  This passphrase CANNOT be changed or recovered after stanza-create. Losing
+# it makes every backup in this repository permanently unreadable. Store it in
+# a password manager AND on paper, alongside CALENDAR_TOKEN_ENCRYPTION_KEY_BASE64
+# (see docs/runbooks/disaster-recovery.md §1).
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass=REPLACE_ME
+
+# --- Retention -------------------------------------------------------------
+# Four weekly fulls ≈ a one-month PITR window. Expiring a full also expires the
+# WAL that only it needed, so the archive does not grow without bound.
+repo1-retention-full=4
+repo1-retention-diff=7
+
+# --- Archiving -------------------------------------------------------------
+# archive-async decouples WAL upload from transaction commit. Without it, a slow
+# or briefly unreachable S3 endpoint applies back-pressure directly onto commits
+# and the application stalls.
+archive-async=y
+spool-path=/var/spool/pgbackrest
+
+# start-fast issues an immediate checkpoint instead of waiting for the next
+# scheduled one, so a backup starts promptly rather than idling for minutes.
+start-fast=y
+
+# Half the box's 8 vCPU. Backups run at 02:00, but the API's schedulers never
+# stop entirely, so leaving headroom keeps a backup from competing with request
+# handling. Raising this trades backup wall-time for CPU the API may want.
+process-max=4
+
+# Verify checksums on backup. Catches silent disk corruption at backup time
+# rather than during a restore, when it is too late to do anything about it.
+repo1-bundle=y
+checksum-page=y
+
+# --- Logging ---------------------------------------------------------------
+log-level-console=info
+log-level-file=detail
+log-path=/var/log/pgbackrest
+
+[bunnycal]
+# Must match the running cluster's data directory. Confirm with:
+#   sudo -u postgres psql -Atc 'SHOW data_directory'
+pg1-path=/var/lib/postgresql/17/main
+pg1-port=5432

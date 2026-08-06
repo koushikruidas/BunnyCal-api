@@ -1,0 +1,28 @@
+# Schedule for pgbackrest-full.service — weekly, Sunday 02:00 UTC.
+#
+#   systemctl list-timers 'pgbackrest-*'
+#   journalctl -u pgbackrest-full --since '2 weeks ago'
+#
+[Unit]
+Description=Run the BunnyCal full physical backup weekly
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+
+[Timer]
+# Sunday 02:00 UTC. Ahead of the 03:00 logical dump so the two never contend
+# for CPU or for the database's I/O.
+OnCalendar=Sun *-*-* 02:00:00
+
+# Jitter so the backup does not start at the same second every week, avoiding
+# alignment with provider maintenance and other scheduled work.
+RandomizedDelaySec=600
+
+# If the VM was down or rebooting at 02:00, run as soon as it returns rather
+# than silently skipping the week. This is the main reason to prefer a timer
+# over cron: cron would simply not fire, and the miss would stay invisible
+# until the dead-man's-switch complained.
+Persistent=true
+
+Unit=pgbackrest-full.service
+
+[Install]
+WantedBy=timers.target

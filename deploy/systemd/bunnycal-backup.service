@@ -1,0 +1,58 @@
+# Nightly logical backup of the managed Postgres database.
+#
+# Install on the app VM (backups pull from managed Postgres over the network,
+# so this does not need to run anywhere special):
+#
+#   sudo cp deploy/systemd/bunnycal-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bunnycal-backup.timer
+#
+# Run it by hand (the first run should always be manual):
+#   sudo systemctl start bunnycal-backup.service
+#   journalctl -u bunnycal-backup -f
+#
+[Unit]
+Description=BunnyCal nightly Postgres logical backup
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+# Backups pull from a managed provider over the internet, so wait for real
+# connectivity rather than merely for the network device to exist.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Reads BACKUP_* settings. Same file the app stack uses, so there is one
+# source of truth for configuration on the VM.
+EnvironmentFile=/opt/bunnycal/.env
+
+ExecStart=/opt/bunnycal/scripts/backup/pg-dump-nightly.sh
+
+# The script is intentionally not idempotent-safe against concurrent runs
+# (it writes a dated file), and a backup that takes over an hour means
+# something is wrong. Fail loudly instead of piling up runs.
+TimeoutStartSec=3600
+
+# Do not retry automatically. A failed backup should surface via the
+# dead-man's-switch and be looked at, not silently retried into a green state.
+Restart=no
+
+# --- Hardening -------------------------------------------------------------
+# This unit reads database credentials and the age public key, and writes
+# dumps containing every user's PII. Keep its blast radius small.
+User=bunnycal
+Group=bunnycal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Only the backup staging directory is writable.
+ReadWritePaths=/var/backups/bunnycal
+
+[Install]
+WantedBy=multi-user.target

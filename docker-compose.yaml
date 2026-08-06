@@ -1,90 +1,158 @@
-services:
-#  bunnycal-api:
-#    image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
-#    logging:
-#      driver: json-file
-#      options:
-#        max-size: "100m"
-#        max-file: "5"
-#    env_file:
-#      - path: .env
-#        required: false
-#    environment:
-#      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-#      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
-#      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
-#      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-#      SPRING_DATA_REDIS_HOST: redis
-#      SPRING_DATA_REDIS_PORT: 6379
-#      APP_EMBED_TOKEN_SECRET: ${APP_EMBED_TOKEN_SECRET}
-#      LOG_DIR: /app/logs
-#    volumes:
-#      - ./logs:/app/logs
-#    restart: unless-stopped
-#    depends_on:
-#      postgres:
-#        condition: service_healthy
-#      redis:
-#        condition: service_started
-#    networks:
-#      - bunnycal
+# Production stack. Postgres is NOT here either: it runs directly on the HOST,
+# installed from the PGDG apt repo, so that pgBackRest has straightforward
+# filesystem access to the data directory and the restore path stays simple.
 #
-#  caddy:
-#    image: caddy:2.8-alpine
-#    restart: unless-stopped
-#    stop_grace_period: 30s
-#    logging:
-#      driver: json-file
-#      options:
-#        max-size: "50m"
-#        max-file: "3"
-#    ports:
-#      - "443:443"
-#    env_file:
-#      - path: .env
-#        required: false
-#    environment:
-#      APP_DOMAIN: ${APP_DOMAIN}
-#    volumes:
-#      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-#      - caddy_data:/data
-#      - caddy_config:/config
-#    depends_on:
-#      - bunnycal-api
-#    networks:
-#      - bunnycal
-
-  postgres:
-    image: postgres:16-alpine
+# The app reaches it at 172.30.0.1 — the gateway of the pinned bunnycal network
+# below, which is the host's own address on that bridge. That connection never
+# leaves the machine, so it does NOT use TLS: SPRING_DATASOURCE_URL carries
+# sslmode=disable, correct here and wrong the moment the DB moves off-box.
+# See DEPLOYMENT.md §0.
+#
+# NOT host.docker.internal. That name (via extra_hosts: host-gateway) resolves
+# to the DEFAULT bridge gateway — 172.17.0.1 — regardless of which network the
+# container is actually attached to. On this stack the container sits on
+# 172.30.0.x, so the name points at an interface Postgres does not listen on and
+# every connection is refused at the TCP layer. The gateway is pinned and
+# therefore stable, so addressing it directly is both simpler and honest.
+services:
+  bunnycal-api:
+    image: ${BUNNYCAL_IMAGE:?BUNNYCAL_IMAGE must be set in .env}
+    # REQUIRED — do not remove.
+    #
+    # Dockerfile sets -XX:MaxRAMPercentage=75, which sizes the heap against
+    # whatever memory the container can see. Unconstrained on this 16 GB box the
+    # JVM would claim ~12 GB and starve Postgres, which shares the host.
+    #
+    # 6g caps the heap near 4.5 GB — roughly 50% above the ~3 GB this workload
+    # actually uses. That margin is deliberate and not slack:
+    #
+    #   - Flyway applies 143 migrations on first boot against an empty database,
+    #     the highest-memory moment in the app's life, and it happens before
+    #     there is any traffic to observe it under.
+    #   - G1 collects less efficiently as the heap approaches its ceiling, so a
+    #     tight cap costs GC time long before it costs an OOM.
+    #
+    # Sized against the application's observed behaviour rather than against the
+    # machine: the leftover memory is worth more to the OS page cache, which
+    # Postgres depends on, than to a heap that will never reach it.
+    mem_limit: 6g
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      # Host Postgres via the pinned bridge gateway, e.g.
+      #   jdbc:postgresql://172.30.0.1:5432/bunnycal?sslmode=disable
+      # Required with no default: a missing value must fail fast at boot rather
+      # than silently connect somewhere unintended.
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL must be set in .env}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME must be set in .env}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD must be set in .env}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      APP_EMBED_TOKEN_SECRET: ${APP_EMBED_TOKEN_SECRET}
+      LOG_DIR: /app/logs
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - ./logs:/app/logs
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - bunnycal
 
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    ports:
+      # 80 is REQUIRED, not just a convenience redirect: Caddy solves the ACME
+      # HTTP-01 challenge on it to issue and renew the Let's Encrypt
+      # certificate. With only 443 published, issuance fails on a fresh host and
+      # renewal fails silently ~60 days later.
+      - "80:80"
+      - "443:443"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - bunnycal-api
+    networks:
+      - bunnycal
+
+  # Pure cache. Nothing here is a source of truth: slot cache (60s TTL), slot
+  # version counters (self-heal to 1) and OAuth access tokens (TTL = expiry - 5m).
+  # Every call site fails open to Postgres, so persistence would only buy us a
+  # warm cache after a restart — not worth the disk I/O or the backup surface.
+  #
+  # No published ports: reachable only from bunnycal-api on the compose network.
   redis:
     image: redis:7-alpine
+    # Redis is quiet, but an uncapped log is still an uncapped log — and a full
+    # disk stops WAL archiving, which makes Postgres refuse writes. Small limits
+    # because there is nothing here worth keeping much history of.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     networks:
       - bunnycal
 
 networks:
+  # Subnet is PINNED, not left to Docker's dynamic allocation.
+  #
+  # Postgres runs on the host and binds listen_addresses to this gateway
+  # (172.30.0.1) and the API connects to that address directly. With a
+  # dynamic subnet, `docker compose down` followed by `docker network prune`
+  # can bring the network back on a different range — the gateway address
+  # changes, Postgres is no longer listening on it, and every connection is
+  # refused at the TCP layer with nothing in the app logs explaining why.
+  #
+  # Changing this subnet REQUIRES a matching update in two places on the host:
+  #   listen_addresses  in /etc/postgresql/17/main/conf.d/10-bunnycal.conf
+  #   the host rule     in /etc/postgresql/17/main/pg_hba.conf
+  # See deploy/postgres/ for both templates.
+  #
+  # /24 = 254 usable addresses; this stack uses three.
   bunnycal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
-  postgres_data:
-#  caddy_data:
-#  caddy_config:
+  caddy_data:
+  caddy_config:

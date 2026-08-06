@@ -1,0 +1,18 @@
+# Schedule for pgbackrest-diff.service — Monday through Saturday, 02:00 UTC.
+#
+# Sunday is deliberately excluded: the weekly full runs then, and a differential
+# taken minutes after a full would be nearly empty and pointless.
+#
+[Unit]
+Description=Run the BunnyCal differential physical backup daily
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 02:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+Unit=pgbackrest-diff.service
+
+[Install]
+WantedBy=timers.target

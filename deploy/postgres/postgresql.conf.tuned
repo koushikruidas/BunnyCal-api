@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# BunnyCal production PostgreSQL 17 tuning — single CX43 (8 vCPU / 16 GB).
+#
+# Append to /etc/postgresql/17/main/conf.d/ as `10-bunnycal.conf` rather than
+# editing postgresql.conf directly. Settings in conf.d/ override the defaults
+# and survive a package upgrade rewriting the main file.
+#
+#   sudo cp deploy/postgres/postgresql.conf.tuned \
+#           /etc/postgresql/17/main/conf.d/10-bunnycal.conf
+#   sudo systemctl restart postgresql
+#
+# Postgres shares this box with the JVM (mem_limit 6g), Redis (256 MB cap) and
+# Caddy, leaving ~6.3 GB for the OS page cache. The memory settings below are
+# that budget's Postgres share — raising them takes RAM from the API or, worse,
+# from the page cache Postgres itself depends on. See DEPLOYMENT.md §0.
+# ---------------------------------------------------------------------------
+
+# --- Connections -----------------------------------------------------------
+# Loopback plus the Docker bridge gateway — nothing else.
+#
+# 'localhost' alone is NOT enough. The API runs in a container and reaches the
+# host via host.docker.internal, which resolves to the compose network's
+# gateway (172.30.0.1), not 127.0.0.1. Bound to loopback only, Postgres refuses
+# that connection at the TCP layer — before pg_hba.conf is ever consulted — so
+# the app fails with "Connection refused" and the hba rules look innocent.
+#
+# 172.30.0.1 is the gateway of the PINNED subnet in docker-compose.yaml. It is
+# a host-private address on the bridge, reachable only from containers on this
+# machine; it is not routable from outside and does not depend on the Hetzner
+# firewall for that property.
+#
+# Deliberately NOT '*': the two interfaces that need Postgres are known, so
+# binding them explicitly keeps this correct on its own terms rather than
+# relying on the cloud firewall and pg_hba.conf to compensate for a wide bind.
+#
+# ⚠️  This address is coupled to the compose network's subnet. Change one and
+# you must change the other, along with the host rule in pg_hba.conf.
+listen_addresses = '127.0.0.1,172.30.0.1'
+port = 5432
+
+# HikariCP takes up to 30 (SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE). The rest
+# is headroom for psql, pgBackRest, and the nightly pg_dump. There is exactly one
+# API instance — see DEPLOYMENT.md on why a second replica is not yet safe.
+max_connections = 100
+
+# --- Memory ----------------------------------------------------------------
+# Deliberately BELOW the usual "25% of RAM" starting point, which assumes a
+# DEDICATED database server. This box also runs the JVM, and two things follow:
+#
+#   1. Postgres double-caches. A page in shared_buffers is usually also in the
+#      OS page cache, so 4 GB here would not buy 4 GB of extra coverage — while
+#      the page cache is shared, elastic, and shrinks under pressure instead of
+#      being pinned.
+#   2. Larger shared_buffers means more dirty pages per checkpoint. The bookings
+#      tables churn constantly (holds inserted, expired and confirmed by the
+#      schedulers), so smaller buffers give smoother write behaviour on a host
+#      that is also serving JVM I/O.
+#
+# The working set today is well under 1 GB. Raise this if the dataset grows past
+# a few GB — it needs a RESTART, so it is the expensive one to get wrong.
+shared_buffers = 2GB
+
+# NOT an allocation — a planner hint describing how much cache is plausibly
+# available (shared_buffers + OS page cache). Setting it low does not "free"
+# anything; it only makes the planner underestimate caching and favour
+# sequential scans where an index would win. With ~2 GB pinned above and ~6.5 GB
+# of page cache free, 10 GB is the honest figure. Changing it is a RELOAD.
+effective_cache_size = 10GB
+
+# Per sort/hash node, not per query or per connection — one query with several
+# sorts can use a multiple of this. With shared_buffers reduced to 2GB this is
+# now proportionally the largest lever on Postgres's footprint, so it is the
+# FIRST setting to revisit under memory pressure, not shared_buffers.
+work_mem = 16MB
+
+# VACUUM, CREATE INDEX, ALTER TABLE. Higher makes maintenance markedly faster
+# and is only held during those operations.
+maintenance_work_mem = 512MB
+
+# --- Parallelism -----------------------------------------------------------
+# 8 vCPU. Leaving these at defaults sized for a 2-core box would waste most of
+# the machine on any analytical or reporting query.
+max_worker_processes = 8
+max_parallel_workers = 8
+max_parallel_workers_per_gather = 4
+max_parallel_maintenance_workers = 4
+
+# --- Planner ---------------------------------------------------------------
+# NVMe SSD: random reads cost almost the same as sequential ones. Leaving this
+# at the rotational-disk default of 4.0 pushes the planner toward sequential
+# scans where an index would be faster.
+random_page_cost = 1.1
+effective_io_concurrency = 200
+
+# --- WAL and archiving — REQUIRED FOR POINT-IN-TIME RECOVERY ---------------
+# wal_level=replica emits enough detail for physical replay. Lowering it to
+# 'minimal' silently breaks PITR: backups keep succeeding and recovery fails.
+wal_level = replica
+archive_mode = on
+archive_command = 'pgbackrest --stanza=bunnycal archive-push %p'
+max_wal_size = 2GB
+min_wal_size = 128MB
+
+# ⚠️  THIS SETTING IS THE 5-MINUTE RPO.
+#
+# WAL is archived a segment at a time, and a segment is normally only archived
+# once it fills (16 MB). On a quiet database that can take hours — and WAL that
+# has not been archived cannot be replayed, so the real recovery point silently
+# drifts to "the last time we happened to write 16 MB".
+#
+# archive_timeout forces a segment switch every 300 s regardless of volume,
+# which caps data loss at ~5 minutes. The cost is one mostly-empty 16 MB
+# segment per idle 5 minutes; pgBackRest compresses these to almost nothing.
+archive_timeout = 300
+
+# --- Checkpoints -----------------------------------------------------------
+# Spread checkpoint I/O across the interval instead of spiking at the end,
+# which would show up as latency on booking writes.
+checkpoint_completion_target = 0.9
+checkpoint_timeout = 15min
+
+# --- Logging ---------------------------------------------------------------
+# Log slow queries only. Full statement logging on a box that also runs the JVM
+# is a disk-space risk, and a full disk stops WAL archiving.
+log_min_duration_statement = 500
+log_checkpoints = on
+log_connections = off
+log_disconnections = off
+log_lock_waits = on
+log_temp_files = 0
+log_line_prefix = '%m [%p] %q%u@%d '
+
+# --- Autovacuum ------------------------------------------------------------
+# The booking tables churn: rows are inserted, held, then expired or confirmed
+# by the schedulers. More aggressive thresholds than the defaults keep bloat
+# and index scan costs down on exactly those tables.
+autovacuum = on
+autovacuum_vacuum_scale_factor = 0.05
+autovacuum_analyze_scale_factor = 0.025
+
+# --- Timezone --------------------------------------------------------------
+# UTC everywhere. The application stores TIMESTAMPTZ and does its own zone
+# conversion; a non-UTC server timezone only creates ambiguity in logs.
+timezone = 'UTC'
+log_timezone = 'UTC'

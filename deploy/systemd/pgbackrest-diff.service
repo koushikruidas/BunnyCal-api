@@ -1,0 +1,39 @@
+# Daily DIFFERENTIAL physical backup.
+#
+# A differential copies only the blocks changed since the last FULL. Restoring
+# needs the full plus exactly one differential (not a chain), which keeps
+# recovery simple and fast. See pgbackrest-full.service for the weekly base.
+#
+[Unit]
+Description=BunnyCal daily differential physical backup (pgBackRest)
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Never run alongside the weekly full — pgBackRest would refuse anyway, but
+# failing here keeps the reason legible in the journal.
+Conflicts=pgbackrest-full.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+
+ExecStart=/usr/bin/pgbackrest --stanza=bunnycal --type=diff backup
+
+TimeoutStartSec=1800
+Restart=no
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/postgresql /var/spool/pgbackrest /var/log/pgbackrest
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,55 @@
+# Weekly FULL physical base backup.
+#
+# A full backup copies the entire cluster and becomes the base that subsequent
+# differentials and WAL replay build on. Expiring the oldest full also expires
+# the WAL only it required, which is what keeps the repository bounded.
+#
+# Install (see docs/runbooks/vm-provisioning.md):
+#   sudo cp deploy/systemd/pgbackrest-*.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pgbackrest-full.timer
+#
+# Run by hand — always do this once, and read the output:
+#   sudo systemctl start pgbackrest-full.service
+#   journalctl -u pgbackrest-full -f
+#
+[Unit]
+Description=BunnyCal weekly full physical backup (pgBackRest)
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+# The repository is remote object storage, so wait for real connectivity rather
+# than merely for a network device to appear.
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+
+ExecStart=/usr/bin/pgbackrest --stanza=bunnycal --type=full backup
+
+# A full backup of a small database should take minutes. An hour means
+# something is wrong — fail loudly rather than letting runs pile up.
+TimeoutStartSec=3600
+
+# Do not retry. A failed backup should surface through the dead-man's-switch
+# and be looked at, not silently retried into a green state.
+Restart=no
+
+# --- Hardening -------------------------------------------------------------
+# This unit reads the repository passphrase and the object storage credentials,
+# and handles data containing every user's PII. Keep the blast radius small.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# pgBackRest needs to read the cluster and write its spool and logs.
+ReadWritePaths=/var/lib/postgresql /var/spool/pgbackrest /var/log/pgbackrest
+
+[Install]
+WantedBy=multi-user.target

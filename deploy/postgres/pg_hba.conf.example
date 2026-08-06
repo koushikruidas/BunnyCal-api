@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# BunnyCal pg_hba.conf — client authentication.
+#
+# Install to /etc/postgresql/17/main/pg_hba.conf, then:
+#   sudo systemctl reload postgresql     # reload is enough; no restart needed
+#
+# Order matters: the FIRST matching line wins. Put specific rules above general
+# ones, and never add a `trust` line — not even temporarily "just to get in".
+#
+# Because listen_addresses='localhost', nothing off-box can reach Postgres at
+# all. These rules are the second layer, not the only one.
+# ---------------------------------------------------------------------------
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# --- Local administration --------------------------------------------------
+# Unix socket, peer auth: the OS user must match the database role. This is how
+# `sudo -u postgres psql` works, and how pgBackRest and the nightly dump connect.
+local   all             postgres                                peer
+
+# --- Application -----------------------------------------------------------
+# The API connects over TCP from its container via host.docker.internal.
+# scram-sha-256, never md5 — md5 is cryptographically broken and PG14+ defaults
+# to scram anyway.
+#
+# The connection arrives from the container's own address on the compose
+# network (172.30.0.x), NOT from 127.0.0.1, so the second rule is what actually
+# admits the application.
+#
+# Scoped to the pinned subnet in docker-compose.yaml rather than to Docker's
+# whole 172.16.0.0/12 default range: with the subnet fixed, there is no reason
+# to accept authentication attempts from 1M addresses when 254 will do.
+#
+# ⚠️  Coupled to that subnet — change it here, in docker-compose.yaml, and in
+# listen_addresses (postgresql.conf.tuned) together, or the app cannot connect.
+host    bunnycal        bunnycal        127.0.0.1/32            scram-sha-256
+host    bunnycal        bunnycal        172.30.0.0/24           scram-sha-256
+
+# --- Local tooling ---------------------------------------------------------
+# psql over loopback for maintenance and the PITR drill.
+local   bunnycal        bunnycal                                scram-sha-256
+
+# --- Everything else is denied ---------------------------------------------
+# No line matches any other host, database, or user, so those connections are
+# rejected. Do not add a catch-all below this point.

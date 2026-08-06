@@ -1,0 +1,32 @@
+# Schedule for bunnycal-backup.service.
+#
+# One timer, one service — deliberately. systemd over cron for journalctl
+# history, `systemctl status`, and Persistent=true; a single unit rather than
+# a fleet of timers so there is exactly one thing to check when something
+# looks wrong.
+#
+#   systemctl list-timers bunnycal-backup.timer
+#   journalctl -u bunnycal-backup --since '2 days ago'
+#
+[Unit]
+Description=Run the BunnyCal Postgres backup nightly
+Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
+
+[Timer]
+# 03:00 UTC daily. Low-traffic window for both US and EU.
+OnCalendar=*-*-* 03:00:00
+
+# Jitter so the backup does not start at the exact second every night. Avoids
+# lining up with the provider's own maintenance and with other cron-ish work.
+RandomizedDelaySec=300
+
+# If the VM was down or rebooting at 03:00, run as soon as it is back rather
+# than silently skipping the night. This is the main reason to prefer a timer
+# over cron: cron would simply not fire, and the miss would be invisible until
+# the dead-man's-switch complained.
+Persistent=true
+
+Unit=bunnycal-backup.service
+
+[Install]
+WantedBy=timers.target
