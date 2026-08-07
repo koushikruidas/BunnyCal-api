@@ -1,7 +1,8 @@
-# Nightly logical backup of the managed Postgres database.
+# Nightly logical backup of the Postgres database.
 #
-# Install on the app VM (backups pull from managed Postgres over the network,
-# so this does not need to run anywhere special):
+# Install on the VM that runs Postgres — the dump is taken over loopback
+# (BACKUP_DATABASE_URL points at 127.0.0.1), so this unit belongs on the same
+# host as the database:
 #
 #   sudo cp deploy/systemd/bunnycal-backup.* /etc/systemd/system/
 #   sudo systemctl daemon-reload
@@ -14,8 +15,8 @@
 [Unit]
 Description=BunnyCal nightly Postgres logical backup
 Documentation=file:/opt/bunnycal/docs/runbooks/disaster-recovery.md
-# Backups pull from a managed provider over the internet, so wait for real
-# connectivity rather than merely for the network device to exist.
+# The dump is local, but the upload leg goes to S3 over the internet, so wait
+# for real connectivity rather than merely for the network device to exist.
 After=network-online.target
 Wants=network-online.target
 
@@ -25,6 +26,16 @@ Type=oneshot
 # Reads BACKUP_* settings. Same file the app stack uses, so there is one
 # source of truth for configuration on the VM.
 EnvironmentFile=/opt/bunnycal/.env
+
+# rclone defaults to ~/.config/rclone/rclone.conf, which ProtectHome=true below
+# makes invisible to this unit — the upload would fail with "config file not
+# found" even though it works fine from an interactive shell. Keep the config
+# under /opt/bunnycal so it survives the sandbox and is backed up with the rest
+# of the deployment. Install it with:
+#   mkdir -p /opt/bunnycal/rclone
+#   mv ~/.config/rclone/rclone.conf /opt/bunnycal/rclone/rclone.conf
+#   chmod 600 /opt/bunnycal/rclone/rclone.conf
+Environment=RCLONE_CONFIG=/opt/bunnycal/rclone/rclone.conf
 
 ExecStart=/opt/bunnycal/scripts/backup/pg-dump-nightly.sh
 
