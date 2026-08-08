@@ -26,6 +26,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -176,6 +177,63 @@ class BillingReconciliationServiceTest {
         assertThat(sub.getStatus()).isEqualTo(SubscriptionStatus.ACTIVE);
         verify(invoiceService).recordPaidInvoice(any(), any());
         verify(billingEventPublisher).publishForInvoice(any(), any(), any(), any());
+    }
+
+    /**
+     * A purchase made during a trial reports next_billing_date = trial end, which is not the
+     * period the payment bought. The receipt must state a full plan interval instead, or a
+     * yearly plan shows a ~14-day billing period.
+     */
+    @Test
+    void yearlyPurchaseDuringTrial_recordsAFullYearNotTheTrialEnd() {
+        Subscription sub = incomplete();
+        lockReturns(sub);
+        SubscriptionPlan plan = SubscriptionPlan.builder()
+                .id(PLAN_ID).billingInterval(BillingInterval.YEAR).build();
+        lenient().when(planService.requireById(PLAN_ID)).thenReturn(plan);
+        when(invoiceService.existsByProviderInvoiceId(any())).thenReturn(false);
+        when(invoiceService.recordPaidInvoice(any(), any())).thenReturn(
+                SubscriptionInvoice.builder().id(UUID.randomUUID()).invoiceNumber("BCR-1").build());
+
+        Instant start = Instant.parse("2026-08-08T00:00:00Z");
+        Instant trialEnd = Instant.parse("2026-08-22T00:00:00Z");
+        PaymentSnapshot payment = new PaymentSnapshot(
+                "pay_1", PaymentSnapshot.PaymentStatus.SUCCEEDED, SUB, "cus_1",
+                "inv_1", null, null, 480000, 0, 480000, "USD", start, trialEnd);
+
+        service.applyPaymentSnapshot(payment, T1, ReconciliationSource.REDIRECT);
+
+        ArgumentCaptor<InvoiceService.PaidInvoiceInput> input =
+                ArgumentCaptor.forClass(InvoiceService.PaidInvoiceInput.class);
+        verify(invoiceService).recordPaidInvoice(any(), input.capture());
+        assertThat(input.getValue().periodStart()).isEqualTo(start);
+        assertThat(input.getValue().periodEnd()).isEqualTo(Instant.parse("2027-08-08T00:00:00Z"));
+    }
+
+    /** The monthly equivalent, so the interval is genuinely read from the plan. */
+    @Test
+    void monthlyPurchaseDuringTrial_recordsAFullMonth() {
+        Subscription sub = incomplete();
+        lockReturns(sub);
+        SubscriptionPlan plan = SubscriptionPlan.builder()
+                .id(PLAN_ID).billingInterval(BillingInterval.MONTH).build();
+        lenient().when(planService.requireById(PLAN_ID)).thenReturn(plan);
+        when(invoiceService.existsByProviderInvoiceId(any())).thenReturn(false);
+        when(invoiceService.recordPaidInvoice(any(), any())).thenReturn(
+                SubscriptionInvoice.builder().id(UUID.randomUUID()).invoiceNumber("BCR-2").build());
+
+        Instant start = Instant.parse("2026-08-08T00:00:00Z");
+        PaymentSnapshot payment = new PaymentSnapshot(
+                "pay_2", PaymentSnapshot.PaymentStatus.SUCCEEDED, SUB, "cus_1",
+                "inv_2", null, null, 40000, 0, 40000, "USD",
+                start, Instant.parse("2026-08-22T00:00:00Z"));
+
+        service.applyPaymentSnapshot(payment, T1, ReconciliationSource.REDIRECT);
+
+        ArgumentCaptor<InvoiceService.PaidInvoiceInput> input =
+                ArgumentCaptor.forClass(InvoiceService.PaidInvoiceInput.class);
+        verify(invoiceService).recordPaidInvoice(any(), input.capture());
+        assertThat(input.getValue().periodEnd()).isEqualTo(Instant.parse("2026-09-08T00:00:00Z"));
     }
 
     @Test
