@@ -246,11 +246,21 @@ public class BillingReconciliationService {
                 ? snapshot.periodStart() : subscription.getCurrentPeriodStart();
         Instant periodEnd = snapshot.periodEnd() != null
                 ? snapshot.periodEnd() : subscription.getCurrentPeriodEnd();
-        if (periodEnd == null && periodStart != null) {
+
+        // The receipt must state the service period this payment bought, which is one plan
+        // interval. Dodo's next_billing_date is not that: while a trial is running it is the
+        // trial end, so a yearly purchase recorded a ~14-day period. Derive the end from the
+        // plan interval and only keep the provider's value when it is at least that long
+        // (proration and mid-cycle changes can legitimately shorten a period, but a value
+        // short of a full interval on a fresh charge is the trial date leaking through).
+        if (periodStart != null) {
             var interval = planService.requireById(subscription.getPlanId()).getBillingInterval();
             var startUtc = periodStart.atZone(java.time.ZoneOffset.UTC);
-            periodEnd = (interval == io.bunnycal.billing.domain.BillingInterval.YEAR
+            Instant derivedEnd = (interval == io.bunnycal.billing.domain.BillingInterval.YEAR
                     ? startUtc.plusYears(1) : startUtc.plusMonths(1)).toInstant();
+            if (periodEnd == null || periodEnd.isBefore(derivedEnd)) {
+                periodEnd = derivedEnd;
+            }
         }
 
         boolean firstSeen = snapshot.providerInvoiceId() == null
