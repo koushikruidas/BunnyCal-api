@@ -115,6 +115,15 @@ public class PdfInvoiceGenerator {
             meta.addCell(labelValueCell("Subscription", subscriptionName(ctx.planName()), label, value));
             meta.addCell(labelValueCell("Next renewal",
                     periodEnd == null ? "—" : DATE.format(periodEnd), label, value));
+            // The Merchant of Record's own invoice number (Dodo's invoice_id). A customer chasing a
+            // payment with the MoR is asked for this, not for our internal receipt number, so it
+            // belongs in the meta block beside the other references rather than only in the footer.
+            // The table takes cells in pairs, so an unpaired addCell would pull the next row up.
+            if (invoice.getOfficialInvoiceNumber() != null) {
+                meta.addCell(labelValueCell(presentation.merchantOfRecordName() + " invoice",
+                        invoice.getOfficialInvoiceNumber(), label, value));
+                meta.addCell(emptyCell());
+            }
             document.add(meta);
 
             // Line items.
@@ -153,12 +162,10 @@ public class PdfInvoiceGenerator {
             document.add(footer);
 
             if (mor) {
+                // The number itself is in the meta block above; this line only attributes the
+                // official invoice to its issuer, so repeating it here would just be noise.
                 Paragraph issued = new Paragraph(
-                        "Official invoice"
-                                + (invoice.getOfficialInvoiceNumber() == null
-                                        ? "" : ": " + invoice.getOfficialInvoiceNumber())
-                                + "\nIssued by: " + presentation.merchantOfRecordName(),
-                        label);
+                        "Issued by: " + presentation.merchantOfRecordName(), label);
                 issued.setSpacingBefore(4);
                 document.add(issued);
             }
@@ -193,6 +200,14 @@ public class PdfInvoiceGenerator {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /** Filler for the second column when a meta row carries only one field. */
+    private static PdfPCell emptyCell() {
+        PdfPCell cell = new PdfPCell();
+        cell.setBorder(0);
+        cell.setPaddingBottom(6);
+        return cell;
     }
 
     private static PdfPCell labelValueCell(String labelText, String valueText, Font label, Font value) {

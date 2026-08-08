@@ -52,6 +52,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Comparator;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -140,6 +141,40 @@ public class SlotService {
                 .map(AvailabilityRule::getDayOfWeek)
                 .distinct()
                 .toList();
+    }
+
+    /**
+     * The weekdays a specific event type can be booked on — what the public calendar must grey out.
+     *
+     * <p>Answering this from the host's global rules alone contradicts slot generation for an event
+     * on a CUSTOM schedule: enabling Saturday and disabling Monday on the event produced slots on
+     * Saturday, yet the calendar still struck Saturday out and offered Monday, because global rules
+     * never changed. The day set has to come from the same source the engine restricts to.
+     *
+     * <p>Mirrors the candidate-window rules in {@link #getSlots}: a CUSTOM demand-driven event is
+     * restricted to its own windows, so those windows alone define the bookable days. INHERIT falls
+     * back to the host's rules. GROUP is deliberately excluded — it is reservation-driven and its
+     * windows may be ONE_TIME (a single date rather than a weekday), which a weekday set cannot
+     * represent; those calendars keep using host days as the upper bound.
+     */
+    public List<DayOfWeek> availableDaysFor(UUID userId, EventType eventType) {
+        if (eventType == null
+                || eventType.getKind() == EventKind.GROUP
+                || effectiveAvailabilityMode(eventType) != EventAvailabilityMode.CUSTOM) {
+            return availableDaysFor(userId);
+        }
+        List<DayOfWeek> customDays = eventAvailabilityWindowRepository.findByEventTypeId(eventType.getId()).stream()
+                .filter(window -> window.getStartTime() != null
+                        && window.getEndTime() != null
+                        && window.getStartTime().isBefore(window.getEndTime()))
+                .map(EventAvailabilityWindow::getDayOfWeek)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .toList();
+        // A CUSTOM event with no usable window is closed every day. Falling back to host days here
+        // would advertise days that generate no slots.
+        return customDays;
     }
 
     public SlotResponse getSlots(SlotRequest request) {

@@ -262,9 +262,10 @@ public class PublicBookingService {
                     .filter(p -> p.name() != null)
                     .toList();
         }
-        // Which weekdays the host works, so the calendar can grey out the rest instead of assuming
-        // Mon–Fri.
-        List<String> availableDays = slotService.availableDaysFor(target.userId()).stream()
+        // Which weekdays THIS event can be booked on, so the calendar greys out the rest. Scoped to
+        // the event, not just the host: an event on a CUSTOM schedule overrides the global rules,
+        // and answering from the host alone struck out days the event had opened.
+        List<String> availableDays = slotService.availableDaysFor(target.userId(), eventType).stream()
                 .map(Enum::name)
                 .toList();
 
