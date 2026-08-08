@@ -21,6 +21,9 @@ import io.bunnycal.availability.cache.SlotCacheService.CachedSlots;
 import io.bunnycal.availability.cache.SlotCacheService.ComputeOutcome;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
 import io.bunnycal.availability.domain.AvailabilityRule;
+import io.bunnycal.availability.domain.EventAvailabilityMode;
+import io.bunnycal.availability.domain.EventAvailabilityWindow;
+import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.dto.SlotRequest;
@@ -580,6 +583,100 @@ class SlotServiceTest {
                         rule(hostId, DayOfWeek.SATURDAY)));
 
         assertEquals(List.of(DayOfWeek.SATURDAY), slotService.availableDaysFor(hostId));
+    }
+
+    /**
+     * The reported bug: enabling Saturday and disabling Monday on the event's CUSTOM schedule
+     * generated slots correctly, but the calendar still struck Saturday out and offered Monday
+     * because the day set came from the host's global rules. It must follow the event's windows.
+     */
+    @Test
+    void availableDaysFor_customEventSchedule_usesEventWindowsNotHostRules() {
+        EventType custom = customScheduleEvent();
+        when(eventAvailabilityWindowRepository.findByEventTypeId(eventTypeId))
+                .thenReturn(List.of(eventWindow(DayOfWeek.SATURDAY)));
+
+        List<DayOfWeek> days = slotService.availableDaysFor(userId, custom);
+
+        assertEquals(List.of(DayOfWeek.SATURDAY), days);
+        assertFalse(days.contains(DayOfWeek.MONDAY), "Monday is off on the event and must not be offered");
+        // The host's global rules are irrelevant once the event overrides them.
+        verify(availabilityRuleRepository, never()).findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId);
+    }
+
+    /** INHERIT means the event has no opinion, so the host's rules still decide. */
+    @Test
+    void availableDaysFor_inheritEvent_fallsBackToHostRules() {
+        EventType inherit = EventType.builder()
+                .id(eventTypeId)
+                .userId(userId)
+                .name("30-min")
+                .duration(Duration.ofMinutes(30))
+                .availabilityMode(EventAvailabilityMode.INHERIT)
+                .build();
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
+                .thenReturn(List.of(rule(userId, DayOfWeek.MONDAY)));
+
+        assertEquals(List.of(DayOfWeek.MONDAY), slotService.availableDaysFor(userId, inherit));
+    }
+
+    /** A CUSTOM event with no usable window is closed every day — advertising host days would lie. */
+    @Test
+    void availableDaysFor_customEventWithNoWindows_isClosedEveryDay() {
+        EventType custom = customScheduleEvent();
+        when(eventAvailabilityWindowRepository.findByEventTypeId(eventTypeId)).thenReturn(List.of());
+
+        assertEquals(List.of(), slotService.availableDaysFor(userId, custom));
+    }
+
+    /** GROUP is reservation-driven and its windows may be ONE_TIME, so it keeps host days. */
+    @Test
+    void availableDaysFor_groupEvent_fallsBackToHostRules() {
+        EventType group = EventType.builder()
+                .id(eventTypeId)
+                .userId(userId)
+                .name("Yoga Class")
+                .duration(Duration.ofMinutes(30))
+                .kind(EventKind.GROUP)
+                .availabilityMode(EventAvailabilityMode.CUSTOM)
+                .build();
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
+                .thenReturn(List.of(rule(userId, DayOfWeek.TUESDAY)));
+
+        assertEquals(List.of(DayOfWeek.TUESDAY), slotService.availableDaysFor(userId, group));
+        verify(eventAvailabilityWindowRepository, never()).findByEventTypeId(eventTypeId);
+    }
+
+    /** Two windows on one day (morning and afternoon) are still one bookable day. */
+    @Test
+    void availableDaysFor_customEventSchedule_deduplicatesAndSortsDays() {
+        EventType custom = customScheduleEvent();
+        when(eventAvailabilityWindowRepository.findByEventTypeId(eventTypeId))
+                .thenReturn(List.of(
+                        eventWindow(DayOfWeek.SATURDAY),
+                        eventWindow(DayOfWeek.SATURDAY),
+                        eventWindow(DayOfWeek.WEDNESDAY)));
+
+        assertEquals(List.of(DayOfWeek.WEDNESDAY, DayOfWeek.SATURDAY),
+                slotService.availableDaysFor(userId, custom));
+    }
+
+    private EventType customScheduleEvent() {
+        return EventType.builder()
+                .id(eventTypeId)
+                .userId(userId)
+                .name("30-min")
+                .duration(Duration.ofMinutes(30))
+                .availabilityMode(EventAvailabilityMode.CUSTOM)
+                .build();
+    }
+
+    private static EventAvailabilityWindow eventWindow(DayOfWeek day) {
+        return EventAvailabilityWindow.builder()
+                .dayOfWeek(day)
+                .startTime(LocalTime.of(9, 0))
+                .endTime(LocalTime.of(17, 0))
+                .build();
     }
 
     private static AvailabilityRule rule(UUID userId, DayOfWeek day) {
