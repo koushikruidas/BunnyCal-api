@@ -216,9 +216,15 @@ public class DodoProvider implements PaymentProvider {
         if (c == null) {
             return Optional.empty();
         }
+        // GET /checkouts/{id} answers with the session's *payment* state, and its field names
+        // differ from the create-response and the webhook payloads:
+        //   {"id":…, "payment_id":…, "payment_status":"succeeded", "customer_email":…}
+        // There is no "status" and no "session_id" here, so reading those returned null, mapped
+        // to UNKNOWN, and parked every attempt in PROCESSING forever. Accept either spelling so
+        // the mapping keeps working if a payload carries the older shape.
         return Optional.of(new CheckoutSnapshot(
-                text(c, "session_id"),
-                mapCheckoutStatus(text(c, "status")),
+                firstText(c, "session_id", "id"),
+                mapCheckoutStatus(firstText(c, "status", "payment_status")),
                 text(c, "subscription_id"),
                 customerId(c),
                 text(c, "payment_id"),
@@ -577,6 +583,10 @@ public class DodoProvider implements PaymentProvider {
                     .uri(path)
                     .retrieve()
                     .body(String.class);
+            // Reads were previously silent, so a provider call that ran looked identical in the
+            // logs to one that never happened — which is exactly how a field-name mismatch here
+            // went undiagnosed. Mirror the POST logging so reads are visible too.
+            log.info("dodo.{}.response path={} body={}", op, path, response);
             return readJson(response);
         } catch (org.springframework.web.client.RestClientResponseException re) {
             if (re.getStatusCode().value() == 404) {

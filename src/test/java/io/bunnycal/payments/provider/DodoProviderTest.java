@@ -252,6 +252,65 @@ class DodoProviderTest {
                 .isInstanceOf(WebhookVerificationException.class);
     }
 
+    /**
+     * GET /checkouts/{id} reports the session's payment state under "payment_status", and names
+     * the session "id" rather than "session_id" — unlike the create response and the webhooks.
+     * Reading "status" yielded null → UNKNOWN → markProcessing(), so a paid checkout never left
+     * PROCESSING and the confirmation poll span until its deadline. Payload copied verbatim from
+     * a live test-mode response.
+     */
+    @Test
+    void readsCheckoutSessionStatusFromPaymentStatusField() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider readProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+
+        server.expect(requestTo("https://test.dodopayments.com/checkouts/cks_1"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess("""
+                        {"id":"cks_1","payment_id":"pay_1","payment_status":"succeeded",
+                         "customer_name":"Ada","customer_email":"ada@example.com",
+                         "created_at":"2026-08-08T12:56:36.015910Z"}
+                        """, MediaType.APPLICATION_JSON));
+
+        var snapshot = readProvider.getCheckoutSession("cks_1");
+
+        assertThat(snapshot).isPresent();
+        assertThat(snapshot.get().status())
+                .isEqualTo(ProviderSnapshots.CheckoutSnapshot.CheckoutStatus.COMPLETED);
+        assertThat(snapshot.get().providerSessionId()).isEqualTo("cks_1");
+        assertThat(snapshot.get().providerPaymentId()).isEqualTo("pay_1");
+        server.verify();
+    }
+
+    /** The older shape (explicit "status" + "session_id") must keep mapping correctly. */
+    @Test
+    void stillReadsCheckoutSessionStatusFromLegacyStatusField() {
+        RestClient.Builder builder = RestClient.builder().baseUrl("https://test.dodopayments.com");
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        DodoProvider readProvider = new DodoProvider(
+                new DodoProperties("dodo_test_key", SECRET, true),
+                objectMapper,
+                builder.build());
+
+        server.expect(requestTo("https://test.dodopayments.com/checkouts/cks_2"))
+                .andExpect(method(HttpMethod.GET))
+                .andRespond(withSuccess(
+                        "{\"session_id\":\"cks_2\",\"status\":\"open\",\"payment_id\":\"pay_2\"}",
+                        MediaType.APPLICATION_JSON));
+
+        var snapshot = readProvider.getCheckoutSession("cks_2");
+
+        assertThat(snapshot).isPresent();
+        assertThat(snapshot.get().status())
+                .isEqualTo(ProviderSnapshots.CheckoutSnapshot.CheckoutStatus.OPEN);
+        assertThat(snapshot.get().providerSessionId()).isEqualTo("cks_2");
+        server.verify();
+    }
+
     /** Builds a valid Standard-Webhooks header set for the given id + body. */
     private static Map<String, String> signedHeaders(String id, String body) {
         String timestamp = "1700000000";
