@@ -21,7 +21,9 @@ public record InvoicePresentationProperties(
         Mode mode,
         String sellerName,
         /** Display name of the Merchant of Record (e.g. "Dodo Payments"), used in MoR mode. */
-        String merchantOfRecordName) {
+        String merchantOfRecordName,
+        /** Support address printed in the receipt footer. */
+        String supportEmail) {
 
     public InvoicePresentationProperties {
         if (mode == null) {
@@ -29,6 +31,9 @@ public record InvoicePresentationProperties(
         }
         if (sellerName == null || sellerName.isBlank()) {
             sellerName = "BunnyCal";
+        }
+        if (supportEmail == null || supportEmail.isBlank()) {
+            supportEmail = "support@bunnycal.io";
         }
     }
 

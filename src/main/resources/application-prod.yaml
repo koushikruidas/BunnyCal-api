@@ -345,6 +345,7 @@ billing:
     mode: ${BILLING_INVOICE_MODE:}
     seller-name: ${BILLING_SELLER_NAME:BunnyCal}
     merchant-of-record-name: ${BILLING_MOR_NAME:Dodo Payments}
+    support-email: ${BILLING_SUPPORT_EMAIL:support@bunnycal.io}
   stripe:
     secret-key: ${STRIPE_SECRET_KEY:}
     # Signing secret for the webhook endpoint (whsec_...). Verified on every callback.
