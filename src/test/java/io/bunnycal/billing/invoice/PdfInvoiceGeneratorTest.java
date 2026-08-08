@@ -48,6 +48,8 @@ class PdfInvoiceGeneratorTest {
                 .contains("24 Jul 2026 – 23 Aug 2026")
                 .contains("NEXT RENEWAL")
                 .contains("24 Aug 2026")
+                // Cycle sub-line under the subscription, read from the covered period.
+                .contains("Monthly plan")
                 .contains("PAID")
                 .contains("Payment ID")
                 .contains("pay_123")

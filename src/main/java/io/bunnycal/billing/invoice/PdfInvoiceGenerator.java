@@ -45,11 +45,9 @@ public class PdfInvoiceGenerator {
     private static final Color MUTED = new Color(0x6b, 0x65, 0x77);
     private static final Color LABEL = new Color(0xa1, 0x9b, 0xad);
     private static final Color SUBTLE = new Color(0x8b, 0x84, 0x97);
-    private static final Color HAIRLINE = new Color(0xed, 0xe8, 0xf2);
+    private static final Color HAIRLINE = new Color(0xec, 0xe7, 0xf1);
     private static final Color PANEL = new Color(0xfa, 0xf8, 0xfc);
     private static final Color TOTAL_BAND = new Color(0xf6, 0xf2, 0xfa);
-    private static final Color ACCENT = new Color(0xd8, 0xc2, 0xe8);
-    private static final Color ACCENT_WARM = new Color(0xe9, 0xc9, 0xdd);
     private static final Color PAID_BG = new Color(0xe4, 0xf5, 0xe9);
     private static final Color PAID_FG = new Color(0x2f, 0x7d, 0x4f);
 
@@ -84,10 +82,12 @@ public class PdfInvoiceGenerator {
     }
 
     public byte[] generate(SubscriptionInvoice invoice, InvoiceContext ctx) {
-        Document document = new Document(PageSize.A4, 44, 44, 40, 44);
+        // The design lays the receipt out on a 794×1123px page (A4 at 96dpi) with 68px side and
+        // 72px top padding. Converted at 72/96, that is 51pt sides and 54pt top.
+        Document document = new Document(PageSize.A4, 51, 51, 54, 48);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
-            PdfWriter.getInstance(document, out);
+            PdfWriter writer = PdfWriter.getInstance(document, out);
             document.open();
 
             Font labelFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 8, LABEL);
@@ -100,13 +100,26 @@ public class PdfInvoiceGenerator {
             boolean mor = presentation.isMerchantOfRecord()
                     || (billing != null && "dodo".equalsIgnoreCase(billing.provider()));
 
-            document.add(accentBar());
+            // The revised design drops the gradient cap: the page is flat, and the header is
+            // separated from the body by a single hairline instead.
             document.add(header(invoice, mor));
+            document.add(headerRule());
             document.add(referenceRow(invoice, mor));
             document.add(partiesGrid(invoice, ctx, labelFont, valueFont, valueStrong));
             document.add(lineItems(invoice, ctx, mor));
             document.add(paymentDetails(invoice, ctx, mor));
-            document.add(footerNote(mor, noteFont));
+
+            // The design pushes the closing note to the foot of the page with a flex spacer.
+            // A PDF has no such flow, so the note is written at an absolute position against
+            // the bottom margin instead of trailing the content above it.
+            PdfPTable footer = footerNote(mor, noteFont);
+            float width = document.right() - document.left();
+            footer.setTotalWidth(width);
+            footer.setLockedWidth(true);
+            footer.writeSelectedRows(
+                    0, -1, document.left(),
+                    document.bottom() + footer.getTotalHeight(),
+                    writer.getDirectContent());
 
             document.close();
             return out.toByteArray();
@@ -118,34 +131,28 @@ public class PdfInvoiceGenerator {
         }
     }
 
-    /**
-     * The design's 6px gradient cap. PDF cells take a single fill, so the gradient is
-     * approximated with two abutting bands of its end colours.
-     */
-    private static PdfPTable accentBar() {
-        PdfPTable bar = new PdfPTable(2);
-        bar.setWidthPercentage(100);
-        bar.setSpacingAfter(26);
-        bar.addCell(band(ACCENT));
-        bar.addCell(band(ACCENT_WARM));
-        return bar;
-    }
-
-    private static PdfPCell band(Color color) {
+    /** Hairline separating the header from the body, per the design's 34px-margin rule. */
+    private static PdfPTable headerRule() {
+        PdfPTable rule = new PdfPTable(1);
+        rule.setWidthPercentage(100);
+        rule.setSpacingBefore(21);
+        rule.setSpacingAfter(19);
         PdfPCell cell = new PdfPCell();
         cell.setBorder(0);
-        cell.setFixedHeight(5f);
-        cell.setBackgroundColor(color);
-        return cell;
+        cell.setBorderWidthTop(0.7f);
+        cell.setBorderColorTop(HAIRLINE);
+        cell.setFixedHeight(0.7f);
+        rule.addCell(cell);
+        return rule;
     }
 
     /** Brand mark + wordmark on the left, document title and status pill on the right. */
     private PdfPTable header(SubscriptionInvoice invoice, boolean mor) {
         PdfPTable header = new PdfPTable(new float[] {1.6f, 1f});
         header.setWidthPercentage(100);
-        header.setSpacingAfter(24);
+        header.setSpacingAfter(4);
 
-        PdfPTable brandRow = new PdfPTable(new float[] {40f, 200f});
+        PdfPTable brandRow = new PdfPTable(new float[] {46f, 200f});
         brandRow.setWidthPercentage(100);
         brandRow.getDefaultCell().setBorder(0);
 
@@ -157,7 +164,7 @@ public class PdfInvoiceGenerator {
         Image mark = brandMark();
         PdfPCell markCell;
         if (mark != null) {
-            mark.scaleToFit(38, 38);
+            mark.scaleToFit(42, 42);
             markCell = new PdfPCell(mark, false);
         } else {
             markCell = new PdfPCell();
@@ -167,7 +174,7 @@ public class PdfInvoiceGenerator {
         markCell.setVerticalAlignment(Element.ALIGN_MIDDLE);
         markCell.setHorizontalAlignment(Element.ALIGN_LEFT);
         // Tall enough to hold the two-line lockup; both cells centre within it.
-        markCell.setFixedHeight(42f);
+        markCell.setFixedHeight(46f);
         brandRow.addCell(markCell);
 
         // Two paragraphs rather than one with a newline: a single phrase uses the font's own
@@ -175,9 +182,9 @@ public class PdfInvoiceGenerator {
         // Composite mode ignores vertical centring, so the row is given a fixed height and both
         // cells centre against it — the same result as the sidebar's align-items:center.
         Paragraph name = wordmarkParagraph(presentation.sellerName());
-        name.setLeading(15f);
+        name.setLeading(17f);
         Paragraph tagline = new Paragraph(
-                TAGLINE, FontFactory.getFont(FontFactory.HELVETICA, 8.5f, SUBTLE));
+                TAGLINE, FontFactory.getFont(FontFactory.HELVETICA, 10f, SUBTLE));
         tagline.setLeading(11f);
         tagline.setSpacingBefore(2f);
 
@@ -212,8 +219,8 @@ public class PdfInvoiceGenerator {
      * single colour rather than being cut at an arbitrary point.
      */
     private static Paragraph wordmarkParagraph(String sellerName) {
-        Font bunnyFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 15, PLUM_500);
-        Font calFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 15, PLUM_900);
+        Font bunnyFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 17, PLUM_500);
+        Font calFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 17, PLUM_900);
         if (!"bunnycal".equalsIgnoreCase(sellerName)) {
             return new Paragraph(sellerName, calFont);
         }
@@ -306,10 +313,18 @@ public class PdfInvoiceGenerator {
         Paragraph planName = new Paragraph(subscriptionName(ctx.planName()), valueStrong);
         planName.setSpacingBefore(3);
         plan.addElement(planName);
-        grid.addCell(plan);
 
         Instant periodStart = ctx.periodStart() != null ? ctx.periodStart() : invoice.getPeriodStart();
         Instant periodEnd = ctx.periodEnd() != null ? ctx.periodEnd() : invoice.getPeriodEnd();
+        // Cycle sub-line, per the design. Derived from the period the payment covers rather
+        // than the plan name, which may or may not spell the interval out.
+        String cycle = billingCycleLabel(periodStart, periodEnd);
+        if (cycle != null) {
+            plan.addElement(new Paragraph(
+                    cycle, FontFactory.getFont(FontFactory.HELVETICA, 9.5f, MUTED)));
+        }
+        grid.addCell(plan);
+
         String period = periodStart != null && periodEnd != null
                 ? DATE.format(periodStart) + " – "
                         + DATE.format(periodEnd.minus(1, java.time.temporal.ChronoUnit.DAYS))
@@ -485,6 +500,25 @@ public class PdfInvoiceGenerator {
         cell.addElement(note);
         table.addCell(cell);
         return table;
+    }
+
+    /**
+     * "Yearly plan" / "Monthly plan" for the subscription cell. Read from the covered period so
+     * it stays right regardless of how the plan is named; anything that is not close to a month
+     * or a year is left unlabelled rather than guessed at.
+     */
+    private static String billingCycleLabel(Instant start, Instant end) {
+        if (start == null || end == null) {
+            return null;
+        }
+        long days = java.time.Duration.between(start, end).toDays();
+        if (days >= 330 && days <= 400) {
+            return "Yearly plan";
+        }
+        if (days >= 26 && days <= 32) {
+            return "Monthly plan";
+        }
+        return null;
     }
 
     /** Dates the charge covers, shown under the line-item description. */
