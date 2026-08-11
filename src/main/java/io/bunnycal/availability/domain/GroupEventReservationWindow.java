@@ -30,8 +30,10 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
  * Two schedule types are supported:
  * <ul>
  *   <li>{@link ScheduleType#ONE_TIME}: reserves a single date ({@code eventDate}).</li>
- *   <li>{@link ScheduleType#RECURRING}: reserves a recurring weekly window anchored
- *       to {@code startDate} with an optional end bound ({@code recurrenceEndMode}).</li>
+ *   <li>{@link ScheduleType#RECURRING}: reserves a recurring weekly window with an optional
+ *       lower bound ({@code startDate}) and an optional end bound ({@code recurrenceEndMode}).
+ *       A null {@code startDate} means the window has no lower bound and simply runs from
+ *       today; only OCCURRENCE_COUNT requires one, as the anchor it counts weeks from.</li>
  * </ul>
  *
  * Semantics at slot-generation time:
@@ -87,7 +89,10 @@ public class GroupEventReservationWindow {
     @Column(name = "frequency", length = 12)
     private RecurrenceFrequency frequency;
 
-    /** First occurrence date for RECURRING windows; null for ONE_TIME. */
+    /**
+     * First occurrence date for RECURRING windows; null for ONE_TIME. Optional: null means no
+     * lower bound, so occurrences run from today. Required only for OCCURRENCE_COUNT.
+     */
     @Column(name = "start_date")
     private LocalDate startDate;
 

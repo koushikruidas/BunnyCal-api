@@ -30,10 +30,13 @@ import java.util.UUID;
  * <p>Field rules (enforced by the service, not this record):
  * <ul>
  *   <li>ONE_TIME: {@code eventDate} required; {@code dayOfWeek} ignored.</li>
- *   <li>RECURRING: {@code dayOfWeek} and {@code startDate} required;
- *       {@code frequency} defaults to WEEKLY.</li>
- *   <li>UNTIL_DATE: {@code untilDate} required and {@code >= startDate}.</li>
- *   <li>OCCURRENCE_COUNT: {@code occurrenceCount > 0} required.</li>
+ *   <li>RECURRING: {@code dayOfWeek} required; {@code frequency} defaults to WEEKLY.
+ *       {@code startDate} is optional and means "no lower bound" when absent, so the
+ *       window simply runs from today — which is what the create-event form offers.</li>
+ *   <li>UNTIL_DATE: {@code untilDate} required, and {@code >= startDate} when one is given.</li>
+ *   <li>OCCURRENCE_COUNT: {@code occurrenceCount > 0} and {@code startDate} both required —
+ *       occurrences are counted in whole weeks from {@code startDate}, so the count is
+ *       meaningless without it.</li>
  * </ul>
  */
 public record ReservationWindowRequest(
