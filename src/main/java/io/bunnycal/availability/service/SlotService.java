@@ -49,12 +49,17 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Comparator;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -175,6 +180,65 @@ public class SlotService {
         // A CUSTOM event with no usable window is closed every day. Falling back to host days here
         // would advertise days that generate no slots.
         return customDays;
+    }
+
+    /**
+     * The host's own timezone, so callers can anchor "today" where the host lives rather than on the
+     * server's clock — near midnight those differ by a date, which would drop or add a leading day.
+     */
+    public ZoneId zoneFor(UUID userId) {
+        User host = userId == null ? null : userRepository.findById(userId).orElse(null);
+        try {
+            return timeConversionService.resolveZone(host == null ? null : host.getTimezone());
+        } catch (RuntimeException ex) {
+            // An unset or malformed host timezone must not fail the whole public event page. UTC is
+            // only used to anchor "today" for the blocked-date window, where being off by a day at
+            // the edge is harmless — slot generation resolves the zone strictly on its own path.
+            return ZoneId.of("UTC");
+        }
+    }
+
+    /**
+     * Individual dates in the window ahead that generate no slots at all — the host's own whole-day
+     * offs plus imported public holidays. The weekday set from {@link #availableDaysFor} cannot
+     * express these: "Dec 25 is off" is a date, not a weekday, so without this the public calendar
+     * left holidays and vacations fully selectable and only revealed them as an empty slot list
+     * after the guest clicked.
+     *
+     * <p>Mirrors the precedence in {@link #getSlots}: an explicit user override wins over an
+     * imported holiday, so a host who deliberately keeps working on a holiday is not blocked. Only
+     * whole-day offs count — a partial override ({@code isAvailable} with a narrower start/end)
+     * still produces slots, so listing it would hide a bookable day.
+     *
+     * <p>Dates only, never labels: this feeds an unauthenticated endpoint, and an override's label
+     * ("Vacation", "Surgery") is the host's private note, not guest-facing copy.
+     */
+    public List<LocalDate> blockedDatesFor(UUID userId, LocalDate from, LocalDate to) {
+        if (userId == null || from == null || to == null || to.isBefore(from)) {
+            return List.of();
+        }
+        ZoneId zoneId = zoneFor(userId);
+
+        Map<LocalDate, AvailabilityOverride> overrides =
+                availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, from, to).stream()
+                        .filter(o -> o.getDate() != null)
+                        .collect(Collectors.toMap(
+                                AvailabilityOverride::getDate, o -> o, (a, b) -> a, LinkedHashMap::new));
+
+        SortedSet<LocalDate> blocked = new TreeSet<>();
+        overrides.values().stream()
+                .filter(o -> !o.isAvailable())
+                .map(AvailabilityOverride::getDate)
+                .forEach(blocked::add);
+
+        // Holidays only apply where the host has not spoken for the date themselves — matching
+        // isDayOffUnlessOverridden. A date carrying any override is already decided above.
+        holidayDayOffService.holidays(userId, from, to, zoneId).stream()
+                .map(HolidayDeduplicator.Holiday::date)
+                .filter(date -> !overrides.containsKey(date))
+                .forEach(blocked::add);
+
+        return List.copyOf(blocked);
     }
 
     public SlotResponse getSlots(SlotRequest request) {
