@@ -667,9 +667,8 @@ class EventTypeParticipantIT {
     // ── Conferencing coverage (create wizard) ────────────────────────────────────
 
     /**
-     * A member whose default meeting link is NONE mints nothing, so they are not covered — even
-     * though {@code canProvideMeetingLink} answers "yes" for them (nothing was asked). Counting
-     * them would inflate DEFAULT into a recommendation that leaves guests with no way to join.
+     * An unset default AND no write-back calendar: nothing to fall back to, so not covered. The
+     * fallback below rescues an unset preference, never a missing calendar.
      */
     @Test
     void conferencingCoverage_memberWithNoDefaultLink_isNotCounted() {
@@ -682,6 +681,31 @@ class EventTypeParticipantIT {
 
         assertThat(coverage.totalParticipants()).isEqualTo(1);
         assertThat(coverage.defaultCapableCount()).isZero();
+        assertThat(coverage.zoomCapableCount()).isZero();
+    }
+
+    /**
+     * The production case this fallback exists for: a teammate who joined by invite and never
+     * opened conferencing settings, so their preference sits at the default NONE while they have a
+     * perfectly good Google write-back calendar. Reading the column alone counted them as unable to
+     * mint a link, so "My default" never out-scored Zoom and the host was never offered the
+     * provider their whole team could actually use — while the wizard simultaneously labelled that
+     * option "Currently Google Meet".
+     */
+    @Test
+    void conferencingCoverage_unsetDefaultButCapableCalendar_isCounted() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        googleConnection(alice.getId());
+        assertThat(alice.getDefaultConferencingProvider())
+                .isIn(null, ConferencingProviderType.NONE);
+
+        ConferencingCoverageResponse coverage = participantService.conferencingCoverage(
+                owner.getId(), List.of(alice.getId()));
+
+        assertThat(coverage.totalParticipants()).isEqualTo(1);
+        assertThat(coverage.defaultCapableCount()).isEqualTo(1);
         assertThat(coverage.zoomCapableCount()).isZero();
     }
 
