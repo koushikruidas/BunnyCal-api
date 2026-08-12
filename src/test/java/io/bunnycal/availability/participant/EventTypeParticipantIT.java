@@ -8,6 +8,7 @@ import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.dto.ConferencingCoverageResponse;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.availability.service.EventTypeParticipantService;
@@ -567,5 +568,171 @@ class EventTypeParticipantIT {
                 .filter(p -> p.userId().equals(msaUser.getId())).findFirst().orElseThrow();
         assertThat(workRow.supportsNativeTeams()).isTrue();
         assertThat(msaRow.supportsNativeTeams()).isFalse();
+    }
+
+    // ── Meeting-link readiness (canCreateMeetingLink) ────────────────────────────
+
+    /**
+     * Round Robin mints the meeting link from the ASSIGNED member's own account, so a member
+     * without the integration is skipped when assigning and receives no bookings. These assert the
+     * signal that makes that visible, which is otherwise silent.
+     */
+    @Test
+    void googleMeetEvent_participantWithGoogleCalendar_canCreateMeetingLink() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        googleConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        participantService.replaceParticipants(owner.getId(), et.getId(), List.of(alice.getId()));
+
+        List<EventTypeParticipantResponse> listed = participantService.listParticipants(owner.getId(), et.getId());
+        assertThat(listed).singleElement()
+                .satisfies(p -> {
+                    assertThat(p.canCreateMeetingLink()).isTrue();
+                    assertThat(p.resolvedConferencingProvider()).isEqualTo("GOOGLE_MEET");
+                });
+    }
+
+    /**
+     * The realistic incapable case is drift, not a bad initial setup:
+     * {@code validateConferencingForRoundRobinParticipants} refuses to ADD a member who cannot host
+     * the link, but each member's capability depends on their own write-back calendar, which they
+     * can change afterwards without ever seeing this event type. That member then silently stops
+     * receiving bookings — and this flag is what makes it visible.
+     */
+    @Test
+    void participantWhoLosesCapabilityAfterBeingAdded_reportsCannotCreateMeetingLink() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        CalendarConnection google = googleConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.GOOGLE_MEET);
+        participantService.replaceParticipants(owner.getId(), et.getId(), List.of(alice.getId()));
+
+        // Alice moves off Google afterwards — nothing re-validates the pool she is already in.
+        google.setStatus(CalendarConnectionStatus.REVOKED);
+        google.setDefaultWriteback(false);
+        calendarConnectionRepository.save(google);
+
+        List<EventTypeParticipantResponse> listed = participantService.listParticipants(owner.getId(), et.getId());
+        assertThat(listed).singleElement()
+                .satisfies(p -> assertThat(p.canCreateMeetingLink()).isFalse());
+    }
+
+    /** An event needing no provider link is satisfied by every member. */
+    @Test
+    void defaultProviderEvent_participantWithNoConferencingPreference_reportsCapable() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        EventType et = createEventTypeWithConferencing(owner.getId(), EventKind.ROUND_ROBIN, ConferencingProviderType.DEFAULT);
+        participantService.replaceParticipants(owner.getId(), et.getId(), List.of(alice.getId()));
+
+        List<EventTypeParticipantResponse> listed = participantService.listParticipants(owner.getId(), et.getId());
+        assertThat(listed).singleElement()
+                .satisfies(p -> {
+                    assertThat(p.canCreateMeetingLink()).isTrue();
+                    assertThat(p.resolvedConferencingProvider()).isNull();
+                });
+    }
+
+    /**
+     * The exact setup of {@link #participantWhoLosesCapabilityAfterBeingAdded_reportsCannotCreateMeetingLink()}
+     * — a member who genuinely cannot mint a Meet link — but on a COLLECTIVE event, where it is not
+     * a defect. Collective mints from the owner (one fixed host for every booking), so a
+     * participant is an attendee on the owner's meeting and never its creator. Flagging them would
+     * warn about an impossible failure and wrongly claim they receive no bookings, when in fact
+     * they are on every one.
+     */
+    @Test
+    void collectiveEvent_participantWhoCannotMintLink_isNotFlagged() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+        CalendarConnection google = googleConnection(alice.getId());
+        EventType et = createEventTypeWithConferencing(
+                owner.getId(), EventKind.COLLECTIVE, ConferencingProviderType.GOOGLE_MEET);
+        participantService.replaceParticipants(owner.getId(), et.getId(), List.of(alice.getId()));
+
+        google.setStatus(CalendarConnectionStatus.REVOKED);
+        google.setDefaultWriteback(false);
+        calendarConnectionRepository.save(google);
+
+        List<EventTypeParticipantResponse> listed = participantService.listParticipants(owner.getId(), et.getId());
+        assertThat(listed).singleElement()
+                .satisfies(p -> assertThat(p.canCreateMeetingLink()).isTrue());
+    }
+
+    // ── Conferencing coverage (create wizard) ────────────────────────────────────
+
+    /**
+     * A member whose default meeting link is NONE mints nothing, so they are not covered — even
+     * though {@code canProvideMeetingLink} answers "yes" for them (nothing was asked). Counting
+     * them would inflate DEFAULT into a recommendation that leaves guests with no way to join.
+     */
+    @Test
+    void conferencingCoverage_memberWithNoDefaultLink_isNotCounted() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+
+        ConferencingCoverageResponse coverage = participantService.conferencingCoverage(
+                owner.getId(), List.of(alice.getId()));
+
+        assertThat(coverage.totalParticipants()).isEqualTo(1);
+        assertThat(coverage.defaultCapableCount()).isZero();
+        assertThat(coverage.zoomCapableCount()).isZero();
+    }
+
+    /** A member whose default resolves to Meet, backed by a capable write-back calendar, counts. */
+    @Test
+    void conferencingCoverage_memberWithGoogleMeetDefault_isCounted() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        alice.setDefaultConferencingProvider(ConferencingProviderType.GOOGLE_MEET);
+        userRepository.save(alice);
+        addToOwnersTeam(owner.getId(), alice);
+        googleConnection(alice.getId());
+
+        ConferencingCoverageResponse coverage = participantService.conferencingCoverage(
+                owner.getId(), List.of(alice.getId()));
+
+        assertThat(coverage.totalParticipants()).isEqualTo(1);
+        assertThat(coverage.defaultCapableCount()).isEqualTo(1);
+        // No Zoom connection — this is the gap the wizard dialog exists to surface.
+        assertThat(coverage.zoomCapableCount()).isZero();
+    }
+
+    /** Coverage is only ever probed for the acting user's own teammates. */
+    @Test
+    void conferencingCoverage_rejectsUserOutsideTeamPool() {
+        User owner = createUser("owner@test.com");
+        User stranger = createUser("stranger@test.com");
+
+        assertThatThrownBy(() ->
+                participantService.conferencingCoverage(owner.getId(), List.of(stranger.getId())))
+                .isInstanceOf(CustomException.class);
+    }
+
+    /**
+     * The create wizard checks participant readiness before an event type exists, so there is no
+     * provider to resolve against. Report capable rather than warning about a provider nobody has
+     * chosen yet.
+     */
+    @Test
+    void readinessWithoutEventType_reportsCapable() {
+        User owner = createUser("owner@test.com");
+        User alice = createUser("alice@test.com");
+        addToOwnersTeam(owner.getId(), alice);
+
+        List<EventTypeParticipantResponse> checked =
+                participantService.checkReadiness(owner.getId(), List.of(alice.getId()));
+
+        assertThat(checked).singleElement()
+                .satisfies(p -> {
+                    assertThat(p.canCreateMeetingLink()).isTrue();
+                    assertThat(p.resolvedConferencingProvider()).isNull();
+                });
     }
 }

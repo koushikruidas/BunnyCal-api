@@ -15,6 +15,7 @@ import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.AuthProvider;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.conferencing.service.ConferencingReadinessService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -38,19 +39,22 @@ public class RoundRobinAssignmentService {
     private final BookingAssignmentRepository bookingAssignmentRepository;
     private final BookingService bookingService;
     private final UserRepository userRepository;
+    private final ConferencingReadinessService conferencingReadinessService;
 
     public RoundRobinAssignmentService(EventTypeParticipantService participantService,
                                        ParticipantEligibilityService eligibilityService,
                                        ParticipantAvailabilityService participantAvailabilityService,
                                        BookingAssignmentRepository bookingAssignmentRepository,
                                        BookingService bookingService,
-                                       UserRepository userRepository) {
+                                       UserRepository userRepository,
+                                       ConferencingReadinessService conferencingReadinessService) {
         this.participantService = participantService;
         this.eligibilityService = eligibilityService;
         this.participantAvailabilityService = participantAvailabilityService;
         this.bookingAssignmentRepository = bookingAssignmentRepository;
         this.bookingService = bookingService;
         this.userRepository = userRepository;
+        this.conferencingReadinessService = conferencingReadinessService;
     }
 
     public Map<UUID, AssignmentStats> statsForParticipants(UUID eventTypeId, Collection<UUID> participantIds) {
@@ -81,6 +85,14 @@ public class RoundRobinAssignmentService {
             }
             ParticipantEligibilityResult eligibility = eligibilityService.checkForRoundRobin(participantId);
             if (!eligibility.eligible()) {
+                continue;
+            }
+            // Whoever is assigned has to mint this event's meeting link from their own account.
+            // A member without the required integration produces a confirmed booking whose join
+            // URL never materialises: link creation runs asynchronously after confirmation, and
+            // its failure is caught and logged, so the guest is emailed an invitation with nothing
+            // to click. Route around them instead.
+            if (!conferencingReadinessService.canProvideMeetingLink(participantId, eventType)) {
                 continue;
             }
             User participant = userRepository.findById(participantId)

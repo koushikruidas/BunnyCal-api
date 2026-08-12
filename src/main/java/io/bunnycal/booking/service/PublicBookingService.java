@@ -268,6 +268,15 @@ public class PublicBookingService {
         List<String> availableDays = slotService.availableDaysFor(target.userId(), eventType).stream()
                 .map(Enum::name)
                 .toList();
+        // Whole-day offs and public holidays ahead, which the weekday set above cannot represent.
+        // Bounded to the year the public calendar lets a guest page through (MAX_MONTHS_AHEAD on the
+        // client), so this stays a small list rather than an unbounded scan.
+        LocalDate blockedFrom = LocalDate.now(slotService.zoneFor(target.userId()));
+        List<String> blockedDates = slotService
+                .blockedDatesFor(target.userId(), blockedFrom, blockedFrom.plusMonths(12))
+                .stream()
+                .map(LocalDate::toString)
+                .toList();
 
         var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
         return new PublicEventInfoResponse(
@@ -283,6 +292,7 @@ public class PublicBookingService {
                 eventType.isPublished(),
                 participants,
                 availableDays,
+                blockedDates,
                 payment != null && payment.enabled(),
                 payment == null ? null : payment.amountMinor(),
                 payment == null ? null : payment.currency(),

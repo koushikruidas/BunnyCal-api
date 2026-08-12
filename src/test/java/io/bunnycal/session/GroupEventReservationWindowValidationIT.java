@@ -7,6 +7,7 @@ import io.bunnycal.availability.domain.RecurrenceEndMode;
 import io.bunnycal.availability.domain.RecurrenceFrequency;
 import io.bunnycal.availability.domain.ScheduleType;
 import io.bunnycal.availability.dto.ReservationWindowRequest;
+import io.bunnycal.availability.dto.ReservationWindowResponse;
 import io.bunnycal.availability.service.GroupEventReservationWindowService;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
@@ -241,22 +242,67 @@ class GroupEventReservationWindowValidationIT extends AbstractSessionIT {
 
     // ── RECURRING validation ─────────────────────────────────────────────────
 
+    /**
+     * The create-event form offers the first occurrence as optional ("defaults to today"), and a
+     * null startDate already means "no lower bound" to every reader — RecurrenceWindowFilter only
+     * applies a floor when one is present. Rejecting it left the host unable to save the window at
+     * all, so the event had no reservation windows and its public page showed no sessions.
+     */
     @Test
-    void recurring_withNullStartDate_rejected() {
+    void recurring_withNullStartDate_accepted() {
         User host = hostWithWeekdayAvailability();
         EventType group = groupType(host.getId());
 
-        // startDate is null — should fail validation
-        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+        ReservationWindowRequest request = new ReservationWindowRequest(
                 null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
                 null, DayOfWeek.WEDNESDAY, RecurrenceFrequency.WEEKLY,
                 null, RecurrenceEndMode.NONE, null, null);
+
+        List<ReservationWindowResponse> saved = reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(request));
+
+        assertThat(saved).hasSize(1);
+        assertThat(saved.get(0).startDate()).isNull();
+    }
+
+    /**
+     * The exception: occurrences are counted in whole weeks from startDate, so without one the
+     * limit cannot be evaluated and readers fall back to treating the window as unbounded —
+     * silently ignoring the cap the host set.
+     */
+    @Test
+    void recurring_occurrenceCountWithNullStartDate_rejected() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        ReservationWindowRequest badRequest = new ReservationWindowRequest(
+                null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, DayOfWeek.WEDNESDAY, RecurrenceFrequency.WEEKLY,
+                null, RecurrenceEndMode.OCCURRENCE_COUNT, null, 4);
 
         assertThatThrownBy(() -> reservationWindowService.replaceWindows(
                 host.getId(), group.getId(), List.of(badRequest)))
                 .isInstanceOf(CustomException.class)
                 .satisfies(ex -> assertThat(((CustomException) ex).getErrorCode())
                         .isEqualTo(ErrorCode.VALIDATION_ERROR));
+    }
+
+    /** An untilDate cannot precede an absent lower bound, so this combination must save. */
+    @Test
+    void recurring_untilDateWithNullStartDate_accepted() {
+        User host = hostWithWeekdayAvailability();
+        EventType group = groupType(host.getId());
+
+        ReservationWindowRequest request = new ReservationWindowRequest(
+                null, ScheduleType.RECURRING, LocalTime.parse("10:00"), LocalTime.parse("12:00"),
+                null, DayOfWeek.WEDNESDAY, RecurrenceFrequency.WEEKLY,
+                null, RecurrenceEndMode.UNTIL_DATE, LocalDate.of(2026, 12, 31), null);
+
+        List<ReservationWindowResponse> saved = reservationWindowService.replaceWindows(
+                host.getId(), group.getId(), List.of(request));
+
+        assertThat(saved).hasSize(1);
+        assertThat(saved.get(0).startDate()).isNull();
     }
 
     @Test

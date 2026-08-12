@@ -212,6 +212,28 @@ class GroupEventRecurrenceIT extends AbstractSessionIT {
                 .contains(slotAt(ANCHOR_MONDAY2, 9, 30));
     }
 
+    /**
+     * The end date is inclusive for the group event's own bookable slots, not only for the busy
+     * block it casts on other event types. A weekly Monday series running "until" a date that is
+     * itself a Monday must still run that day — dropping it would quietly cut the series one
+     * session short of what the host set up.
+     */
+    @Test
+    void recurringUntilDate_onEndDate_groupStillOffersItsOwnSlots() {
+        User host = createHostWithWeekdayAvailability();
+        EventType demo = createGroupType(host.getId());
+        // Series runs Mondays from ANCHOR_MONDAY through ANCHOR_MONDAY2, which is also a Monday.
+        insertRecurringUntilDateWindow(demo.getId(), "MONDAY", "09:00", "12:00",
+                ANCHOR_MONDAY, ANCHOR_MONDAY2);
+
+        // The final Monday is the end date itself: it must still produce slots.
+        assertThat(slotStarts(host.getId(), demo.getId(), ANCHOR_MONDAY2))
+                .contains(slotAt(ANCHOR_MONDAY2, 9, 0));
+        // ...and the Monday after the end date must not.
+        assertThat(slotStarts(host.getId(), demo.getId(), ANCHOR_MONDAY2.plusWeeks(1)))
+                .isEmpty();
+    }
+
     // ── 6. RECURRING/OCCURRENCE_COUNT — blocks within count ──────────────────
 
     @Test

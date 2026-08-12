@@ -303,17 +303,15 @@ public class GroupEventReservationWindowService {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "RECURRING reservation window requires dayOfWeek.");
         }
-        if (w.startDate() == null) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "RECURRING reservation window requires startDate.");
-        }
         RecurrenceEndMode endMode = w.recurrenceEndMode();
         if (endMode == RecurrenceEndMode.UNTIL_DATE) {
             if (w.untilDate() == null) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         "UNTIL_DATE recurrence requires untilDate.");
             }
-            if (w.untilDate().isBefore(w.startDate())) {
+            // Only an explicit startDate can be out of order. An absent one means "no lower bound",
+            // which no untilDate can precede.
+            if (w.startDate() != null && w.untilDate().isBefore(w.startDate())) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         "untilDate must be on or after startDate.");
             }
@@ -322,6 +320,14 @@ public class GroupEventReservationWindowService {
             if (w.occurrenceCount() == null || w.occurrenceCount() <= 0) {
                 throw new CustomException(ErrorCode.VALIDATION_ERROR,
                         "OCCURRENCE_COUNT recurrence requires occurrenceCount > 0.");
+            }
+            // The only mode that truly needs an anchor: occurrences are counted in whole weeks
+            // from startDate, so without it "after N sessions" has nothing to count from and both
+            // the slot engine and the public session query fall back to treating the window as
+            // unbounded — silently ignoring the limit the host asked for.
+            if (w.startDate() == null) {
+                throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                        "OCCURRENCE_COUNT recurrence requires a first occurrence date to count from.");
             }
         }
     }

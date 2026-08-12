@@ -16,6 +16,17 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
 
     List<BookingAssignment> findAllByBookingId(UUID bookingId);
 
+    /**
+     * Assignment counts driving round-robin fairness.
+     *
+     * <p>PENDING is included deliberately. Assignment happens when the slot is held, not when it is
+     * confirmed, so counting only CONFIRMED/COMPLETED made an outstanding hold invisible to the very
+     * next assignment: two guests booking before either confirmed both looked like "nobody has been
+     * assigned anything yet" and landed on the same member, who ended up owning both meetings.
+     *
+     * <p>A hold that later expires or is cancelled leaves its booking in a terminal state and drops
+     * out of this window again, so an abandoned hold does not penalise a member permanently.
+     */
     @Query(value = """
             SELECT
                 ba.participant_user_id AS participantUserId,
@@ -25,7 +36,7 @@ public interface BookingAssignmentRepository extends JpaRepository<BookingAssign
             JOIN bookings b ON b.id = ba.booking_id
             WHERE b.event_type_id = :eventTypeId
               AND ba.participant_user_id IN (:participantIds)
-              AND b.status IN ('CONFIRMED', 'COMPLETED')
+              AND b.status IN ('PENDING', 'CONFIRMED', 'COMPLETED')
             GROUP BY ba.participant_user_id
             """, nativeQuery = true)
     List<ParticipantAssignmentStatsRow> findStatsForEventTypeAndParticipants(

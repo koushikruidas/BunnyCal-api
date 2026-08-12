@@ -71,7 +71,7 @@ public class PublishReadinessService {
         }
         List<UUID> participantIds = participantService.effectiveParticipantUserIds(eventType);
         List<EventTypeParticipantResponse> enriched = participantService.enrichForReadiness(
-                participantIds, eventType.getUserId());
+                participantIds, eventType.getUserId(), eventType);
 
         return buildSummary(eventType.isPublished(), enriched);
     }
@@ -87,18 +87,38 @@ public class PublishReadinessService {
         }
         List<UUID> participantIds = participantService.effectiveParticipantUserIds(eventType);
         List<EventTypeParticipantResponse> enriched = participantService.enrichForReadiness(
-                participantIds, eventType.getUserId());
+                participantIds, eventType.getUserId(), eventType);
 
         CollectiveReadinessSummary summary = buildSummary(eventType.isPublished(), enriched);
         int readyCount = (int) enriched.stream()
                 .filter(p -> p.readinessStatus() == ParticipantReadinessStatus.READY
                         || p.readinessStatus() == ParticipantReadinessStatus.DEGRADED_CALENDAR)
                 .count();
+
+        // A participant who cannot mint this event's meeting link is skipped when Round Robin
+        // assigns, so the rotation quietly runs at partial strength. Warn without blocking: the
+        // event genuinely works, bookings simply route to the members who can. Same treatment as
+        // DEGRADED_CALENDAR, and deliberately NOT added to the structural blockers in
+        // buildSummary — those auto-unpublish the event.
+        List<String> cannotMintLink = enriched.stream()
+                .filter(p -> !p.canCreateMeetingLink())
+                .map(p -> p.userName() != null && !p.userName().isBlank() ? p.userName() : "A participant")
+                .toList();
+        boolean degraded = summary.degraded() || !cannotMintLink.isEmpty();
+        List<String> reasons = summary.reasons();
+        if (!cannotMintLink.isEmpty()) {
+            reasons = new ArrayList<>(reasons);
+            reasons.add(cannotMintLink.size() == 1
+                    ? cannotMintLink.get(0) + " cannot create meeting links for this event and will not receive bookings."
+                    : cannotMintLink.size() + " participants cannot create meeting links for this event "
+                            + "and will not receive bookings.");
+        }
+
         return new PublishReadinessResponse(
                 eventType.isPublished(),
                 summary.publishable(),
-                summary.degraded(),
-                summary.reasons(),
+                degraded,
+                reasons,
                 enriched.size(),
                 readyCount,
                 enriched);

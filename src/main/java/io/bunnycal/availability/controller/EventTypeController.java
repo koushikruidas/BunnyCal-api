@@ -1,5 +1,6 @@
 package io.bunnycal.availability.controller;
 
+import io.bunnycal.availability.dto.ConferencingCoverageResponse;
 import io.bunnycal.availability.dto.CreateEventTypeRequest;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.dto.EventTypeParticipantsRequest;
@@ -96,6 +97,19 @@ public class EventTypeController {
         UUID actingUserId = extractUserId(authentication);
         return ResponseEntity.ok(ApiResponse.success(
                 participantService.checkReadiness(actingUserId, userIds)));
+    }
+
+    /**
+     * Aggregate meeting-link coverage for a proposed round-robin roster, so the create wizard can
+     * warn before the provider choice is locked in. Counts only — never who lacks what.
+     */
+    @GetMapping("/participants/conferencing-coverage")
+    public ResponseEntity<ApiResponse<ConferencingCoverageResponse>> conferencingCoverage(
+            Authentication authentication,
+            @RequestParam("userIds") List<UUID> userIds) {
+        UUID actingUserId = extractUserId(authentication);
+        return ResponseEntity.ok(ApiResponse.success(
+                participantService.conferencingCoverage(actingUserId, userIds)));
     }
 
     @GetMapping("/{eventTypeId}/rr-stats")

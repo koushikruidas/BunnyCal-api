@@ -20,6 +20,7 @@ import io.bunnycal.availability.cache.SlotCacheService;
 import io.bunnycal.availability.cache.SlotCacheService.CachedSlots;
 import io.bunnycal.availability.cache.SlotCacheService.ComputeOutcome;
 import io.bunnycal.availability.cache.SlotCacheVersionService;
+import io.bunnycal.availability.domain.AvailabilityOverride;
 import io.bunnycal.availability.domain.AvailabilityRule;
 import io.bunnycal.availability.domain.EventAvailabilityMode;
 import io.bunnycal.availability.domain.EventAvailabilityWindow;
@@ -618,6 +619,112 @@ class SlotServiceTest {
                 .thenReturn(List.of(rule(userId, DayOfWeek.MONDAY)));
 
         assertEquals(List.of(DayOfWeek.MONDAY), slotService.availableDaysFor(userId, inherit));
+    }
+
+    // ---------------------------------------------------------------------
+    // blockedDatesFor — individual off dates the weekday set cannot express.
+    // ---------------------------------------------------------------------
+
+    private static final LocalDate RANGE_START = LocalDate.of(2026, 12, 1);
+    private static final LocalDate RANGE_END = LocalDate.of(2026, 12, 31);
+
+    private void hostExistsForBlockedDates() {
+        when(userRepository.findById(userId)).thenReturn(Optional.of(host));
+    }
+
+    private static AvailabilityOverride dayOff(UUID userId, LocalDate date) {
+        return AvailabilityOverride.builder().userId(userId).date(date).isAvailable(false).build();
+    }
+
+    /** A host marking a whole day off must strike that date out of the public calendar. */
+    @Test
+    void blockedDatesFor_includesWholeDayOffOverride() {
+        hostExistsForBlockedDates();
+        LocalDate off = LocalDate.of(2026, 12, 24);
+        when(availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, RANGE_START, RANGE_END))
+                .thenReturn(List.of(dayOff(userId, off)));
+        when(holidayDayOffService.holidays(eq(userId), any(), any(), any())).thenReturn(List.of());
+
+        assertEquals(List.of(off), slotService.blockedDatesFor(userId, RANGE_START, RANGE_END));
+    }
+
+    /**
+     * A partial override still generates slots, so listing it would hide a bookable day — the exact
+     * over-blocking that makes this different from "any override means closed".
+     */
+    @Test
+    void blockedDatesFor_excludesPartialDayOverride() {
+        hostExistsForBlockedDates();
+        AvailabilityOverride partial = AvailabilityOverride.builder()
+                .userId(userId)
+                .date(LocalDate.of(2026, 12, 24))
+                .isAvailable(true)
+                .startTime(LocalTime.of(9, 0))
+                .endTime(LocalTime.of(11, 0))
+                .build();
+        when(availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, RANGE_START, RANGE_END))
+                .thenReturn(List.of(partial));
+        when(holidayDayOffService.holidays(eq(userId), any(), any(), any())).thenReturn(List.of());
+
+        assertEquals(List.of(), slotService.blockedDatesFor(userId, RANGE_START, RANGE_END));
+    }
+
+    /** An imported public holiday blocks the day just like a manual day off. */
+    @Test
+    void blockedDatesFor_includesImportedHoliday() {
+        hostExistsForBlockedDates();
+        LocalDate christmas = LocalDate.of(2026, 12, 25);
+        when(availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, RANGE_START, RANGE_END))
+                .thenReturn(List.of());
+        when(holidayDayOffService.holidays(eq(userId), any(), any(), any()))
+                .thenReturn(List.of(new HolidayDeduplicator.Holiday("Christmas", christmas)));
+
+        assertEquals(List.of(christmas), slotService.blockedDatesFor(userId, RANGE_START, RANGE_END));
+    }
+
+    /**
+     * Mirrors isDayOffUnlessOverridden: a host who deliberately keeps working on a public holiday
+     * must not have that day struck out, or the UI would block a day the engine still fills.
+     */
+    @Test
+    void blockedDatesFor_explicitAvailableOverrideBeatsHoliday() {
+        hostExistsForBlockedDates();
+        LocalDate christmas = LocalDate.of(2026, 12, 25);
+        AvailabilityOverride working = AvailabilityOverride.builder()
+                .userId(userId)
+                .date(christmas)
+                .isAvailable(true)
+                .build();
+        when(availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, RANGE_START, RANGE_END))
+                .thenReturn(List.of(working));
+        when(holidayDayOffService.holidays(eq(userId), any(), any(), any()))
+                .thenReturn(List.of(new HolidayDeduplicator.Holiday("Christmas", christmas)));
+
+        assertEquals(List.of(), slotService.blockedDatesFor(userId, RANGE_START, RANGE_END));
+    }
+
+    /** A date off both by hand and by holiday import must appear once, and the list stays sorted. */
+    @Test
+    void blockedDatesFor_dedupesAndSortsAcrossBothSources() {
+        hostExistsForBlockedDates();
+        LocalDate christmas = LocalDate.of(2026, 12, 25);
+        LocalDate vacation = LocalDate.of(2026, 12, 3);
+        when(availabilityOverrideRepository.findByUserIdAndDateBetweenOrderByDateAsc(userId, RANGE_START, RANGE_END))
+                .thenReturn(List.of(dayOff(userId, christmas), dayOff(userId, vacation)));
+        when(holidayDayOffService.holidays(eq(userId), any(), any(), any()))
+                .thenReturn(List.of(new HolidayDeduplicator.Holiday("Christmas", christmas)));
+
+        assertEquals(List.of(vacation, christmas), slotService.blockedDatesFor(userId, RANGE_START, RANGE_END));
+    }
+
+    /** Guard clauses: nothing to scan, and no repository traffic. */
+    @Test
+    void blockedDatesFor_invalidRange_returnsEmptyWithoutQuerying() {
+        assertEquals(List.of(), slotService.blockedDatesFor(userId, RANGE_END, RANGE_START));
+        assertEquals(List.of(), slotService.blockedDatesFor(null, RANGE_START, RANGE_END));
+
+        verify(availabilityOverrideRepository, never())
+                .findByUserIdAndDateBetweenOrderByDateAsc(any(), any(), any());
     }
 
     /** A CUSTOM event with no usable window is closed every day — advertising host days would lie. */
