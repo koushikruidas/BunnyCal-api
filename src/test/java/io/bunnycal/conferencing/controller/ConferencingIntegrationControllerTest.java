@@ -169,6 +169,63 @@ class ConferencingIntegrationControllerTest {
     }
 
     @Test
+    void callback_returnsToWhereTheConnectStarted() {
+        // A host connecting Zoom from step 3 of event creation must land back on that step
+        // with their draft intact, not on the integrations page.
+        String returnTo = "/dashboard/events/new?step=3&zoomConnect=1";
+        when(zoomOAuthService.handleCallback("code", "state"))
+                .thenReturn(new ConferencingOAuthService.CallbackResult("host-dashboard", returnTo, null));
+
+        ResponseEntity<Void> response = controller.callback("zoom", "code", "state");
+
+        assertEquals(HttpStatus.FOUND, response.getStatusCode());
+        assertEquals(
+                "http://localhost:3000/dashboard/events/new?step=3&zoomConnect=1&integrationSuccess=zoom",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void callback_returnToKeepsFragmentLast() {
+        when(zoomOAuthService.handleCallback("code", "state"))
+                .thenReturn(new ConferencingOAuthService.CallbackResult(
+                        "host-dashboard", "/dashboard/events/new?step=3#conferencing", null));
+
+        ResponseEntity<Void> response = controller.callback("zoom", "code", "state");
+
+        // The fragment must stay at the end or the browser swallows the query param.
+        assertEquals(
+                "http://localhost:3000/dashboard/events/new?step=3&integrationSuccess=zoom#conferencing",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void callback_absoluteReturnToIsIgnored() {
+        // returnTo is attacker-influencable, so anything that is not a relative path is
+        // discarded rather than followed — otherwise this is an open redirect.
+        when(zoomOAuthService.handleCallback("code", "state"))
+                .thenReturn(new ConferencingOAuthService.CallbackResult(
+                        "host-dashboard", "https://evil.example.com/steal", null));
+
+        ResponseEntity<Void> response = controller.callback("zoom", "code", "state");
+
+        assertEquals("http://localhost:3000/success?integrationSuccess=zoom",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
+    void callback_protocolRelativeReturnToIsIgnored() {
+        // "//host" inherits the current scheme and still leaves the origin.
+        when(zoomOAuthService.handleCallback("code", "state"))
+                .thenReturn(new ConferencingOAuthService.CallbackResult(
+                        "host-dashboard", "//evil.example.com/steal", null));
+
+        ResponseEntity<Void> response = controller.callback("zoom", "code", "state");
+
+        assertEquals("http://localhost:3000/success?integrationSuccess=zoom",
+                response.getHeaders().getLocation().toString());
+    }
+
+    @Test
     void callback_mapsExpiredStateToErrorRedirect() {
         when(zoomOAuthService.handleCallback("code", "state"))
                 .thenThrow(new OAuthStateException(OAuthStateException.Reason.EXPIRED, "boom"));

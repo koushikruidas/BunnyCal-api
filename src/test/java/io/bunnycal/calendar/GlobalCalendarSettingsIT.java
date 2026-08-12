@@ -20,6 +20,8 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.service.CalendarConnectionManagementService;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.conferencing.domain.ConferencingConnectionStatus;
+import io.bunnycal.conferencing.domain.ZoomConferencingConnection;
 import io.bunnycal.conferencing.service.EventConferencingResolver;
 import java.time.Duration;
 import java.util.UUID;
@@ -98,11 +100,13 @@ class GlobalCalendarSettingsIT {
     @Autowired CalendarConnectionManagementService managementService;
     @Autowired EventConferencingResolver conferencingResolver;
     @Autowired BookingSchedulingProjectionResolver projectionResolver;
+    @Autowired io.bunnycal.conferencing.repository.ZoomConferencingConnectionRepository zoomConnectionRepository;
+    @Autowired io.bunnycal.conferencing.service.ZoomConferencingOAuthService zoomOAuthService;
 
     @BeforeEach
     void setUp() {
         jdbc.execute("TRUNCATE TABLE users, event_types, calendar_connections, "
-                + "calendar_connection_calendars CASCADE");
+                + "calendar_connection_calendars, zoom_conferencing_connections CASCADE");
     }
 
     // ── The pointer follows the calendar ────────────────────────────────────────────────────────
@@ -125,6 +129,7 @@ class GlobalCalendarSettingsIT {
                 .isEqualTo(ConferencingProviderType.GOOGLE_MEET);
 
         // The user moves house. Teams first (Meet cannot survive the move), then the calendar.
+        zoomConnection(owner);
         managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
         managementService.setDefaultWriteback(owner.getId(), microsoft.getId());
         managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.MICROSOFT_TEAMS);
@@ -200,6 +205,7 @@ class GlobalCalendarSettingsIT {
                 .isInstanceOf(CustomException.class)
                 .hasMessageContaining("work or school");
 
+        zoomConnection(owner);
         managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
         assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
                 .isEqualTo(ConferencingProviderType.ZOOM);
@@ -261,9 +267,71 @@ class GlobalCalendarSettingsIT {
     void disablingTheServingAvailabilityCalendar_preservesIndependentZoomDefault() {
         User owner = createUser("owner@test.com");
         CalendarConnection google = connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+        zoomConnection(owner);
         managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
 
         managementService.setChecksAvailability(owner.getId(), google.getId(), "primary", false);
+
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.ZOOM);
+    }
+
+    /**
+     * The Zoom counterpart of {@link #disconnectingTheServingCalendar_standsTheDefaultLinkDown}.
+     *
+     * <p>Disconnecting Zoom used to delete the connection and leave the default pointing at it, so
+     * new events still selected Zoom with nothing behind it. It now stands down like any other
+     * default whose provider can no longer serve.
+     */
+    @Test
+    void disconnectingZoom_standsDownAZoomDefault() {
+        User owner = createUser("owner@test.com");
+        zoomConnection(owner);
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
+
+        zoomOAuthService.disconnect(owner.getId());
+
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.NONE);
+    }
+
+    /** Disconnecting Zoom must not disturb a default that never depended on it. */
+    @Test
+    void disconnectingZoom_leavesANativeDefaultAlone() {
+        User owner = createUser("owner@test.com");
+        connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+        zoomConnection(owner);
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.GOOGLE_MEET);
+
+        zoomOAuthService.disconnect(owner.getId());
+
+        assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
+                .isEqualTo(ConferencingProviderType.GOOGLE_MEET);
+    }
+
+    /**
+     * The other half: a provider that cannot serve must not be selectable in the first place.
+     * Without this a host could re-select Zoom straight after disconnecting it and land back in the
+     * broken state the stand-down just repaired.
+     */
+    @Test
+    void choosingZoomWithoutConnectingIt_isRefused() {
+        User owner = createUser("owner@test.com");
+        connection(owner, CalendarProviderType.GOOGLE, "g-sub", true);
+
+        assertThatThrownBy(() -> managementService.setDefaultConferencing(
+                owner.getId(), ConferencingProviderType.ZOOM))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("not connected");
+    }
+
+    /** Once Zoom is connected again it becomes selectable, with no other action needed. */
+    @Test
+    void zoomBecomesSelectableAgainAfterReconnecting() {
+        User owner = createUser("owner@test.com");
+        zoomConnection(owner);
+
+        managementService.setDefaultConferencing(owner.getId(), ConferencingProviderType.ZOOM);
 
         assertThat(userRepository.findById(owner.getId()).orElseThrow().getDefaultConferencingProvider())
                 .isEqualTo(ConferencingProviderType.ZOOM);
@@ -344,6 +412,20 @@ class GlobalCalendarSettingsIT {
         inventoryRepository.save(calendar);
 
         return saved;
+    }
+
+    /**
+     * A live Zoom connection. Zoom needs no calendar, but it does need to be connected: selecting it
+     * as the default is rejected otherwise, exactly as it is for a host who never linked Zoom.
+     */
+    private void zoomConnection(User owner) {
+        ZoomConferencingConnection c = new ZoomConferencingConnection();
+        c.setUserId(owner.getId());
+        c.setProviderUserId("zoom-" + owner.getId());
+        c.setRefreshTokenCiphertext("cipher");
+        c.setStatus(ConferencingConnectionStatus.ACTIVE);
+        c.setLastTokenExpiresAt(java.time.Instant.now().plusSeconds(3600));
+        zoomConnectionRepository.saveAndFlush(c);
     }
 
     private EventType eventBoundToDefault(User owner) {

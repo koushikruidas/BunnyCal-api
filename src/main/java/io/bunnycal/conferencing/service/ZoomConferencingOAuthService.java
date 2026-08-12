@@ -25,6 +25,7 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
     private final ZoomApiClient zoomApiClient;
     private final OAuthStateService stateService;
     private final TokenCipher tokenCipher;
+    private final DefaultConferencingReconciler defaultConferencingReconciler;
     private final String clientId;
     private final String clientSecret;
     private final String redirectUri;
@@ -33,6 +34,7 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
                                         ZoomApiClient zoomApiClient,
                                         OAuthStateService stateService,
                                         TokenCipher tokenCipher,
+                                        DefaultConferencingReconciler defaultConferencingReconciler,
                                         @Value("${zoom.oauth.client-id:}") String clientId,
                                         @Value("${zoom.oauth.client-secret:}") String clientSecret,
                                         @Value("${zoom.oauth.redirect-uri:http://127.0.0.1:8080/integrations/conferencing/zoom/callback}") String redirectUri) {
@@ -40,6 +42,7 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
         this.zoomApiClient = zoomApiClient;
         this.stateService = stateService;
         this.tokenCipher = tokenCipher;
+        this.defaultConferencingReconciler = defaultConferencingReconciler;
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.redirectUri = redirectUri;
@@ -120,6 +123,12 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
         // Data-deletion guarantee for Zoom marketplace compliance: no token
         // material or provider identifiers are retained after disconnect.
         repository.delete(connection);
+        // Deleting the connection does not by itself change the host's default meeting link, so
+        // without this the default stays pointing at Zoom and new events keep selecting a provider
+        // that can no longer mint a link. Flush first: the reconciler reads the connection back to
+        // decide whether Zoom is still servable.
+        repository.flush();
+        defaultConferencingReconciler.reconcile(userId, "zoom_disconnected");
     }
 
     /**
@@ -134,8 +143,21 @@ public class ZoomConferencingOAuthService implements ConferencingOAuthService {
             return;
         }
         var connections = repository.findAllByProviderUserId(providerUserId);
-        if (!connections.isEmpty()) {
-            repository.deleteAll(connections);
+        if (connections.isEmpty()) {
+            return;
+        }
+        var affectedUserIds = connections.stream()
+                .map(ZoomConferencingConnection::getUserId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        repository.deleteAll(connections);
+        // Same reasoning as disconnect(): the rows are gone, so any host still defaulting to Zoom
+        // needs a servable replacement. One Zoom account can be linked by more than one host, so
+        // every affected host is reconciled, not just the first.
+        repository.flush();
+        for (UUID affectedUserId : affectedUserIds) {
+            defaultConferencingReconciler.reconcile(affectedUserId, "zoom_deauthorized");
         }
     }
 
