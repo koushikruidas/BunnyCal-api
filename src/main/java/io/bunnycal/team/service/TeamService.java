@@ -1,6 +1,7 @@
 package io.bunnycal.team.service;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.onboarding.OnboardingStatus;
 import io.bunnycal.auth.avatar.ProfileAvatarService;
 import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.auth.service.SessionUserResolver;
@@ -331,6 +332,15 @@ public class TeamService {
                         .role(invitation.getRole())
                         .joinedAt(timeSource.now())
                         .build()));
+
+        // Record that this user arrived by invitation, but only while they still have onboarding
+        // ahead of them — it describes how they became a user, not every team they later join. An
+        // already-onboarded user accepting an invite has nothing left to adapt, so leave them be.
+        if (user.getOnboardingStatus() != OnboardingStatus.COMPLETED
+                && user.getOnboardingInvitedTeamId() == null) {
+            user.setOnboardingInvitedTeamId(invitation.getTeamId());
+            userRepository.save(user);
+        }
 
         invitation.setStatus(InvitationStatus.ACCEPTED);
         teamInvitationRepository.save(invitation);

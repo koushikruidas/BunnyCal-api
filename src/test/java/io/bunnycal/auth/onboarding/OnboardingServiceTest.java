@@ -22,6 +22,8 @@ import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.calendar.service.CalendarConnectionManagementService;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.team.domain.Team;
+import io.bunnycal.team.repository.TeamRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Field;
 import java.time.DayOfWeek;
@@ -42,6 +44,7 @@ class OnboardingServiceTest {
     @Mock CalendarConnectionCalendarRepository calendarRepository;
     @Mock CalendarConnectionManagementService calendarManagementService;
     @Mock EventTypeRepository eventTypeRepository;
+    @Mock TeamRepository teamRepository;
 
     private OnboardingService service;
     private final UUID userId = UUID.randomUUID();
@@ -52,7 +55,8 @@ class OnboardingServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         service = new OnboardingService(userRepository, availabilityRuleRepository, connectionRepository,
-                calendarRepository, calendarManagementService, eventTypeRepository, new SimpleMeterRegistry());
+                calendarRepository, calendarManagementService, eventTypeRepository, teamRepository,
+                new SimpleMeterRegistry());
         user = User.builder().id(userId).email("new@example.com").name("New Host").timezone("UTC").build();
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -99,6 +103,78 @@ class OnboardingServiceTest {
         assertThat(user.getAvailabilityConfirmedAt()).isNotNull();
         assertThat(user.getOnboardingCompletedAt()).isNotNull();
         verify(userRepository, atLeastOnce()).save(user);
+    }
+
+    /**
+     * Someone who arrived by team invitation joined to receive team bookings, so a personal
+     * one-on-one link is not something to demand of them before they can finish. The step is still
+     * offered in the UI — it is only the completion requirement that relaxes.
+     */
+    @Test
+    void invitedUserCompletesWithoutPublishingAPersonalLink() throws Exception {
+        UUID teamId = UUID.randomUUID();
+        user.setOnboardingInvitedTeamId(teamId);
+        when(teamRepository.findByIdAndDeletedAtIsNull(teamId))
+                .thenReturn(Optional.of(Team.builder().id(teamId).name("Customer Success").build()));
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
+                .thenReturn(List.of(rule()));
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId))
+                .thenReturn(Optional.of(activeConnection()));
+        when(calendarRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of(readyCalendar()));
+        when(eventTypeRepository.existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(userId, EventKind.ONE_ON_ONE))
+                .thenReturn(false);
+
+        OnboardingStateResponse state = service.update(userId,
+                new OnboardingUpdateRequest(OnboardingUseCase.TEAM_MANAGEMENT, OnboardingStep.SUCCESS, true, false));
+
+        assertThat(state.status()).isEqualTo(OnboardingStatus.COMPLETED);
+        assertThat(state.missingRequirements()).isEmpty();
+        // Still reported, so the UI can offer the step — only the requirement relaxed.
+        assertThat(state.firstEventReady()).isFalse();
+        // Parking them on a step they may skip would read as being stuck.
+        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.SUCCESS);
+        assertThat(state.invitedTeamId()).isEqualTo(teamId);
+        assertThat(state.invitedTeamName()).isEqualTo("Customer Success");
+    }
+
+    /**
+     * The counterpart, and the guard that this change stays scoped: for a user who signed up on
+     * their own the booking link is the product, so the requirement is untouched.
+     */
+    @Test
+    void selfSignedUpUserStillMustPublishAPersonalLink() throws Exception {
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
+                .thenReturn(List.of(rule()));
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId))
+                .thenReturn(Optional.of(activeConnection()));
+        when(calendarRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of(readyCalendar()));
+        when(eventTypeRepository.existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(userId, EventKind.ONE_ON_ONE))
+                .thenReturn(false);
+
+        OnboardingStateResponse state = service.update(userId,
+                new OnboardingUpdateRequest(OnboardingUseCase.PERSONAL, OnboardingStep.FIRST_EVENT, true, false));
+
+        assertThat(state.missingRequirements()).contains("firstEvent");
+        assertThat(state.status()).isNotEqualTo(OnboardingStatus.COMPLETED);
+        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.FIRST_EVENT);
+        assertThat(state.invitedTeamId()).isNull();
+        assertThat(state.invitedTeamName()).isNull();
+    }
+
+    /** A soft-deleted team leaves the relaxed requirement intact but has no name to show. */
+    @Test
+    void invitedTeamThatWasDeletedResolvesToNoName() throws Exception {
+        UUID teamId = UUID.randomUUID();
+        user.setOnboardingInvitedTeamId(teamId);
+        when(teamRepository.findByIdAndDeletedAtIsNull(teamId)).thenReturn(Optional.empty());
+
+        OnboardingStateResponse state = service.get(userId);
+
+        assertThat(state.invitedTeamId()).isEqualTo(teamId);
+        assertThat(state.invitedTeamName()).isNull();
+        assertThat(state.missingRequirements()).doesNotContain("firstEvent");
     }
 
     @Test

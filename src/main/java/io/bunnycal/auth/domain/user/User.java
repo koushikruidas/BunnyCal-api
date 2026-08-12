@@ -94,6 +94,17 @@ public class User extends BaseEntity {
     private Instant onboardingCompletedAt;
 
     /**
+     * The team whose invitation brought this user in, or null if they arrived on their own.
+     *
+     * <p>Set only while onboarding is still incomplete, so it records how someone became a user
+     * rather than every team they later join. Non-null relaxes the first-event requirement —
+     * publishing a personal booking link is a solo-host concern, not something to demand of
+     * someone who joined to receive team bookings — and names the team during onboarding.
+     */
+    @Column(name = "onboarding_invited_team_id")
+    private UUID onboardingInvitedTeamId;
+
+    /**
      * The user's global default meeting link. Event types storing
      * {@link ConferencingProviderType#DEFAULT} resolve to this at booking time, so changing it
      * carries every one of them forward instead of leaving them pinned to a provider their

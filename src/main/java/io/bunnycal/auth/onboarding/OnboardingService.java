@@ -5,6 +5,8 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.team.domain.Team;
+import io.bunnycal.team.repository.TeamRepository;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -42,6 +44,7 @@ public class OnboardingService {
     private final CalendarConnectionCalendarRepository calendarRepository;
     private final CalendarConnectionManagementService calendarManagementService;
     private final EventTypeRepository eventTypeRepository;
+    private final TeamRepository teamRepository;
     private final MeterRegistry meterRegistry;
 
     @Transactional
@@ -141,10 +144,17 @@ public class OnboardingService {
         boolean firstEventReady = eventTypeRepository
                 .existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(userId, EventKind.ONE_ON_ONE);
 
+        // A personal booking link is the product for someone who signed up on their own, so they
+        // still have to publish one. Someone who arrived by team invitation joined to receive team
+        // bookings; the step is still shown to them — an invitee is a new user of the product, not
+        // just a new member of a team — but it no longer blocks completion, because cornering them
+        // into publishing yields a junk event type rather than understanding.
+        boolean firstEventRequired = user.getOnboardingInvitedTeamId() == null;
+
         List<String> missing = new ArrayList<>();
         if (!availabilityReady || !availabilityConfirmed) missing.add("availability");
         if (!calendarReady) missing.add("calendar");
-        if (!firstEventReady) missing.add("firstEvent");
+        if (firstEventRequired && !firstEventReady) missing.add("firstEvent");
 
         if (missing.isEmpty() && user.getOnboardingStatus() != OnboardingStatus.COMPLETED) {
             user.setOnboardingStatus(OnboardingStatus.COMPLETED);
@@ -157,11 +167,20 @@ public class OnboardingService {
                     userId, CONTRACT_VERSION, user.getOnboardingUseCase());
         }
 
+        UUID invitedTeamId = user.getOnboardingInvitedTeamId();
+        // Soft-deleted teams resolve to null: the invite still explains why the first-event step is
+        // optional, but there is no team left to name or send them to.
+        String invitedTeamName = invitedTeamId == null ? null
+                : teamRepository.findByIdAndDeletedAtIsNull(invitedTeamId)
+                        .map(Team::getName)
+                        .orElse(null);
+
         return new OnboardingStateResponse(
                 user.getOnboardingVersion(), user.getOnboardingStatus(), user.getOnboardingUseCase(),
                 user.getOnboardingLastStep(), resumeStep(user, availabilityConfirmed && availabilityReady,
                 calendarReady, firstEventReady), availabilityConfirmed, availabilityReady,
-                calendarReady, firstEventReady, List.copyOf(missing), user.getOnboardingCompletedAt());
+                calendarReady, firstEventReady, List.copyOf(missing), user.getOnboardingCompletedAt(),
+                invitedTeamId, invitedTeamName);
     }
 
     private boolean calendarReady(UUID userId) {
@@ -186,7 +205,10 @@ public class OnboardingService {
         if (!availability) return OnboardingStep.AVAILABILITY;
         // Calendar authorization is part of host sign-in now. If it could not be initialized,
         // FIRST_EVENT renders a compact recovery action instead of a standalone setup step.
-        if (!event) return OnboardingStep.FIRST_EVENT;
+        //
+        // Resuming an invitee onto FIRST_EVENT would park them on the one step they are allowed to
+        // skip, which reads as being stuck. They can still reach it from the checklist.
+        if (!event && user.getOnboardingInvitedTeamId() == null) return OnboardingStep.FIRST_EVENT;
         return OnboardingStep.SUCCESS;
     }
 
