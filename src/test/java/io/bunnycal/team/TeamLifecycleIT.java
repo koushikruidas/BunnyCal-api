@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.bunnycal.auth.domain.user.User;
+import io.bunnycal.auth.onboarding.OnboardingStatus;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.domain.TeamRole;
@@ -62,6 +63,44 @@ class TeamLifecycleIT extends AbstractTeamIT {
         assertThat(members).hasSize(2);
         assertThat(members).extracting(TeamMemberResponse::userId)
                 .containsExactlyInAnyOrder(owner.getId(), invitee.getId());
+    }
+
+    /**
+     * Accepting an invite records which team brought the user in, so onboarding can name it and
+     * stop demanding a personal booking link from someone who joined to receive team bookings.
+     */
+    @Test
+    void acceptInvitation_recordsInvitingTeamForAnUnonboardedUser() {
+        User owner = createUser("owner@test.com");
+        User invitee = createUser("alice@test.com");
+        TeamResponse team = teamService.createTeam(owner.getId(), new CreateTeamRequest("Sales Team", "sales-team"));
+        TeamInvitationResponse invite = teamService.inviteMember(
+                owner.getId(), team.id(), new InviteMemberRequest("alice@test.com", TeamRole.MEMBER));
+
+        teamService.acceptInvitation(invitee.getId(), invite.token());
+
+        assertThat(userRepository.findById(invitee.getId()).orElseThrow().getOnboardingInvitedTeamId())
+                .isEqualTo(team.id());
+    }
+
+    /**
+     * The guard that keeps this scoped to first-run: someone who already finished onboarding has
+     * nothing left to adapt, so joining another team must not rewrite how they arrived.
+     */
+    @Test
+    void acceptInvitation_leavesAnAlreadyOnboardedUserUntouched() {
+        User owner = createUser("owner@test.com");
+        User invitee = createUser("alice@test.com");
+        invitee.setOnboardingStatus(OnboardingStatus.COMPLETED);
+        userRepository.save(invitee);
+        TeamResponse team = teamService.createTeam(owner.getId(), new CreateTeamRequest("Sales Team", "sales-team"));
+        TeamInvitationResponse invite = teamService.inviteMember(
+                owner.getId(), team.id(), new InviteMemberRequest("alice@test.com", TeamRole.MEMBER));
+
+        teamService.acceptInvitation(invitee.getId(), invite.token());
+
+        assertThat(userRepository.findById(invitee.getId()).orElseThrow().getOnboardingInvitedTeamId())
+                .isNull();
     }
 
     @Test
