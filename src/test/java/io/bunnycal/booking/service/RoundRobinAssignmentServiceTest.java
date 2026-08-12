@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -24,6 +25,7 @@ import io.bunnycal.booking.domain.BookingAssignment;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
+import io.bunnycal.conferencing.service.ConferencingReadinessService;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -46,6 +48,7 @@ class RoundRobinAssignmentServiceTest {
     @Mock private BookingAssignmentRepository bookingAssignmentRepository;
     @Mock private BookingService bookingService;
     @Mock private UserRepository userRepository;
+    @Mock private ConferencingReadinessService conferencingReadinessService;
 
     private RoundRobinAssignmentService service;
 
@@ -57,7 +60,12 @@ class RoundRobinAssignmentServiceTest {
                 participantAvailabilityService,
                 bookingAssignmentRepository,
                 bookingService,
-                userRepository);
+                userRepository,
+                conferencingReadinessService);
+        // These tests cover rotation, not conferencing: every participant can mint a link unless a
+        // test says otherwise, so the existing expectations stay about assignment order.
+        lenient().when(conferencingReadinessService.canProvideMeetingLink(any(), any(EventType.class)))
+                .thenReturn(true);
     }
 
     @Test
@@ -159,6 +167,59 @@ class RoundRobinAssignmentServiceTest {
                 "guest@example.com",
                 "Guest"));
         assertEquals(ErrorCode.SLOT_UNAVAILABLE, ex.getErrorCode());
+    }
+
+    /**
+     * A member who cannot mint the event's meeting link must be routed around, even when they are
+     * otherwise eligible, available, and next in the rotation. Assigning them yields a confirmed
+     * booking whose join URL never materialises, because link creation runs after confirmation and
+     * its failure is swallowed — the guest is emailed an invitation with nothing to click.
+     */
+    @Test
+    void assignAndCreateHeldBooking_skipsParticipantWhoCannotMintMeetingLink() {
+        UUID ownerId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID aliceId = UUID.randomUUID();
+        UUID bobId = UUID.randomUUID();
+        Instant start = Instant.parse("2026-06-15T09:00:00Z");
+        Instant end = Instant.parse("2026-06-15T09:30:00Z");
+        EventType eventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(ownerId)
+                .kind(EventKind.ROUND_ROBIN)
+                .build();
+
+        when(participantService.effectiveParticipantUserIds(eventType)).thenReturn(List.of(aliceId, bobId));
+        when(eligibilityService.checkForRoundRobin(aliceId))
+                .thenReturn(new ParticipantEligibilityResult(aliceId, true, ParticipantEligibilityReason.ACTIVE));
+        when(eligibilityService.checkForRoundRobin(bobId))
+                .thenReturn(new ParticipantEligibilityResult(bobId, true, ParticipantEligibilityReason.ACTIVE));
+        // Alice has never been assigned anything, so she would win the rotation — but her Zoom
+        // account is not connected, so the booking has to go to Bob instead.
+        when(conferencingReadinessService.canProvideMeetingLink(aliceId, eventType)).thenReturn(false);
+        when(conferencingReadinessService.canProvideMeetingLink(bobId, eventType)).thenReturn(true);
+        when(userRepository.findById(bobId)).thenReturn(Optional.of(User.builder().id(bobId).timezone("UTC").build()));
+        when(participantAvailabilityService.computeForParticipant(eq(bobId), eq(eventType), eq(LocalDate.of(2026, 6, 15)), any()))
+                .thenReturn(List.of(new SlotUtc(start, end)));
+        when(bookingAssignmentRepository.findStatsForEventTypeAndParticipants(eventTypeId, List.of(bobId)))
+                .thenReturn(List.of(statsRow(bobId, 5L, Instant.parse("2026-06-14T10:00:00Z"))));
+
+        Booking booking = Booking.builder()
+                .id(UUID.randomUUID())
+                .hostId(bobId)
+                .eventTypeId(eventTypeId)
+                .startTime(start)
+                .endTime(end)
+                .build();
+        when(bookingService.createHeldBooking(
+                bobId, eventTypeId, start, end, Duration.ofMinutes(10), "guest@example.com", "Guest"))
+                .thenReturn(booking);
+
+        var assigned = service.assignAndCreateHeldBooking(
+                eventType, start, end, List.of(aliceId, bobId),
+                Duration.ofMinutes(10), "guest@example.com", "Guest");
+
+        assertEquals(bobId, assigned.participantUserId());
     }
 
     private BookingAssignmentRepository.ParticipantAssignmentStatsRow statsRow(UUID participantId,

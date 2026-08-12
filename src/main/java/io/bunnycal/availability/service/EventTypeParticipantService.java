@@ -6,6 +6,7 @@ import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.availability.domain.EventTypeParticipant;
+import io.bunnycal.availability.dto.ConferencingCoverageResponse;
 import io.bunnycal.availability.dto.EventTypeParticipantResponse;
 import io.bunnycal.availability.dto.PublishReadinessResponse;
 import io.bunnycal.availability.repository.EventTypeParticipantRepository;
@@ -17,6 +18,7 @@ import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
 import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.common.enums.ConferencingProviderType;
+import io.bunnycal.conferencing.service.ConferencingReadinessService;
 import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.conferencing.service.NativeConferencingCapabilityService;
 import io.bunnycal.common.enums.ErrorCode;
@@ -113,6 +115,7 @@ public class EventTypeParticipantService {
     private final BookingSchedulingProjectionResolver projectionResolver;
     private final EventConferencingResolver conferencingResolver;
     private final NativeConferencingCapabilityService conferencingCapabilityService;
+    private final ConferencingReadinessService conferencingReadinessService;
     // Injected lazily to break the circular dependency:
     // PublishReadinessService → EventTypeParticipantService → PublishReadinessService
     @Lazy
@@ -131,7 +134,8 @@ public class EventTypeParticipantService {
                                        ProfileAvatarService profileAvatarService,
                                        BookingSchedulingProjectionResolver projectionResolver,
                                        EventConferencingResolver conferencingResolver,
-                                       NativeConferencingCapabilityService conferencingCapabilityService) {
+                                       NativeConferencingCapabilityService conferencingCapabilityService,
+                                       ConferencingReadinessService conferencingReadinessService) {
         this.eventTypeRepository = eventTypeRepository;
         this.participantRepository = participantRepository;
         this.userRepository = userRepository;
@@ -145,6 +149,7 @@ public class EventTypeParticipantService {
         this.projectionResolver = projectionResolver;
         this.conferencingResolver = conferencingResolver;
         this.conferencingCapabilityService = conferencingCapabilityService;
+        this.conferencingReadinessService = conferencingReadinessService;
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -153,7 +158,7 @@ public class EventTypeParticipantService {
     public List<EventTypeParticipantResponse> listParticipants(UUID actingUserId, UUID eventTypeId) {
         EventType eventType = requireOwnedEventType(actingUserId, eventTypeId);
         List<UUID> effectiveIds = effectiveParticipantUserIds(eventType);
-        return enrich(effectiveIds, eventType.getUserId(), actingUserId);
+        return enrich(effectiveIds, eventType.getUserId(), actingUserId, eventType);
     }
 
     // ── Replace (PUT semantics) ────────────────────────────────────────────────
@@ -177,7 +182,7 @@ public class EventTypeParticipantService {
             }
             // Single-host kinds keep zero stored rows; effective participant is the owner.
             participantRepository.deleteByEventTypeId(eventTypeId);
-            return enrich(List.of(eventType.getUserId()), eventType.getUserId(), actingUserId);
+            return enrich(List.of(eventType.getUserId()), eventType.getUserId(), actingUserId, eventType);
         }
 
         // ROUND_ROBIN / COLLECTIVE: 1..N participants required.
@@ -241,7 +246,7 @@ public class EventTypeParticipantService {
             publishReadinessService.applyAndEnforce(eventType);
         }
 
-        return enrich(ordered, eventType.getUserId(), actingUserId);
+        return enrich(ordered, eventType.getUserId(), actingUserId, eventType);
     }
 
     // ── Effective participants (consumed by Phase 3) ───────────────────────────
@@ -288,7 +293,45 @@ public class EventTypeParticipantService {
         if (userIds == null || userIds.isEmpty()) return List.of();
         List<UUID> ordered = dedupePreserveOrder(userIds);
         validateWithinTeamPool(actingUserId, ordered);
-        return enrich(ordered, actingUserId, actingUserId);
+        return enrich(ordered, actingUserId, actingUserId, null);
+    }
+
+    /**
+     * How many of {@code userIds} could mint the meeting link for each selectable conferencing
+     * option. Lets the create wizard warn a host that the provider they just picked would exclude
+     * teammates from the rotation, while there is still a choice to change — rather than after
+     * publishing, when the only remedy is to start over.
+     *
+     * <p>Returns counts, never per-member detail: see {@link ConferencingCoverageResponse}. Same
+     * team-pool gate as {@link #checkReadiness}, so a host can only probe their own teammates.
+     */
+    @Transactional(readOnly = true)
+    public ConferencingCoverageResponse conferencingCoverage(UUID actingUserId, List<UUID> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return new ConferencingCoverageResponse(0, 0, 0);
+        }
+        List<UUID> ordered = dedupePreserveOrder(userIds);
+        validateWithinTeamPool(actingUserId, ordered);
+
+        int zoomCapable = 0;
+        int defaultCapable = 0;
+        for (UUID uid : ordered) {
+            if (conferencingReadinessService.canProvideMeetingLink(uid, ConferencingProviderType.ZOOM)) {
+                zoomCapable++;
+            }
+            // "My default" is a pointer, so ask what it actually resolves to for this member. A
+            // member whose default is NONE would pass canProvideMeetingLink — nothing was asked of
+            // them — but they mint no link, and counting that as covered would inflate DEFAULT into
+            // a recommendation that leaves some guests with no way to join.
+            ConferencingProviderType theirDefault =
+                    conferencingResolver.resolve(uid, ConferencingProviderType.DEFAULT);
+            if (theirDefault != null
+                    && theirDefault != ConferencingProviderType.NONE
+                    && conferencingReadinessService.canProvideMeetingLink(uid, theirDefault)) {
+                defaultCapable++;
+            }
+        }
+        return new ConferencingCoverageResponse(ordered.size(), zoomCapable, defaultCapable);
     }
 
     // ── Publish readiness ─────────────────────────────────────────────────────
@@ -308,10 +351,15 @@ public class EventTypeParticipantService {
     /**
      * Returns enriched participant responses for readiness evaluation.
      * Exposed as package-friendly for {@link PublishReadinessService}.
+     *
+     * @param eventType the event being evaluated, so conferencing readiness can be resolved against
+     *                  the provider it actually uses. Nullable for callers with no event type yet.
      */
     @Transactional(readOnly = true)
-    public List<EventTypeParticipantResponse> enrichForReadiness(List<UUID> userIds, UUID ownerUserId) {
-        return enrich(userIds, ownerUserId, ownerUserId);
+    public List<EventTypeParticipantResponse> enrichForReadiness(List<UUID> userIds,
+                                                                 UUID ownerUserId,
+                                                                 EventType eventType) {
+        return enrich(userIds, ownerUserId, ownerUserId, eventType);
     }
 
     // ── Validation helpers ─────────────────────────────────────────────────────
@@ -345,7 +393,16 @@ public class EventTypeParticipantService {
 
     // ── Enrichment ─────────────────────────────────────────────────────────────
 
-    private List<EventTypeParticipantResponse> enrich(List<UUID> userIds, UUID ownerUserId, UUID actingUserId) {
+    /**
+     * @param eventType the event these participants belong to, or {@code null} when there is not one
+     *                  yet — the create wizard checks readiness before the event type exists. Only
+     *                  the conferencing dimension needs it, since which provider a member must be
+     *                  able to mint a link from is a property of the event, not of the member.
+     */
+    private List<EventTypeParticipantResponse> enrich(List<UUID> userIds,
+                                                      UUID ownerUserId,
+                                                      UUID actingUserId,
+                                                      EventType eventType) {
         Map<UUID, User> usersById = new HashMap<>();
         userRepository.findAllById(userIds).forEach(u -> usersById.put(u.getId(), u));
 
@@ -371,6 +428,26 @@ public class EventTypeParticipantService {
                             conn, ConferencingProviderType.MICROSOFT_TEAMS))
                     .orElse(false);
 
+            // Whether this member could mint the meeting link if a booking were assigned to them.
+            // Provider-agnostic: an explicit Zoom event needs their Zoom connection, while a
+            // DEFAULT event resolves per member to Meet/Teams and needs their write-back calendar.
+            //
+            // ROUND_ROBIN only. The question presupposes that the link minter varies per booking,
+            // which is true solely for round-robin — every other kind mints from the owner
+            // (see BookingConferencingCapabilityGuard: "the owner for 1:1/group/collective, the
+            // assigned member for round-robin"). On a COLLECTIVE event a participant without Zoom
+            // is an attendee on the owner's meeting, never its host, so flagging them would warn
+            // about an impossible failure and wrongly claim they receive no bookings.
+            //
+            // Unknown before the event type exists (the create wizard checks readiness first), so
+            // treat that as capable rather than warning about a provider nobody has chosen yet.
+            boolean canCreateMeetingLink = eventType == null
+                    || eventType.getKind() != EventKind.ROUND_ROBIN
+                    || conferencingReadinessService.canProvideMeetingLink(uid, eventType);
+            ConferencingProviderType resolvedConferencing = eventType == null
+                    ? null
+                    : conferencingResolver.resolve(uid, eventType);
+
             String displayName = u != null ? u.getName() : null;
             out.add(new EventTypeParticipantResponse(
                     uid,
@@ -388,7 +465,11 @@ public class EventTypeParticipantService {
                     hasWriteback,
                     readiness,
                     EventTypeParticipantResponse.buildReadinessMessage(readiness, displayName),
-                    supportsNativeTeams));
+                    supportsNativeTeams,
+                    canCreateMeetingLink,
+                    resolvedConferencing == null || resolvedConferencing == ConferencingProviderType.NONE
+                            ? null
+                            : resolvedConferencing.name()));
         }
         return out;
     }

@@ -154,6 +154,51 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
         assertThat(secondHost).isEqualTo(bob.getId());
     }
 
+    /**
+     * Rotation must also account for holds that have not been confirmed yet.
+     *
+     * <p>Assignment happens at hold time, but the fairness query counts only CONFIRMED/COMPLETED
+     * bookings, so a PENDING hold is invisible to the next assignment. Two guests holding before
+     * either confirms therefore both look like "nobody has been assigned anything" and land on the
+     * same member, who then owns both meetings.
+     */
+    @Test
+    void roundRobinBooking_pendingHoldStillCountsTowardRotation() {
+        User owner = createUser("owner-p@test.com", "owner-p");
+        User alice = createUser("alice-p@test.com", "alice-p");
+        User bob = createUser("bob-p@test.com", "bob-p");
+        EventType eventType = createRoundRobinType(owner.getId(), "rr-p");
+
+        setParticipants(eventType.getId(), List.of(alice.getId(), bob.getId()));
+        insertRule(alice.getId(), "MONDAY", LocalTime.of(9, 0), LocalTime.of(11, 0));
+        insertRule(bob.getId(), "MONDAY", LocalTime.of(9, 0), LocalTime.of(11, 0));
+        insertCalendarConnection(owner.getId());
+        insertCalendarConnection(alice.getId());
+        insertCalendarConnection(bob.getId());
+
+        List<SlotDto> initialSlots = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE).slots();
+        SlotDto first = initialSlots.stream()
+                .filter(s -> s.start().equals(slotAt(9, 0)))
+                .findFirst()
+                .orElseThrow();
+        SlotDto second = initialSlots.stream()
+                .filter(s -> s.start().equals(slotAt(9, 30)))
+                .findFirst()
+                .orElseThrow();
+
+        // Both guests hold before either confirms — the realistic concurrent case.
+        UUID bookingOne = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
+                new PublicBookRequest(first.start(), "guest1@test.com", "Guest 1", first.bookingToken())).bookingId();
+        UUID bookingTwo = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
+                new PublicBookRequest(second.start(), "guest2@test.com", "Guest 2", second.bookingToken())).bookingId();
+
+        UUID firstHost = jdbc.queryForObject("SELECT host_id FROM bookings WHERE id = ?", UUID.class, bookingOne);
+        UUID secondHost = jdbc.queryForObject("SELECT host_id FROM bookings WHERE id = ?", UUID.class, bookingTwo);
+        assertThat(secondHost)
+                .as("second hold must not land on the same member as the first, unconfirmed hold")
+                .isNotEqualTo(firstHost);
+    }
+
     @Test
     void roundRobinReschedule_preservesAssignmentAndMovesBusyWindow() {
         User owner = createUser("owner-r@test.com", "owner-r");

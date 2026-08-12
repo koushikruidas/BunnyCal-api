@@ -31,7 +31,26 @@ public record EventTypeParticipantResponse(
         boolean hasWritebackCapability,
         ParticipantReadinessStatus readinessStatus,
         String readinessMessage,
-        boolean supportsNativeTeams) {
+        boolean supportsNativeTeams,
+        /**
+         * Whether this participant could create the meeting link this event needs, from their own
+         * account. Deliberately a sibling boolean rather than a {@code readinessStatus} value: the
+         * enum carries one primary blocking dimension and expresses combinations through fields
+         * like this one. A member missing only this still reports READY, which is accurate — they
+         * are set up in every other sense, and a missing calendar or schedule is the more
+         * fundamental problem to report first.
+         *
+         * <p>Round Robin skips such members when assigning, so they receive no bookings. True when
+         * the event needs no provider-minted link, and when no event type is in scope yet.
+         */
+        boolean canCreateMeetingLink,
+        /**
+         * The conferencing provider this participant would actually use, as a provider name. Varies
+         * per member when the event uses the DEFAULT pointer — one event can be Google Meet for one
+         * host and Teams for another — which nothing else in the UI reveals. Null when there is no
+         * link to mint, or no event type in scope.
+         */
+        String resolvedConferencingProvider) {
 
     public static String buildReadinessMessage(ParticipantReadinessStatus status, String name) {
         String n = (name != null && !name.isBlank()) ? name : "This participant";
