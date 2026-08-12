@@ -319,19 +319,41 @@ public class EventTypeParticipantService {
             if (conferencingReadinessService.canProvideMeetingLink(uid, ConferencingProviderType.ZOOM)) {
                 zoomCapable++;
             }
-            // "My default" is a pointer, so ask what it actually resolves to for this member. A
-            // member whose default is NONE would pass canProvideMeetingLink — nothing was asked of
-            // them — but they mint no link, and counting that as covered would inflate DEFAULT into
-            // a recommendation that leaves some guests with no way to join.
+            // "My default" is a pointer, so ask what it actually resolves to for this member.
             ConferencingProviderType theirDefault =
                     conferencingResolver.resolve(uid, ConferencingProviderType.DEFAULT);
-            if (theirDefault != null
-                    && theirDefault != ConferencingProviderType.NONE
-                    && conferencingReadinessService.canProvideMeetingLink(uid, theirDefault)) {
+            if (theirDefault != null && theirDefault != ConferencingProviderType.NONE) {
+                if (conferencingReadinessService.canProvideMeetingLink(uid, theirDefault)) {
+                    defaultCapable++;
+                }
+            } else if (canWritebackCalendarMintALink(uid)) {
+                // NONE is both "I want no meeting link" and "I never opened that setting", and the
+                // column cannot tell them apart. Unset dominates in practice — teammates join by
+                // invite and never visit conferencing settings — so falling back to what their
+                // write-back calendar can actually mint counts them as covered.
+                //
+                // Reading the stored preference alone contradicted the wizard, which labels the
+                // option "Currently Google Meet" from calendar capability: a member with a working
+                // Google calendar was shown as having a Meet default while being counted as unable
+                // to produce one, so a genuinely common provider was never suggested.
                 defaultCapable++;
             }
         }
         return new ConferencingCoverageResponse(ordered.size(), zoomCapable, defaultCapable);
+    }
+
+    /**
+     * Could this member's write-back calendar mint a native meeting link, whatever their stored
+     * preference says? Google calendars serve Meet; Microsoft work accounts serve Teams. Used only
+     * as the fallback for an unset default — never to override a preference the member did set.
+     */
+    private boolean canWritebackCalendarMintALink(UUID userId) {
+        CalendarConnection writeback = projectionResolver.writebackConnection(userId).orElse(null);
+        if (writeback == null) {
+            return false;
+        }
+        return conferencingCapabilityService.canServe(writeback, ConferencingProviderType.GOOGLE_MEET)
+                || conferencingCapabilityService.canServe(writeback, ConferencingProviderType.MICROSOFT_TEAMS);
     }
 
     // ── Publish readiness ─────────────────────────────────────────────────────
