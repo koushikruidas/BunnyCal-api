@@ -156,7 +156,11 @@ public class ParticipantSetupRequestService {
         String base = frontendBaseUrl.endsWith("/")
                 ? frontendBaseUrl.substring(0, frontendBaseUrl.length() - 1)
                 : frontendBaseUrl;
-        String setupUrl = base + "/dashboard/availability";
+        // ?setup=calendar marks this as an explicit, narrow errand. The first-run gate otherwise
+        // intercepts any protected route for a user still at NOT_STARTED and sends them to the full
+        // onboarding flow — so a member who was asked to reconnect one calendar was instead put
+        // through purpose, availability and publishing before reaching what the mail promised.
+        String setupUrl = base + "/dashboard/availability?setup=calendar";
 
         ParticipantSetupRequestOutboxPayload payload = new ParticipantSetupRequestOutboxPayload(
                 req.getId(),
