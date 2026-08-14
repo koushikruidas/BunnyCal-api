@@ -40,7 +40,13 @@ public class CalendarWebhookDedupService {
         }
         String normalizedProvider = provider.trim().toUpperCase();
         String payloadHash = hashNullable(rawPayload);
-        String deliveryKey = normalizedProvider + ":" + connectionId + ":" + providerEventId.trim() + ":" + payloadHash;
+        // The event id is hashed rather than embedded whole. Microsoft Graph ids run ~152 chars, so
+        // the literal form reached ~264 and overflowed delivery_key's varchar(255) — every Outlook
+        // webhook then failed to insert and was dropped, leaving those calendars to refresh only on
+        // the slower delta poll. Hashing bounds the key at 137 chars for any provider while keeping
+        // it deterministic and just as unique, so dedup behaviour is unchanged.
+        String deliveryKey = normalizedProvider + ":" + connectionId + ":"
+                + hash(providerEventId.trim()) + ":" + payloadHash;
         int inserted = repository.insertIfAbsent(
                 UUID.randomUUID(),
                 normalizedProvider,
@@ -60,9 +66,13 @@ public class CalendarWebhookDedupService {
 
     private static String hashNullable(String payload) {
         if (payload == null) return null;
+        return hash(payload);
+    }
+
+    private static String hash(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(payload.getBytes(StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 not available", e);
         }
