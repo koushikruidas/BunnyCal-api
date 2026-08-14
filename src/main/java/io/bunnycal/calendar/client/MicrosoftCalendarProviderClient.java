@@ -8,6 +8,7 @@ import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.ownership.BookingOwnership;
 import io.bunnycal.booking.ownership.BookingOwnershipRepository;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -152,7 +153,8 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? connectionRepository.findById(schedulingConnectionId)
                         .orElseGet(() -> resolveAnyConnection(booking.getHostId(), provider))
                 : resolveAnyConnection(booking.getHostId(), provider);
-        microsoftCalendarProvider.deleteEvent(new DeleteEventRequest(connection.getId(), externalEventId));
+        microsoftCalendarProvider.deleteEvent(new DeleteEventRequest(
+                connection.getId(), externalEventId, resolveTargetCalendarId(booking.getId())));
     }
 
     @Override
@@ -167,7 +169,17 @@ public class MicrosoftCalendarProviderClient implements CalendarProviderClient {
                 ? connectionRepository.findById(schedulingConnectionId)
                         .orElseGet(() -> resolveAnyConnection(booking.getHostId(), provider))
                 : resolveAnyConnection(booking.getHostId(), provider);
-        return microsoftCalendarProvider.eventExists(new DeleteEventRequest(connection.getId(), externalEventId));
+        // A missing ownership row is a local gap, not evidence about the provider. Reporting it as
+        // a 400 would be read as INVALID_REQUEST -> PERMANENT_FAILURE -> PROVIDER_STATE_ORPHANED,
+        // which is precisely the false orphaning this change exists to stop. Treat it as retryable
+        // so the reconciler waits for ownership to land instead of condemning the booking.
+        String targetCalendarId = bookingOwnershipRepository.findByBookingId(booking.getId())
+                .map(BookingOwnership::getProjectionCalendarId)
+                .filter(id -> id != null && !id.isBlank())
+                .orElseThrow(() -> new CalendarClientException(
+                        503, "projection calendar ownership not yet available"));
+        return microsoftCalendarProvider.eventExists(new DeleteEventRequest(
+                connection.getId(), externalEventId, targetCalendarId.trim()));
     }
 
     @Override

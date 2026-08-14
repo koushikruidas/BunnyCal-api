@@ -32,12 +32,18 @@ public class MicrosoftCalendarProvider implements CalendarProvider {
         return new UpdateEventResponse(details.externalEventId(), details.providerEventUrl(), details.conferenceUrl());
     }
 
+    // Both paths address the event under the calendar it was actually written to. They used to
+    // pass the literal "primary", which is Google's alias and not a calendar Graph can resolve —
+    // every request 400'd. Delete failed silently; observe was classified INVALID_REQUEST ->
+    // PERMANENT_FAILURE -> PROVIDER_STATE_ORPHANED, so healthy bookings were marked orphaned and
+    // hidden from the host's own grid.
+
     @Override
     public void deleteEvent(DeleteEventRequest request) {
         tokenRefresher.executeWithValidToken(
                 request.connectionId(),
                 token -> {
-                    microsoftApiClient.deleteEvent(token, "primary", request.externalEventId());
+                    microsoftApiClient.deleteEvent(token, request.targetCalendarId(), request.externalEventId());
                     return null;
                 }
         );
@@ -46,7 +52,7 @@ public class MicrosoftCalendarProvider implements CalendarProvider {
     public boolean eventExists(DeleteEventRequest request) {
         return tokenRefresher.executeWithValidToken(
                 request.connectionId(),
-                token -> microsoftApiClient.eventExists(token, "primary", request.externalEventId())
+                token -> microsoftApiClient.eventExists(token, request.targetCalendarId(), request.externalEventId())
         );
     }
 }
