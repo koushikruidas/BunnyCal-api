@@ -20,6 +20,20 @@ public interface TeamMemberRepository extends JpaRepository<TeamMember, UUID> {
 
     boolean existsByTeamIdAndUserId(UUID teamId, UUID userId);
 
+    /**
+     * Whether the user belongs to at least one live team.
+     *
+     * <p>Joined to the team rather than counting membership rows alone: deleting a team is a soft
+     * delete that leaves its members behind, so a plain existence check would still call someone a
+     * team member after their only team was gone.
+     */
+    @Query("""
+            select count(m) > 0 from TeamMember m
+            join Team t on t.id = m.teamId
+            where m.userId = :userId and t.deletedAt is null
+            """)
+    boolean existsActiveMembershipForUser(@Param("userId") UUID userId);
+
     Optional<TeamMember> findByTeamIdAndRole(UUID teamId, TeamRole role);
 
     long countByTeamId(UUID teamId);

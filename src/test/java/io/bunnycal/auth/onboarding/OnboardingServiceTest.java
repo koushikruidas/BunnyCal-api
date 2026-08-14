@@ -23,6 +23,7 @@ import io.bunnycal.calendar.service.CalendarConnectionManagementService;
 import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.team.domain.Team;
+import io.bunnycal.team.repository.TeamMemberRepository;
 import io.bunnycal.team.repository.TeamRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Field;
@@ -45,6 +46,7 @@ class OnboardingServiceTest {
     @Mock CalendarConnectionManagementService calendarManagementService;
     @Mock EventTypeRepository eventTypeRepository;
     @Mock TeamRepository teamRepository;
+    @Mock TeamMemberRepository teamMemberRepository;
 
     private OnboardingService service;
     private final UUID userId = UUID.randomUUID();
@@ -56,7 +58,7 @@ class OnboardingServiceTest {
         MockitoAnnotations.openMocks(this);
         service = new OnboardingService(userRepository, availabilityRuleRepository, connectionRepository,
                 calendarRepository, calendarManagementService, eventTypeRepository, teamRepository,
-                new SimpleMeterRegistry());
+                teamMemberRepository, new SimpleMeterRegistry());
         user = User.builder().id(userId).email("new@example.com").name("New Host").timezone("UTC").build();
         when(userRepository.findById(userId)).thenReturn(Optional.of(user));
         when(userRepository.save(any(User.class))).thenAnswer(invocation -> invocation.getArgument(0));
@@ -114,6 +116,7 @@ class OnboardingServiceTest {
     void invitedUserCompletesWithoutPublishingAPersonalLink() throws Exception {
         UUID teamId = UUID.randomUUID();
         user.setOnboardingInvitedTeamId(teamId);
+        when(teamMemberRepository.existsActiveMembershipForUser(userId)).thenReturn(true);
         when(teamRepository.findByIdAndDeletedAtIsNull(teamId))
                 .thenReturn(Optional.of(Team.builder().id(teamId).name("Customer Success").build()));
         when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
@@ -163,18 +166,54 @@ class OnboardingServiceTest {
         assertThat(state.invitedTeamName()).isNull();
     }
 
-    /** A soft-deleted team leaves the relaxed requirement intact but has no name to show. */
+    /**
+     * A soft-deleted team has no name to show, and no longer relaxes the requirement either: the
+     * exemption exists because team bookings are the reason the member is here, and a deleted team
+     * sends none. Leaving it relaxed would let someone finish onboarding owning no bookable link at
+     * all. The membership query filters deleted teams out, so this is the same call as never having
+     * joined one.
+     */
     @Test
-    void invitedTeamThatWasDeletedResolvesToNoName() throws Exception {
+    void invitedTeamThatWasDeletedResolvesToNoNameAndRestoresTheRequirement() throws Exception {
         UUID teamId = UUID.randomUUID();
         user.setOnboardingInvitedTeamId(teamId);
         when(teamRepository.findByIdAndDeletedAtIsNull(teamId)).thenReturn(Optional.empty());
+        when(teamMemberRepository.existsActiveMembershipForUser(userId)).thenReturn(false);
 
         OnboardingStateResponse state = service.get(userId);
 
         assertThat(state.invitedTeamId()).isEqualTo(teamId);
         assertThat(state.invitedTeamName()).isNull();
+        assertThat(state.missingRequirements()).contains("firstEvent");
+    }
+
+    /**
+     * The bug this replaced invitedTeamId to fix. Someone who had signed up but never finished
+     * onboarding, then accepted an invite, gets no invitedTeamId stamp — TeamService records that
+     * only for accounts created by the invite. Keying the requirement off the stamp therefore
+     * treated them as a solo signup and made publishing an event the price of escaping the
+     * first-run gate, which is what the admin's calendar request had to fight through.
+     */
+    @Test
+    void existingUserJoiningATeamNeedNotPublishEvenWithoutTheInviteStamp() throws Exception {
+        assertThat(user.getOnboardingInvitedTeamId()).isNull();
+        when(teamMemberRepository.existsActiveMembershipForUser(userId)).thenReturn(true);
+        when(availabilityRuleRepository.findByUserIdOrderByDayOfWeekAscStartTimeAsc(userId))
+                .thenReturn(List.of(rule()));
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId))
+                .thenReturn(Optional.of(activeConnection()));
+        when(calendarRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of(readyCalendar()));
+        when(eventTypeRepository.existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(userId, EventKind.ONE_ON_ONE))
+                .thenReturn(false);
+
+        OnboardingStateResponse state = service.update(userId,
+                new OnboardingUpdateRequest(OnboardingUseCase.TEAM_MANAGEMENT, OnboardingStep.SUCCESS, true, false));
+
         assertThat(state.missingRequirements()).doesNotContain("firstEvent");
+        assertThat(state.status()).isEqualTo(OnboardingStatus.COMPLETED);
+        // No stamp, so no team to name — the requirement relaxes on membership alone.
+        assertThat(state.invitedTeamId()).isNull();
     }
 
     @Test

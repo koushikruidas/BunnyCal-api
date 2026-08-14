@@ -6,6 +6,7 @@ import io.bunnycal.availability.domain.EventKind;
 import io.bunnycal.availability.repository.AvailabilityRuleRepository;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.team.domain.Team;
+import io.bunnycal.team.repository.TeamMemberRepository;
 import io.bunnycal.team.repository.TeamRepository;
 import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -45,6 +46,7 @@ public class OnboardingService {
     private final CalendarConnectionManagementService calendarManagementService;
     private final EventTypeRepository eventTypeRepository;
     private final TeamRepository teamRepository;
+    private final TeamMemberRepository teamMemberRepository;
     private final MeterRegistry meterRegistry;
 
     @Transactional
@@ -145,11 +147,16 @@ public class OnboardingService {
                 .existsByUserIdAndKindAndPublishedTrueAndDeletedAtIsNull(userId, EventKind.ONE_ON_ONE);
 
         // A personal booking link is the product for someone who signed up on their own, so they
-        // still have to publish one. Someone who arrived by team invitation joined to receive team
-        // bookings; the step is still shown to them — an invitee is a new user of the product, not
-        // just a new member of a team — but it no longer blocks completion, because cornering them
-        // into publishing yields a junk event type rather than understanding.
-        boolean firstEventRequired = user.getOnboardingInvitedTeamId() == null;
+        // still have to publish one. Someone who belongs to a team joined to receive team bookings;
+        // the step is still shown to them — a member is a new user of the product, not just a new
+        // member of a team — but it no longer blocks completion, because cornering them into
+        // publishing yields a junk event type rather than understanding.
+        //
+        // Keyed off actual membership rather than onboardingInvitedTeamId, which is only stamped
+        // for someone whose account did not exist before the invite. Reading the stamp here meant a
+        // user who had signed up but not finished onboarding, then accepted an invite, was still
+        // treated as a solo signup and made to publish an event to escape the first-run gate.
+        boolean firstEventRequired = !teamMemberRepository.existsActiveMembershipForUser(userId);
 
         List<String> missing = new ArrayList<>();
         if (!availabilityReady || !availabilityConfirmed) missing.add("availability");
