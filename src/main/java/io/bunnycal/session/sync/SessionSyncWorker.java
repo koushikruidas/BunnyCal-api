@@ -244,7 +244,7 @@ public class SessionSyncWorker {
                             conferencingInstruction, conferenceDetails);
                     yield true;
                 }
-                case DELETE -> processDelete(job, connection, provider);
+                case DELETE -> processDelete(job, connection, provider, targetCalendarId);
             };
             if (!processed) {
                 return;
@@ -318,7 +318,7 @@ public class SessionSyncWorker {
             return;
         }
         if (confirmedRegistrations.isEmpty()) {
-            processDelete(job, connection, provider);
+            processDelete(job, connection, provider, targetCalendarId);
             return;
         }
         ConferenceDetails persistedConferenceDetails = projectionState.conferenceDetails();
@@ -352,7 +352,8 @@ public class SessionSyncWorker {
                 session.getId(), connection.getProvider(), response.externalEventId());
     }
 
-    private boolean processDelete(CalendarSyncJob job, CalendarConnection connection, CalendarProvider provider) {
+    private boolean processDelete(CalendarSyncJob job, CalendarConnection connection, CalendarProvider provider,
+                                  String targetCalendarId) {
         String externalId = job.getExternalEventId();
         if (externalId == null || externalId.isBlank()) {
             externalId = findLatestExternalEventId(job.getInternalRefId());
@@ -364,7 +365,11 @@ public class SessionSyncWorker {
             return false;
         }
         try {
-            provider.deleteEvent(new DeleteEventRequest(connection.getId(), externalId));
+            // Same calendar the create wrote to. Passing none meant Microsoft got the literal
+            // "primary", which Graph cannot resolve, so deleting a group session's event 400'd and
+            // left it on the host's Outlook calendar. Google accepts the alias, which is why this
+            // only ever failed for one provider.
+            provider.deleteEvent(new DeleteEventRequest(connection.getId(), externalId, targetCalendarId));
         } catch (CalendarClientException ex) {
             if (ex.getStatusCode() == 404 || ex.getStatusCode() == 410) {
                 log.info("session_sync_delete_idempotent sessionId={} provider={} externalEventId={}",
