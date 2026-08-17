@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.when;
 
@@ -271,6 +272,51 @@ class OnboardingServiceTest {
         service.configureCalendar(userId, connectionId);
 
         verify(calendarManagementService).setDefaultConferencing(userId, ConferencingProviderType.NONE);
+    }
+
+    /**
+     * Regression: the sync scheduler races signup. Login commits the new connection as ACTIVE and
+     * the scheduler picks it up within the same second; any transient sync fault flips it to FAILED
+     * before configureCalendar runs. This used to abort setup, so no calendar was ever marked
+     * selected and onboarding showed "Finish connecting your sign-in calendar" to a user whose
+     * calendar was connected and writable. A sync fault says nothing about whether the calendar can
+     * be configured, so it must not block setup.
+     */
+    @Test
+    void autoConfigureStillCompletesWhenSyncMarkedTheConnectionFailed() throws Exception {
+        CalendarConnection connection = activeConnection();
+        connection.setStatus(CalendarConnectionStatus.FAILED);
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
+        CalendarConnectionCalendar calendar = readyCalendar();
+        calendar.setPrimary(true);
+        calendar.setExternalCalendarId("primary@example.com");
+        when(calendarRepository.findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId))
+                .thenReturn(List.of(calendar));
+
+        service.configureCalendar(userId, connectionId);
+
+        verify(calendarManagementService).setChecksAvailability(
+                userId, connectionId, "primary@example.com", true);
+        verify(calendarManagementService).setDefaultWriteback(userId, connectionId);
+        verify(calendarManagementService).setWritebackCalendar(
+                userId, connectionId, "primary@example.com");
+    }
+
+    /**
+     * The opposite case still has to fail: once the authorization itself is gone, selecting a
+     * calendar would be meaningless and a reconnect is the only recovery.
+     */
+    @Test
+    void autoConfigureRefusesAConnectionTheUserHasRevoked() throws Exception {
+        CalendarConnection connection = activeConnection();
+        connection.setStatus(CalendarConnectionStatus.REVOKED);
+        when(connectionRepository.findById(connectionId)).thenReturn(Optional.of(connection));
+
+        assertThatThrownBy(() -> service.configureCalendar(userId, connectionId))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("Reconnect");
+
+        verifyNoInteractions(calendarManagementService);
     }
 
     private AvailabilityRule rule() {

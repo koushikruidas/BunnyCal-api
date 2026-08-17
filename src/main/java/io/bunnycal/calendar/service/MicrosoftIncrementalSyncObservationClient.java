@@ -17,6 +17,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -192,7 +193,19 @@ public class MicrosoftIncrementalSyncObservationClient implements ExternalCalend
         row.setProvider(CalendarProviderType.MICROSOFT);
         row.setDeltaCursor(deltaCursor);
         row.setLastSyncedAt(Instant.now());
-        cursorRepository.save(row);
+        try {
+            cursorRepository.saveAndFlush(row);
+        } catch (DataIntegrityViolationException ex) {
+            // Same find-then-write race as the Google client: connect-time full sync runs on the
+            // login thread while the scheduler can already be syncing the new connection, so both
+            // can miss the row and then insert it. Microsoft cannot hit the "primary" alias variant
+            // of this (syncOneCalendar rejects that id outright), but the concurrent-insert window
+            // is identical. Losing the race is harmless -- the winner wrote an equally valid cursor
+            // -- so swallow it instead of rolling the caller's sync back and tripping the
+            // connection into FAILED.
+            log.info("microsoft_calendar_cursor_write_raced connectionId={} calendarId={} action=kept_existing",
+                    connection.getId(), calendarId);
+        }
     }
 
     private List<CalendarEventIngestionService.IncomingCalendarEvent> toIncoming(

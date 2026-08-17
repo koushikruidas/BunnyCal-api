@@ -81,8 +81,13 @@ public class CalendarConnectionManagementService {
     @Transactional
     public void setDefaultWriteback(UUID userId, UUID connectionId) {
         CalendarConnection connection = requireOwnedConnection(userId, connectionId);
-        if (connection.getStatus() != CalendarConnectionStatus.ACTIVE
-                && connection.getStatus() != CalendarConnectionStatus.SYNCING) {
+        // DISCONNECTED/REVOKED means the authorization is gone and only a reconnect can fix it.
+        // FAILED/ERROR are transient sync faults that the scheduler retries on its own, and they
+        // must not block writeback selection: signup configures the calendar in the same second the
+        // scheduler first touches the new connection, so a momentary fault here used to abort
+        // onboarding setup entirely. See OnboardingService.configureCalendar for the full case.
+        if (connection.getStatus() == CalendarConnectionStatus.DISCONNECTED
+                || connection.getStatus() == CalendarConnectionStatus.REVOKED) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
                     "Bookings can only be added to a connected calendar.");
         }
