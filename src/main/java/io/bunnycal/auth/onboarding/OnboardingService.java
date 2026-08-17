@@ -105,10 +105,26 @@ public class OnboardingService {
                 .filter(candidate -> userId.equals(candidate.getUserId()))
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND,
                         "Calendar connection not found."));
-        if (connection.getStatus() != CalendarConnectionStatus.ACTIVE
-                && connection.getStatus() != CalendarConnectionStatus.SYNCING) {
+        // Only a connection the user has actually taken away is unusable here. FAILED/ERROR are
+        // deliberately allowed through.
+        //
+        // This used to require ACTIVE or SYNCING, which lost a race against the sync scheduler on
+        // every signup: login commits the new connection as ACTIVE, the scheduler picks it up
+        // within the same second, and any transient sync fault flips it to FAILED before this line
+        // runs. Setup then aborted, no calendar was ever marked selected, and onboarding showed the
+        // "Finish connecting your sign-in calendar" notice to a user whose calendar was in fact
+        // connected and writable. The connection usually recovered to ACTIVE moments later, but
+        // configureCalendar only runs once, at login, so nothing went back to finish the job.
+        //
+        // The status was never the right question. What matters is whether there is a readable,
+        // writable primary calendar to configure, which the check below establishes directly — and
+        // a sync fault says nothing about that. Selecting a calendar on a connection that is
+        // briefly FAILED is safe: the selection is local state, the scheduler retries on its own,
+        // and a genuinely dead connection still cannot serve availability.
+        if (connection.getStatus() == CalendarConnectionStatus.DISCONNECTED
+                || connection.getStatus() == CalendarConnectionStatus.REVOKED) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Wait for the calendar connection to finish syncing before continuing.");
+                    "Reconnect this calendar account before continuing.");
         }
         CalendarConnectionCalendar primary = calendarRepository
                 .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connectionId).stream()

@@ -8,6 +8,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.bunnycal.auth.onboarding.OnboardingService;
+import io.bunnycal.auth.onboarding.OnboardingStateResponse;
+import io.bunnycal.auth.onboarding.OnboardingStatus;
+import io.bunnycal.auth.onboarding.OnboardingStep;
 import io.bunnycal.calendar.client.OAuthTokenExchangeResult;
 import io.bunnycal.calendar.domain.CalendarConnection;
 import io.bunnycal.calendar.domain.CalendarConnectionStatus;
@@ -78,6 +81,7 @@ class HostLoginCalendarBootstrapServiceTest {
         when(existing.getStatus()).thenReturn(CalendarConnectionStatus.ACTIVE);
         when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId))
                 .thenReturn(Optional.of(existing));
+        when(onboardingService.get(userId)).thenReturn(onboardingState(true));
 
         service.bootstrapIfNeeded(userId, "google", authorizedClient(
                 "google", Set.of("email", "profile", GOOGLE_EVENTS, GOOGLE_READ)));
@@ -86,6 +90,40 @@ class HostLoginCalendarBootstrapServiceTest {
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
         verify(onboardingService, never()).configureCalendar(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * Regression: a user whose first login connected the account but never finished selecting a
+     * calendar has an ACTIVE writeback connection AND calendarReady=false. The skip used to key off
+     * the connection alone, so every later login jumped straight past setup and the reconnect
+     * notice was shown forever. Such an account must retry and repair itself on the next login.
+     */
+    @Test
+    void halfConfiguredAccountIsRepairedOnTheNextLogin() {
+        UUID userId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        CalendarConnection existing = mock(CalendarConnection.class);
+        when(existing.getStatus()).thenReturn(CalendarConnectionStatus.ACTIVE);
+        when(connectionRepository.findByUserIdAndDefaultWritebackTrue(userId))
+                .thenReturn(Optional.of(existing));
+        when(onboardingService.get(userId)).thenReturn(onboardingState(false));
+        when(googleOAuthService.connectAuthorizedUser(org.mockito.ArgumentMatchers.eq(userId),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new CalendarOAuthService.ConnectedCalendar(
+                        connectionId, CalendarConnectionStatus.ACTIVE));
+
+        service.bootstrapIfNeeded(userId, "google", authorizedClient(
+                "google", Set.of("email", "profile", GOOGLE_EVENTS, GOOGLE_READ)));
+
+        verify(onboardingService).configureCalendar(userId, connectionId);
+    }
+
+    /** Minimal onboarding state; only calendarReady participates in the bootstrap skip decision. */
+    private static OnboardingStateResponse onboardingState(boolean calendarReady) {
+        return new OnboardingStateResponse(
+                1, OnboardingStatus.IN_PROGRESS, null, OnboardingStep.FIRST_EVENT,
+                OnboardingStep.FIRST_EVENT, true, true, calendarReady, false,
+                java.util.List.of(), null, null, null);
     }
 
     @Test

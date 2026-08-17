@@ -39,11 +39,28 @@ public class HostLoginCalendarBootstrapService {
      * provider account, and silently repointing live booking links would be destructive.
      */
     public void bootstrapIfNeeded(UUID userId, String registrationId, OAuth2AuthorizedClient client) {
-        if (connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)
+        boolean hasActiveWriteback = connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)
                 .filter(connection -> connection.getStatus() == CalendarConnectionStatus.ACTIVE)
-                .isPresent()) {
-            log.debug("host_login_calendar_bootstrap_skipped userId={} reason=active_writeback", userId);
+                .isPresent();
+        // Skipping requires that the calendar is actually USABLE, not merely present.
+        //
+        // Testing only for an active writeback connection stranded anyone whose first login
+        // connected the account but failed to finish selecting a calendar: the connection existed,
+        // so every subsequent login skipped straight past this and never retried, while onboarding
+        // kept reporting calendarReady=false and showing the reconnect notice forever. The only
+        // escape was clicking Reconnect, which a user with a seemingly-connected calendar has no
+        // reason to do.
+        //
+        // calendarReady() asks the question the skip actually depends on — is there an active
+        // writeback connection with a selected, readable, writable calendar — so a half-configured
+        // account now self-heals on the user's next login.
+        if (hasActiveWriteback && onboardingService.get(userId).calendarReady()) {
+            log.debug("host_login_calendar_bootstrap_skipped userId={} reason=calendar_ready", userId);
             return;
+        }
+        if (hasActiveWriteback) {
+            log.info("host_login_calendar_bootstrap_retrying userId={} reason=writeback_present_but_calendar_not_ready",
+                    userId);
         }
         if (client == null || client.getAccessToken() == null) {
             throw new CalendarBootstrapUnavailableException(

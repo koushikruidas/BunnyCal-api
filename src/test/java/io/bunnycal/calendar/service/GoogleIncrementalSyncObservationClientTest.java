@@ -108,7 +108,7 @@ class GoogleIncrementalSyncObservationClientTest {
 
         ArgumentCaptor<CalendarConnectionSyncCursor> saved =
                 ArgumentCaptor.forClass(CalendarConnectionSyncCursor.class);
-        verify(cursorRepository, times(2)).save(saved.capture());
+        verify(cursorRepository, times(2)).saveAndFlush(saved.capture());
         assertThat(saved.getAllValues())
                 .extracting(CalendarConnectionSyncCursor::getExternalCalendarId,
                         CalendarConnectionSyncCursor::getDeltaCursor,
@@ -177,14 +177,18 @@ class GoogleIncrementalSyncObservationClientTest {
                 .containsExactly("evt-live");
         // gapSuspected surfaces the token invalidation to the scheduler's telemetry.
         assertThat(batch.gapSuspected()).isTrue();
-        // The stale cursor row was modified (deltaCursor set to null and saved).
-        ArgumentCaptor<CalendarConnectionSyncCursor> savedRows =
+        // The stale cursor row was modified (deltaCursor set to null and saved). discardCursor
+        // only ever updates an existing row so it still uses save(); persistSyncToken inserts and
+        // therefore uses saveAndFlush(), so that the unique-constraint race it guards against
+        // surfaces inside its own try block rather than at transaction commit.
+        ArgumentCaptor<CalendarConnectionSyncCursor> discardedRows =
                 ArgumentCaptor.forClass(CalendarConnectionSyncCursor.class);
-        verify(cursorRepository, times(2)).save(savedRows.capture()); // one discard, one persist
-        assertThat(savedRows.getAllValues())
+        verify(cursorRepository).save(discardedRows.capture());
+        assertThat(discardedRows.getAllValues())
                 .filteredOn(r -> r.getExternalCalendarId().equals(stale))
                 .extracting(CalendarConnectionSyncCursor::getDeltaCursor)
                 .containsOnlyNulls();
+        verify(cursorRepository).saveAndFlush(any(CalendarConnectionSyncCursor.class));
     }
 
     @Test

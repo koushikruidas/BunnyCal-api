@@ -106,7 +106,7 @@ class MicrosoftIncrementalSyncObservationClientTest {
         // Both new deltaLinks persisted (one per calendar).
         ArgumentCaptor<CalendarConnectionSyncCursor> saved =
                 ArgumentCaptor.forClass(CalendarConnectionSyncCursor.class);
-        verify(cursorRepository, times(2)).save(saved.capture());
+        verify(cursorRepository, times(2)).saveAndFlush(saved.capture());
         assertThat(saved.getAllValues())
                 .extracting(CalendarConnectionSyncCursor::getExternalCalendarId,
                         CalendarConnectionSyncCursor::getDeltaCursor,

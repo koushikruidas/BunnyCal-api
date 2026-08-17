@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -263,15 +264,55 @@ public class GoogleIncrementalSyncObservationClient implements ExternalCalendarS
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void persistSyncToken(CalendarConnection connection, String calendarId, String syncToken) {
+        // Store under the calendar's canonical id, never the "primary" alias.
+        //
+        // resolveCalendarsToSync falls back to the literal "primary" when the inventory has not
+        // been hydrated yet, which is always the case during the initial connect. That alias and
+        // the real id (the account's email address) name the SAME Google calendar, so writing a
+        // row for each produced two cursors for one calendar. The moment both an alias row and a
+        // resolved row existed, a later write collided with
+        // uk_calendar_connection_sync_cursors_connection_calendar, the whole sync transaction
+        // rolled back, and the scheduler marked the connection FAILED — which, on a brand-new
+        // signup, is what aborted onboarding's calendar setup. See
+        // OnboardingService.configureCalendar.
+        String canonicalId = resolvePrimaryAlias(connection, calendarId);
+
         CalendarConnectionSyncCursor row = cursorRepository
-                .findByConnectionIdAndExternalCalendarId(connection.getId(), calendarId)
+                .findByConnectionIdAndExternalCalendarId(connection.getId(), canonicalId)
                 .orElseGet(CalendarConnectionSyncCursor::new);
         row.setConnectionId(connection.getId());
-        row.setExternalCalendarId(calendarId);
+        row.setExternalCalendarId(canonicalId);
         row.setProvider(CalendarProviderType.GOOGLE);
         row.setDeltaCursor(syncToken);
         row.setLastSyncedAt(Instant.now());
-        cursorRepository.save(row);
+        try {
+            cursorRepository.saveAndFlush(row);
+        } catch (DataIntegrityViolationException ex) {
+            // Two threads can reach this for the same calendar during the first seconds of a
+            // connection (login does an initial full sync while the scheduler picks the row up).
+            // Losing that race is harmless — the winner persisted an equally valid cursor — so
+            // treat it as success rather than letting it roll the caller's sync back.
+            log.info("google_calendar_sync_cursor_write_raced connectionId={} calendarId={} action=kept_existing",
+                    connection.getId(), canonicalId);
+        }
+    }
+
+    /**
+     * Map the "primary" alias onto the concrete calendar id it refers to, using the connection's
+     * hydrated inventory. Returns the input unchanged when it is already a real id, or when the
+     * inventory cannot name a primary yet.
+     */
+    private String resolvePrimaryAlias(CalendarConnection connection, String calendarId) {
+        if (!"primary".equalsIgnoreCase(calendarId)) {
+            return calendarId;
+        }
+        return inventoryRepository
+                .findByConnectionIdOrderByPrimaryDescExternalCalendarIdAsc(connection.getId()).stream()
+                .filter(CalendarConnectionCalendar::isPrimary)
+                .map(CalendarConnectionCalendar::getExternalCalendarId)
+                .filter(id -> id != null && !id.isBlank())
+                .findFirst()
+                .orElse(calendarId);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
