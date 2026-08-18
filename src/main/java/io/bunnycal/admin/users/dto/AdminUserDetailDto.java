@@ -10,9 +10,14 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Full admin view of a user: profile + their subscriptions + invoices + resolved
- * entitlements. Tabs the plan calls for (calendars/conferencing/auth/audit) are added as
- * later phases wire those modules; Phase 1 covers the billing-critical surface.
+ * Full admin view of a user: profile, subscriptions, invoices, resolved entitlements, plus
+ * the product-activity surface — onboarding funnel position, the booking pages they built,
+ * and the calendar accounts they connected.
+ *
+ * <p>The activity half exists so the common support question ("did this user finish setup,
+ * and did they create anything?") is answerable in the portal rather than by hand-written
+ * SQL against production. Remaining planned tabs (conferencing/auth/audit) arrive as those
+ * modules are wired.
  */
 public record AdminUserDetailDto(
         UUID id,
@@ -25,13 +30,19 @@ public record AdminUserDetailDto(
         Instant createdAt,
         List<AdminSubscriptionDto> subscriptions,
         List<InvoiceDto> invoices,
-        EntitlementsDto entitlements) {
+        EntitlementsDto entitlements,
+        AdminUserActivityDto activity,
+        List<AdminUserEventTypeDto> eventTypes,
+        List<AdminUserCalendarConnectionDto> calendarConnections) {
 
     public static AdminUserDetailDto of(
             User u,
             List<AdminSubscriptionDto> subscriptions,
             List<InvoiceDto> invoices,
-            EntitlementsDto entitlements) {
+            EntitlementsDto entitlements,
+            AdminUserActivityDto activity,
+            List<AdminUserEventTypeDto> eventTypes,
+            List<AdminUserCalendarConnectionDto> calendarConnections) {
         return new AdminUserDetailDto(
                 u.getId(),
                 u.getEmail(),
@@ -43,6 +54,9 @@ public record AdminUserDetailDto(
                 u.getCreatedAt(),
                 subscriptions,
                 invoices,
-                entitlements);
+                entitlements,
+                activity,
+                eventTypes,
+                calendarConnections);
     }
 }

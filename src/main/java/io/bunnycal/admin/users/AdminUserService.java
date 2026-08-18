@@ -4,10 +4,22 @@ import io.bunnycal.admin.audit.AdminAuditService;
 import io.bunnycal.admin.common.PageResponse;
 import io.bunnycal.admin.subscriptions.AdminSubscriptionService;
 import io.bunnycal.admin.subscriptions.dto.AdminSubscriptionDto;
+import io.bunnycal.admin.users.dto.AdminUserActivityDto;
+import io.bunnycal.admin.users.dto.AdminUserCalendarConnectionDto;
 import io.bunnycal.admin.users.dto.AdminUserDetailDto;
+import io.bunnycal.admin.users.dto.AdminUserEventTypeDto;
 import io.bunnycal.admin.users.dto.AdminUserSummaryDto;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.domain.EventType;
+import io.bunnycal.availability.repository.AvailabilityRuleRepository;
+import io.bunnycal.availability.repository.EventTypeRepository;
+import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.calendar.domain.CalendarConnection;
+import io.bunnycal.calendar.domain.CalendarConnectionCalendar;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.calendar.repository.CalendarEventRepository;
 import io.bunnycal.billing.dto.InvoiceDto;
 import io.bunnycal.billing.entitlement.EntitlementService;
 import io.bunnycal.billing.entitlement.EntitlementsDto;
@@ -18,8 +30,11 @@ import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.enums.UserStatus;
 import io.bunnycal.common.exception.CustomException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -45,6 +60,12 @@ public class AdminUserService {
     private final EntitlementService entitlementService;
     private final AdminSubscriptionService adminSubscriptionService;
     private final AdminAuditService auditService;
+    private final EventTypeRepository eventTypeRepository;
+    private final AvailabilityRuleRepository availabilityRuleRepository;
+    private final BookingRepository bookingRepository;
+    private final CalendarConnectionRepository calendarConnectionRepository;
+    private final CalendarConnectionCalendarRepository calendarConnectionCalendarRepository;
+    private final CalendarEventRepository calendarEventRepository;
 
     public AdminUserService(UserRepository userRepository,
                             SubscriptionRepository subscriptionRepository,
@@ -52,7 +73,13 @@ public class AdminUserService {
                             SubscriptionStateService stateService,
                             EntitlementService entitlementService,
                             AdminSubscriptionService adminSubscriptionService,
-                            AdminAuditService auditService) {
+                            AdminAuditService auditService,
+                            EventTypeRepository eventTypeRepository,
+                            AvailabilityRuleRepository availabilityRuleRepository,
+                            BookingRepository bookingRepository,
+                            CalendarConnectionRepository calendarConnectionRepository,
+                            CalendarConnectionCalendarRepository calendarConnectionCalendarRepository,
+                            CalendarEventRepository calendarEventRepository) {
         this.userRepository = userRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.invoiceRepository = invoiceRepository;
@@ -60,6 +87,12 @@ public class AdminUserService {
         this.entitlementService = entitlementService;
         this.adminSubscriptionService = adminSubscriptionService;
         this.auditService = auditService;
+        this.eventTypeRepository = eventTypeRepository;
+        this.availabilityRuleRepository = availabilityRuleRepository;
+        this.bookingRepository = bookingRepository;
+        this.calendarConnectionRepository = calendarConnectionRepository;
+        this.calendarConnectionCalendarRepository = calendarConnectionCalendarRepository;
+        this.calendarEventRepository = calendarEventRepository;
     }
 
     /**
@@ -122,7 +155,71 @@ public class AdminUserService {
 
         EntitlementsDto entitlements = EntitlementsDto.from(entitlementService.resolve(userId));
 
-        return AdminUserDetailDto.of(user, subscriptions, invoices, entitlements);
+        return AdminUserDetailDto.of(
+                user,
+                subscriptions,
+                invoices,
+                entitlements,
+                activity(user),
+                eventTypes(userId),
+                calendarConnections(userId));
+    }
+
+    // ── Product activity: onboarding funnel, booking pages, connected calendars ────────
+
+    /** Funnel position plus the counts that say whether this user ever built anything. */
+    private AdminUserActivityDto activity(User user) {
+        UUID userId = user.getId();
+        return AdminUserActivityDto.of(
+                user,
+                eventTypeRepository.countByUserIdAndDeletedAtIsNull(userId),
+                eventTypeRepository.countByUserIdAndPublishedTrueAndDeletedAtIsNull(userId),
+                calendarConnectionRepository.findByUserIdOrderByCreatedAtAsc(userId).size(),
+                availabilityRuleRepository.countByUserId(userId),
+                bookingRepository.countByHostId(userId));
+    }
+
+    /**
+     * Every booking page the user has, soft-deleted ones included and flagged. Ordered by
+     * name: {@code EventType} does not map the table's timestamp columns, so there is no
+     * creation order to sort on.
+     */
+    private List<AdminUserEventTypeDto> eventTypes(UUID userId) {
+        return eventTypeRepository.findByUserIdOrderByNameAsc(userId).stream()
+                .map(AdminUserEventTypeDto::from)
+                .toList();
+    }
+
+    /**
+     * Connected accounts with their sub-calendars and live event counts. Sub-calendars and
+     * counts are each fetched in a single batched query, so the cost does not grow with the
+     * number of connections.
+     */
+    private List<AdminUserCalendarConnectionDto> calendarConnections(UUID userId) {
+        List<CalendarConnection> connections =
+                calendarConnectionRepository.findByUserIdOrderByCreatedAtAsc(userId);
+        if (connections.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> ids = connections.stream().map(CalendarConnection::getId).toList();
+
+        Map<UUID, List<CalendarConnectionCalendar>> calendarsByConnection =
+                calendarConnectionCalendarRepository
+                        .findByConnectionIdInOrderByConnectionIdAscPrimaryDescExternalCalendarIdAsc(ids)
+                        .stream()
+                        .collect(Collectors.groupingBy(CalendarConnectionCalendar::getConnectionId));
+
+        Map<UUID, Long> eventCounts = calendarEventRepository.countLiveByConnectionIds(ids).stream()
+                .collect(Collectors.toMap(
+                        CalendarEventRepository.ConnectionEventCount::getConnectionId,
+                        CalendarEventRepository.ConnectionEventCount::getEventCount));
+
+        return connections.stream()
+                .map(c -> AdminUserCalendarConnectionDto.from(
+                        c,
+                        calendarsByConnection.getOrDefault(c.getId(), List.of()),
+                        eventCounts.getOrDefault(c.getId(), 0L)))
+                .toList();
     }
 
     @Transactional
