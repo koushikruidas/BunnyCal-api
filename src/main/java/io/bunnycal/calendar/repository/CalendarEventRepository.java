@@ -30,6 +30,28 @@ public interface CalendarEventRepository extends JpaRepository<CalendarEvent, UU
                                                                              String externalEventId);
 
     /**
+     * Live (non-cancelled, non-deleted) event counts per connection, for a set of connections.
+     * Grouped so an admin view of N connections costs one query rather than N.
+     * Connections with no events are absent from the result — callers default them to zero.
+     */
+    @Query("""
+            SELECT e.connectionId AS connectionId, COUNT(e) AS eventCount
+            FROM CalendarEvent e
+            WHERE e.connectionId IN :connectionIds
+              AND e.cancelled = false
+              AND e.deleted = false
+            GROUP BY e.connectionId
+            """)
+    List<ConnectionEventCount> countLiveByConnectionIds(
+            @Param("connectionIds") java.util.Collection<UUID> connectionIds);
+
+    /** Projection for {@link #countLiveByConnectionIds}. */
+    interface ConnectionEventCount {
+        UUID getConnectionId();
+        long getEventCount();
+    }
+
+    /**
      * Every event that should block this user, on every calendar they left switched on.
      *
      * <p>Availability is a property of the calendar, not of the event type being booked: a calendar

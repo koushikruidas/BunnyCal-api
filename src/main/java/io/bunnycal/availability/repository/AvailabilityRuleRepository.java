@@ -9,5 +9,7 @@ public interface AvailabilityRuleRepository extends JpaRepository<AvailabilityRu
 
     List<AvailabilityRule> findByUserIdOrderByDayOfWeekAscStartTimeAsc(UUID userId);
 
+    long countByUserId(UUID userId);
+
     void deleteByUserId(UUID userId);
 }

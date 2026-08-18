@@ -25,6 +25,12 @@ public interface CalendarConnectionRepository extends JpaRepository<CalendarConn
             UUID userId, CalendarProviderType provider, CalendarConnectionStatus status);
 
     /**
+     * Every connection a user holds, across all providers. Admin read path: a user's busy
+     * time is the union of all of these, so a support view has to show them together.
+     */
+    java.util.List<CalendarConnection> findByUserIdOrderByCreatedAtAsc(UUID userId);
+
+    /**
      * The identity finder: resolves the row for one specific external account.
      *
      * <p>Deliberately <b>status-agnostic</b>. Disconnect is a soft delete — it marks the row

@@ -11,10 +11,16 @@ import io.bunnycal.admin.subscriptions.AdminSubscriptionService;
 import io.bunnycal.admin.users.dto.AdminUserSummaryDto;
 import io.bunnycal.auth.domain.user.User;
 import io.bunnycal.auth.repository.UserRepository;
+import io.bunnycal.availability.repository.AvailabilityRuleRepository;
+import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.billing.entitlement.EntitlementService;
 import io.bunnycal.billing.repository.SubscriptionInvoiceRepository;
 import io.bunnycal.billing.repository.SubscriptionRepository;
 import io.bunnycal.billing.service.SubscriptionStateService;
+import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.calendar.repository.CalendarConnectionCalendarRepository;
+import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.calendar.repository.CalendarEventRepository;
 import io.bunnycal.common.enums.UserStatus;
 import java.time.Instant;
 import java.util.List;
@@ -40,6 +46,12 @@ class AdminUserServiceTest {
     @Mock private EntitlementService entitlementService;
     @Mock private AdminSubscriptionService adminSubscriptionService;
     @Mock private AdminAuditService auditService;
+    @Mock private EventTypeRepository eventTypeRepository;
+    @Mock private AvailabilityRuleRepository availabilityRuleRepository;
+    @Mock private BookingRepository bookingRepository;
+    @Mock private CalendarConnectionRepository calendarConnectionRepository;
+    @Mock private CalendarConnectionCalendarRepository calendarConnectionCalendarRepository;
+    @Mock private CalendarEventRepository calendarEventRepository;
 
     private AdminUserService service;
 
@@ -52,7 +64,13 @@ class AdminUserServiceTest {
                 stateService,
                 entitlementService,
                 adminSubscriptionService,
-                auditService);
+                auditService,
+                eventTypeRepository,
+                availabilityRuleRepository,
+                bookingRepository,
+                calendarConnectionRepository,
+                calendarConnectionCalendarRepository,
+                calendarEventRepository);
     }
 
     @Test
