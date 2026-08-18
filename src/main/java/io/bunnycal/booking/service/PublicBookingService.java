@@ -16,11 +16,13 @@ import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicBookingStatusResponse;
 import io.bunnycal.booking.dto.PublicBookRequest;
 import io.bunnycal.booking.dto.PublicEventInfoResponse;
+import io.bunnycal.booking.dto.PublicGuestDetailsRequest;
 import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.domain.BookingAssignment;
+import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
 import io.bunnycal.booking.repository.BookingRepository;
@@ -1053,6 +1055,105 @@ public class PublicBookingService {
                 booking.getEndTime(),
                 null
         );
+    }
+
+    /**
+     * Attaches the guest's identity to a hold taken before those details were known, and gives
+     * the hold a fresh full window.
+     *
+     * <p>The public page reserves the slot the moment a time is picked, so the guest fills in
+     * the form against a slot that is already theirs. That leaves the booking row without a
+     * name or email until this call. {@code confirm} reads both off the row and accepts no body
+     * of its own, so this is the only route those details have onto the booking — which also
+     * makes this the one place guest identity is validated.
+     *
+     * <p>The expiry reset matters most for paid events: the payment reservation shares the
+     * hold's clock, so without it a guest who spent 90s on the form would reach the card form
+     * with only part of the window left. Resetting for free events too costs nothing and keeps
+     * one code path.
+     */
+    @Transactional
+    public PublicHoldResponse updateGuestDetails(String username,
+                                                 String eventTypeSlug,
+                                                 UUID bookingId,
+                                                 PublicGuestDetailsRequest request) {
+        String guestEmail = normalizeGuestEmail(request == null ? null : request.guestEmail());
+        String guestName = normalizeGuestName(request == null ? null : request.guestName());
+        if (guestEmail == null || guestName == null) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR, "guestEmail and guestName are required.");
+        }
+        String guestNotes = normalizeNotes(request.notes());
+
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        // Scopes the booking to this event type, so a booking id cannot be steered at an
+        // unrelated event. GROUP is excluded because its registrations carry the guest email
+        // from insert time (NOT NULL) and never reach this path.
+        var booking = bookingRepository.findAnyByIdAndEventTypeId(bookingId, target.eventTypeId())
+                .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
+
+        int updated = bookingRepository.setPendingGuestDetails(bookingId, guestEmail, guestName, guestNotes);
+        if (updated == 0) {
+            // Not PENDING any more — confirmed, expired, or released. Same neutral response as
+            // an unknown id so a stale tab cannot use this to probe booking state.
+            throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found.");
+        }
+
+        Instant expiresAt = Instant.now().plus(target.holdDuration());
+        bookingRepository.setPendingExpiry(bookingId, expiresAt);
+
+        OpsLoggers.BOOKING.info("booking_hold_details_attached bookingId={} hostId={} eventTypeId={} guestEmail={} expiresAt={}",
+                bookingId,
+                target.userId(),
+                target.eventTypeId(),
+                OpsLogSupport.maskEmail(guestEmail),
+                expiresAt);
+
+        PublicHoldResponse response = PublicHoldResponse.oneOnOne(
+                bookingId, expiresAt, booking.getStartTime(), booking.getEndTime());
+
+        // Re-snapshot against the new expiry so the payment reservation and the hold cannot
+        // drift apart. snapshotTerms upserts, so this updates the row created at hold time.
+        if (hostPaymentLifecycleService != null) {
+            var terms = hostPaymentLifecycleService.snapshotTerms(
+                    target.eventTypeId(), target.userId(), bookingId,
+                    io.bunnycal.hostpayments.domain.PaymentReservationKind.BOOKING,
+                    expiresAt);
+            return response.withPayment(terms.amountMinor(), terms.currency(), terms.provider());
+        }
+        var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
+        if (payment == null) return response;
+        return response.withPayment(payment.amountMinor(), payment.currency(), payment.provider());
+    }
+
+    /**
+     * Gives up a still-valid hold, so a slot the guest moved away from returns to availability
+     * at once instead of waiting out the sweeper.
+     *
+     * <p>Best-effort by contract: a release that loses a race to confirm or expiry is a no-op,
+     * not an error, and {@link BookingExpiryScheduler} reclaims the slot either way. The caller
+     * is a fire-and-forget UI action and must never be blocked on this.
+     *
+     * <p>Changing slots creates a NEW booking row rather than moving an existing one, so a
+     * release that arrives late can only ever target the row it was issued for — it cannot
+     * reach the guest's newer hold.
+     */
+    @Transactional
+    public void releaseHold(String username, String eventTypeSlug, UUID bookingId) {
+        PublicBookingTargetResolver.ResolvedTarget target = publicBookingTargetResolver.resolve(username, eventTypeSlug);
+        var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId()).orElse(null);
+        if (state == null || !BookingState.PENDING.name().equals(state.getStatus())) {
+            return;
+        }
+        boolean released = bookingService.releaseHeldBooking(bookingId, state.getVersion());
+        if (!released) {
+            return;
+        }
+        collectiveParticipantHoldRepository.releaseByBookingId(bookingId);
+        if (hostPaymentLifecycleService != null) {
+            hostPaymentLifecycleService.markReservationExpired(bookingId);
+        }
+        OpsLoggers.BOOKING.info("booking_hold_released bookingId={} hostId={} eventTypeId={}",
+                bookingId, target.userId(), target.eventTypeId());
     }
 
     private PublicBookingStatusResponse cancelGroupRegistration(PublicBookingTargetResolver.ResolvedTarget target,

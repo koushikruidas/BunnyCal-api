@@ -1018,6 +1018,152 @@ class PublicBookingServiceTest {
         assertEquals(false, response.degraded());
     }
 
+    // ── Guest details attached after the hold ────────────────────────────────────────────
+    // The public page reserves the slot before it knows who the guest is, so these details
+    // arrive on their own call. Confirm reads them off the row and takes no body, which makes
+    // this the only route onto the booking — and the only place guest identity is validated.
+
+    @Test
+    void updateGuestDetails_writesDetailsAndResetsExpiry() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        Booking booking = new Booking();
+        booking.setId(bookingId);
+        booking.setHostId(userId);
+        booking.setStartTime(Instant.parse("2026-05-10T10:00:00Z"));
+        booking.setEndTime(Instant.parse("2026-05-10T10:30:00Z"));
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.setPendingGuestDetails(eq(bookingId), eq("priya@example.com"), eq("Priya"), eq("notes")))
+                .thenReturn(1);
+
+        Instant before = Instant.now();
+        var response = service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest("  Priya@Example.com ", " Priya ", " notes "));
+
+        verify(bookingRepository).setPendingGuestDetails(bookingId, "priya@example.com", "Priya", "notes");
+
+        // The hold clock restarts here so a slow form fill cannot eat into the payment window:
+        // the payment reservation shares this expiry.
+        ArgumentCaptor<Instant> expiry = ArgumentCaptor.forClass(Instant.class);
+        verify(bookingRepository).setPendingExpiry(eq(bookingId), expiry.capture());
+        assertEquals(true, !expiry.getValue().isBefore(before.plus(Duration.ofMinutes(10)).minusSeconds(5)));
+        assertEquals(expiry.getValue(), response.expiresAt());
+        assertEquals(bookingId, response.bookingId());
+    }
+
+    @Test
+    void updateGuestDetails_rejectsMissingGuestIdentity() {
+        UUID bookingId = UUID.randomUUID();
+
+        CustomException blank = assertThrows(CustomException.class, () ->
+                service.updateGuestDetails("koushik", "30min", bookingId,
+                        new io.bunnycal.booking.dto.PublicGuestDetailsRequest("   ", "Priya", null)));
+        assertEquals(ErrorCode.VALIDATION_ERROR, blank.getErrorCode());
+
+        CustomException noName = assertThrows(CustomException.class, () ->
+                service.updateGuestDetails("koushik", "30min", bookingId,
+                        new io.bunnycal.booking.dto.PublicGuestDetailsRequest("priya@example.com", null, null)));
+        assertEquals(ErrorCode.VALIDATION_ERROR, noName.getErrorCode());
+
+        // Nothing was resolved or written — validation happens before any state is touched.
+        verify(bookingRepository, never()).setPendingGuestDetails(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void updateGuestDetails_notPendingIsNeutralNotFound() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        Booking booking = new Booking();
+        booking.setId(bookingId);
+        booking.setHostId(userId);
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        // Already confirmed/expired → the PENDING-guarded update matches nothing.
+        when(bookingRepository.setPendingGuestDetails(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(0);
+
+        CustomException ex = assertThrows(CustomException.class, () ->
+                service.updateGuestDetails("koushik", "30min", bookingId,
+                        new io.bunnycal.booking.dto.PublicGuestDetailsRequest("priya@example.com", "Priya", null)));
+
+        // Deliberately the same response as an unknown id, so a stale tab cannot use this to
+        // probe whether a booking exists or what state it is in.
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND, ex.getErrorCode());
+        verify(bookingRepository, never()).setPendingExpiry(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+    }
+
+    // ── Releasing a hold the guest moved away from ───────────────────────────────────────
+
+    @Test
+    void releaseHold_releasesPendingBooking() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, "PENDING", 3L)));
+        when(bookingService.releaseHeldBooking(bookingId, 3L)).thenReturn(true);
+
+        service.releaseHold("koushik", "30min", bookingId);
+
+        verify(bookingService).releaseHeldBooking(bookingId, 3L);
+        verify(collectiveParticipantHoldRepository).releaseByBookingId(bookingId);
+    }
+
+    @Test
+    void releaseHold_alreadyConfirmedIsNoOp() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, "CONFIRMED", 4L)));
+
+        service.releaseHold("koushik", "30min", bookingId);
+
+        // Release is best-effort: losing the race to confirm must never cancel a real booking.
+        verify(bookingService, never()).releaseHeldBooking(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void releaseHold_staleVersionDoesNotTouchOtherState() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId))
+                .thenReturn(Optional.of(stateRow(bookingId, "PENDING", 7L)));
+        // The version CAS missed — something else moved this booking on in the meantime.
+        when(bookingService.releaseHeldBooking(bookingId, 7L)).thenReturn(false);
+
+        service.releaseHold("koushik", "30min", bookingId);
+
+        // No downstream side effects when the CAS loses; the sweeper reclaims the slot anyway.
+        verify(collectiveParticipantHoldRepository, never()).releaseByBookingId(
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void releaseHold_unknownBookingIsNoOp() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        when(bookingRepository.findStateByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.empty());
+
+        service.releaseHold("koushik", "30min", bookingId);
+
+        verify(bookingService, never()).releaseHeldBooking(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    private BookingRepository.BookingStateRow stateRow(UUID id, String status, long version) {
+        return new BookingRepository.BookingStateRow() {
+            @Override public UUID getId() { return id; }
+            @Override public UUID getHostId() { return userId; }
+            @Override public String getStatus() { return status; }
+            @Override public Long getVersion() { return version; }
+            @Override public Instant getExpiresAt() { return Instant.now().plusSeconds(300); }
+            @Override public Long getTerminalIntentEpoch() { return 0L; }
+        };
+    }
+
     private PublicBookingTargetResolver.ResolvedTarget target() {
         return new PublicBookingTargetResolver.ResolvedTarget(
                 userId,

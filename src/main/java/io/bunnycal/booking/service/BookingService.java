@@ -533,6 +533,39 @@ public class BookingService {
         }
     }
 
+    /**
+     * Releases a hold the guest voluntarily gave up — they went back and picked a different
+     * slot, so the old one should return to availability immediately rather than sitting
+     * PENDING until the sweeper reaches it.
+     *
+     * <p>Deliberately NOT {@code cancelBooking}: that publishes BOOKING_CANCELLED, which the
+     * notification service turns into cancellation emails. Nobody ever confirmed this booking,
+     * so there is nothing to tell anyone about. Deliberately not {@code expireBooking} either:
+     * that asserts {@code expires_at < NOW()} and this hold is still valid.
+     *
+     * <p>Returns false rather than throwing when the CAS misses. A release is best-effort by
+     * design — the caller is a fire-and-forget UI action, and {@link BookingExpiryScheduler}
+     * reclaims the slot regardless — so losing a race to confirm/expire is an expected
+     * outcome, not an error.
+     */
+    @Transactional
+    public boolean releaseHeldBooking(UUID id, long version) {
+        int updated = bookingRepository.releaseIfPending(id, version);
+        if (updated == 0) {
+            return false;
+        }
+        // No recordCompletionLatency here, unlike expireBooking: it increments
+        // bookingCompletedTotal, and a hold the guest abandoned mid-flow is not a completed
+        // booking. Counting it would quietly inflate the completion SLO.
+        if (pendingCounter != null) {
+            pendingCounter.decrement();
+        }
+        if (slotCacheVersionService != null) {
+            bookingRepository.findAnyById(id).ifPresent(booking -> slotCacheVersionService.bumpVersionAfterCommit(booking.getHostId()));
+        }
+        return true;
+    }
+
     @Transactional
     public void completeBooking(UUID id, long version) {
         transitionFromExpectedState(id, BookingState.CONFIRMED, version, BookingState.COMPLETED);
