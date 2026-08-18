@@ -5,6 +5,8 @@ import io.bunnycal.booking.dto.PublicConfirmResponse;
 import io.bunnycal.booking.dto.PublicBookRequest;
 import io.bunnycal.booking.dto.PublicEventInfoResponse;
 import io.bunnycal.booking.dto.PublicGroupSessionsResponse;
+import io.bunnycal.booking.dto.PublicGuestDetailsRequest;
+import io.bunnycal.booking.dto.PublicHoldResponse;
 import io.bunnycal.booking.dto.PublicManageBookingResponse;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.idempotency.IdempotencyOutcome;
@@ -27,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -160,6 +163,39 @@ public class PublicBookingController {
         PublicManageBookingResponse response = publicBookingService.manageView(
                 username, eventTypeSlug, java.util.UUID.fromString(bookingId), guestCapabilityToken);
         return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    /**
+     * Attaches the guest's name and email to a hold that was taken before they were known.
+     *
+     * <p>No Idempotency-Key: this is a last-write-wins update of a fixed set of fields on one
+     * booking, so a retry converges on the same row rather than creating anything. The PENDING
+     * guard in the service is what bounds it.
+     */
+    @PatchMapping("/{username}/{eventTypeSlug}/book/{bookingId}/details")
+    public ResponseEntity<ApiResponse<PublicHoldResponse>> updateGuestDetails(
+            @PathVariable String username,
+            @PathVariable String eventTypeSlug,
+            @PathVariable String bookingId,
+            @RequestBody PublicGuestDetailsRequest request) {
+        PublicHoldResponse response = publicBookingService.updateGuestDetails(
+                username, eventTypeSlug, java.util.UUID.fromString(bookingId), request);
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    /**
+     * Gives up a still-valid hold — the guest went back and chose a different slot.
+     *
+     * <p>Always 204, including when the booking has already moved on. The caller is a
+     * fire-and-forget UI action that must not be blocked or shown an error, and the expiry
+     * sweeper reclaims the slot regardless.
+     */
+    @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/release")
+    public ResponseEntity<Void> releaseHold(@PathVariable String username,
+                                            @PathVariable String eventTypeSlug,
+                                            @PathVariable String bookingId) {
+        publicBookingService.releaseHold(username, eventTypeSlug, java.util.UUID.fromString(bookingId));
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/confirm")

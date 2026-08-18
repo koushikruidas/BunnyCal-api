@@ -355,6 +355,40 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
             """, nativeQuery = true)
     int setPendingExpiry(@Param("id") UUID id, @Param("expiresAt") Instant expiresAt);
 
+    // Writes the guest identity onto a hold that was taken before those details were known
+    // (the public page reserves the slot at slot-pick, then collects name/email). PENDING in
+    // the WHERE clause is the whole guard: once a booking is confirmed or expired its guest
+    // fields are frozen, so a stale tab replaying this cannot rewrite a live booking.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET guest_email = :guestEmail,
+                   guest_name  = :guestName,
+                   guest_notes = :guestNotes,
+                   version     = version + 1
+             WHERE id     = :id
+               AND status = 'PENDING'
+            """, nativeQuery = true)
+    int setPendingGuestDetails(@Param("id") UUID id,
+                               @Param("guestEmail") String guestEmail,
+                               @Param("guestName") String guestName,
+                               @Param("guestNotes") String guestNotes);
+
+    // Voluntary release of a hold the guest walked away from — same PENDING -> EXPIRED
+    // transition as expireIfPendingAndExpired, minus its `expires_at < NOW()` guard, because
+    // here the hold is deliberately given up while still valid. The version CAS keeps a
+    // delayed release from landing on a booking that has since moved on.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET status  = 'EXPIRED',
+                   version = version + 1
+             WHERE id      = :id
+               AND status  = 'PENDING'
+               AND version = :version
+            """, nativeQuery = true)
+    int releaseIfPending(@Param("id") UUID id, @Param("version") long version);
+
     @Query(value = """
             SELECT id, host_id, status, version, expires_at
                    , terminal_intent_epoch
