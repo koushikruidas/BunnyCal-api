@@ -1091,11 +1091,24 @@ public class PublicBookingService {
         var booking = bookingRepository.findAnyByIdAndEventTypeId(bookingId, target.eventTypeId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found."));
 
+        // Validate embed answers BEFORE mutating anything, matching the hold path: a bad token or
+        // a missing required answer must not leave the booking half-updated.
+        List<AnswerSnapshot> answerSnapshots = List.of();
+        if (request.embedToken() != null && !request.embedToken().isBlank() && embedBookingSupport != null) {
+            answerSnapshots = embedBookingSupport.validateEmbedRequest(request.embedToken(), request.answers());
+        }
+
         int updated = bookingRepository.setPendingGuestDetails(bookingId, guestEmail, guestName, guestNotes);
         if (updated == 0) {
             // Not PENDING any more — confirmed, expired, or released. Same neutral response as
             // an unknown id so a stale tab cannot use this to probe booking state.
             throw new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Booking not found.");
+        }
+
+        // Answers arrive here rather than on the hold now that the widget reserves the slot when
+        // the guest picks it — at hold time no answer has been given yet.
+        if (!answerSnapshots.isEmpty() && embedBookingSupport != null) {
+            embedBookingSupport.persistAnswers(bookingId, target.userId(), answerSnapshots);
         }
 
         Instant expiresAt = Instant.now().plus(target.holdDuration());
