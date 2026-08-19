@@ -75,6 +75,10 @@ public class EmbedBookingSupport {
     @Transactional
     public void persistAnswers(UUID bookingId, UUID hostId, List<AnswerSnapshot> snapshots) {
         if (snapshots == null || snapshots.isEmpty()) return;
+        // Replace rather than append. Answers used to be written once, on the hold, so saving was
+        // enough; they now arrive on the re-submittable details step, and a guest who goes back to
+        // correct an answer would otherwise leave both versions on the booking.
+        answerRepository.deleteByBookingIdAndHostId(bookingId, hostId);
         List<BookingQuestionAnswer> rows = new java.util.ArrayList<>();
         for (AnswerSnapshot s : snapshots) {
             String answerJson = null;
