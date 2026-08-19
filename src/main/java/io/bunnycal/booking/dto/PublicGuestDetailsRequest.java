@@ -18,6 +18,11 @@ import java.util.List;
  * worked while the hold happened after that step. Once the widget reserves the slot on selection
  * like the public page does, the hold call is made before any answer exists, so they travel here
  * instead. Both stay optional: the hosted page sends neither.
+ *
+ * <p>{@code guestEmails} carries the additional attendees the booker added on the details step.
+ * They are invite-only — they receive the invite and the notifications but no manage token — and
+ * the server normalises, validates, de-duplicates and caps the list, so a malformed or oversized
+ * one is trimmed rather than failing the whole booking.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record PublicGuestDetailsRequest(
@@ -25,11 +30,12 @@ public record PublicGuestDetailsRequest(
         String guestName,
         String notes,
         List<AnswerInput> answers,
-        String embedToken
+        String embedToken,
+        List<String> guestEmails
 ) implements ForwardCompatibleRequest {
 
     /** The hosted page's shape — no embed answers. */
     public PublicGuestDetailsRequest(String guestEmail, String guestName, String notes) {
-        this(guestEmail, guestName, notes, null, null);
+        this(guestEmail, guestName, notes, null, null, null);
     }
 }

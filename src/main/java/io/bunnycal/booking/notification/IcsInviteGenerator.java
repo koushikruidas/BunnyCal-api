@@ -37,7 +37,28 @@ public class IcsInviteGenerator {
                                          String guestEmail,
                                          int sequence,
                                          ConferenceDetails conferenceDetails) {
-        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
+        return buildStandaloneRequest(bookingId, summary, description, start, end, organizerName,
+                organizerEmail, hostName, hostEmail, guestName, guestEmail, List.of(), sequence,
+                conferenceDetails);
+    }
+
+    /** As above, plus the invite-only extra guests the booker attached. */
+    public String buildStandaloneRequest(UUID bookingId,
+                                         String summary,
+                                         String description,
+                                         Instant start,
+                                         Instant end,
+                                         String organizerName,
+                                         String organizerEmail,
+                                         String hostName,
+                                         String hostEmail,
+                                         String guestName,
+                                         String guestEmail,
+                                         List<String> extraGuestEmails,
+                                         int sequence,
+                                         ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail,
+                extraGuestEmails, organizerEmail);
         return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail,
                 attendees, sequence, true, conferenceDetails);
     }
@@ -56,7 +77,28 @@ public class IcsInviteGenerator {
                                         String guestEmail,
                                         int sequence,
                                         ConferenceDetails conferenceDetails) {
-        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail, organizerEmail);
+        return buildStandaloneCancel(bookingId, summary, description, start, end, organizerName,
+                organizerEmail, hostName, hostEmail, guestName, guestEmail, List.of(), sequence,
+                conferenceDetails);
+    }
+
+    /** As above, plus the invite-only extra guests, so a cancellation reaches them too. */
+    public String buildStandaloneCancel(UUID bookingId,
+                                        String summary,
+                                        String description,
+                                        Instant start,
+                                        Instant end,
+                                        String organizerName,
+                                        String organizerEmail,
+                                        String hostName,
+                                        String hostEmail,
+                                        String guestName,
+                                        String guestEmail,
+                                        List<String> extraGuestEmails,
+                                        int sequence,
+                                        ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildAttendees(hostName, hostEmail, guestName, guestEmail,
+                extraGuestEmails, organizerEmail);
         return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail,
                 attendees, sequence, true, conferenceDetails);
     }
@@ -108,7 +150,26 @@ public class IcsInviteGenerator {
                                          String guestEmail,
                                          int sequence,
                                          ConferenceDetails conferenceDetails) {
-        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail, organizerEmail);
+        return buildCollectiveRequest(bookingId, summary, description, start, end, organizerName,
+                organizerEmail, hosts, guestName, guestEmail, List.of(), sequence, conferenceDetails);
+    }
+
+    /** As above, plus the invite-only extra guests the booker attached. */
+    public String buildCollectiveRequest(UUID bookingId,
+                                         String summary,
+                                         String description,
+                                         Instant start,
+                                         Instant end,
+                                         String organizerName,
+                                         String organizerEmail,
+                                         List<CollectiveHost> hosts,
+                                         String guestName,
+                                         String guestEmail,
+                                         List<String> extraGuestEmails,
+                                         int sequence,
+                                         ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail,
+                extraGuestEmails, organizerEmail);
         return build("REQUEST", bookingId, summary, description, start, end, organizerName, organizerEmail,
                 attendees, sequence, true, conferenceDetails);
     }
@@ -125,7 +186,26 @@ public class IcsInviteGenerator {
                                         String guestEmail,
                                         int sequence,
                                         ConferenceDetails conferenceDetails) {
-        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail, organizerEmail);
+        return buildCollectiveCancel(bookingId, summary, description, start, end, organizerName,
+                organizerEmail, hosts, guestName, guestEmail, List.of(), sequence, conferenceDetails);
+    }
+
+    /** As above, plus the invite-only extra guests, so a cancellation reaches them too. */
+    public String buildCollectiveCancel(UUID bookingId,
+                                        String summary,
+                                        String description,
+                                        Instant start,
+                                        Instant end,
+                                        String organizerName,
+                                        String organizerEmail,
+                                        List<CollectiveHost> hosts,
+                                        String guestName,
+                                        String guestEmail,
+                                        List<String> extraGuestEmails,
+                                        int sequence,
+                                        ConferenceDetails conferenceDetails) {
+        List<Participant> attendees = buildCollectiveAttendees(hosts, guestName, guestEmail,
+                extraGuestEmails, organizerEmail);
         return build("CANCEL", bookingId, summary, description, start, end, organizerName, organizerEmail,
                 attendees, sequence, true, conferenceDetails);
     }
@@ -133,6 +213,7 @@ public class IcsInviteGenerator {
     private static List<Participant> buildCollectiveAttendees(List<CollectiveHost> hosts,
                                                                String guestName,
                                                                String guestEmail,
+                                                               List<String> extraGuestEmails,
                                                                String organizerEmail) {
         Map<String, Participant> deduped = new LinkedHashMap<>();
         if (hosts != null) {
@@ -144,6 +225,10 @@ public class IcsInviteGenerator {
             }
         }
         addAttendee(deduped, guestName, guestEmail, organizerEmail, ParticipantRole.GUEST);
+        // Everyone here already carries REQ-PARTICIPANT, so there is no role to protect — a
+        // collision simply rewrites an identical entry. Added last so the named participants keep
+        // their display names.
+        addExtraGuests(deduped, extraGuestEmails, organizerEmail);
         return new ArrayList<>(deduped.values());
     }
 
@@ -286,11 +371,42 @@ public class IcsInviteGenerator {
                                                     String hostEmail,
                                                     String guestName,
                                                     String guestEmail,
+                                                    List<String> extraGuestEmails,
                                                     String organizerEmail) {
         Map<String, Participant> deduped = new LinkedHashMap<>();
         addAttendee(deduped, hostName, hostEmail, organizerEmail, ParticipantRole.HOST);
         addAttendee(deduped, guestName, guestEmail, organizerEmail, ParticipantRole.GUEST);
+        // Extra guests are added last, and addExtraGuests refuses to overwrite an address that is
+        // already present. That ordering matters: addAttendee is an unconditional put, so a guest
+        // whose address equals the host's would otherwise replace the host's HOST role — and the
+        // HOST role is what emits ROLE=CHAIR below. The host must always keep it.
+        addExtraGuests(deduped, extraGuestEmails, organizerEmail);
         return new ArrayList<>(deduped.values());
+    }
+
+    /**
+     * Adds the booker's extra guests, skipping any address already present.
+     *
+     * <p>The skip is the point. {@link #addAttendee} ends in a plain {@code put}, so it is
+     * last-write-wins: appending a guest who shares the host's or the primary guest's address
+     * would silently overwrite that stronger entry, demoting the host out of CHAIR. Guests are
+     * always the weakest role here, so an existing entry wins.
+     */
+    private static void addExtraGuests(Map<String, Participant> deduped,
+                                       List<String> extraGuestEmails,
+                                       String organizerEmail) {
+        if (extraGuestEmails == null) {
+            return;
+        }
+        for (String email : extraGuestEmails) {
+            if (email == null || email.isBlank()) {
+                continue;
+            }
+            if (deduped.containsKey(normalizeEmail(email).toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            addAttendee(deduped, null, email, organizerEmail, ParticipantRole.GUEST);
+        }
     }
 
     private static void addAttendee(Map<String, Participant> deduped,

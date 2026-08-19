@@ -93,9 +93,24 @@ public class DefaultConferencingReconciler {
         };
     }
 
+    /**
+     * The connection bookings are written to, if it can still host a meeting link.
+     *
+     * <p>Only a connection the user has actually taken away is unusable. FAILED and ERROR are
+     * deliberately allowed through, matching {@code OnboardingService.configureCalendar}, which
+     * carries the same reasoning at length: a transient sync fault says nothing about whether the
+     * account can mint a Meet or Teams link, and the sweep clears it on its own within a minute.
+     *
+     * <p>Requiring ACTIVE here was the second half of the signup failure. configureCalendar
+     * tolerated a briefly-FAILED connection and then called straight into this class, which did
+     * not — so a sync hiccup during signup still aborted setup and produced the "reconnect your
+     * calendar" notice for a calendar that was fine. A genuinely dead connection is still excluded
+     * below, and cannot serve availability either way.
+     */
     private CalendarConnection writeback(UUID userId) {
         return connectionRepository.findByUserIdAndDefaultWritebackTrue(userId)
-                .filter(c -> c.getStatus() == CalendarConnectionStatus.ACTIVE)
+                .filter(c -> c.getStatus() != CalendarConnectionStatus.DISCONNECTED
+                        && c.getStatus() != CalendarConnectionStatus.REVOKED)
                 .orElse(null);
     }
 }

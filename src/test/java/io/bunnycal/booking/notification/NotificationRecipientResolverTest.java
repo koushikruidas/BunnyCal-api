@@ -38,4 +38,22 @@ class NotificationRecipientResolverTest {
         assertEquals(1, deduped.size());
         assertEquals("host@example.com", deduped.get(0));
     }
+
+    @Test
+    void resolveExtraGuestRecipients_filtersUndeliverableAndDeduplicates() {
+        var resolved = resolver.resolveExtraGuestRecipients(java.util.List.of(
+                "  Colleague@Example.com ",
+                "colleague@example.com",
+                "not-an-email",
+                "",
+                "second@example.com"));
+
+        assertEquals(java.util.List.of("colleague@example.com", "second@example.com"), resolved);
+    }
+
+    @Test
+    void resolveExtraGuestRecipients_emptyWhenNullOrEmpty() {
+        assertEquals(java.util.List.of(), resolver.resolveExtraGuestRecipients(null));
+        assertEquals(java.util.List.of(), resolver.resolveExtraGuestRecipients(java.util.List.of()));
+    }
 }

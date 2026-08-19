@@ -43,16 +43,7 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
     /** Query param the SPA appends to {@code /oauth2/authorization/{registrationId}}. */
     private static final String CLIENT_PARAM = "client";
     private static final String ADMIN_CLIENT = "admin";
-    private static final String CALENDAR_PARAM = "calendar";
     private static final String HOST_CALENDAR = "host";
-
-    private static final Set<String> GOOGLE_CALENDAR_SCOPES = Set.of(
-            "https://www.googleapis.com/auth/calendar.events",
-            "https://www.googleapis.com/auth/calendar.readonly");
-    private static final Set<String> MICROSOFT_CALENDAR_SCOPES = Set.of(
-            "offline_access",
-            "Calendars.ReadWrite",
-            "Calendars.Read");
 
     /** Short TTL: only needs to survive the redirect to the provider and back. */
     private static final int CLIENT_COOKIE_MAX_AGE_SECONDS = 600;
@@ -73,7 +64,7 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (resolved != null) {
             rememberIntent(request);
         }
-        return customize(resolved, isHostCalendarIntent(request));
+        return customize(resolved);
     }
 
     @Override
@@ -82,7 +73,7 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (resolved != null) {
             rememberIntent(request);
         }
-        return customize(resolved, isHostCalendarIntent(request));
+        return customize(resolved);
     }
 
     /**
@@ -99,11 +90,11 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (ADMIN_CLIENT.equalsIgnoreCase(request.getParameter(CLIENT_PARAM))) {
             addIntentCookie(response, request, OAUTH_CLIENT_COOKIE, ADMIN_CLIENT);
         }
-        if (isHostCalendarIntent(request)) {
-            addIntentCookie(response, request, HOST_CALENDAR_COOKIE, HOST_CALENDAR);
-        } else {
-            clearIntentCookie(response, request, HOST_CALENDAR_COOKIE);
-        }
+        // Cleared unconditionally, never set: sign-in requests no calendar scopes, so there is no
+        // calendar grant for the success handler to bootstrap. Clearing also disarms a cookie left
+        // over from the previous behaviour, which would otherwise trigger a bootstrap attempt
+        // against a token that now carries identity scopes only.
+        clearIntentCookie(response, request, HOST_CALENDAR_COOKIE);
         rememberOrigin(request, response);
     }
 
@@ -156,33 +147,32 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         return null;
     }
 
-    private OAuth2AuthorizationRequest customize(OAuth2AuthorizationRequest req, boolean hostCalendarIntent) {
+    private OAuth2AuthorizationRequest customize(OAuth2AuthorizationRequest req) {
         if (req == null) return null;
 
+        // Sign-in asks for identity, and only for identity.
+        //
+        // Calendar scopes deliberately no longer ride along. Requesting them here meant this
+        // request had to carry prompt=consent, because that is the only way Google returns a
+        // refresh token — and Google re-shows its permission screen every time that is sent, even
+        // for already-granted scopes. Every returning host re-consented, forever.
+        //
+        // Calendar access is now granted once at the CALENDAR onboarding step, through the
+        // dedicated connect endpoint (CalendarOAuthService.buildGoogleConnectUrl) which owns
+        // access_type=offline + prompt=consent. Because that grant is stored against the user, it
+        // survives a new browser or device — which a cookie-based "already consented" hint cannot.
+        //
+        // prompt=select_account stays: it is a product choice about account switching and shows
+        // the account picker, never the permission screen.
         Map<String, Object> extraParams = new HashMap<>(req.getAdditionalParameters());
         extraParams.put("prompt", "select_account");
 
         Set<String> scopes = new HashSet<>(req.getScopes());
-        if (hostCalendarIntent) {
-            String registrationId = String.valueOf(req.getAttributes().get("registration_id"));
-            if ("google".equalsIgnoreCase(registrationId)) {
-                scopes.addAll(GOOGLE_CALENDAR_SCOPES);
-                extraParams.put("access_type", "offline");
-                extraParams.put("include_granted_scopes", "true");
-            } else if ("microsoft".equalsIgnoreCase(registrationId)) {
-                scopes.addAll(MICROSOFT_CALENDAR_SCOPES);
-            }
-        }
 
         return OAuth2AuthorizationRequest.from(req)
                 .scopes(scopes)
                 .additionalParameters(extraParams)
                 .build();
-    }
-
-    private static boolean isHostCalendarIntent(HttpServletRequest request) {
-        return !ADMIN_CLIENT.equalsIgnoreCase(request.getParameter(CLIENT_PARAM))
-                && HOST_CALENDAR.equalsIgnoreCase(request.getParameter(CALENDAR_PARAM));
     }
 
     private static void addIntentCookie(HttpServletResponse response, HttpServletRequest request,

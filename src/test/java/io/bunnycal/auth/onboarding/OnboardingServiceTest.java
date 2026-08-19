@@ -233,7 +233,10 @@ class OnboardingServiceTest {
         OnboardingStateResponse state = service.get(userId);
 
         assertThat(state.calendarReady()).isFalse();
-        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.FIRST_EVENT);
+        // Held at CALENDAR rather than waved through. Sign-in no longer requests calendar scopes,
+        // so an unconnected calendar is the normal state for a new host, and this is the step that
+        // asks for it — once, against the account, rather than at publish time as a failure.
+        assertThat(state.resumeStep()).isEqualTo(OnboardingStep.CALENDAR);
     }
 
     @Test
