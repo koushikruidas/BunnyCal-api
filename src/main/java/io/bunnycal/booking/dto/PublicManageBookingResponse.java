@@ -23,6 +23,8 @@ public record PublicManageBookingResponse(
         String status,
         String externalLifecycleState,
         String externalLifecycleReason,
-        String timezone
+        String timezone,
+        /** The additional guests the booker attached, echoed back so they can see their own list. */
+        List<String> guests
 ) {
 }

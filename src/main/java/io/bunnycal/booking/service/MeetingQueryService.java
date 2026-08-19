@@ -24,6 +24,11 @@ public class MeetingQueryService {
     private static final int MAX_LIMIT = 200;
 
     private final BookingRepository bookingRepository;
+
+    // Field-injected so the established test constructors stay stable; absent means no guests,
+    // which is the pre-feature behaviour.
+    @Autowired(required = false)
+    private io.bunnycal.booking.repository.BookingGuestRepository bookingGuestRepository;
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final TimeSource timeSource;
@@ -104,7 +109,14 @@ public class MeetingQueryService {
                 hostPaymentQueryService == null
                         ? null
                         : hostPaymentQueryService.findForReservation(
-                                hostId, PaymentReservationKind.BOOKING, bookingId)
+                                hostId, PaymentReservationKind.BOOKING, bookingId),
+                // Shown so a host is not surprised by extra attendees on what the dashboard
+                // otherwise presents as a one-to-one.
+                bookingGuestRepository == null
+                        ? java.util.List.of()
+                        : bookingGuestRepository.findByBookingIdAndHostId(bookingId, hostId).stream()
+                                .map(io.bunnycal.booking.domain.BookingGuest::getGuestEmail)
+                                .toList()
         );
     }
 
