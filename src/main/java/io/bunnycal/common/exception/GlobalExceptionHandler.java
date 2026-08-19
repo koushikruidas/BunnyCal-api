@@ -95,6 +95,7 @@ public class GlobalExceptionHandler {
             case GOOGLE_EVENT_CREATION_FAILED:
                 return HttpStatus.BAD_GATEWAY;
             case TOO_MANY_PENDING_BOOKINGS:
+            case RATE_LIMITED:
                 return HttpStatus.TOO_MANY_REQUESTS;
             case IDEMPOTENCY_RACE:
                 return HttpStatus.SERVICE_UNAVAILABLE;

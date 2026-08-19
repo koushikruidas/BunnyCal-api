@@ -136,4 +136,33 @@ class BookingGuestsIT extends AbstractBookingIT {
         assertEquals(0, bookingGuestRepository.findByBookingIdAndHostId(first, host.getId()).size());
         assertEquals(1, bookingGuestRepository.findByBookingIdAndHostId(second, host.getId()).size());
     }
+
+    /**
+     * The read path: guests attached to a booking come back out again. Without this the rows are
+     * written and mailed but invisible, so a host sees "one-to-one" for a four-person meeting.
+     */
+    @Test
+    void savedGuestsAreReadableForDisplay() {
+        var host = createHost();
+        UUID bookingId = newBooking(host.getId());
+        bookingGuestRepository.saveAll(List.of(
+                BookingGuest.builder().bookingId(bookingId).hostId(host.getId())
+                        .guestEmail("first@example.com").build(),
+                BookingGuest.builder().bookingId(bookingId).hostId(host.getId())
+                        .guestEmail("second@example.com").build()));
+
+        List<String> emails = bookingGuestRepository.findByBookingIdAndHostId(bookingId, host.getId())
+                .stream().map(BookingGuest::getGuestEmail).sorted().toList();
+
+        assertEquals(List.of("first@example.com", "second@example.com"), emails);
+    }
+
+    /** A booking with no guests reads as an empty list, never null. */
+    @Test
+    void aBookingWithoutGuestsReadsAsEmpty() {
+        var host = createHost();
+        UUID bookingId = newBooking(host.getId());
+
+        assertTrue(bookingGuestRepository.findByBookingIdAndHostId(bookingId, host.getId()).isEmpty());
+    }
 }

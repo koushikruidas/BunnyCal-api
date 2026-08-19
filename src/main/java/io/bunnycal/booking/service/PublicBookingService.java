@@ -965,7 +965,8 @@ public class PublicBookingService {
                 row.getBookingStatus(),
                 row.getExternalLifecycleState(),
                 row.getExternalLifecycleReason(),
-                assignedHost.getTimezone()
+                assignedHost.getTimezone(),
+                loadGuestEmails(bookingId, booking.getHostId())
         );
     }
 
@@ -1029,7 +1030,10 @@ public class PublicBookingService {
                 registration.getStatus().name(),
                 sessionLifecycleState(sessionDetail),
                 sessionDetail == null ? null : sessionDetail.getLastError(),
-                host.getTimezone());
+                host.getTimezone(),
+                // GROUP registrations carry no additional guests: attendance there is one row per
+                // person in session_registrations, against a capacity ceiling.
+                List.of());
     }
 
     private static String sessionLifecycleState(EventSessionRepository.SessionDetailRow row) {
@@ -1343,6 +1347,16 @@ public class PublicBookingService {
                                               Instant end) {
         ZoneId zoneId = timeConversionService.resolveZone(timezone);
         return calendarBusyTimeService.hasBusyConflict(userId, start, end, zoneId);
+    }
+
+    /** The additional guests on a booking, for read-only display. Empty when none or unavailable. */
+    private List<String> loadGuestEmails(UUID bookingId, UUID hostId) {
+        if (bookingGuestRepository == null) {
+            return List.of();
+        }
+        return bookingGuestRepository.findByBookingIdAndHostId(bookingId, hostId).stream()
+                .map(BookingGuest::getGuestEmail)
+                .toList();
     }
 
     /** Server-side ceiling on additional guests. The client counter is cosmetic; this is the rule. */

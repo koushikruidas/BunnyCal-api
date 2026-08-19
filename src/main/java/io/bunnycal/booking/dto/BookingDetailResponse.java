@@ -25,6 +25,11 @@ public record BookingDetailResponse(
         String externalLifecycleReason,
         boolean reconcileSuppressed,
         boolean actionRequired,
-        HostBookingPaymentResponse payment
+        HostBookingPaymentResponse payment,
+        /**
+         * Additional invite-only guests the booker attached. Surfaced so a host is not confronted
+         * by a four-person invite for what their dashboard calls a one-to-one.
+         */
+        List<String> guests
 ) {
 }

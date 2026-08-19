@@ -16,6 +16,8 @@ import io.bunnycal.booking.idempotency.ResponseEnvelope;
 import io.bunnycal.booking.service.PublicBookingService;
 import io.bunnycal.booking.service.PublicGroupSessionQueryService;
 import io.bunnycal.common.api.ApiResponse;
+import io.bunnycal.booking.ratelimit.PublicBookingRateLimiter;
+import jakarta.servlet.http.HttpServletRequest;
 import io.bunnycal.common.enums.ErrorCode;
 import io.bunnycal.common.exception.CustomException;
 import io.bunnycal.common.time.TimeConversionService;
@@ -42,6 +44,33 @@ import org.springframework.security.core.Authentication;
 @RestController
 @RequestMapping("/public")
 public class PublicBookingController {
+    // Optional so the established test constructors keep working; absent simply means no ceiling.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private PublicBookingRateLimiter rateLimiter;
+
+    /**
+     * Client address for rate limiting. X-Forwarded-For may be a comma-separated chain; the first
+     * entry is the original client. Behind our own proxy this is trustworthy enough for a ceiling
+     * — worst case a spoofed value buys one extra bucket, which the per-host limit still bounds.
+     */
+    private static String clientIp(HttpServletRequest http) {
+        if (http == null) {
+            return null;
+        }
+        String forwarded = http.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return http.getRemoteAddr();
+    }
+
+    /** Applied where a request can create a booking or cause mail to be sent. */
+    private void enforceRateLimit(HttpServletRequest http, String username) {
+        if (rateLimiter != null && !rateLimiter.tryAcquire(clientIp(http), username)) {
+            throw new CustomException(ErrorCode.RATE_LIMITED);
+        }
+    }
+
     private static final Logger log = LoggerFactory.getLogger(PublicBookingController.class);
     private final PublicBookingService publicBookingService;
     private final PublicGroupSessionQueryService publicGroupSessionQueryService;
@@ -97,7 +126,11 @@ public class PublicBookingController {
                                   Authentication authentication,
                                   @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
                                   @RequestHeader(value = "X-Timezone", required = false) String timezoneHeader,
-                                  @RequestBody PublicBookRequest request) {
+                                  @RequestBody PublicBookRequest request,
+                                  HttpServletRequest http) {
+        // Bound here rather than only at confirm: a hold reserves a slot, so unbounded holds are
+        // a denial-of-availability on the host's calendar even when no mail is ever sent.
+        enforceRateLimit(http, username);
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new CustomException(ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
@@ -151,7 +184,9 @@ public class PublicBookingController {
                                   String idempotencyKey,
                                   String timezoneHeader,
                                   PublicBookRequest request) {
-        return hold(username, eventTypeSlug, null, idempotencyKey, timezoneHeader, request);
+        // No servlet request: this overload is called directly, not over HTTP, so there is no
+        // client address to bound. enforceRateLimit still runs and buckets it under "unknown".
+        return hold(username, eventTypeSlug, null, idempotencyKey, timezoneHeader, request, null);
     }
 
     @GetMapping("/{username}/{eventTypeSlug}/book/{bookingId}")
@@ -201,7 +236,10 @@ public class PublicBookingController {
     @PostMapping("/{username}/{eventTypeSlug}/book/{bookingId}/confirm")
     public ResponseEntity<ApiResponse<PublicConfirmResponse>> confirm(@PathVariable String username,
                                                                       @PathVariable String eventTypeSlug,
-                                                                      @PathVariable String bookingId) {
+                                                                      @PathVariable String bookingId,
+                                                                      HttpServletRequest http) {
+        // The step that actually emits mail — to the host, the guest, and now every added guest.
+        enforceRateLimit(http, username);
         PublicConfirmResponse response = publicBookingService.confirm(username, eventTypeSlug, java.util.UUID.fromString(bookingId));
         return ResponseEntity.ok(ApiResponse.success(response));
     }
