@@ -26,6 +26,9 @@ import io.bunnycal.booking.contract.BookingState;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.CalendarEventMappingRepository;
 import io.bunnycal.booking.repository.BookingRepository;
+import io.bunnycal.booking.domain.BookingGuest;
+import io.bunnycal.booking.repository.BookingGuestRepository;
+import io.bunnycal.booking.notification.EmailDeliverabilityPolicy;
 import io.bunnycal.calendar.service.CalendarService;
 import io.bunnycal.calendar.service.CalendarBusyTimeService;
 import io.bunnycal.calendar.domain.CalendarConnection;
@@ -54,6 +57,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 import java.time.ZoneId;
@@ -81,6 +86,14 @@ public class PublicBookingService {
     // Optional: only present when embed module is on the classpath (always in practice)
     @Autowired(required = false)
     private EmbedBookingSupport embedBookingSupport;
+
+    // Additional invite-only guests attached on the details step. Field-injected, like the other
+    // late additions here, so the established test constructors stay stable.
+    @Autowired(required = false)
+    private BookingGuestRepository bookingGuestRepository;
+
+    @Autowired(required = false)
+    private EmailDeliverabilityPolicy emailDeliverabilityPolicy;
 
     // Field-injected to keep the legacy test constructors stable while confirm-time availability
     // gains the same holiday-day-off check as slot listing.
@@ -1111,14 +1124,20 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(bookingId, target.userId(), answerSnapshots);
         }
 
+        int guestCount = persistExtraGuests(bookingId, target.userId(), target.kind(),
+                guestEmail, request.guestEmails());
+
         Instant expiresAt = Instant.now().plus(target.holdDuration());
         bookingRepository.setPendingExpiry(bookingId, expiresAt);
 
-        OpsLoggers.BOOKING.info("booking_hold_details_attached bookingId={} hostId={} eventTypeId={} guestEmail={} expiresAt={}",
+        // guestCount only — never the addresses themselves, matching the maskEmail discipline
+        // used for the primary. It is also the signal an abuse spike would show up in.
+        OpsLoggers.BOOKING.info("booking_hold_details_attached bookingId={} hostId={} eventTypeId={} guestEmail={} guestCount={} expiresAt={}",
                 bookingId,
                 target.userId(),
                 target.eventTypeId(),
                 OpsLogSupport.maskEmail(guestEmail),
+                guestCount,
                 expiresAt);
 
         PublicHoldResponse response = PublicHoldResponse.oneOnOne(
@@ -1324,6 +1343,85 @@ public class PublicBookingService {
                                               Instant end) {
         ZoneId zoneId = timeConversionService.resolveZone(timezone);
         return calendarBusyTimeService.hasBusyConflict(userId, start, end, zoneId);
+    }
+
+    /** Server-side ceiling on additional guests. The client counter is cosmetic; this is the rule. */
+    private static final int MAX_EXTRA_GUESTS = 10;
+
+    /**
+     * Replaces the additional-guest list for a booking, and returns how many rows were kept.
+     *
+     * <p>Every rule here is deliberately forgiving: addresses that are malformed, undeliverable,
+     * duplicated, equal to the primary guest, or past the cap are dropped rather than rejected.
+     * The details step already blocks submission on an invalid chip, so a bad address arriving
+     * means a client bypass — and failing an otherwise-good booking over one stray address is a
+     * far worse outcome than quietly not inviting it. This mirrors {@code resolveAttendeeRecipient}
+     * returning empty instead of throwing.
+     *
+     * <p>Replace rather than append: the details step is re-submittable, and appending would hit
+     * the unique index on a resubmit.
+     */
+    private int persistExtraGuests(UUID bookingId,
+                                   UUID hostId,
+                                   EventKind kind,
+                                   String primaryGuestEmail,
+                                   List<String> requested) {
+        if (bookingGuestRepository == null) {
+            return 0;
+        }
+
+        // Defence in depth. GROUP tracks attendance in session_registrations against a capacity
+        // ceiling, so guests attached outside that table would bypass it. GROUP cannot reach this
+        // method today (its registrations carry the email from insert time), but the gate makes
+        // that a stated rule rather than an accident of routing.
+        if (kind == EventKind.GROUP) {
+            if (requested != null && !requested.isEmpty()) {
+                log.warn("Ignoring {} additional guest(s) on a GROUP booking {}", requested.size(), bookingId);
+            }
+            return 0;
+        }
+
+        // Always clear first, so removing every guest on a resubmit actually removes them.
+        bookingGuestRepository.deleteByBookingIdAndHostId(bookingId, hostId);
+        if (requested == null || requested.isEmpty()) {
+            return 0;
+        }
+
+        LinkedHashSet<String> accepted = new LinkedHashSet<>();
+        int dropped = 0;
+        for (String raw : requested) {
+            String email = normalizeGuestEmail(raw);
+            if (email == null
+                    || email.equals(primaryGuestEmail)
+                    || (emailDeliverabilityPolicy != null && !emailDeliverabilityPolicy.isDeliverable(email))) {
+                dropped++;
+                continue;
+            }
+            if (accepted.size() >= MAX_EXTRA_GUESTS) {
+                dropped++;
+                continue;
+            }
+            accepted.add(email);
+        }
+
+        if (dropped > 0) {
+            log.info("Dropped {} additional guest(s) on booking {} (invalid, duplicate, primary, or over the cap of {})",
+                    dropped, bookingId, MAX_EXTRA_GUESTS);
+        }
+        if (accepted.isEmpty()) {
+            return 0;
+        }
+
+        List<BookingGuest> rows = new ArrayList<>(accepted.size());
+        for (String email : accepted) {
+            rows.add(BookingGuest.builder()
+                    .bookingId(bookingId)
+                    .hostId(hostId)
+                    .guestEmail(email)
+                    .build());
+        }
+        bookingGuestRepository.saveAll(rows);
+        return rows.size();
     }
 
     private static String normalizeGuestEmail(String value) {

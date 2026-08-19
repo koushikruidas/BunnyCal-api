@@ -1051,6 +1051,126 @@ class PublicBookingServiceTest {
         assertEquals(bookingId, response.bookingId());
     }
 
+    /** Wires the field-injected guest collaborators and returns the repository mock. */
+    private io.bunnycal.booking.repository.BookingGuestRepository wireGuestRepo() {
+        var repo = Mockito.mock(io.bunnycal.booking.repository.BookingGuestRepository.class);
+        ReflectionTestUtils.setField(service, "bookingGuestRepository", repo);
+        ReflectionTestUtils.setField(service, "emailDeliverabilityPolicy",
+                new io.bunnycal.booking.notification.EmailDeliverabilityPolicy());
+        return repo;
+    }
+
+    private UUID stubPendingBooking() {
+        UUID bookingId = UUID.randomUUID();
+        when(publicBookingTargetResolver.resolve("koushik", "30min")).thenReturn(target());
+        Booking booking = new Booking();
+        booking.setId(bookingId);
+        booking.setHostId(userId);
+        booking.setStartTime(Instant.parse("2026-05-10T10:00:00Z"));
+        booking.setEndTime(Instant.parse("2026-05-10T10:30:00Z"));
+        when(bookingRepository.findAnyByIdAndEventTypeId(bookingId, eventTypeId)).thenReturn(Optional.of(booking));
+        when(bookingRepository.setPendingGuestDetails(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(1);
+        return bookingId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.List<String> capturedGuestEmails(
+            io.bunnycal.booking.repository.BookingGuestRepository repo) {
+        ArgumentCaptor<java.util.List<io.bunnycal.booking.domain.BookingGuest>> captor =
+                ArgumentCaptor.forClass(java.util.List.class);
+        verify(repo).saveAll(captor.capture());
+        return captor.getValue().stream()
+                .map(io.bunnycal.booking.domain.BookingGuest::getGuestEmail)
+                .toList();
+    }
+
+    @Test
+    void updateGuestDetails_normalizesAndPersistsExtraGuests() {
+        var repo = wireGuestRepo();
+        UUID bookingId = stubPendingBooking();
+
+        service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest(
+                        "priya@example.com", "Priya", null, null, null,
+                        java.util.List.of("  Colleague@Example.com ", "second@example.com")));
+
+        assertEquals(java.util.List.of("colleague@example.com", "second@example.com"),
+                capturedGuestEmails(repo));
+    }
+
+    @Test
+    void updateGuestDetails_replacesRatherThanAppendsOnResubmit() {
+        var repo = wireGuestRepo();
+        UUID bookingId = stubPendingBooking();
+
+        service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest(
+                        "priya@example.com", "Priya", null, null, null,
+                        java.util.List.of("colleague@example.com")));
+
+        // The details step is re-submittable, so the previous set must be cleared first —
+        // appending would collide with the unique index.
+        verify(repo).deleteByBookingIdAndHostId(bookingId, userId);
+    }
+
+    @Test
+    void updateGuestDetails_clearsGuestsWhenListIsEmpty() {
+        var repo = wireGuestRepo();
+        UUID bookingId = stubPendingBooking();
+
+        service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest(
+                        "priya@example.com", "Priya", null, null, null, java.util.List.of()));
+
+        // Removing every guest and resubmitting has to actually remove them.
+        verify(repo).deleteByBookingIdAndHostId(bookingId, userId);
+        verify(repo, never()).saveAll(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void updateGuestDetails_dropsInvalidDuplicateAndPrimaryAddresses() {
+        var repo = wireGuestRepo();
+        UUID bookingId = stubPendingBooking();
+
+        service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest(
+                        "priya@example.com", "Priya", null, null, null,
+                        java.util.List.of(
+                                "not-an-email",
+                                "colleague@example.com",
+                                "COLLEAGUE@example.com",
+                                "Priya@Example.com")));
+
+        // Malformed dropped, duplicate collapsed case-insensitively, and the primary guest
+        // excluded — they already receive the invite as the attendee.
+        assertEquals(java.util.List.of("colleague@example.com"), capturedGuestEmails(repo));
+    }
+
+    @Test
+    void updateGuestDetails_truncatesAtTheCapRatherThanFailingTheBooking() {
+        var repo = wireGuestRepo();
+        UUID bookingId = stubPendingBooking();
+
+        java.util.List<String> twelve = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            twelve.add("guest" + i + "@example.com");
+        }
+
+        var response = service.updateGuestDetails("koushik", "30min", bookingId,
+                new io.bunnycal.booking.dto.PublicGuestDetailsRequest(
+                        "priya@example.com", "Priya", null, null, null, twelve));
+
+        java.util.List<String> saved = capturedGuestEmails(repo);
+        assertEquals(10, saved.size());
+        // Order-preserving truncation: the first ten survive.
+        assertEquals("guest0@example.com", saved.get(0));
+        assertEquals("guest9@example.com", saved.get(9));
+        // The booking itself still succeeds — one guest too many must never cost the booking.
+        assertEquals(bookingId, response.bookingId());
+    }
+
     @Test
     void updateGuestDetails_rejectsMissingGuestIdentity() {
         UUID bookingId = UUID.randomUUID();
