@@ -40,6 +40,8 @@ public enum ErrorCode {
             "Calendar synchronization is still in progress."),
     TOO_MANY_PENDING_BOOKINGS("TOO_MANY_PENDING_BOOKINGS",
             "Too many pending bookings overlap this time window. Try again later."),
+    RATE_LIMITED("RATE_LIMITED",
+            "Too many requests. Please wait a moment and try again."),
     INVALID_STATE_TRANSITION("INVALID_STATE_TRANSITION",
             "Booking is not in the expected state or version — concurrent update may have occurred."),
     CONFERENCING_DISCONNECT_NOT_SUPPORTED("CONFERENCING_DISCONNECT_NOT_SUPPORTED",

@@ -304,6 +304,19 @@ booking:
     require-capability-token: ${BOOKING_PUBLIC_REQUIRE_CAPABILITY_TOKEN:true}
     capability-token-ttl-days: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_TTL_DAYS:14}
     capability-token-legacy-cutoff: ${BOOKING_PUBLIC_CAPABILITY_TOKEN_LEGACY_CUTOFF:}
+    # Ceiling on the unauthenticated booking endpoints. One confirmed booking can now send mail to
+    # the host, the guest and up to ten added guests, all from our own sending domain, so this
+    # bounds deliverability risk as much as load. Fixed windows in Redis, shared across replicas,
+    # and fails open if Redis is down — booking must not depend on the limiter being healthy.
+    rate-limit:
+      enabled: ${BOOKING_PUBLIC_RATE_LIMIT_ENABLED:true}
+      # Generous for a human: a booker retrying, re-picking slots and reloading stays well inside
+      # 60/hour. Set any limit to 0 to disable that dimension alone.
+      per-ip-per-hour: ${BOOKING_PUBLIC_RATE_LIMIT_PER_IP_PER_HOUR:60}
+      per-ip-window-seconds: ${BOOKING_PUBLIC_RATE_LIMIT_PER_IP_WINDOW_SECONDS:3600}
+      # Bounds one host's link even when traffic is spread across many addresses.
+      per-host-per-hour: ${BOOKING_PUBLIC_RATE_LIMIT_PER_HOST_PER_HOUR:200}
+      per-host-window-seconds: ${BOOKING_PUBLIC_RATE_LIMIT_PER_HOST_WINDOW_SECONDS:3600}
   notifications:
     enabled: ${BOOKING_NOTIFICATIONS_ENABLED:true}
     # From is aligned with the iTIP ORGANIZER identity at send time (Outlook treats
