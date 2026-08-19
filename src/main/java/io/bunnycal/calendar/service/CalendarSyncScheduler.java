@@ -501,6 +501,24 @@ public class CalendarSyncScheduler {
                                    String providerTag,
                                    RuntimeException ex,
                                    long connectionStart) {
+        // "Not committed yet" is not a fault. Sign-in creates the connection and runs its initial
+        // full sync inside one transaction, so this sweep can legitimately pick up a row it cannot
+        // read for the few seconds before that commits — the due-query includes SYNCING, which is
+        // exactly the status such a row carries.
+        //
+        // Marking it FAILED here is what broke signup: onboarding refuses to set the conferencing
+        // default on a non-ACTIVE connection, so setup aborted and the host was told to reconnect
+        // a calendar that was never broken. It recovered on the following sweep, but onboarding
+        // runs once and never went back. Skip instead; the next sweep sees a committed row.
+        if (ex instanceof CalendarConnectionNotVisibleException) {
+            meterRegistry.counter("calendar.sync.connection_not_visible.total", "provider", providerTag)
+                    .increment();
+            log.info("calendar_sync_scheduler_connection_not_visible connectionId={} userId={} prevStatus={} elapsedMs={} action=skip_until_next_sweep",
+                    connection.getId(), connection.getUserId(), previousStatus,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - connectionStart));
+            return;
+        }
+
         CalendarConnection latest = connectionRepository.findById(connection.getId()).orElse(null);
         CalendarConnectionStatus latestStatus = latest == null ? previousStatus : latest.getStatus();
         String latestErrorCode = latest == null ? null : latest.getLastErrorCode();

@@ -65,8 +65,12 @@ public class CalendarEventIngestionService {
         }
         log.debug("calendar_event_ingestion_lookup connectionId={} incomingCount={}",
                 connectionId, incomingEvents == null ? 0 : incomingEvents.size());
+        // A missing row here does NOT mean the connection is gone. Sign-in writes the connection
+        // and runs its initial sync in one transaction, so a concurrent reader — the sync sweep —
+        // sees nothing until that commits. Signalling that separately lets the caller skip and
+        // retry instead of condemning a connection that is merely still being created.
         CalendarConnection connection = connectionRepository.findById(connectionId)
-                .orElseThrow(() -> new IllegalArgumentException("Calendar connection not found"));
+                .orElseThrow(() -> new CalendarConnectionNotVisibleException(connectionId));
 
         boolean changed = false;
         int recomputed = 0;
