@@ -1156,6 +1156,83 @@ class BookingNotificationServiceTest {
         }
     }
 
+    /** Wires the field-injected guest repository with the rows this booking should fan out to. */
+    private void stubExtraGuests(UUID bookingId, UUID hostId, String... emails) {
+        var repo = org.mockito.Mockito.mock(io.bunnycal.booking.repository.BookingGuestRepository.class);
+        List<io.bunnycal.booking.domain.BookingGuest> rows = new java.util.ArrayList<>();
+        for (String email : emails) {
+            rows.add(io.bunnycal.booking.domain.BookingGuest.builder()
+                    .bookingId(bookingId).hostId(hostId).guestEmail(email).build());
+        }
+        when(repo.findByBookingIdAndHostId(bookingId, hostId)).thenReturn(rows);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "bookingGuestRepository", repo);
+        when(recipientResolver.resolveExtraGuestRecipients(any())).thenReturn(List.of(emails));
+    }
+
+    @Test
+    void standalone_extraGuestGetsInviteButNoManageLink() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        stubExtraGuests(bookingId, hostId, "colleague@example.com");
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(List.of("host@example.com", "guest@example.com", "colleague@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(3)).send(messageCaptor.capture());
+        var sent = messageCaptor.getAllValues();
+        MimeMessage guestMsg = findByRecipient(sent, "colleague@example.com");
+
+        // They are on the invite: the ICS still reaches them, so their own mail client can RSVP.
+        String ics = unfold(icsBody(guestMsg));
+        assertTrue(ics.contains("METHOD:REQUEST"));
+        assertTrue(ics.contains(":mailto:colleague@example.com"));
+        // But invite-only means no manage link — that link is a bearer capability to cancel.
+        assertFalse(textBody(guestMsg).contains("Manage your booking"),
+                "an added guest must not receive a manage link");
+        // The people who legitimately hold one still do.
+        assertTrue(textBody(findByRecipient(sent, "host@example.com")).contains("Manage your booking"));
+        assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
+    }
+
+    @Test
+    void standalone_extraGuestMatchingHostKeepsTheHostsManageLink() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        User host = User.builder().id(hostId).name("Host Name").email("host@example.com").username("host-user").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder().name("Discovery Call").slug("discovery-call").build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@example.com"));
+        // The booker typed the host's own address into the guests field.
+        stubExtraGuests(bookingId, hostId, "host@example.com");
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(List.of("host@example.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        // The stronger identity wins: being listed as a guest must not strip the host's link.
+        assertTrue(textBody(findByRecipient(messageCaptor.getAllValues(), "host@example.com"))
+                        .contains("Manage your booking"),
+                "the host keeps their manage link even when also listed as a guest");
+    }
+
     // ── Collective notification tests ────────────────────────────────────────
 
     @Test
@@ -1216,6 +1293,59 @@ class BookingNotificationServiceTest {
             assertFalse(ics.contains("ROLE=CHAIR"), "collective ICS must not contain ROLE=CHAIR");
         }
         // Exactly one token issued (not one per recipient)
+        verify(guestCapabilityTokenService, times(1)).issueToken(any(), any(), any(), any(), any());
+    }
+
+    /**
+     * The collective path mints ONE manage token above the send loop and shares it across the
+     * batch, on the stated assumption that "all recipients share the same permissions". Extra
+     * guests are exactly the case that breaks it — without per-recipient suppression every guest
+     * would receive a working reschedule/cancel link.
+     */
+    @Test
+    void collective_extraGuestGetsIcsButNotTheSharedManageLink() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+        UUID aliceId = UUID.randomUUID();
+
+        Booking booking = booking(bookingId, ownerId, "guest@example.com", "Guest Name", 1L);
+        User owner = User.builder().id(ownerId).name("Owner").email("owner@example.com").username("owner").timezone("UTC").build();
+        User alice = User.builder().id(aliceId).name("Alice").email("alice@example.com").username("alice").timezone("UTC").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        io.bunnycal.booking.domain.BookingAssignment assignAlice = io.bunnycal.booking.domain.BookingAssignment.builder()
+                .bookingId(bookingId).participantUserId(aliceId)
+                .assignmentReason(io.bunnycal.booking.domain.AssignmentReason.COLLECTIVE_ALL).build();
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(ownerId)).thenReturn(Optional.of(owner));
+        when(eventTypeRepository.findById(any())).thenReturn(Optional.of(
+                EventType.builder().kind(io.bunnycal.availability.domain.EventKind.COLLECTIVE)
+                        .name("Team Sync").slug("team-sync").userId(ownerId).build()));
+        when(bookingAssignmentRepository.findAllByBookingId(bookingId)).thenReturn(List.of(assignAlice));
+        when(userRepository.findById(aliceId)).thenReturn(Optional.of(alice));
+        when(recipientResolver.resolveHostRecipient(alice)).thenReturn(Optional.of("alice@example.com"));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        stubExtraGuests(bookingId, ownerId, "colleague@example.com");
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(List.of("alice@example.com", "guest@example.com", "colleague@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(3)).send(messageCaptor.capture());
+        var sent = messageCaptor.getAllValues();
+
+        MimeMessage guestMsg = findByRecipient(sent, "colleague@example.com");
+        String ics = unfold(icsBody(guestMsg));
+        assertTrue(ics.contains(":mailto:colleague@example.com"), "guest must be on the invite");
+        assertFalse(ics.contains("ROLE=CHAIR"), "collective ICS must not contain ROLE=CHAIR");
+        assertFalse(textBody(guestMsg).contains("Manage your booking"),
+                "an added guest must not receive the shared collective manage link");
+
+        // The participant and the primary guest legitimately share it.
+        assertTrue(textBody(findByRecipient(sent, "alice@example.com")).contains("Manage your booking"));
+        assertTrue(textBody(findByRecipient(sent, "guest@example.com")).contains("Manage your booking"));
+        // Still exactly one token for the batch — suppression is per recipient, not per token.
         verify(guestCapabilityTokenService, times(1)).issueToken(any(), any(), any(), any(), any());
     }
 

@@ -39,6 +39,27 @@ public class NotificationRecipientResolver {
         return Optional.of(attendee);
     }
 
+    /**
+     * The invite-only extra guests the booker attached, filtered to deliverable addresses.
+     *
+     * <p>Deliberately separate from {@link #resolveAttendeeRecipient}: the primary guest is the
+     * only one who gets a manage link, so the two must stay distinguishable all the way through
+     * the send loop.
+     */
+    public List<String> resolveExtraGuestRecipients(List<String> guestEmails) {
+        if (guestEmails == null || guestEmails.isEmpty()) {
+            return List.of();
+        }
+        Set<String> dedup = new LinkedHashSet<>();
+        for (String raw : guestEmails) {
+            String normalized = policy.normalize(raw);
+            if (policy.isDeliverable(normalized)) {
+                dedup.add(normalized);
+            }
+        }
+        return new ArrayList<>(dedup);
+    }
+
     public List<String> deduplicate(List<String> recipients) {
         Set<String> dedup = new LinkedHashSet<>();
         for (String r : recipients) {

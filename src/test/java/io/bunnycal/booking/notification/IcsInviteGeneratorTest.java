@@ -301,6 +301,174 @@ class IcsInviteGeneratorTest {
     }
 
     @Test
+    void standaloneRequest_extraGuestsBecomeReqParticipants() {
+        String ics = generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                List.of("colleague@example.com", "second@example.com"),
+                3,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertTrue(unfolded.contains("ATTENDEE;CN=colleague@example.com;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:colleague@example.com"));
+        assertTrue(unfolded.contains("ATTENDEE;CN=second@example.com;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:second@example.com"));
+        // Host and primary guest keep their own lines.
+        assertTrue(unfolded.contains("ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:host@example.com"));
+        assertTrue(unfolded.contains(":mailto:guest@example.com"));
+    }
+
+    /**
+     * addAttendee ends in an unconditional put, so appending a guest whose address equals the
+     * host's would overwrite the host's HOST role and drop ROLE=CHAIR from the invite entirely.
+     */
+    @Test
+    void standaloneRequest_extraGuestMatchingHostDoesNotDemoteChair() {
+        String ics = generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                // Same address as the host, in a different case.
+                List.of("HOST@example.com"),
+                3,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertTrue(unfolded.contains("ATTENDEE;CN=Host Name;CUTYPE=INDIVIDUAL;ROLE=CHAIR;PARTSTAT=ACCEPTED;RSVP=FALSE:mailto:host@example.com"));
+        assertEquals(1, countOccurrences(unfolded, "ROLE=CHAIR"));
+        // Exactly two attendees: the collision must not add a third line.
+        assertEquals(2, countOccurrences(unfolded, "ATTENDEE;"));
+    }
+
+    @Test
+    void standaloneRequest_extraGuestMatchingPrimaryGuestIsNotDuplicated() {
+        String ics = generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                List.of("Guest@Example.com"),
+                3,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertEquals(2, countOccurrences(unfolded, "ATTENDEE;"));
+        // Keeps the named display name rather than falling back to the bare address.
+        assertTrue(unfolded.contains("CN=Guest Name"));
+    }
+
+    @Test
+    void standaloneRequest_extraGuestEqualToOrganizerIsDropped() {
+        String ics = generator.buildStandaloneRequest(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                List.of("calendar@example.com"),
+                3,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertEquals(2, countOccurrences(unfolded, "ATTENDEE;"));
+        assertFalse(unfolded.contains("ATTENDEE;CN=calendar@example.com"));
+    }
+
+    @Test
+    void collectiveRequest_extraGuestsAreReqParticipantsAndKeepNoChair() {
+        String ics = generator.buildCollectiveRequest(
+                UUID.randomUUID(),
+                "Sync",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                List.of(
+                        new IcsInviteGenerator.CollectiveHost("Alice", "alice@example.com"),
+                        new IcsInviteGenerator.CollectiveHost("Bob", "bob@example.com")
+                ),
+                "Guest Name",
+                "guest@example.com",
+                List.of("colleague@example.com"),
+                1,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertTrue(unfolded.contains("ATTENDEE;CN=colleague@example.com;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:colleague@example.com"));
+        assertFalse(unfolded.contains("ROLE=CHAIR"));
+        assertEquals(4, countOccurrences(unfolded, "ATTENDEE;"));
+    }
+
+    @Test
+    void standaloneCancel_carriesExtraGuestsSoTheyLearnOfTheCancellation() {
+        String ics = generator.buildStandaloneCancel(
+                UUID.randomUUID(),
+                "Discovery",
+                "Booking 1",
+                Instant.parse("2026-05-10T10:00:00Z"),
+                Instant.parse("2026-05-10T10:30:00Z"),
+                "App Calendar",
+                "calendar@example.com",
+                "Host Name",
+                "host@example.com",
+                "Guest Name",
+                "guest@example.com",
+                List.of("colleague@example.com"),
+                4,
+                conf(null)
+        );
+        String unfolded = unfold(ics);
+
+        assertTrue(unfolded.contains("METHOD:CANCEL"));
+        assertTrue(unfolded.contains(":mailto:colleague@example.com"));
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = haystack.indexOf(needle, idx)) != -1) {
+            count++;
+            idx += needle.length();
+        }
+        return count;
+    }
+
+    @Test
     void collectiveRequest_allAttendeesAreReqParticipant() {
         // Option B: collective hosts and guest both use REQ-PARTICIPANT. No CHAIR.
         UUID bookingId = UUID.randomUUID();

@@ -33,6 +33,8 @@ import io.bunnycal.conferencing.service.EventConferencingResolver;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.embed.public_.BookingQuestionAnswerRepository;
+import io.bunnycal.booking.repository.BookingGuestRepository;
+import io.bunnycal.booking.domain.BookingGuest;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
 import java.time.Duration;
@@ -94,6 +96,11 @@ public class BookingNotificationService {
     private final CalendarConnectionRepository calendarConnectionRepository;
     private final BookingOwnershipRepository bookingOwnershipRepository;
     private final BookingQuestionAnswerRepository bookingQuestionAnswerRepository;
+
+    // The booker's invite-only extra guests. Field-injected so the established test constructors
+    // keep compiling; absent simply means no extra guests, which is the pre-feature behaviour.
+    @Autowired(required = false)
+    private BookingGuestRepository bookingGuestRepository;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final boolean notificationsEnabled;
     private final String fromAddress;
@@ -285,9 +292,15 @@ public class BookingNotificationService {
             }
         }
 
-        List<String> candidateRecipients = new ArrayList<>(2);
+        // The booker's extra guests. Unsized now: the old capacity hint of 2 encoded the
+        // host-plus-one-guest world this feature ends.
+        List<String> extraGuests = loadExtraGuestEmails(booking);
+        List<String> candidateRecipients = new ArrayList<>();
         hostRecipient.ifPresent(candidateRecipients::add);
         attendee.ifPresent(candidateRecipients::add);
+        candidateRecipients.addAll(extraGuests);
+        // deduplicate is first-wins, so host and primary keep their slots and a guest who repeats
+        // either address collapses into it — which is also what keeps them out of isExtraGuest.
         List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
         if (recipients.isEmpty()) {
             log.info("booking_notification_all_recipients_skipped bookingId={} eventType={}",
@@ -337,6 +350,7 @@ public class BookingNotificationService {
                 hostEmail,
                 attendeeName,
                 attendeeEmail,
+                extraGuests,
                 sequence,
                 conferenceDetails)
                 : icsInviteGenerator.buildStandaloneRequest(
@@ -351,6 +365,7 @@ public class BookingNotificationService {
                 hostEmail,
                 attendeeName,
                 attendeeEmail,
+                extraGuests,
                 sequence,
                 conferenceDetails);
         log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} hasAttachment={} method={} attendeesInIcs={} hasConferenceUrl={}",
@@ -362,7 +377,8 @@ public class BookingNotificationService {
                 countIcsAttendees(standaloneIcs),
                 conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank());
         for (String recipient : recipients) {
-            String role = resolveRecipientRole(recipient, hostRecipient, attendee);
+            boolean extraGuest = isExtraGuest(recipient, hostRecipient, attendee, extraGuests);
+            String role = extraGuest ? "GUEST" : resolveRecipientRole(recipient, hostRecipient, attendee);
             if (event.getId() == null) {
                 log.warn("booking_notification_send_skipped_missing_event_id bookingId={} recipient={} role={} eventType={}",
                         booking.getId(), recipient, role, event.getEventType());
@@ -383,7 +399,10 @@ public class BookingNotificationService {
                 continue;
             }
             String manageLink = null;
-            if (canBuildManageLink) {
+            // Extra guests are invite-only: they get the invite and every update, but no manage
+            // link, because that link is a bearer capability to reschedule and cancel. Gating here
+            // rather than at send time also avoids minting a token nobody may use.
+            if (canBuildManageLink && !extraGuest) {
                 String manageToken = guestCapabilityTokenService.issueToken(
                         booking.getId(),
                         booking.getHostId(),
@@ -525,8 +544,12 @@ public class BookingNotificationService {
             icsSuppressedRecipient = null;
         }
 
+        // The booker's extra guests. Kept out of icsHosts on purpose: that list is derived from
+        // BookingAssignment and feeds the participant-count log, and a guest is not a host.
+        List<String> extraGuests = loadExtraGuestEmails(booking);
         List<String> candidateRecipients = new ArrayList<>(participantRecipients);
         attendee.ifPresent(candidateRecipients::add);
+        candidateRecipients.addAll(extraGuests);
         List<String> recipients = recipientResolver.deduplicate(candidateRecipients);
         if (recipients.isEmpty()) {
             log.info("booking_notification_all_recipients_skipped bookingId={} eventType={}",
@@ -549,19 +572,21 @@ public class BookingNotificationService {
                         booking.getId(), summary, description,
                         booking.getStartTime(), booking.getEndTime(),
                         calendarOrganizerName, calendarOrganizerEmail,
-                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails)
+                        icsHosts, attendeeName, attendeeEmail, extraGuests, sequence, conferenceDetails)
                 : icsInviteGenerator.buildCollectiveRequest(
                         booking.getId(), summary, description,
                         booking.getStartTime(), booking.getEndTime(),
                         calendarOrganizerName, calendarOrganizerEmail,
-                        icsHosts, attendeeName, attendeeEmail, sequence, conferenceDetails);
+                        icsHosts, attendeeName, attendeeEmail, extraGuests, sequence, conferenceDetails);
         log.info("booking_notification_ics_built bookingId={} eventId={} eventType={} hasAttachment={} method={} attendeesInIcs={} hasConferenceUrl={}",
                 booking.getId(), event.getId(), event.getEventType(), true, eventMethod,
                 countIcsAttendees(standaloneIcs),
                 conferenceDetails != null && conferenceDetails.joinUrl() != null && !conferenceDetails.joinUrl().isBlank());
 
-        // Issue one manage token for the entire notification batch — all recipients
-        // share the same booking and the same permissions, so one token is correct.
+        // Issue one manage token for the entire notification batch — the participants and the
+        // primary guest share the same booking and the same permissions, so one token is correct
+        // for them. Extra guests are the exception: they are invite-only, so the link is withheld
+        // per recipient at the send call below rather than by minting a second token here.
         String manageLink = null;
         if (canBuildManageLink) {
             String manageToken = guestCapabilityTokenService.issueToken(
@@ -595,10 +620,16 @@ public class BookingNotificationService {
                 // The projection owner is notified without a calendar part — the API write already
                 // put the event on their calendar; attaching an iTIP REQUEST would add a second one.
                 boolean withIcs = !sameRecipient(recipient, icsSuppressedRecipient);
+                // Withhold the shared manage token from invite-only guests. The token above is
+                // correct for participants and the primary guest, but handing it to an added guest
+                // would let them reschedule or cancel a booking that is not theirs.
+                boolean extraGuest = !isCollectiveParticipant(recipient, participantRecipients)
+                        && isExtraGuest(recipient, Optional.empty(), attendee, extraGuests);
                 sendMail(recipient, summary, event.getEventType(),
                         withIcs ? standaloneIcs : null,
                         withIcs ? eventMethod : null,
-                        manageLink, conferenceDetails, booking.getId(), description, when);
+                        extraGuest ? null : manageLink,
+                        conferenceDetails, booking.getId(), description, when);
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
@@ -815,6 +846,68 @@ public class BookingNotificationService {
                 details.joinUrl() == null || details.joinUrl().isBlank() ? "NO_CONFERENCE_URL" : "EXISTING_PROJECTION",
                 details.joinUrl() != null && !details.joinUrl().isBlank());
         return details;
+    }
+
+    /**
+     * Whether this recipient is one of the collective's own participants.
+     *
+     * <p>Compared with {@code sameRecipient} rather than {@code List.contains}, because
+     * participantRecipients holds addresses as collected (including write-back redirection) while
+     * the loop iterates the normalised, de-duplicated list. A participant who was also typed into
+     * the guests field must keep their manage link.
+     */
+    private boolean isCollectiveParticipant(String recipient, List<String> participantRecipients) {
+        for (String participant : participantRecipients) {
+            if (sameRecipient(recipient, participant)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The booker's extra guests for this booking, deliverable-filtered and de-duplicated.
+     *
+     * <p>Empty when the repository is absent (older test contexts) or the booking has none, so
+     * every caller degrades to the previous host-plus-one-guest behaviour.
+     */
+    private List<String> loadExtraGuestEmails(Booking booking) {
+        if (bookingGuestRepository == null || booking == null) {
+            return List.of();
+        }
+        List<BookingGuest> rows =
+                bookingGuestRepository.findByBookingIdAndHostId(booking.getId(), booking.getHostId());
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        return recipientResolver.resolveExtraGuestRecipients(
+                rows.stream().map(BookingGuest::getGuestEmail).toList());
+    }
+
+    /**
+     * Whether this recipient is present <em>only</em> as an added guest.
+     *
+     * <p>The host and the primary guest keep their stronger identity even if the booker also typed
+     * their address into the guests field — otherwise adding your own host as a guest would strip
+     * their manage link.
+     */
+    private boolean isExtraGuest(String recipient,
+                                 Optional<String> hostRecipient,
+                                 Optional<String> attendee,
+                                 List<String> extraGuests) {
+        if (extraGuests.isEmpty()) {
+            return false;
+        }
+        if (sameRecipient(recipient, hostRecipient.orElse(null))
+                || sameRecipient(recipient, attendee.orElse(null))) {
+            return false;
+        }
+        for (String guest : extraGuests) {
+            if (sameRecipient(recipient, guest)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String resolveRecipientRole(String recipient,
