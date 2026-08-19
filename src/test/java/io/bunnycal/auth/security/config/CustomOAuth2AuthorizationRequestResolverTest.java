@@ -23,8 +23,16 @@ class CustomOAuth2AuthorizationRequestResolverTest {
         RequestContextHolder.resetRequestAttributes();
     }
 
+    /**
+     * Sign-in requests identity only — even when the caller asks for a host calendar login.
+     *
+     * <p>Calendar scopes were bundled here, which forced this request to carry prompt=consent
+     * (the only way Google returns a refresh token). Google re-shows its permission screen every
+     * time that is sent, including for already-granted scopes, so every returning host
+     * re-consented. Calendar access is now granted once at the CALENDAR onboarding step.
+     */
     @Test
-    void hostGoogleLoginAddsCalendarAndOfflineAccess() {
+    void hostGoogleLoginRequestsIdentityOnlyAndNeverForcesConsent() {
         CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
         MockHttpServletRequest request = oauthRequest("google");
         request.addParameter("calendar", "host");
@@ -34,13 +42,31 @@ class CustomOAuth2AuthorizationRequestResolverTest {
         OAuth2AuthorizationRequest authorization = resolver.resolve(request);
 
         assertThat(authorization).isNotNull();
-        assertThat(authorization.getScopes()).contains("email", "profile", GOOGLE_EVENTS, GOOGLE_READ);
+        assertThat(authorization.getScopes()).containsExactlyInAnyOrder("email", "profile");
+        assertThat(authorization.getScopes()).doesNotContain(GOOGLE_EVENTS, GOOGLE_READ);
+        // The account picker is fine — it never shows the permission screen. access_type and
+        // consent are what would, and neither belongs on a sign-in.
         assertThat(authorization.getAdditionalParameters())
-                .containsEntry("access_type", "offline")
-                .containsEntry("include_granted_scopes", "true");
-        assertThat(Arrays.stream(response.getCookies()))
-                .anyMatch(cookie -> CustomOAuth2AuthorizationRequestResolver.HOST_CALENDAR_COOKIE
-                        .equals(cookie.getName()) && "host".equals(cookie.getValue()));
+                .containsEntry("prompt", "select_account")
+                .doesNotContainKeys("access_type", "include_granted_scopes");
+        assertThat(String.valueOf(authorization.getAdditionalParameters().get("prompt")))
+                .doesNotContain("consent");
+    }
+
+    @Test
+    void hostMicrosoftLoginRequestsIdentityOnly() {
+        CustomOAuth2AuthorizationRequestResolver resolver = resolver("microsoft");
+        MockHttpServletRequest request = oauthRequest("microsoft");
+        request.addParameter("calendar", "host");
+        RequestContextHolder.setRequestAttributes(
+                new ServletRequestAttributes(request, new MockHttpServletResponse()));
+
+        OAuth2AuthorizationRequest authorization = resolver.resolve(request);
+
+        assertThat(authorization).isNotNull();
+        assertThat(authorization.getScopes())
+                .doesNotContain("offline_access", "Calendars.ReadWrite", "Calendars.Read");
+        assertThat(authorization.getAdditionalParameters()).containsEntry("prompt", "select_account");
     }
 
     @Test
@@ -58,20 +84,6 @@ class CustomOAuth2AuthorizationRequestResolverTest {
                 "access_type", "include_granted_scopes");
     }
 
-    @Test
-    void hostMicrosoftLoginAddsCalendarAndOfflineAccess() {
-        CustomOAuth2AuthorizationRequestResolver resolver = resolver("microsoft");
-        MockHttpServletRequest request = oauthRequest("microsoft");
-        request.addParameter("calendar", "host");
-        RequestContextHolder.setRequestAttributes(
-                new ServletRequestAttributes(request, new MockHttpServletResponse()));
-
-        OAuth2AuthorizationRequest authorization = resolver.resolve(request);
-
-        assertThat(authorization).isNotNull();
-        assertThat(authorization.getScopes()).contains(
-                "offline_access", "Calendars.ReadWrite", "Calendars.Read");
-    }
 
     private static CustomOAuth2AuthorizationRequestResolver resolver(String registrationId) {
         ClientRegistration registration = ClientRegistration.withRegistrationId(registrationId)

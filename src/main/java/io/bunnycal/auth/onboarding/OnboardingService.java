@@ -226,8 +226,21 @@ public class OnboardingService {
     private OnboardingStep resumeStep(User user, boolean availability, boolean calendar, boolean event) {
         if (user.getOnboardingUseCase() == null) return OnboardingStep.PURPOSE;
         if (!availability) return OnboardingStep.AVAILABILITY;
-        // Calendar authorization is part of host sign-in now. If it could not be initialized,
-        // FIRST_EVENT renders a compact recovery action instead of a standalone setup step.
+        // Calendar authorization is its own step, not part of sign-in.
+        //
+        // Bundling it into sign-in forced that request to carry Google's prompt=consent — the only
+        // way Google issues a refresh token — and Google re-shows the permission screen every time
+        // that parameter is sent, even for scopes already granted. Returning hosts were therefore
+        // re-consenting on every login to solve a problem that exists only on the first one.
+        //
+        // Asking here instead means consent happens exactly once per ACCOUNT rather than once per
+        // browser: the grant is recorded against the user, so a new device or a cleared cookie
+        // does not ask again. That property is why Calendly and Cal.com split it the same way; a
+        // browser-side "already consented" marker cannot survive a device change.
+        //
+        // Invitees are exempt for the same reason they need not publish a personal link: they
+        // joined to receive round-robin bookings, and their team's calendars serve those.
+        if (!calendar && user.getOnboardingInvitedTeamId() == null) return OnboardingStep.CALENDAR;
         //
         // Resuming an invitee onto FIRST_EVENT would park them on the one step they are allowed to
         // skip, which reads as being stuck. They can still reach it from the checklist.
