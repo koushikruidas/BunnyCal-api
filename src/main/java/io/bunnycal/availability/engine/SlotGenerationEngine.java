@@ -367,7 +367,18 @@ public final class SlotGenerationEngine {
         List<TimeInterval> slots = new ArrayList<>();
 
         for (TimeInterval free : availability) {
+            // The grid is anchored to local midnight so slot starts land on familiar clock times
+            // (09:00, 09:30) rather than drifting with each window's ragged start. That anchoring
+            // silently loses slots once the step grows: with an 8h duration on a 09:00-17:00 day
+            // the only midnight-aligned starts are 00:00, 08:00 and 16:00 — the first two precede
+            // the window and the third would end at midnight, so an exactly-8h day offered nothing
+            // at all. Fall back to anchoring on the window itself when the midnight grid cannot fit
+            // a single slot: a start the host did not round to is still better than no slot.
             ZonedDateTime slotStart = ceilToGrid(free.start(), dayStart, interval);
+            if (slotStart.plus(duration).isAfter(free.end())
+                    && !free.start().plus(duration).isAfter(free.end())) {
+                slotStart = free.start();
+            }
 
             while (!slotStart.plus(duration).isAfter(free.end())) {
                 slots.add(new TimeInterval(slotStart, slotStart.plus(duration)));

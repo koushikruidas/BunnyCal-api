@@ -142,6 +142,11 @@ public class PublicBookingController {
                 request.startTime(),
                 normalizedStart,
                 normalizedStart == null ? "null" : normalizedStart.getClass().getSimpleName());
+        // The invitee's zone rides the same header the start time is normalised against, so it is
+        // taken from there rather than from the body: a client cannot claim one zone for the
+        // instant and a different one for the mail. Deliberately left out of the idempotency hash
+        // below — the same booking retried from a device that has since changed zone is still the
+        // same booking, and hashing it would turn a retry into a duplicate-key rejection.
         PublicBookRequest normalizedRequest = new PublicBookRequest(
                 normalizedStart,
                 request.guestEmail(),
@@ -149,7 +154,8 @@ public class PublicBookingController {
                 request.notes(),
                 request.slotToken(),
                 request.answers(),
-                request.embedToken());
+                request.embedToken(),
+                timezoneHeader);
 
         String route = IdempotencyRoutes.PUBLIC_BOOK_HOLD;
         Map<String, Object> hashPayload = new java.util.LinkedHashMap<>();

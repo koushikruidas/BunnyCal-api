@@ -331,11 +331,12 @@ public class BookingNotificationService {
         boolean canBuildManageLink = includeManageLink
                 && hostUsername != null && !hostUsername.isBlank()
                 && eventTypeSlug != null && !eventTypeSlug.isBlank();
-        // The body carried no date or time. Every other recipient gets an ICS and their mail client
-        // renders the time from that; the projection owner gets no calendar part, so for them the
-        // mail announced a meeting without ever saying when. Render it in the host's own zone.
-        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
-                host == null ? null : host.getTimezone());
+        // The "When:" line is rendered per recipient, inside the loop below, because the zone it
+        // should be stated in differs by who is reading. It used to be built once here from the
+        // host's zone and sent to everyone, which told an invitee in New York their meeting was at
+        // "13:30-14:00 (Asia/Kolkata)" -- their host's local time, correctly labelled, and useless
+        // to them. See whenFor.
+        String hostTimezone = host == null ? null : host.getTimezone();
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String standaloneIcs = "CANCEL".equals(eventMethod)
                 ? icsInviteGenerator.buildStandaloneCancel(
@@ -441,7 +442,8 @@ public class BookingNotificationService {
                 sendMail(recipient, summary, event.getEventType(),
                         withIcs ? standaloneIcs : null,
                         withIcs ? eventMethod : null,
-                        manageLink, conferenceDetails, booking.getId(), description, when);
+                        manageLink, conferenceDetails, booking.getId(), description,
+                        whenFor(role, booking, hostTimezone));
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} role={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, role, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
@@ -560,10 +562,10 @@ public class BookingNotificationService {
                 booking.getId(), event.getId(), event.getEventType(),
                 icsHosts.size(), attendee.isPresent(), recipients.size());
 
-        // See formatWhen: the body carried no date or time, which only shows on the mail that has
-        // no ICS to render it from — the projection owner's.
-        String when = formatWhen(booking.getStartTime(), booking.getEndTime(),
-                userRepository.findById(booking.getHostId()).map(User::getTimezone).orElse(null));
+        // See whenFor: the "When:" line is rendered per recipient, since the invitee and the
+        // participating hosts do not share a zone. The owner's zone is the fallback for everyone
+        // we have no zone of our own for.
+        String ownerTimezone = userRepository.findById(booking.getHostId()).map(User::getTimezone).orElse(null);
         ConferenceDetails conferenceDetails = resolveConferenceDetails(booking, eventType, event.getEventType());
         String attendeeName = booking.getGuestName();
         String attendeeEmail = attendee.orElse(null);
@@ -625,11 +627,16 @@ public class BookingNotificationService {
                 // would let them reschedule or cancel a booking that is not theirs.
                 boolean extraGuest = !isCollectiveParticipant(recipient, participantRecipients)
                         && isExtraGuest(recipient, Optional.empty(), attendee, extraGuests);
+                // Participants are hosts on this booking and read the owner's zone; the invitee and
+                // any guest they added read the zone the booking was made from.
+                boolean readsGuestZone = !isCollectiveParticipant(recipient, participantRecipients)
+                        && (extraGuest || sameRecipient(recipient, attendee.orElse(null)));
                 sendMail(recipient, summary, event.getEventType(),
                         withIcs ? standaloneIcs : null,
                         withIcs ? eventMethod : null,
                         extraGuest ? null : manageLink,
-                        conferenceDetails, booking.getId(), description, when);
+                        conferenceDetails, booking.getId(), description,
+                        whenFor(readsGuestZone ? "ATTENDEE" : "HOST", booking, ownerTimezone));
                 log.info("booking_notification_send_success eventId={} bookingId={} recipient={} eventType={} hasIcs={}",
                         event.getId(), booking.getId(), recipient, event.getEventType(), withIcs);
                 OpsLoggers.NOTIFICATION.info(
@@ -978,7 +985,9 @@ public class BookingNotificationService {
      * recipient who gets no calendar part — so for them the mail said a meeting was confirmed
      * without ever saying when.
      *
-     * <p>Rendered in the recipient's own zone, falling back to UTC when the host has none set.
+     * <p>Renders into whatever zone the caller supplies; {@link #whenFor} is what decides which
+     * zone that is for a given recipient. Falls back to UTC only if handed nothing usable — which
+     * whenFor avoids, because for these mails the host's zone is a far better last resort.
      */
     private static String formatWhen(Instant start, Instant end, @org.springframework.lang.Nullable String timezone) {
         ZoneId zone;
@@ -992,6 +1001,29 @@ public class BookingNotificationService {
         // e.g. "Sunday, 12 July 2026, 13:30–14:00 (Asia/Kolkata)"
         return WHEN_DATE.format(from) + ", " + WHEN_TIME.format(from) + "–" + WHEN_TIME.format(to)
                 + " (" + zone.getId() + ")";
+    }
+
+    /**
+     * Picks the zone this one recipient's "When:" line should be stated in.
+     *
+     * <p>The host reads the host's zone; the invitee reads the zone they booked from. Anyone else
+     * on the thread — extra guests, and any address we cannot classify — reads the host's, because
+     * we never captured a zone of their own and the host's is the meeting's anchor.
+     *
+     * <p>A null or unrecognised {@code role} therefore lands on the host's zone, which is exactly
+     * what every recipient got before this method existed. That is the deliberate fallback: UTC is
+     * a zone almost nobody actually lives in, so defaulting to it would have re-rendered the time
+     * on every booking taken before invitee zones were recorded — a much wider change than the
+     * one this fixes.
+     */
+    private static String whenFor(String role, Booking booking, @org.springframework.lang.Nullable String hostTimezone) {
+        String zone = "ATTENDEE".equals(role) || "GUEST".equals(role)
+                ? booking.getGuestTimezone()
+                : null;
+        if (zone == null || zone.isBlank()) {
+            zone = hostTimezone;
+        }
+        return formatWhen(booking.getStartTime(), booking.getEndTime(), zone);
     }
 
     private static String body(String summary,

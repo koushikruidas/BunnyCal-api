@@ -1,0 +1,31 @@
+-- The invitee's own timezone, captured at booking time.
+--
+-- Until now the booking confirmation, reschedule and cancellation mails rendered ONE "When:" line
+-- for every recipient, built from the HOST's timezone (BookingNotificationService.formatWhen).
+-- An invitee in America/New_York booking a host in Asia/Kolkata was told their meeting was at
+-- "13:30-14:00 (Asia/Kolkata)" -- a real local time, just not theirs.
+--
+-- The value already reached the server on every request as the X-Timezone header, but
+-- TimeConversionService.normalizeClientInstant only validated it and threw it away: nothing in the
+-- schema could hold it. This column is that missing home, so the notification path can render each
+-- recipient's mail in their own zone.
+--
+-- NULLABLE on purpose, and permanently so. Every row written before this migration has no guest
+-- zone, and bookings created by any non-browser path (API clients, backfills, tests) may never
+-- carry one. Readers MUST fall back to the host's timezone rather than to UTC -- falling back to
+-- UTC would silently change the rendered time for every historical booking, which is a larger
+-- regression than the bug being fixed.
+--
+-- VARCHAR(64) matches the IANA zone-id shape ("America/Argentina/ComodRivadavia" is 30 chars, the
+-- longest in the tz database); users.timezone is stored the same way. Values are validated against
+-- ZoneId by TimezoneService before they ever reach this column, so no CHECK constraint is needed --
+-- the tz database changes faster than a constraint could track.
+--
+-- No index: this column is only ever read alongside a booking already located by primary key.
+--
+-- bookings is HASH-partitioned into 16 partitions on host_id, so ADD COLUMN on the parent
+-- propagates to every partition automatically. This mirrors V96_0, which added guest_notes the
+-- same way.
+
+ALTER TABLE bookings
+    ADD COLUMN IF NOT EXISTS guest_timezone VARCHAR(64);

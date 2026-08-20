@@ -472,6 +472,16 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
 
+        // Record the zone the invitee booked from so their mail can state the time in it. GROUP is
+        // excluded: its registrations live in session_registrations, not bookings, and this column
+        // does not exist there.
+        if (target.kind() != EventKind.GROUP && response.bookingId() != null) {
+            String guestTimezone = normalizeGuestTimezone(request.guestTimezone());
+            if (guestTimezone != null) {
+                bookingRepository.setGuestTimezone(response.bookingId(), guestTimezone);
+            }
+        }
+
         var payment = eventPaymentConfigService == null ? null : eventPaymentConfigService.response(target.eventTypeId());
         if (payment == null) return response;
         if (hostPaymentLifecycleService != null) {
@@ -1454,6 +1464,25 @@ public class PublicBookingService {
         if (value == null) return null;
         String v = value.trim();
         return v.isEmpty() ? null : v;
+    }
+
+    /**
+     * Accepts an IANA zone id, or null if it is absent or unparseable.
+     *
+     * <p>Rejecting quietly rather than throwing is deliberate: this value only decides which zone
+     * a mail states the time in, and the reader already falls back to the host's zone. A booking
+     * is not worth failing over a header a proxy rewrote or an old client sent malformed, and the
+     * start time itself is an absolute instant that this never reinterprets.
+     */
+    private static String normalizeGuestTimezone(String value) {
+        if (value == null) return null;
+        String v = value.trim();
+        if (v.isEmpty()) return null;
+        try {
+            return java.time.ZoneId.of(v).getId();
+        } catch (RuntimeException ex) {
+            return null;
+        }
     }
 
     private InviteeAuthContext resolveInviteeAuthContext(UUID authenticatedInviteeId) {
