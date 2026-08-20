@@ -1,5 +1,6 @@
 package io.bunnycal.calendar.repository;
 
+import io.bunnycal.testsupport.TestContainers;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.bunnycal.TestApplication;
@@ -8,7 +9,6 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,8 +17,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Persistence contract tests for availability policy version 1. These pin the JPQL form of the
@@ -26,7 +24,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * confirmation, the Availability UI, round-robin, or collective scheduling.
  */
 @SpringBootTest(classes = TestApplication.class)
-@Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
         "spring.sql.init.mode=never",
@@ -38,26 +35,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 })
 class CalendarEventRepositoryIT {
 
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
-    static {
-        postgres.start();
-        Flyway.configure()
-                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
-    }
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        // Redis is autowired in some beans; point it at a fake but never start it —
-        // the repository test never touches the cache path.
-        registry.add("spring.data.redis.host", () -> "localhost");
-        registry.add("spring.data.redis.port", () -> "16379");
+        TestContainers.registerProperties(registry);
     }
 
     @Autowired private CalendarEventRepository repository;
