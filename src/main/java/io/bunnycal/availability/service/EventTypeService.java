@@ -44,6 +44,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class EventTypeService {
 
     public static final int MAX_GROUP_CAPACITY = 9_999;
+
+    /**
+     * Longest bookable meeting, in minutes (8 hours).
+     *
+     * <p>Hosts pick a duration from presets or type their own, so this is the server's own bound
+     * rather than a mirror of the picker: the API has to reject a hand-crafted request the UI
+     * would never send.
+     *
+     * <p>Eight hours because {@code SlotGenerationEngine} builds each day's slots between that
+     * day's start and end, so a meeting cannot run past midnight. Durations approaching 24h would
+     * be accepted here and then silently yield no slots at all, which reads as a broken booking
+     * page rather than as a rejected setting. A full working day still fits comfortably.
+     */
+    public static final int MAX_DURATION_MINUTES = 480;
     private final EventTypeRepository eventTypeRepository;
     private final UserRepository userRepository;
     private final SessionUserResolver sessionUserResolver;
@@ -240,8 +254,10 @@ public class EventTypeService {
         if (request.name() != null && request.name().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "name must not be blank.");
         }
-        if (request.durationMinutes() != null && request.durationMinutes() <= 0) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "durationMinutes must be > 0.");
+        if (request.durationMinutes() != null
+                && (request.durationMinutes() <= 0 || request.durationMinutes() > MAX_DURATION_MINUTES)) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "durationMinutes must be between 1 and " + MAX_DURATION_MINUTES + ".");
         }
         if (request.slotIntervalMinutes() != null && request.slotIntervalMinutes() <= 0) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotIntervalMinutes must be > 0.");
@@ -366,8 +382,11 @@ public class EventTypeService {
         if (request == null || request.name() == null || request.name().isBlank()) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "name is required.");
         }
-        if (request.durationMinutes() == null || request.durationMinutes() <= 0) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR, "durationMinutes must be > 0.");
+        if (request.durationMinutes() == null
+                || request.durationMinutes() <= 0
+                || request.durationMinutes() > MAX_DURATION_MINUTES) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "durationMinutes must be between 1 and " + MAX_DURATION_MINUTES + ".");
         }
         if (request.slotIntervalMinutes() == null || request.slotIntervalMinutes() <= 0) {
             throw new CustomException(ErrorCode.VALIDATION_ERROR, "slotIntervalMinutes must be > 0.");

@@ -176,6 +176,47 @@ class EventTypeUpdateIT {
                 .hasMessageContaining("between 2 and 9999");
     }
 
+    // Hosts are no longer limited to the 15/30/45/60/90 presets — they can type their own length,
+    // so a multi-hour session has to survive the round trip rather than being clamped to a preset.
+    @Test
+    void update_acceptsCustomDurationBeyondThePresets() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistEventType(owner.getId(), "workshop");
+
+        eventTypeService.update(owner.getId(), et.getId(), new UpdateEventTypeRequest(
+                null, null, null, 180, null, null, null, null, null, null, null));
+
+        EventType reloaded = eventTypeRepository.findById(et.getId()).orElseThrow();
+        assertThat(reloaded.getDuration()).isEqualTo(java.time.Duration.ofMinutes(180));
+    }
+
+    // The bound is the server's own, not a mirror of the picker: a hand-crafted request must be
+    // rejected even though the UI would never send one. Past this length a meeting would run into
+    // the next day, which the per-day slot engine cannot express — it would yield no slots at all.
+    @Test
+    void update_rejectsDurationAboveMaximum() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistEventType(owner.getId(), "workshop");
+
+        assertThatThrownBy(() -> eventTypeService.update(owner.getId(), et.getId(),
+                new UpdateEventTypeRequest(
+                        null, null, null, 481, null, null, null, null, null, null, null)))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("between 1 and 480");
+    }
+
+    @Test
+    void update_rejectsZeroDuration() {
+        User owner = createUser("owner@test.com");
+        EventType et = persistEventType(owner.getId(), "workshop");
+
+        assertThatThrownBy(() -> eventTypeService.update(owner.getId(), et.getId(),
+                new UpdateEventTypeRequest(
+                        null, null, null, 0, null, null, null, null, null, null, null)))
+                .isInstanceOf(CustomException.class)
+                .hasMessageContaining("between 1 and 480");
+    }
+
     // booking_ownership records where an event was ACTUALLY written, and ensureOwnership runs on
     // every outbox dispatch, not just at creation. It used to re-derive ownership from the event
     // type and throw if the two disagreed. Editing an event type must not disturb the ownership of
