@@ -122,6 +122,46 @@ class SlotGenerationEngineTest {
     }
 
     @Test
+    void fullDayDuration_fillsTheWindowItExactlyFits() {
+        // A host working 09:00-17:00 who sets an 8h event is describing exactly their day, so it
+        // must be bookable. The midnight-anchored grid alone cannot express it: with an 8h step the
+        // only candidate starts are 00:00, 08:00 and 16:00 — two before the window opens and one
+        // that would run to midnight — so this returned no slots at all.
+        LocalDate date = LocalDate.of(2026, 4, 30);
+        ZoneId zone = ZoneId.of("UTC");
+        EventType eventType = eventType(Duration.ofHours(8), Duration.ofHours(8));
+
+        List<SlotGenerationEngine.SlotUtc> slots = SlotGenerationEngine.compute(
+                new SlotGenerationEngine.SlotInput(
+                        date, zone, List.of(rule(DayOfWeek.THURSDAY, 9, 0, 17, 0)), null, eventType,
+                        List.of(), List.of(), List.of(), List.of(),
+                        date.minusDays(1).atStartOfDay(zone).toInstant()));
+
+        assertEquals(1, slots.size());
+        assertEquals(date.atTime(9, 0).atZone(zone).toInstant(), slots.get(0).start());
+        assertEquals(date.atTime(17, 0).atZone(zone).toInstant(), slots.get(0).end());
+    }
+
+    @Test
+    void shorterDurations_keepTheirMidnightAlignedStarts() {
+        // The window fallback above must stay a last resort. Whenever the midnight grid can place
+        // even one slot, starts keep landing on familiar clock times rather than drifting to
+        // whatever minute the host's window happens to open on.
+        LocalDate date = LocalDate.of(2026, 4, 30);
+        ZoneId zone = ZoneId.of("UTC");
+        EventType eventType = eventType(Duration.ofMinutes(30), Duration.ofMinutes(30));
+
+        List<SlotGenerationEngine.SlotUtc> slots = SlotGenerationEngine.compute(
+                new SlotGenerationEngine.SlotInput(
+                        date, zone, List.of(rule(DayOfWeek.THURSDAY, 9, 10, 11, 0)), null, eventType,
+                        List.of(), List.of(), List.of(), List.of(),
+                        date.minusDays(1).atStartOfDay(zone).toInstant()));
+
+        // 09:10 opens the window, but the first slot still starts on the 09:30 grid line.
+        assertEquals(date.atTime(9, 30).atZone(zone).toInstant(), slots.get(0).start());
+    }
+
+    @Test
     void busySubtractionWithBuffers_blocksSlots() {
         LocalDate date = LocalDate.of(2026, 4, 30);
         ZoneId zone = ZoneId.of("UTC");
