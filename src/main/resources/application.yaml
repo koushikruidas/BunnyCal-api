@@ -100,6 +100,10 @@ spring:
           google:
             client-id: ${GOOGLE_CLIENT_ID}
             client-secret: ${GOOGLE_CLIENT_SECRET}
+            # Identity only. Calendar scopes are added per-request by
+            # CustomOAuth2AuthorizationRequestResolver, and ONLY for the host sign-in surface:
+            # listing them here applied them to every Google authorization, so a guest booking a
+            # meeting was asked to grant calendar access we would never use.
             scope:
               - email
               - profile
