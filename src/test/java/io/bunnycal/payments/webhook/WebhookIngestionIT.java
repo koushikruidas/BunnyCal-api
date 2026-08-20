@@ -1,11 +1,11 @@
 package io.bunnycal.payments.webhook;
 
+import io.bunnycal.testsupport.TestContainers;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.bunnycal.TestApplication;
 import io.bunnycal.payments.provider.ProviderWebhookEvent;
 import java.util.UUID;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,9 +14,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
-import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Milestone-1 deliverable verification: a verified webhook is persisted and audited,
@@ -29,7 +26,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @SpringBootTest(classes = TestApplication.class)
 @org.springframework.context.annotation.Import(
         io.bunnycal.testsupport.ProgrammableBillingProviderConfig.class)
-@Testcontainers
 @TestPropertySource(properties = {
         "spring.jpa.hibernate.ddl-auto=none",
         "spring.sql.init.mode=never",
@@ -41,26 +37,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 })
 class WebhookIngestionIT {
 
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
-    static {
-        postgres.start();
-        redis.start();
-        Flyway.configure()
-                .dataSource(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())
-                .locations("classpath:db/migration")
-                .load()
-                .migrate();
-    }
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("spring.data.redis.host", redis::getHost);
-        registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        TestContainers.registerProperties(registry);
     }
 
     @Autowired JdbcTemplate jdbc;
