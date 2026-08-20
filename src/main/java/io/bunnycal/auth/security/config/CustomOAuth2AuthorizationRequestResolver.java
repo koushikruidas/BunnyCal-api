@@ -43,7 +43,18 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
     /** Query param the SPA appends to {@code /oauth2/authorization/{registrationId}}. */
     private static final String CLIENT_PARAM = "client";
     private static final String ADMIN_CLIENT = "admin";
+    /** Query param the host sign-in surface appends; see LoginPage.tsx. */
+    private static final String CALENDAR_PARAM = "calendar";
     private static final String HOST_CALENDAR = "host";
+
+    /**
+     * Requested only for a host sign-in. These match the scopes the dedicated calendar connect
+     * flow asks for, so a grant made here satisfies the same capability check
+     * (HostLoginCalendarBootstrapService.requireCalendarScopes).
+     */
+    private static final Set<String> HOST_CALENDAR_SCOPES = Set.of(
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar.readonly");
 
     /** Short TTL: only needs to survive the redirect to the provider and back. */
     private static final int CLIENT_COOKIE_MAX_AGE_SECONDS = 600;
@@ -64,7 +75,7 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (resolved != null) {
             rememberIntent(request);
         }
-        return customize(resolved);
+        return customize(resolved, request);
     }
 
     @Override
@@ -73,7 +84,7 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (resolved != null) {
             rememberIntent(request);
         }
-        return customize(resolved);
+        return customize(resolved, request);
     }
 
     /**
@@ -90,11 +101,16 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         if (ADMIN_CLIENT.equalsIgnoreCase(request.getParameter(CLIENT_PARAM))) {
             addIntentCookie(response, request, OAUTH_CLIENT_COOKIE, ADMIN_CLIENT);
         }
-        // Cleared unconditionally, never set: sign-in requests no calendar scopes, so there is no
-        // calendar grant for the success handler to bootstrap. Clearing also disarms a cookie left
-        // over from the previous behaviour, which would otherwise trigger a bootstrap attempt
-        // against a token that now carries identity scopes only.
-        clearIntentCookie(response, request, HOST_CALENDAR_COOKIE);
+        // The host sign-in surface marks itself with ?calendar=host, and only that surface: guest
+        // booking and admin OAuth start elsewhere and omit it, so they never request calendar
+        // access. The cookie carries the intent across the provider redirect, which drops query
+        // params, so the success handler knows this grant is worth bootstrapping into a durable
+        // calendar connection.
+        if (isHostCalendarIntent(request)) {
+            addIntentCookie(response, request, HOST_CALENDAR_COOKIE, HOST_CALENDAR);
+        } else {
+            clearIntentCookie(response, request, HOST_CALENDAR_COOKIE);
+        }
         rememberOrigin(request, response);
     }
 
@@ -136,6 +152,14 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         }
     }
 
+    /**
+     * Whether this authorization is the host sign-in surface asking for calendar access. Guest
+     * booking and admin OAuth start elsewhere and omit the marker, so they stay identity-only.
+     */
+    private static boolean isHostCalendarIntent(HttpServletRequest request) {
+        return HOST_CALENDAR.equalsIgnoreCase(request.getParameter(CALENDAR_PARAM));
+    }
+
     private static boolean hasText(String s) {
         return s != null && !s.isBlank();
     }
@@ -147,27 +171,43 @@ public class CustomOAuth2AuthorizationRequestResolver implements OAuth2Authoriza
         return null;
     }
 
-    private OAuth2AuthorizationRequest customize(OAuth2AuthorizationRequest req) {
+    private OAuth2AuthorizationRequest customize(OAuth2AuthorizationRequest req,
+                                                 HttpServletRequest request) {
         if (req == null) return null;
 
-        // Sign-in asks for identity, and only for identity.
+        // Identity and calendar are requested together, in one authorization.
         //
-        // Calendar scopes deliberately no longer ride along. Requesting them here meant this
-        // request had to carry prompt=consent, because that is the only way Google returns a
-        // refresh token — and Google re-shows its permission screen every time that is sent, even
-        // for already-granted scopes. Every returning host re-consented, forever.
+        // `prompt` is deliberately ABSENT. Google shows the consent screen only when the user has
+        // not already granted the requested scopes ("If no value is specified and the user has not
+        // previously authorized access, then the user is shown a consent screen" — OpenID Connect
+        // docs). So a first-time user consents once, covering identity and calendar, and every
+        // later sign-in is silent. Sending prompt=consent would force that screen on every
+        // sign-in; sending prompt=select_account would show the account picker each time.
         //
-        // Calendar access is now granted once at the CALENDAR onboarding step, through the
-        // dedicated connect endpoint (CalendarOAuthService.buildGoogleConnectUrl) which owns
-        // access_type=offline + prompt=consent. Because that grant is stored against the user, it
-        // survives a new browser or device — which a cookie-based "already consented" hint cannot.
+        // access_type=offline asks for a refresh token. Google returns one only on a user's FIRST
+        // authorization, which is not a problem: CalendarOAuthService.connectAuthorizedUser
+        // carries the stored ciphertext forward when the callback omits it, keyed on the external
+        // account. A refresh token is needed once, not on every sign-in.
         //
-        // prompt=select_account stays: it is a product choice about account switching and shows
-        // the account picker, never the permission screen.
+        // The remaining gap is a user Google still remembers but for whom we hold no token — a
+        // deleted account, a wiped database. That yields MissingRefreshTokenException, which
+        // surfaces as the existing reconnect flow rather than a broken calendar.
         Map<String, Object> extraParams = new HashMap<>(req.getAdditionalParameters());
-        extraParams.put("prompt", "select_account");
-
         Set<String> scopes = new HashSet<>(req.getScopes());
+
+        // Calendar scopes are added HERE rather than on the client registration, and only for the
+        // host sign-in surface. On the registration they applied to every Google authorization, so
+        // someone signing in merely to manage a booking was asked to grant calendar access that
+        // would never be used — permission we have no business requesting, and the kind of
+        // over-broad ask that jeopardises the app's verification standing.
+        if (isHostCalendarIntent(request)) {
+            scopes.addAll(HOST_CALENDAR_SCOPES);
+            // Only meaningful alongside the calendar scopes: it asks for the refresh token that
+            // makes background sync possible. Google issues one on a user's first authorization
+            // only, which is sufficient — CalendarOAuthService carries the stored one forward
+            // when a later callback omits it.
+            extraParams.put("access_type", "offline");
+        }
 
         return OAuth2AuthorizationRequest.from(req)
                 .scopes(scopes)

@@ -24,15 +24,16 @@ class CustomOAuth2AuthorizationRequestResolverTest {
     }
 
     /**
-     * Sign-in requests identity only — even when the caller asks for a host calendar login.
+     * Host sign-in asks for identity and calendar in one authorization, so a new host consents
+     * once and arrives with a usable calendar.
      *
-     * <p>Calendar scopes were bundled here, which forced this request to carry prompt=consent
-     * (the only way Google returns a refresh token). Google re-shows its permission screen every
-     * time that is sent, including for already-granted scopes, so every returning host
-     * re-consented. Calendar access is now granted once at the CALENDAR onboarding step.
+     * <p>{@code prompt} is absent, which is what makes that possible: Google shows the consent
+     * screen only for scopes the user has not already granted, so a returning host sees nothing.
+     * Sending {@code prompt=consent} would re-prompt on every sign-in; verified against Google on
+     * 2026-08-20 across a first signup, a repeat sign-in, and a re-signup after a database wipe.
      */
     @Test
-    void hostGoogleLoginRequestsIdentityOnlyAndNeverForcesConsent() {
+    void hostGoogleLoginRequestsIdentityAndCalendarWithoutForcingConsent() {
         CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
         MockHttpServletRequest request = oauthRequest("google");
         request.addParameter("calendar", "host");
@@ -42,17 +43,18 @@ class CustomOAuth2AuthorizationRequestResolverTest {
         OAuth2AuthorizationRequest authorization = resolver.resolve(request);
 
         assertThat(authorization).isNotNull();
-        assertThat(authorization.getScopes()).containsExactlyInAnyOrder("email", "profile");
-        assertThat(authorization.getScopes()).doesNotContain(GOOGLE_EVENTS, GOOGLE_READ);
-        // The account picker is fine — it never shows the permission screen. access_type and
-        // consent are what would, and neither belongs on a sign-in.
-        assertThat(authorization.getAdditionalParameters())
-                .containsEntry("prompt", "select_account")
-                .doesNotContainKeys("access_type", "include_granted_scopes");
-        assertThat(String.valueOf(authorization.getAdditionalParameters().get("prompt")))
-                .doesNotContain("consent");
+        assertThat(authorization.getScopes())
+                .containsExactlyInAnyOrder("email", "profile", GOOGLE_EVENTS, GOOGLE_READ);
+        // access_type=offline asks for the refresh token that background sync needs. Google
+        // returns one on a user's first authorization only, which is enough:
+        // CalendarOAuthService carries the stored one forward when a later callback omits it.
+        assertThat(authorization.getAdditionalParameters()).containsEntry("access_type", "offline");
+        // Any prompt value would defeat the point — consent re-prompts every time, and
+        // select_account shows the picker on every sign-in.
+        assertThat(authorization.getAdditionalParameters()).doesNotContainKey("prompt");
     }
 
+    /** Microsoft sign-in is unchanged: its calendar connection keeps its own dedicated flow. */
     @Test
     void hostMicrosoftLoginRequestsIdentityOnly() {
         CustomOAuth2AuthorizationRequestResolver resolver = resolver("microsoft");
@@ -66,11 +68,32 @@ class CustomOAuth2AuthorizationRequestResolverTest {
         assertThat(authorization).isNotNull();
         assertThat(authorization.getScopes())
                 .doesNotContain("offline_access", "Calendars.ReadWrite", "Calendars.Read");
-        assertThat(authorization.getAdditionalParameters()).containsEntry("prompt", "select_account");
+    }
+
+    /**
+     * Calendar scopes are gated on the host marker rather than declared on the client
+     * registration. On the registration they applied to EVERY Google authorization, so admin
+     * login asked for calendar access it never uses — an over-broad request that also invites
+     * scrutiny of the app's verification standing.
+     */
+    @Test
+    void adminLoginNeverAsksForCalendarAccess() {
+        CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
+        MockHttpServletRequest request = oauthRequest("google");
+        request.addParameter("client", "admin");
+        RequestContextHolder.setRequestAttributes(
+                new ServletRequestAttributes(request, new MockHttpServletResponse()));
+
+        OAuth2AuthorizationRequest authorization = resolver.resolve(request);
+
+        assertThat(authorization).isNotNull();
+        assertThat(authorization.getScopes()).containsExactlyInAnyOrder("email", "profile");
+        assertThat(authorization.getScopes()).doesNotContain(GOOGLE_EVENTS, GOOGLE_READ);
+        assertThat(authorization.getAdditionalParameters()).doesNotContainKey("access_type");
     }
 
     @Test
-    void guestGoogleLoginKeepsIdentityOnlyScopes() {
+    void loginWithoutTheHostMarkerKeepsIdentityOnlyScopes() {
         CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
         MockHttpServletRequest request = oauthRequest("google");
         RequestContextHolder.setRequestAttributes(
@@ -80,8 +103,43 @@ class CustomOAuth2AuthorizationRequestResolverTest {
 
         assertThat(authorization).isNotNull();
         assertThat(authorization.getScopes()).containsExactlyInAnyOrder("email", "profile");
+        assertThat(authorization.getScopes()).doesNotContain(GOOGLE_EVENTS, GOOGLE_READ);
         assertThat(authorization.getAdditionalParameters()).doesNotContainKeys(
                 "access_type", "include_granted_scopes");
+    }
+
+    /** The success handler bootstraps a calendar only when this cookie says the intent was host. */
+    @Test
+    void theHostMarkerIsRememberedAcrossTheProviderRedirect() {
+        CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
+        MockHttpServletRequest request = oauthRequest("google");
+        request.addParameter("calendar", "host");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, response));
+
+        resolver.resolve(request);
+
+        jakarta.servlet.http.Cookie cookie = response.getCookie(
+                CustomOAuth2AuthorizationRequestResolver.HOST_CALENDAR_COOKIE);
+        assertThat(cookie).isNotNull();
+        assertThat(cookie.getValue()).isEqualTo("host");
+        assertThat(cookie.isHttpOnly()).isTrue();
+    }
+
+    /** Without the marker the cookie is actively cleared, so a stale one cannot arm a bootstrap. */
+    @Test
+    void aStaleHostMarkerIsClearedWhenTheIntentIsAbsent() {
+        CustomOAuth2AuthorizationRequestResolver resolver = resolver("google");
+        MockHttpServletRequest request = oauthRequest("google");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request, response));
+
+        resolver.resolve(request);
+
+        jakarta.servlet.http.Cookie cookie = response.getCookie(
+                CustomOAuth2AuthorizationRequestResolver.HOST_CALENDAR_COOKIE);
+        assertThat(cookie).isNotNull();
+        assertThat(cookie.getMaxAge()).isZero();
     }
 
 
