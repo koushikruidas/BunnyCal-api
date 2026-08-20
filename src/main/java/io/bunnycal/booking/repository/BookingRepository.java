@@ -374,6 +374,24 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                @Param("guestName") String guestName,
                                @Param("guestNotes") String guestNotes);
 
+    // Records the zone the invitee booked from, so their notification mail can state the meeting
+    // time in it. Written straight after the hold rather than passed through createHeldBooking:
+    // that method has several overloads across the one-on-one, round-robin and collective paths,
+    // and threading one nullable display-only field through all of them would touch far more
+    // booking-creation code than the value justifies.
+    //
+    // Deliberately NOT version-bumping and NOT status-guarded, unlike setPendingGuestDetails. This
+    // field feeds mail rendering only — it is not part of the booking's agreed terms, so a late
+    // write cannot corrupt one, and bumping version here would make a benign metadata write lose a
+    // concurrent confirm's optimistic-lock race.
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE bookings
+               SET guest_timezone = :guestTimezone
+             WHERE id = :id
+            """, nativeQuery = true)
+    int setGuestTimezone(@Param("id") UUID id, @Param("guestTimezone") String guestTimezone);
+
     // Voluntary release of a hold the guest walked away from — same PENDING -> EXPIRED
     // transition as expireIfPendingAndExpired, minus its `expires_at < NOW()` guard, because
     // here the hold is deliberately given up while still valid. The version CAS keeps a

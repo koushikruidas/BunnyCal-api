@@ -61,6 +61,17 @@ public class Booking extends BaseEntity {
     @Column(name = "guest_notes", columnDefinition = "TEXT")
     private String guestNotes;
 
+    /**
+     * The invitee's own timezone, as an IANA zone id, captured from the X-Timezone header at
+     * booking time. Null for every booking made before this was recorded, and for any booking not
+     * made through a browser.
+     *
+     * <p>Readers must fall back to the host's timezone when this is null, never to UTC: UTC would
+     * silently re-render the time on every historical booking's mail.
+     */
+    @Column(name = "guest_timezone", length = 64)
+    private String guestTimezone;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "invitee_auth_provider", length = 32)
     private AuthProvider inviteeAuthProvider;

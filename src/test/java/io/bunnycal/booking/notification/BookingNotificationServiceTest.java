@@ -391,6 +391,91 @@ class BookingNotificationServiceTest {
         assertTrue(body.contains("Asia/Kolkata"), "time must be in the host's zone; body was:\n" + body);
     }
 
+    /**
+     * Each recipient reads the meeting time in their own zone.
+     *
+     * <p>One "When:" line used to be built from the host's zone and sent to everyone, so an
+     * invitee in New York was told their 09:30 meeting was at "19:00 (Asia/Kolkata)". Correct
+     * instant, correctly labelled, and their host's local time rather than theirs.
+     */
+    @Test
+    void guestAndHostMails_eachStateTheTimeInTheirOwnZone() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        booking.setGuestTimezone("America/New_York");
+        User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com")
+                .username("host-user").timezone("Asia/Kolkata").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+
+        String hostBody = textBody(findByRecipient(messageCaptor.getAllValues(), "host@gmail.com"));
+        assertTrue(hostBody.contains("Asia/Kolkata"),
+                "host must read the host's zone; body was:\n" + hostBody);
+        assertFalse(hostBody.contains("America/New_York"),
+                "host must not read the guest's zone; body was:\n" + hostBody);
+
+        String guestBody = textBody(findByRecipient(messageCaptor.getAllValues(), "guest@example.com"));
+        assertTrue(guestBody.contains("America/New_York"),
+                "guest must read the zone they booked from; body was:\n" + guestBody);
+        assertFalse(guestBody.contains("Asia/Kolkata"),
+                "guest must not read the host's zone; body was:\n" + guestBody);
+
+        // 10:00Z is 15:30 in Kolkata and 06:00 in New York — the same instant, stated twice.
+        assertTrue(hostBody.contains("15:30"), "host's local start; body was:\n" + hostBody);
+        assertTrue(guestBody.contains("06:00"), "guest's local start; body was:\n" + guestBody);
+    }
+
+    /**
+     * A booking taken before invitee zones were recorded has none, and its guest mail must fall
+     * back to the host's zone — not to UTC, which would re-render the time on every historical
+     * booking rather than only fixing new ones.
+     */
+    @Test
+    void guestMailWithoutStoredZone_fallsBackToHostZoneNotUtc() throws Exception {
+        UUID bookingId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        Booking booking = booking(bookingId, hostId, "guest@example.com", "Guest Name", 3L);
+        // No setGuestTimezone: this is the pre-migration shape.
+        User host = User.builder().id(hostId).name("Host Name").email("host@gmail.com")
+                .username("host-user").timezone("Asia/Kolkata").build();
+        OutboxEvent event = outboxEvent(bookingId, "BOOKING_CONFIRMED");
+
+        when(bookingRepository.findAnyById(bookingId)).thenReturn(Optional.of(booking));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(host));
+        when(eventTypeRepository.findById(any()))
+                .thenReturn(Optional.of(EventType.builder()
+                        .name("Discovery Call").slug("discovery-call")
+                        .build()));
+        when(recipientResolver.resolveAttendeeRecipient(booking)).thenReturn(Optional.of("guest@example.com"));
+        when(recipientResolver.resolveHostRecipient(host)).thenReturn(Optional.of("host@gmail.com"));
+        when(recipientResolver.deduplicate(any()))
+                .thenReturn(java.util.List.of("host@gmail.com", "guest@example.com"));
+
+        service.handleOutboxEvent(event);
+
+        verify(mailSender, times(2)).send(messageCaptor.capture());
+        String guestBody = textBody(findByRecipient(messageCaptor.getAllValues(), "guest@example.com"));
+        assertTrue(guestBody.contains("Asia/Kolkata"),
+                "missing guest zone must fall back to the host's; body was:\n" + guestBody);
+        assertFalse(guestBody.contains("(UTC)"),
+                "missing guest zone must not fall back to UTC; body was:\n" + guestBody);
+    }
+
     /** No account_email (a pre-V118_0 connection) must fall back to the login identity, not drop. */
     @Test
     void projectionOwnerWithoutAccountEmail_fallsBackToLoginIdentity() throws Exception {
