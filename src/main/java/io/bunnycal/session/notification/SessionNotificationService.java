@@ -1,6 +1,7 @@
 package io.bunnycal.session.notification;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.bunnycal.auth.repository.UserRepository;
 import io.bunnycal.booking.notification.BookingManageLinkService;
 import io.bunnycal.booking.notification.IcsInviteGenerator;
 import io.bunnycal.booking.notification.IcsInviteGenerator.GroupAttendee;
@@ -19,6 +20,11 @@ import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -37,6 +43,12 @@ import org.springframework.lang.Nullable;
 public class SessionNotificationService {
 
     private static final Logger log = LoggerFactory.getLogger(SessionNotificationService.class);
+    private static final DateTimeFormatter SESSION_DATE =
+            DateTimeFormatter.ofPattern("EEE, d MMM yyyy", Locale.ENGLISH);
+    private static final DateTimeFormatter SESSION_CLOCK =
+            DateTimeFormatter.ofPattern("h:mm a", Locale.ENGLISH);
+    private static final DateTimeFormatter SESSION_ZONE =
+            DateTimeFormatter.ofPattern("zzz", Locale.ENGLISH);
 
     private final JavaMailSender mailSender;
     private final IcsInviteGenerator icsInviteGenerator;
@@ -45,6 +57,7 @@ public class SessionNotificationService {
     private final CalendarSyncJobRepository syncJobRepository;
     private final ObjectMapper objectMapper;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
+    private final UserRepository userRepository;
     private final GroupHostNotificationService groupHostNotificationService;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -60,6 +73,7 @@ public class SessionNotificationService {
                                        CalendarSyncJobRepository syncJobRepository,
                                        ObjectMapper objectMapper,
                                        BookingSubmissionFormatter bookingSubmissionFormatter,
+                                       @Nullable UserRepository userRepository,
                                        @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                        @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
                                        String calendarOrganizerEmail,
@@ -76,6 +90,7 @@ public class SessionNotificationService {
         this.syncJobRepository = syncJobRepository;
         this.objectMapper = objectMapper;
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
+        this.userRepository = userRepository;
         this.groupHostNotificationService = groupHostNotificationService;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -95,7 +110,7 @@ public class SessionNotificationService {
                                       String calendarOrganizerName) {
         // Branded calendar HTML off: callers of this overload assert the legacy MIME shape.
         this(mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository, objectMapper,
-                new BookingSubmissionFormatter(new ObjectMapper()), fromAddress, calendarOrganizerEmail,
+                new BookingSubmissionFormatter(new ObjectMapper()), null, fromAddress, calendarOrganizerEmail,
                 calendarOrganizerName, null, new BrandedMailSender(mailSender, "", ""), false);
     }
 
@@ -151,7 +166,14 @@ public class SessionNotificationService {
 
         sendWithDedup(event, payload.newAttendeeEmail(), ics, "REQUEST",
                 "Meeting confirmed: " + payload.eventName(),
-                confirmedBody(payload.eventName(), manageLink, conferenceDetails, payload.newAttendeeNotes()));
+                confirmedBody(payload.eventName(), manageLink, conferenceDetails, payload.newAttendeeNotes()),
+                SessionEmailContent.builder("Registration confirmed", "Your registration is confirmed. The details are below.")
+                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .detail("Event", payload.eventName())
+                        .conference(conferenceDetails)
+                        .manageLink(manageLink)
+                        .notes(payload.newAttendeeNotes())
+                        .build());
         if (groupHostNotificationService != null) {
             groupHostNotificationService.handleRegistrationConfirmed(event, payload);
         }
@@ -176,7 +198,13 @@ public class SessionNotificationService {
 
         sendWithDedup(event, payload.cancelledAttendeeEmail(), ics, "CANCEL",
                 "Meeting cancelled: " + payload.eventName(),
-                cancellationBody(payload.eventName(), payload.cancelledAttendeeNotes()));
+                cancellationBody(payload.eventName(), payload.cancelledAttendeeNotes()),
+                SessionEmailContent.builder("Registration cancelled", "Your registration has been cancelled.")
+                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .detail("Event", payload.eventName())
+                        .notes(payload.cancelledAttendeeNotes())
+                        .cancelled(true)
+                        .build());
         if (groupHostNotificationService != null) {
             groupHostNotificationService.handleRegistrationCancelled(event, payload);
         }
@@ -203,7 +231,12 @@ public class SessionNotificationService {
             if (attendee.email() == null || attendee.email().isBlank()) continue;
             sendWithDedup(event, attendee.email(), ics, "CANCEL",
                     "Session cancelled: " + payload.eventName(),
-                    "The session has been cancelled.\n\nEvent: " + payload.eventName());
+                    "The session has been cancelled.\n\nEvent: " + payload.eventName(),
+                    SessionEmailContent.builder("Session cancelled", "The session has been cancelled.")
+                            .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                            .detail("Event", payload.eventName())
+                            .cancelled(true)
+                            .build());
         }
     }
 
@@ -228,7 +261,13 @@ public class SessionNotificationService {
             if (attendee.email() == null || attendee.email().isBlank()) continue;
             sendWithDedup(event, attendee.email(), ics, "REQUEST",
                     "Session rescheduled: " + payload.eventName(),
-                    rescheduledBody(payload.eventName(), conferenceDetails));
+                    rescheduledBody(payload.eventName(), conferenceDetails),
+                    SessionEmailContent.builder("Session rescheduled",
+                                    "The session has been rescheduled. The updated details are below.")
+                            .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                            .detail("Event", payload.eventName())
+                            .conference(conferenceDetails)
+                            .build());
         }
     }
 
@@ -269,6 +308,11 @@ public class SessionNotificationService {
             sendWithDedup(event, guestEmail, cancelIcs, "CANCEL",
                     "Your previous booking was released: " + payload.eventName(),
                     movedAwayBody(payload.eventName()),
+                    SessionEmailContent.builder("Booking released", movedAwayBody(payload.eventName()))
+                            .when(payload.previousStartTime(), payload.previousEndTime(), hostTimezone(payload))
+                            .detail("Event", payload.eventName())
+                            .cancelled(true)
+                            .build(),
                     "REGISTRATION_MOVED_CANCEL");
         }
 
@@ -282,6 +326,12 @@ public class SessionNotificationService {
         sendWithDedup(event, guestEmail, requestIcs, "REQUEST",
                 "Your booking was rescheduled: " + payload.eventName(),
                 rescheduledBody(payload.eventName(), conferenceDetails),
+                SessionEmailContent.builder("Booking rescheduled",
+                                "Your booking has moved to a new session. The updated details are below.")
+                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .detail("Event", payload.eventName())
+                        .conference(conferenceDetails)
+                        .build(),
                 "REGISTRATION_MOVED_REQUEST");
 
         if (groupHostNotificationService != null) {
@@ -297,12 +347,12 @@ public class SessionNotificationService {
     // ── Delivery ───────────────────────────────────────────────────────────────
 
     private void sendWithDedup(OutboxEvent event, String recipient, String ics, String method,
-                                String subject, String body) {
-        sendWithDedup(event, recipient, ics, method, subject, body, event.getEventType());
+                                String subject, String body, SessionEmailContent content) {
+        sendWithDedup(event, recipient, ics, method, subject, body, content, event.getEventType());
     }
 
     /**
-     * As {@link #sendWithDedup(OutboxEvent, String, String, String, String, String)},
+     * As {@link #sendWithDedup(OutboxEvent, String, String, String, String, String, SessionEmailContent)},
      * but with an explicit dedup discriminator.
      *
      * <p>The dedup claim is keyed on (event, recipient, discriminator). An event that
@@ -312,7 +362,7 @@ public class SessionNotificationService {
      * while each still keeps its own at-least-once protection.
      */
     private void sendWithDedup(OutboxEvent event, String recipient, String ics, String method,
-                                String subject, String body, String dedupKey) {
+                                String subject, String body, SessionEmailContent content, String dedupKey) {
         if (event.getId() == null) return;
         boolean claimed = dedupService.claim(event.getId(), recipient, dedupKey);
         if (!claimed) {
@@ -325,7 +375,7 @@ public class SessionNotificationService {
             return;
         }
         try {
-            sendMail(recipient, subject, ics, method, body);
+            sendMail(recipient, subject, ics, method, body, content);
             log.info("session_notification_send_success eventId={} recipient={} eventType={}",
                     event.getId(), recipient, event.getEventType());
             OpsLoggers.NOTIFICATION.info(
@@ -345,7 +395,8 @@ public class SessionNotificationService {
         }
     }
 
-    private void sendMail(String to, String subject, String ics, String method, String bodyText) throws Exception {
+    private void sendMail(String to, String subject, String ics, String method, String bodyText,
+                          SessionEmailContent content) throws Exception {
         var message = mailSender.createMimeMessage();
         var helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
         String envelopeFrom = calendarOrganizerEmail != null && !calendarOrganizerEmail.isBlank()
@@ -366,13 +417,13 @@ public class SessionNotificationService {
             // UID. BookingNotificationService fixed the same bug; this path had not been.
             if (brandedCalendarHtml) {
                 CalendarMimeAssembler.buildBranded(
-                        message, bodyText, calendarTemplate(subject, bodyText).renderHtml(), ics, method);
+                        message, bodyText, calendarTemplate(subject, bodyText, content).renderHtml(), ics, method);
             } else {
                 CalendarMimeAssembler.buildTextOnly(message, bodyText, ics, method);
             }
         } else if (brandedCalendarHtml) {
             // Routed through the assembler so the body carries the inline mascot.
-            BrandedMimeAssembler.build(message, bodyText, calendarTemplate(subject, bodyText).renderHtml());
+            BrandedMimeAssembler.build(message, bodyText, calendarTemplate(subject, bodyText, content).renderHtml());
         } else {
             helper.setText(bodyText, false);
         }
@@ -387,13 +438,93 @@ public class SessionNotificationService {
      * meaning (session time, guest list, occupancy), so they are placed in a monospaced block
      * rather than re-parsed into fields.
      */
-    private EmailTemplate calendarTemplate(String subject, String bodyText) {
-        return brandedMailSender.template()
-                .eyebrow("Group session")
+    private EmailTemplate calendarTemplate(String subject, String bodyText, SessionEmailContent content) {
+        // No structured description available (a path that has not been converted yet): fall back to
+        // the old behaviour rather than dropping information from the HTML body.
+        if (content == null) {
+            return brandedMailSender.template()
+                    .eyebrow("Group session")
+                    .headline(subject)
+                    .preformatted(bodyText)
+                    .footerReason("you're receiving this because you're on this session")
+                    .build();
+        }
+
+        EmailTemplate.Builder b = brandedMailSender.template()
+                .eyebrow(content.eyebrow())
                 .headline(subject)
-                .preformatted(bodyText)
-                .footerReason("you're receiving this because you're on this session")
-                .build();
+                .paragraph(content.intro());
+
+        String when = formatSessionWindow(content.startTime(), content.endTime(), content.timezone());
+        if (when != null) {
+            b.detail("When", when);
+        }
+        content.details().forEach(b::detail);
+
+        ConferenceDetails conference = content.conferenceDetails();
+        String provider = conference == null ? null : conference.provider();
+        if (provider != null && !provider.isBlank() && !"NONE".equalsIgnoreCase(provider)) {
+            b.detail("Conference", provider);
+        }
+        if (content.notes() != null && !content.notes().isBlank()) {
+            b.detail("Notes", content.notes().trim());
+        }
+        // The attendee list keeps its line structure; it is a block, not a field.
+        if (content.preformatted() != null && !content.preformatted().isBlank()) {
+            b.preformatted(content.preformatted().trim());
+        }
+
+        // Buttons, not printed URLs. This is the difference the group emails were missing: the
+        // join and manage links were only ever rendered as bare text inside the body.
+        String joinUrl = conference == null ? null : conference.joinUrl();
+        boolean hasJoin = joinUrl != null && !joinUrl.isBlank() && !content.cancelled();
+        boolean hasManage = content.manageLink() != null && !content.manageLink().isBlank()
+                && !content.cancelled();
+
+        if (hasJoin) {
+            b.primaryAction("Join the meeting", joinUrl);
+            if (hasManage) {
+                b.secondaryAction("Manage registration", content.manageLink());
+            }
+        } else if (hasManage) {
+            b.primaryAction("Manage registration", content.manageLink());
+        }
+        if (hasManage) {
+            b.note("Need to cancel or change your session? Use the manage link above.");
+        }
+
+        return b.footerReason("you're receiving this because you're on this session").build();
+    }
+
+    /**
+     * The host's zone, which is the one the session was scheduled in. Guest zones are not stored,
+     * so this is the only zone both the calendar entry and the email agree on; the ICS carries UTC
+     * instants regardless, so a wrong or missing value here only affects the printed line.
+     */
+    private String hostTimezone(SessionOutboxPayload payload) {
+        if (userRepository == null || payload.hostId() == null) {
+            return null;
+        }
+        return userRepository.findById(payload.hostId())
+                .map(io.bunnycal.auth.domain.user.User::getTimezone)
+                .orElse(null);
+    }
+
+    /** "Wed, 11 Sep 2026 · 3:00 PM – 4:00 PM (IST)", or null when the window is unknown. */
+    private static String formatSessionWindow(Instant start, Instant end, String timezone) {
+        if (start == null) return null;
+        ZoneId zone;
+        try {
+            zone = ZoneId.of(timezone == null || timezone.isBlank() ? "UTC" : timezone);
+        } catch (RuntimeException ignored) {
+            zone = ZoneOffset.UTC;
+        }
+        ZonedDateTime from = start.atZone(zone);
+        String rendered = SESSION_DATE.format(from) + " · " + SESSION_CLOCK.format(from);
+        if (end != null) {
+            rendered += " – " + SESSION_CLOCK.format(end.atZone(zone));
+        }
+        return rendered + " (" + SESSION_ZONE.format(from) + ")";
     }
 
     // ── Payload parsing ────────────────────────────────────────────────────────
