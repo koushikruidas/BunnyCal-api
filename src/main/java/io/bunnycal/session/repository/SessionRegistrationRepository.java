@@ -100,6 +100,21 @@ public interface SessionRegistrationRepository extends JpaRepository<SessionRegi
     List<SessionRegistration> findConfirmedBySessionIds(@Param("sessionIds") List<UUID> sessionIds);
 
     // CAS PENDING→CONFIRMED; also enforces expiry check.
+    /**
+     * Records the zone the attendee registered from, for their notification mail.
+     *
+     * <p>Deliberately outside the hold's version CAS: the zone is descriptive metadata, not part of
+     * the registration's state machine, so writing it must never make a concurrent confirm or
+     * cancel lose its race.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE session_registrations
+               SET guest_timezone = :guestTimezone
+             WHERE id = :id
+            """, nativeQuery = true)
+    int setGuestTimezone(@Param("id") UUID id, @Param("guestTimezone") String guestTimezone);
+
     @Modifying
     @Query(value = """
             UPDATE session_registrations

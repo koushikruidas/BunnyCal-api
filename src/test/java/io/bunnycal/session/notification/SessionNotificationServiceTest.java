@@ -155,6 +155,8 @@ class SessionNotificationServiceTest {
         CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
         io.bunnycal.auth.repository.UserRepository userRepository =
                 org.mockito.Mockito.mock(io.bunnycal.auth.repository.UserRepository.class);
+        io.bunnycal.session.repository.SessionRegistrationRepository registrationRepository =
+                org.mockito.Mockito.mock(io.bunnycal.session.repository.SessionRegistrationRepository.class);
         ObjectMapper objectMapper = new ObjectMapper();
 
         when(mailSender.createMimeMessage()).thenReturn(new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
@@ -182,6 +184,7 @@ class SessionNotificationServiceTest {
                 mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository,
                 objectMapper, new io.bunnycal.booking.service.BookingSubmissionFormatter(new ObjectMapper()),
                 userRepository,
+                registrationRepository,
                 "no-reply@example.test", "organizer@example.test", "BunnyCal",
                 null,
                 new io.bunnycal.common.email.BrandedMailSender(mailSender, "", ""),
@@ -236,6 +239,101 @@ class SessionNotificationServiceTest {
         org.assertj.core.api.Assertions.assertThat(textBody(messageCaptor.getValue()))
                 .contains("Join the meeting:\nhttps://zoom.us/j/8123456789")
                 .contains("Manage your registration:\nhttps://example.test/manage");
+    }
+
+    /**
+     * A group attendee must read the time in THEIR zone, the way 1:1 invitees already do, and the
+     * zone must be named the way people say it. Before this, every group mail rendered the host's
+     * zone printed as an IANA id: someone in New York was told "6:30 PM (Asia/Kolkata)".
+     */
+    @Test
+    void registrationConfirmed_statesTheTimeInTheAttendeesOwnZoneNamedByAbbreviation() throws Exception {
+        JavaMailSender mailSender = org.mockito.Mockito.mock(JavaMailSender.class);
+        IcsInviteGenerator icsInviteGenerator = org.mockito.Mockito.mock(IcsInviteGenerator.class);
+        BookingManageLinkService manageLinkService = org.mockito.Mockito.mock(BookingManageLinkService.class);
+        NotificationSendDedupService dedupService = org.mockito.Mockito.mock(NotificationSendDedupService.class);
+        CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
+        io.bunnycal.auth.repository.UserRepository userRepository =
+                org.mockito.Mockito.mock(io.bunnycal.auth.repository.UserRepository.class);
+        io.bunnycal.session.repository.SessionRegistrationRepository registrationRepository =
+                org.mockito.Mockito.mock(io.bunnycal.session.repository.SessionRegistrationRepository.class);
+        ObjectMapper objectMapper = new ObjectMapper();
+
+        when(mailSender.createMimeMessage()).thenReturn(new MimeMessage(jakarta.mail.Session.getInstance(new Properties())));
+        when(dedupService.claim(any(), any(), any())).thenReturn(true);
+        when(icsInviteGenerator.buildGroupRequest(any(), anyString(), anyString(), any(), any(),
+                anyString(), anyString(), anyList(), anyInt(), any())).thenReturn("ICS");
+        when(manageLinkService.build(any(), anyString(), anyString(), anyString()))
+                .thenReturn("https://example.test/manage");
+        when(syncJobRepository.findLatestSessionSyncRow(any())).thenReturn(List.of());
+
+        UUID sessionId = UUID.randomUUID();
+        UUID registrationId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+
+        // Host in Kolkata, attendee in New York.
+        when(userRepository.findById(hostId)).thenReturn(java.util.Optional.of(
+                io.bunnycal.auth.domain.user.User.builder()
+                        .id(hostId).email("host@example.test").username("hostuser")
+                        .name("Host").timezone("Asia/Kolkata").build()));
+        when(registrationRepository.findActiveBySessionId(sessionId)).thenReturn(List.of(
+                io.bunnycal.session.domain.SessionRegistration.builder()
+                        .sessionId(sessionId)
+                        .hostId(hostId)
+                        .guestEmail("guest@example.test")
+                        .guestName("Guest")
+                        .guestTimezone("America/New_York")
+                        .status(io.bunnycal.session.domain.RegistrationStatus.CONFIRMED)
+                        .build()));
+
+        SessionNotificationService service = new SessionNotificationService(
+                mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository,
+                objectMapper, new io.bunnycal.booking.service.BookingSubmissionFormatter(new ObjectMapper()),
+                userRepository, registrationRepository,
+                "no-reply@example.test", "organizer@example.test", "BunnyCal",
+                null, new io.bunnycal.common.email.BrandedMailSender(mailSender, "", ""), true);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("sessionId", sessionId.toString());
+        payload.put("registrationId", registrationId.toString());
+        payload.put("hostId", hostId.toString());
+        payload.put("hostUsername", "hostuser");
+        payload.put("eventName", "Math Class");
+        payload.put("eventSlug", "math-class");
+        // 13:00 UTC = 9:00 AM EDT in New York = 6:30 PM IST in Kolkata.
+        payload.put("startTime", Instant.parse("2026-09-11T13:00:00Z").toString());
+        payload.put("endTime", Instant.parse("2026-09-11T14:00:00Z").toString());
+        payload.put("calendarSequence", 1);
+        payload.put("guestEmail", "guest@example.test");
+        payload.put("guestName", "Guest");
+        payload.put("capabilityToken", "token-123");
+        payload.put("allConfirmedAttendees", List.of(Map.of("email", "guest@example.test", "name", "Guest")));
+        String json = objectMapper.writeValueAsString(
+                new OutboxPayloadEnvelope(UUID.randomUUID().toString(), "REGISTRATION_CONFIRMED", 1, payload));
+
+        service.handleSessionOutboxEvent(OutboxEvent.builder()
+                .id(UUID.randomUUID())
+                .aggregateType("Session")
+                .aggregateId(sessionId)
+                .eventType("REGISTRATION_CONFIRMED")
+                .payload(json)
+                .status(OutboxEventStatus.PENDING)
+                .attemptCount(0)
+                .build());
+
+        ArgumentCaptor<MimeMessage> messageCaptor = ArgumentCaptor.forClass(MimeMessage.class);
+        verify(mailSender).send(messageCaptor.capture());
+        String html = decodedHtml(rawMime(messageCaptor.getValue()));
+
+        org.assertj.core.api.Assertions.assertThat(html)
+                .as("the attendee's own zone, named the way people say it")
+                .contains("9:00 AM")
+                .contains("(EDT)");
+        org.assertj.core.api.Assertions.assertThat(html)
+                .as("never the raw IANA id, and never the host's clock for a guest elsewhere")
+                .doesNotContain("Asia/Kolkata")
+                .doesNotContain("America/New_York")
+                .doesNotContain("6:30 PM");
     }
 
     /** Quoted-printable soft line breaks split URLs across lines; undo them before asserting. */

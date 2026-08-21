@@ -15,6 +15,9 @@ import io.bunnycal.booking.service.BookingSubmissionFormatter;
 import io.bunnycal.common.logging.OpsLogSupport;
 import io.bunnycal.common.logging.OpsLoggers;
 import io.bunnycal.conferencing.service.ConferenceDetails;
+import io.bunnycal.common.time.ZoneLabels;
+import io.bunnycal.session.domain.SessionRegistration;
+import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMultipart;
@@ -58,6 +61,7 @@ public class SessionNotificationService {
     private final ObjectMapper objectMapper;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final UserRepository userRepository;
+    private final SessionRegistrationRepository sessionRegistrationRepository;
     private final GroupHostNotificationService groupHostNotificationService;
     private final String fromAddress;
     private final String calendarOrganizerEmail;
@@ -74,6 +78,7 @@ public class SessionNotificationService {
                                        ObjectMapper objectMapper,
                                        BookingSubmissionFormatter bookingSubmissionFormatter,
                                        @Nullable UserRepository userRepository,
+                                       @Nullable SessionRegistrationRepository sessionRegistrationRepository,
                                        @Value("${booking.notifications.from:no-reply@BunnyCal.local}") String fromAddress,
                                        @Value("${booking.notifications.calendar-organizer-email:${booking.notifications.from:no-reply@BunnyCal.local}}")
                                        String calendarOrganizerEmail,
@@ -91,6 +96,7 @@ public class SessionNotificationService {
         this.objectMapper = objectMapper;
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.userRepository = userRepository;
+        this.sessionRegistrationRepository = sessionRegistrationRepository;
         this.groupHostNotificationService = groupHostNotificationService;
         this.fromAddress = fromAddress;
         this.calendarOrganizerEmail = calendarOrganizerEmail;
@@ -110,7 +116,7 @@ public class SessionNotificationService {
                                       String calendarOrganizerName) {
         // Branded calendar HTML off: callers of this overload assert the legacy MIME shape.
         this(mailSender, icsInviteGenerator, manageLinkService, dedupService, syncJobRepository, objectMapper,
-                new BookingSubmissionFormatter(new ObjectMapper()), null, fromAddress, calendarOrganizerEmail,
+                new BookingSubmissionFormatter(new ObjectMapper()), null, null, fromAddress, calendarOrganizerEmail,
                 calendarOrganizerName, null, new BrandedMailSender(mailSender, "", ""), false);
     }
 
@@ -168,7 +174,7 @@ public class SessionNotificationService {
                 "Meeting confirmed: " + payload.eventName(),
                 confirmedBody(payload.eventName(), manageLink, conferenceDetails, payload.newAttendeeNotes()),
                 SessionEmailContent.builder("Registration confirmed", "Your registration is confirmed. The details are below.")
-                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .when(payload.startTime(), payload.endTime(), recipientTimezone(payload, payload.newAttendeeEmail()))
                         .detail("Event", payload.eventName())
                         .conference(conferenceDetails)
                         .manageLink(manageLink)
@@ -200,7 +206,7 @@ public class SessionNotificationService {
                 "Meeting cancelled: " + payload.eventName(),
                 cancellationBody(payload.eventName(), payload.cancelledAttendeeNotes()),
                 SessionEmailContent.builder("Registration cancelled", "Your registration has been cancelled.")
-                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .when(payload.startTime(), payload.endTime(), recipientTimezone(payload, payload.cancelledAttendeeEmail()))
                         .detail("Event", payload.eventName())
                         .notes(payload.cancelledAttendeeNotes())
                         .cancelled(true)
@@ -233,7 +239,7 @@ public class SessionNotificationService {
                     "Session cancelled: " + payload.eventName(),
                     "The session has been cancelled.\n\nEvent: " + payload.eventName(),
                     SessionEmailContent.builder("Session cancelled", "The session has been cancelled.")
-                            .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                            .when(payload.startTime(), payload.endTime(), recipientTimezone(payload, attendee.email()))
                             .detail("Event", payload.eventName())
                             .cancelled(true)
                             .build());
@@ -264,7 +270,7 @@ public class SessionNotificationService {
                     rescheduledBody(payload.eventName(), conferenceDetails),
                     SessionEmailContent.builder("Session rescheduled",
                                     "The session has been rescheduled. The updated details are below.")
-                            .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                            .when(payload.startTime(), payload.endTime(), recipientTimezone(payload, attendee.email()))
                             .detail("Event", payload.eventName())
                             .conference(conferenceDetails)
                             .build());
@@ -309,7 +315,7 @@ public class SessionNotificationService {
                     "Your previous booking was released: " + payload.eventName(),
                     movedAwayBody(payload.eventName()),
                     SessionEmailContent.builder("Booking released", movedAwayBody(payload.eventName()))
-                            .when(payload.previousStartTime(), payload.previousEndTime(), hostTimezone(payload))
+                            .when(payload.previousStartTime(), payload.previousEndTime(), recipientTimezone(payload, guestEmail))
                             .detail("Event", payload.eventName())
                             .cancelled(true)
                             .build(),
@@ -328,7 +334,7 @@ public class SessionNotificationService {
                 rescheduledBody(payload.eventName(), conferenceDetails),
                 SessionEmailContent.builder("Booking rescheduled",
                                 "Your booking has moved to a new session. The updated details are below.")
-                        .when(payload.startTime(), payload.endTime(), hostTimezone(payload))
+                        .when(payload.startTime(), payload.endTime(), recipientTimezone(payload, guestEmail))
                         .detail("Event", payload.eventName())
                         .conference(conferenceDetails)
                         .build(),
@@ -501,6 +507,28 @@ public class SessionNotificationService {
      * so this is the only zone both the calendar entry and the email agree on; the ICS carries UTC
      * instants regardless, so a wrong or missing value here only affects the printed line.
      */
+    /**
+     * The zone this one attendee registered from, or the host's when we never captured it.
+     *
+     * <p>Never UTC: registrations taken before V148_0, and any non-browser path, have no zone of
+     * their own, and the host's is the meeting's anchor. Falling back to UTC would restate the time
+     * for every historical attendee in a zone almost nobody lives in.
+     */
+    private String recipientTimezone(SessionOutboxPayload payload, String recipientEmail) {
+        if (sessionRegistrationRepository != null && payload.sessionId() != null && recipientEmail != null) {
+            String zone = sessionRegistrationRepository.findActiveBySessionId(payload.sessionId()).stream()
+                    .filter(r -> recipientEmail.equalsIgnoreCase(r.getGuestEmail()))
+                    .map(SessionRegistration::getGuestTimezone)
+                    .filter(v -> v != null && !v.isBlank())
+                    .findFirst()
+                    .orElse(null);
+            if (zone != null) {
+                return zone;
+            }
+        }
+        return hostTimezone(payload);
+    }
+
     private String hostTimezone(SessionOutboxPayload payload) {
         if (userRepository == null || payload.hostId() == null) {
             return null;
@@ -513,18 +541,14 @@ public class SessionNotificationService {
     /** "Wed, 11 Sep 2026 · 3:00 PM – 4:00 PM (IST)", or null when the window is unknown. */
     private static String formatSessionWindow(Instant start, Instant end, String timezone) {
         if (start == null) return null;
-        ZoneId zone;
-        try {
-            zone = ZoneId.of(timezone == null || timezone.isBlank() ? "UTC" : timezone);
-        } catch (RuntimeException ignored) {
-            zone = ZoneOffset.UTC;
-        }
+        ZoneId zone = ZoneLabels.zoneOrDefault(timezone, ZoneOffset.UTC);
         ZonedDateTime from = start.atZone(zone);
         String rendered = SESSION_DATE.format(from) + " · " + SESSION_CLOCK.format(from);
         if (end != null) {
             rendered += " – " + SESSION_CLOCK.format(end.atZone(zone));
         }
-        return rendered + " (" + SESSION_ZONE.format(from) + ")";
+        // "IST", not "Asia/Kolkata": resolved at the meeting's instant because it is seasonal.
+        return rendered + " (" + ZoneLabels.abbreviation(start, zone) + ")";
     }
 
     // ── Payload parsing ────────────────────────────────────────────────────────

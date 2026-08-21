@@ -52,6 +52,14 @@ public class SessionRegistration extends BaseEntity {
     @Column(name = "guest_notes", columnDefinition = "TEXT")
     private String guestNotes;
 
+    /**
+     * The zone this attendee registered from, so their mail can state the time in it. Null for
+     * registrations taken before V148_0 and for any non-browser path; readers fall back to the
+     * host's zone, never to UTC.
+     */
+    @Column(name = "guest_timezone", length = 64)
+    private String guestTimezone;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "invitee_auth_provider", length = 32)
     private AuthProvider inviteeAuthProvider;

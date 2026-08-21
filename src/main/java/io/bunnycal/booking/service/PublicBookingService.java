@@ -472,9 +472,9 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(response.bookingId(), target.userId(), answerSnapshots);
         }
 
-        // Record the zone the invitee booked from so their mail can state the time in it. GROUP is
-        // excluded: its registrations live in session_registrations, not bookings, and this column
-        // does not exist there.
+        // Record the zone the invitee booked from so their mail can state the time in it. GROUP
+        // registrations live in session_registrations and are handled in holdGroupRegistration,
+        // which writes the same value to their own guest_timezone column.
         if (target.kind() != EventKind.GROUP && response.bookingId() != null) {
             String guestTimezone = normalizeGuestTimezone(request.guestTimezone());
             if (guestTimezone != null) {
@@ -688,6 +688,12 @@ public class PublicBookingService {
                 inviteeAuth.providerUserId(),
                 target.holdDuration()
         );
+        // Same zone the start time was normalised against, recorded so this attendee's mail can
+        // state the time in their own zone rather than the host's (V148_0).
+        String guestTimezone = normalizeGuestTimezone(request.guestTimezone());
+        if (guestTimezone != null && result.registrationId() != null) {
+            sessionRegistrationRepository.setGuestTimezone(result.registrationId(), guestTimezone);
+        }
         OpsLoggers.BOOKING.info("group_registration_held registrationId={} sessionId={} hostId={} eventTypeId={} startTimeUtc={} endTimeUtc={} guestEmail={}",
                 result.registrationId(),
                 result.sessionId(),
