@@ -510,6 +510,156 @@ class PublicGroupSessionQueryServiceIT extends AbstractSessionIT {
                 .build());
     }
 
+    /**
+     * The reported case: a half-full session moved to a DIFFERENT DAY that the same weekly rule
+     * also generates. Both dates sit in the queried range, so the grid produces a candidate for
+     * each. The vacated day must not be re-offered as a fresh session, and the destination must
+     * report the seats that travelled with it rather than looking untouched or full.
+     */
+    @Test
+    void hostRescheduledSessionToAnotherDay_vacatesOldDateAndKeepsOccupancy() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 4, Duration.ZERO, Duration.ofDays(60));
+        insertRecurringWindow(eventType.getId(), "09:00", "10:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        for (String guest : new String[] {"a@test.com", "b@test.com"}) {
+            var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                    new io.bunnycal.booking.dto.PublicBookRequest(originalStart, guest, guest));
+            publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+        }
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+        assertThat(jdbc.queryForObject("SELECT confirmed_count FROM event_sessions WHERE id = ?",
+                Integer.class, sessionId)).isEqualTo(2);
+
+        // Move a week out: same weekday, so the rule generates a candidate at BOTH dates.
+        LocalDate movedDate = TEST_DATE.plusDays(7);
+        Instant newStart = movedDate.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), newStart);
+
+        // Occupancy must survive the move: half full, not reset and not full.
+        assertThat(jdbc.queryForObject("SELECT confirmed_count FROM event_sessions WHERE id = ?",
+                Integer.class, sessionId))
+                .as("the seats move with the session")
+                .isEqualTo(2);
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 14);
+
+        PublicGroupDateCardResponse originalDay = response.dates().stream()
+                .filter(d -> d.date().equals(TEST_DATE))
+                .findFirst()
+                .orElseThrow();
+        assertThat(originalDay.sessions())
+                .as("nobody may book the day the session was moved away from")
+                .noneMatch(session -> session.startTime().equals(originalStart));
+
+        PublicGroupSessionCardResponse moved = response.dates().stream()
+                .filter(d -> d.date().equals(movedDate))
+                .flatMap(d -> d.sessions().stream())
+                .filter(session -> session.startTime().equals(newStart))
+                .findFirst()
+                .orElseThrow();
+        assertThat(moved.sessionId()).isEqualTo(sessionId.toString());
+        assertThat(moved.bookedCount()).as("2 of 4 seats taken").isEqualTo(2);
+        assertThat(moved.capacity()).isEqualTo(4);
+        assertThat(moved.bookable()).as("2 seats remain, so it must still be bookable").isTrue();
+    }
+
+    /**
+     * Same move, but the guest is looking at a window that contains only the ORIGIN. The
+     * destination row is still fetched (the query matches on scheduled_occurrence_start too), so
+     * the vacated slot must stay suppressed rather than reappearing as a bookable session for
+     * anyone paging a narrower range than the move spanned.
+     */
+    @Test
+    void hostRescheduledBeyondTheQueriedRange_stillVacatesTheOriginalDate() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 4, Duration.ZERO, Duration.ofDays(90));
+        insertRecurringWindow(eventType.getId(), "09:00", "10:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                new io.bunnycal.booking.dto.PublicBookRequest(originalStart, "a@test.com", "A"));
+        publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+
+        // Four weeks out, well past the 1-day window queried below.
+        Instant newStart = TEST_DATE.plusDays(28).atTime(9, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), newStart);
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 1);
+
+        assertThat(response.dates().get(0).sessions())
+                .as("the vacated slot must not return just because the destination is out of view")
+                .noneMatch(session -> session.startTime().equals(originalStart));
+    }
+
+    /**
+     * A ONE_TIME window pins the class to a single date, so moving it to another day lands
+     * somewhere the rule generates nothing. The origin must still be vacated and the destination
+     * must carry its registrations across -- the shape a host hits when they reschedule a one-off
+     * class from the meetings dashboard.
+     */
+    @Test
+    void oneTimeGroupEventMovedToAnotherDay_vacatesOriginAndKeepsSeats() {
+        User host = createHostWithAvailability();
+        EventType eventType = createHourlyGroupType(host.getId(), 4, Duration.ZERO, Duration.ofDays(60));
+        insertOneTimeWindow(eventType.getId(), TEST_DATE, "09:00", "10:00");
+
+        Instant originalStart = TEST_DATE.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        for (String guest : new String[] {"a@test.com", "b@test.com"}) {
+            var hold = publicBookingService.hold(host.getUsername(), eventType.getSlug(),
+                    new io.bunnycal.booking.dto.PublicBookRequest(originalStart, guest, guest));
+            publicBookingService.confirm(host.getUsername(), eventType.getSlug(), hold.bookingId());
+        }
+
+        UUID sessionId = jdbc.queryForObject(
+                "SELECT id FROM event_sessions WHERE event_type_id = ? AND start_time = ?",
+                UUID.class, eventType.getId(), java.sql.Timestamp.from(originalStart));
+
+        LocalDate movedDate = TEST_DATE.plusDays(4);
+        Instant newStart = movedDate.atTime(9, 0).toInstant(ZoneOffset.UTC);
+        sessionService.rescheduleSession(sessionId, host.getId(), newStart);
+
+        PublicGroupSessionsResponse response = publicGroupSessionQueryService.getGroupSessions(
+                host.getUsername(), eventType.getSlug(), TEST_DATE, 14);
+
+        assertThat(response.dates().stream()
+                        .filter(d -> d.date().equals(TEST_DATE))
+                        .flatMap(d -> d.sessions().stream()))
+                .as("the original date must offer nothing once the class has moved off it")
+                .noneMatch(session -> session.startTime().equals(originalStart));
+
+        PublicGroupSessionCardResponse moved = response.dates().stream()
+                .filter(d -> d.date().equals(movedDate))
+                .flatMap(d -> d.sessions().stream())
+                .filter(session -> session.startTime().equals(newStart))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("the moved session disappeared from the public page"));
+        assertThat(moved.bookedCount()).as("2 of 4 seats taken").isEqualTo(2);
+        assertThat(moved.bookable()).as("2 seats remain, so it must still be bookable").isTrue();
+    }
+
+    private void insertOneTimeWindow(UUID eventTypeId, LocalDate date, String startTime, String endTime) {
+        jdbc.update("""
+                INSERT INTO group_event_reservation_windows
+                    (id, event_type_id, day_of_week, start_time, end_time,
+                     schedule_type, event_date, start_date, recurrence_end_mode,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?::time, ?::time,
+                        'ONE_TIME', ?, ?, 'NONE', NOW(), NOW())
+                """, UUID.randomUUID(), eventTypeId, date.getDayOfWeek().name(), startTime, endTime,
+                java.sql.Date.valueOf(date), java.sql.Date.valueOf(date));
+    }
+
     private void insertRecurringWindow(UUID eventTypeId, String startTime, String endTime) {
         jdbc.update("""
                 INSERT INTO group_event_reservation_windows
