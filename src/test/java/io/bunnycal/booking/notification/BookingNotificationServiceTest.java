@@ -388,7 +388,7 @@ class BookingNotificationServiceTest {
         String body = textBody(ownerMsg);
         assertTrue(body.contains("When:"), "owner's mail must state the meeting time; body was:\n" + body);
         // Rendered in the host's own zone, not UTC.
-        assertTrue(body.contains("Asia/Kolkata"), "time must be in the host's zone; body was:\n" + body);
+        assertTrue(body.contains("IST"), "time must be in the host's zone; body was:\n" + body);
     }
 
     /**
@@ -424,15 +424,15 @@ class BookingNotificationServiceTest {
         verify(mailSender, times(2)).send(messageCaptor.capture());
 
         String hostBody = textBody(findByRecipient(messageCaptor.getAllValues(), "host@gmail.com"));
-        assertTrue(hostBody.contains("Asia/Kolkata"),
+        assertTrue(hostBody.contains("IST"),
                 "host must read the host's zone; body was:\n" + hostBody);
-        assertFalse(hostBody.contains("America/New_York"),
+        assertFalse(hostBody.contains("EDT") || hostBody.contains("EST"),
                 "host must not read the guest's zone; body was:\n" + hostBody);
 
         String guestBody = textBody(findByRecipient(messageCaptor.getAllValues(), "guest@example.com"));
-        assertTrue(guestBody.contains("America/New_York"),
+        assertTrue(guestBody.contains("EDT") || guestBody.contains("EST"),
                 "guest must read the zone they booked from; body was:\n" + guestBody);
-        assertFalse(guestBody.contains("Asia/Kolkata"),
+        assertFalse(guestBody.contains("IST"),
                 "guest must not read the host's zone; body was:\n" + guestBody);
 
         // 10:00Z is 15:30 in Kolkata and 06:00 in New York — the same instant, stated twice.
@@ -470,7 +470,7 @@ class BookingNotificationServiceTest {
 
         verify(mailSender, times(2)).send(messageCaptor.capture());
         String guestBody = textBody(findByRecipient(messageCaptor.getAllValues(), "guest@example.com"));
-        assertTrue(guestBody.contains("Asia/Kolkata"),
+        assertTrue(guestBody.contains("IST"),
                 "missing guest zone must fall back to the host's; body was:\n" + guestBody);
         assertFalse(guestBody.contains("(UTC)"),
                 "missing guest zone must not fall back to UTC; body was:\n" + guestBody);

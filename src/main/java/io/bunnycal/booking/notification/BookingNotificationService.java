@@ -13,6 +13,7 @@ import io.bunnycal.common.email.BrandedMailSender;
 import io.bunnycal.common.email.BrandedMimeAssembler;
 import io.bunnycal.common.email.CalendarMimeAssembler;
 import io.bunnycal.common.email.EmailTemplate;
+import io.bunnycal.common.time.ZoneLabels;
 import io.bunnycal.booking.repository.BookingAssignmentRepository;
 import io.bunnycal.booking.repository.BookingRepository;
 import io.bunnycal.booking.ownership.BookingOwnership;
@@ -998,9 +999,11 @@ public class BookingNotificationService {
         }
         ZonedDateTime from = start.atZone(zone);
         ZonedDateTime to = end.atZone(zone);
-        // e.g. "Sunday, 12 July 2026, 13:30–14:00 (Asia/Kolkata)"
+        // e.g. "Sunday, 12 July 2026, 13:30–14:00 (IST)". The abbreviation is resolved at the
+        // meeting's instant because it is seasonal — EST in January, EDT in July — and it is what
+        // a reader recognises; the IANA id this used to print is precise but nobody says it.
         return WHEN_DATE.format(from) + ", " + WHEN_TIME.format(from) + "–" + WHEN_TIME.format(to)
-                + " (" + zone.getId() + ")";
+                + " (" + ZoneLabels.abbreviation(start, zone) + ")";
     }
 
     /**
