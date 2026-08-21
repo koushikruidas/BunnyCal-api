@@ -510,7 +510,7 @@ public class SessionNotificationService {
     /**
      * The zone this one attendee registered from, or the host's when we never captured it.
      *
-     * <p>Never UTC: registrations taken before V148_0, and any non-browser path, have no zone of
+     * <p>Never UTC: registrations taken before V149_0, and any non-browser path, have no zone of
      * their own, and the host's is the meeting's anchor. Falling back to UTC would restate the time
      * for every historical attendee in a zone almost nobody lives in.
      */

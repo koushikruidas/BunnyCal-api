@@ -689,7 +689,7 @@ public class PublicBookingService {
                 target.holdDuration()
         );
         // Same zone the start time was normalised against, recorded so this attendee's mail can
-        // state the time in their own zone rather than the host's (V148_0).
+        // state the time in their own zone rather than the host's (V149_0).
         String guestTimezone = normalizeGuestTimezone(request.guestTimezone());
         if (guestTimezone != null && result.registrationId() != null) {
             sessionRegistrationRepository.setGuestTimezone(result.registrationId(), guestTimezone);

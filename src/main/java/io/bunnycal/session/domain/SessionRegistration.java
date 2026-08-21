@@ -54,7 +54,7 @@ public class SessionRegistration extends BaseEntity {
 
     /**
      * The zone this attendee registered from, so their mail can state the time in it. Null for
-     * registrations taken before V148_0 and for any non-browser path; readers fall back to the
+     * registrations taken before V149_0 and for any non-browser path; readers fall back to the
      * host's zone, never to UTC.
      */
     @Column(name = "guest_timezone", length = 64)
