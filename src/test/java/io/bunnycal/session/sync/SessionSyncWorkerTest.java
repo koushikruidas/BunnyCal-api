@@ -17,7 +17,10 @@ import io.bunnycal.calendar.provider.GoogleCalendarProvider;
 import io.bunnycal.calendar.provider.MicrosoftCalendarProvider;
 import io.bunnycal.booking.service.BookingSchedulingProjectionResolver;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
+import io.bunnycal.conferencing.repository.ConferencingEventMappingRepository;
+import io.bunnycal.conferencing.service.ConferencingProviderRegistry;
 import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.SessionConferencingCoordinator;
 import io.bunnycal.availability.domain.EventType;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionStatus;
@@ -68,7 +71,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -181,7 +184,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -255,7 +258,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -402,7 +405,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -511,7 +514,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -632,7 +635,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -744,7 +747,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -849,7 +852,7 @@ class SessionSyncWorkerTest {
                 googleCalendarProvider,
                 microsoftCalendarProvider,
                 projectionResolver,
-                conferencingResolver,
+                sessionConferencingCoordinator(conferencingResolver),
                 retryPolicy,
                 txManager(),
                 new SimpleMeterRegistry());
@@ -946,6 +949,162 @@ class SessionSyncWorkerTest {
                 .guestName(name)
                 .status(io.bunnycal.session.domain.RegistrationStatus.CONFIRMED)
                 .build();
+    }
+
+    /**
+     * The recovery case for a session that already synced without a join link (the Zoom regression:
+     * conferencing resolved to "none", so the row was persisted with provider NONE and a null URL).
+     * A later UPDATE must let the freshly-resolved Zoom link win over that stale persisted row —
+     * otherwise the sync row keeps reporting NONE, the outbox readiness guard keeps failing, and the
+     * confirmation email is never sent even though the calendar event now carries the link.
+     */
+    @Test
+    void processPending_zoomSessionPreviouslySyncedWithoutLink_persistsTheNewZoomLink() {
+        CalendarSyncJobRepository syncJobRepository = org.mockito.Mockito.mock(CalendarSyncJobRepository.class);
+        EventSessionRepository sessionRepository = org.mockito.Mockito.mock(EventSessionRepository.class);
+        SessionRegistrationRepository registrationRepository = org.mockito.Mockito.mock(SessionRegistrationRepository.class);
+        EventTypeRepository eventTypeRepository = org.mockito.Mockito.mock(EventTypeRepository.class);
+        UserRepository userRepository = org.mockito.Mockito.mock(UserRepository.class);
+        CalendarConnectionRepository connectionRepository = org.mockito.Mockito.mock(CalendarConnectionRepository.class);
+        GoogleCalendarProvider googleCalendarProvider = org.mockito.Mockito.mock(GoogleCalendarProvider.class);
+        MicrosoftCalendarProvider microsoftCalendarProvider = org.mockito.Mockito.mock(MicrosoftCalendarProvider.class);
+        SyncRetryPolicy retryPolicy = org.mockito.Mockito.mock(SyncRetryPolicy.class);
+        BookingSchedulingProjectionResolver projectionResolver = org.mockito.Mockito.mock(BookingSchedulingProjectionResolver.class);
+        EventConferencingResolver conferencingResolver = org.mockito.Mockito.mock(EventConferencingResolver.class);
+
+        UUID sessionId = UUID.randomUUID();
+        UUID hostId = UUID.randomUUID();
+        UUID eventTypeId = UUID.randomUUID();
+        UUID connectionId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+        String externalEventId = "ext-created";
+
+        io.bunnycal.conferencing.service.ConferencingProvider zoom =
+                org.mockito.Mockito.mock(io.bunnycal.conferencing.service.ConferencingProvider.class);
+        when(zoom.providerType()).thenReturn(io.bunnycal.common.enums.ConferencingProviderType.ZOOM);
+        when(zoom.createMeeting(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new io.bunnycal.conferencing.service.ConferencingProvider.MeetingDetails(
+                        "8123456789", "https://zoom.us/j/8123456789", null));
+
+        ConferencingEventMappingRepository mappingRepository =
+                org.mockito.Mockito.mock(ConferencingEventMappingRepository.class);
+        when(mappingRepository.findByBookingIdAndProvider(sessionId,
+                io.bunnycal.common.enums.ConferencingProviderType.ZOOM)).thenReturn(Optional.empty());
+
+        SessionSyncWorker worker = new SessionSyncWorker(
+                syncJobRepository,
+                sessionRepository,
+                registrationRepository,
+                eventTypeRepository,
+                userRepository,
+                connectionRepository,
+                googleCalendarProvider,
+                microsoftCalendarProvider,
+                projectionResolver,
+                new SessionConferencingCoordinator(
+                        new ConferencingProviderRegistry(java.util.List.of(zoom)),
+                        mappingRepository,
+                        conferencingResolver,
+                        txManager()),
+                retryPolicy,
+                txManager(),
+                new SimpleMeterRegistry());
+
+        EventType eventType = EventType.builder()
+                .id(eventTypeId)
+                .userId(hostId)
+                .name("Math Class")
+                .slug("math-class")
+                .duration(java.time.Duration.ofHours(1))
+                .bufferBefore(java.time.Duration.ZERO)
+                .bufferAfter(java.time.Duration.ZERO)
+                .slotInterval(java.time.Duration.ofHours(1))
+                .minNotice(java.time.Duration.ZERO)
+                .maxAdvance(java.time.Duration.ofDays(30))
+                .holdDuration(java.time.Duration.ofMinutes(15))
+                .build();
+        when(eventTypeRepository.findByIdAndUserId(eventTypeId, hostId)).thenReturn(Optional.of(eventType));
+        when(userRepository.findById(hostId)).thenReturn(Optional.of(User.builder()
+                .id(hostId).email("host@example.test").username("hostuser").name("Host").timezone("UTC").build()));
+        when(connectionRepository.findById(connectionId))
+                .thenReturn(Optional.of(connection(connectionId, CalendarProviderType.GOOGLE)));
+        when(projectionResolver.resolveForUser(hostId)).thenReturn(
+                new BookingSchedulingProjectionResolver.SchedulingProjection(
+                        CalendarProviderType.GOOGLE, connectionId, "primary"));
+        when(conferencingResolver.resolve(org.mockito.ArgumentMatchers.eq(hostId), org.mockito.ArgumentMatchers.<EventType>any()))
+                .thenReturn(io.bunnycal.common.enums.ConferencingProviderType.ZOOM);
+
+        when(syncJobRepository.claimPendingBatchForSessions(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(jobId));
+        when(syncJobRepository.findById(jobId)).thenReturn(Optional.of(CalendarSyncJob.builder()
+                .id(jobId)
+                .internalRefType(InternalRefType.SESSION)
+                .internalRefId(sessionId)
+                .partitionKey(hostId)
+                .schedulingConnectionId(connectionId)
+                .ownershipVersion(1L)
+                .provider("google")
+                .desiredAction(SyncDesiredAction.UPDATE)
+                .status(SyncJobStatus.PROCESSING)
+                .externalEventId(externalEventId)
+                .attemptCount(0)
+                .nextRetryAt(Instant.now())
+                .version(7L)
+                .build()));
+
+        // The stuck state: synced, but conferencing recorded as NONE with no join URL.
+        CalendarSyncJobRepository.SessionSyncRow row = org.mockito.Mockito.mock(CalendarSyncJobRepository.SessionSyncRow.class);
+        when(row.getExternalEventId()).thenReturn(externalEventId);
+        when(row.getConferenceUrl()).thenReturn(null);
+        when(row.getConferenceProvider()).thenReturn("NONE");
+        when(syncJobRepository.findLatestSessionSyncRow(sessionId)).thenReturn(List.of(row));
+
+        when(sessionRepository.findById(sessionId)).thenReturn(Optional.of(EventSession.builder()
+                .id(sessionId)
+                .hostId(hostId)
+                .eventTypeId(eventTypeId)
+                .startTime(Instant.parse("2026-09-11T09:30:00Z"))
+                .endTime(Instant.parse("2026-09-11T10:30:00Z"))
+                .status(SessionStatus.OPEN)
+                .capacity(10)
+                .confirmedCount(1)
+                .calendarSequence(1L)
+                .build()));
+        when(registrationRepository.findConfirmedBySessionId(sessionId))
+                .thenReturn(List.of(registration(sessionId, hostId, "guest@example.test", "Guest")));
+        when(googleCalendarProvider.updateEvent(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new UpdateEventResponse(externalEventId, "https://calendar.example/evt", null));
+
+        worker.processPending(10);
+
+        // The calendar event carries the Zoom link...
+        verify(googleCalendarProvider).updateEvent(org.mockito.ArgumentMatchers.argThat(req ->
+                req != null && req.conferencingInstruction() != null
+                        && "https://zoom.us/j/8123456789".equals(req.conferencingInstruction().joinUrl())));
+        // ...and so does the sync row, which is what the outbox readiness guard reads.
+        verify(syncJobRepository).markSyncedWithMetadata(
+                org.mockito.ArgumentMatchers.eq(jobId),
+                org.mockito.ArgumentMatchers.eq(7L),
+                org.mockito.ArgumentMatchers.eq(externalEventId),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("https://zoom.us/j/8123456789"),
+                org.mockito.ArgumentMatchers.eq("ZOOM"),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * A real coordinator over the test's mocked resolver, so the existing {@code resolve(...)} stubs
+     * keep driving these cases. Only ZOOM reaches the provider registry, and no case here resolves to
+     * ZOOM — {@link SessionConferencingCoordinatorTest} covers that path directly.
+     */
+    private static SessionConferencingCoordinator sessionConferencingCoordinator(
+            EventConferencingResolver conferencingResolver) {
+        return new SessionConferencingCoordinator(
+                new ConferencingProviderRegistry(java.util.List.of()),
+                org.mockito.Mockito.mock(ConferencingEventMappingRepository.class),
+                conferencingResolver,
+                txManager());
     }
 
     private static PlatformTransactionManager txManager() {

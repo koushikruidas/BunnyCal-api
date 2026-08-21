@@ -20,10 +20,9 @@ import io.bunnycal.calendar.provider.MicrosoftCalendarProvider;
 import io.bunnycal.calendar.provider.UpdateEventRequest;
 import io.bunnycal.calendar.provider.UpdateEventResponse;
 import io.bunnycal.calendar.repository.CalendarConnectionRepository;
-import io.bunnycal.common.enums.ConferencingProviderType;
 import io.bunnycal.conferencing.service.ConferenceDetails;
 import io.bunnycal.conferencing.service.ConferencingInstruction;
-import io.bunnycal.conferencing.service.EventConferencingResolver;
+import io.bunnycal.conferencing.service.SessionConferencingCoordinator;
 import io.bunnycal.session.domain.EventSession;
 import io.bunnycal.session.domain.SessionRegistration;
 import io.bunnycal.session.repository.EventSessionRepository;
@@ -31,6 +30,7 @@ import io.bunnycal.session.repository.SessionRegistrationRepository;
 import io.bunnycal.sync.repository.CalendarSyncJobRepository;
 import io.bunnycal.sync.retry.SyncRetryPolicy;
 import io.bunnycal.sync.state.CalendarSyncJob;
+import io.bunnycal.sync.state.SyncDesiredAction;
 import io.bunnycal.sync.state.SyncJobStatus;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
@@ -60,7 +60,7 @@ public class SessionSyncWorker {
     private final Map<CalendarProviderType, CalendarProvider> providersByType;
     private final BookingSubmissionFormatter bookingSubmissionFormatter;
     private final BookingSchedulingProjectionResolver projectionResolver;
-    private final EventConferencingResolver conferencingResolver;
+    private final SessionConferencingCoordinator sessionConferencingCoordinator;
     private final SyncRetryPolicy retryPolicy;
     private final MeterRegistry meterRegistry;
     private final TransactionTemplate txTemplate;
@@ -76,7 +76,7 @@ public class SessionSyncWorker {
                               MicrosoftCalendarProvider microsoftCalendarProvider,
                               BookingSubmissionFormatter bookingSubmissionFormatter,
                               BookingSchedulingProjectionResolver projectionResolver,
-                              EventConferencingResolver conferencingResolver,
+                              SessionConferencingCoordinator sessionConferencingCoordinator,
                               SyncRetryPolicy retryPolicy,
                               PlatformTransactionManager transactionManager,
                               MeterRegistry meterRegistry) {
@@ -92,7 +92,7 @@ public class SessionSyncWorker {
         );
         this.bookingSubmissionFormatter = bookingSubmissionFormatter;
         this.projectionResolver = projectionResolver;
-        this.conferencingResolver = conferencingResolver;
+        this.sessionConferencingCoordinator = sessionConferencingCoordinator;
         this.retryPolicy = retryPolicy;
         this.meterRegistry = meterRegistry;
         this.txTemplate = new TransactionTemplate(transactionManager);
@@ -108,13 +108,13 @@ public class SessionSyncWorker {
                              GoogleCalendarProvider googleCalendarProvider,
                              MicrosoftCalendarProvider microsoftCalendarProvider,
                              BookingSchedulingProjectionResolver projectionResolver,
-                             EventConferencingResolver conferencingResolver,
+                             SessionConferencingCoordinator sessionConferencingCoordinator,
                              SyncRetryPolicy retryPolicy,
                              PlatformTransactionManager transactionManager,
                              MeterRegistry meterRegistry) {
         this(syncJobRepository, sessionRepository, registrationRepository, eventTypeRepository, userRepository,
                 connectionRepository, googleCalendarProvider, microsoftCalendarProvider,
-                new BookingSubmissionFormatter(new ObjectMapper()), projectionResolver, conferencingResolver,
+                new BookingSubmissionFormatter(new ObjectMapper()), projectionResolver, sessionConferencingCoordinator,
                 retryPolicy, transactionManager, meterRegistry);
     }
 
@@ -226,8 +226,13 @@ public class SessionSyncWorker {
             String description = bookingSubmissionFormatter.buildSessionDescription(confirmedRegistrations);
             String targetCalendarId = projection.calendarId();
             String idempotencyKey = "session-" + connection.getId() + "-" + session.getStartTime().getEpochSecond();
-            ConferencingInstruction conferencingInstruction =
-                    resolveConferencingInstruction(session.getHostId(), eventType);
+            // Only CREATE/UPDATE need a meeting. Resolving on DELETE would mint a Zoom meeting for a
+            // session that is being torn down; the delete path releases it instead.
+            boolean writesEvent = job.getDesiredAction() != SyncDesiredAction.DELETE;
+            ConferencingInstruction conferencingInstruction = writesEvent
+                    ? sessionConferencingCoordinator.prepare(
+                            sessionId, session.getHostId(), eventType, session.getStartTime(), session.getEndTime())
+                    : ConferencingInstruction.none();
             ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(
                     conferencingInstruction, "session_event_type", Instant.now());
 
@@ -244,7 +249,10 @@ public class SessionSyncWorker {
                             conferencingInstruction, conferenceDetails);
                     yield true;
                 }
-                case DELETE -> processDelete(job, connection, provider, targetCalendarId);
+                case DELETE -> {
+                    releaseSessionConferencing(session);
+                    yield processDelete(job, connection, provider, targetCalendarId);
+                }
             };
             if (!processed) {
                 return;
@@ -318,6 +326,9 @@ public class SessionSyncWorker {
             return;
         }
         if (confirmedRegistrations.isEmpty()) {
+            // Last registration cancelled: the calendar event goes, and so must any external meeting
+            // booked for it — otherwise the Zoom meeting outlives the session that owned it.
+            releaseSessionConferencing(session);
             processDelete(job, connection, provider, targetCalendarId);
             return;
         }
@@ -325,9 +336,14 @@ public class SessionSyncWorker {
         ConferencingInstruction updateInstruction = suppressNativeConferenceRegeneration(
                 conferencingInstruction,
                 persistedConferenceDetails);
-        ConferenceDetails authoritativeConferenceDetails = persistedConferenceDetails != null
-                ? persistedConferenceDetails
-                : conferenceDetails;
+        // An externally-minted link (Zoom, custom URL) is known here and NOT echoed back by the
+        // calendar provider — Google only reports conferenceUrl for a native Meet. Preferring the
+        // persisted row in that case would keep re-persisting an older, linkless record, so a session
+        // that previously synced without conferencing could never acquire one on a later update.
+        ConferenceDetails authoritativeConferenceDetails =
+                conferencingInstruction.embedsExternalUrl() || persistedConferenceDetails == null
+                        ? conferenceDetails
+                        : persistedConferenceDetails;
         UpdateEventResponse response = provider.updateEvent(
                 UpdateEventRequest.forGroup(connection.getId(), externalId, title, description,
                         session.getStartTime(), session.getEndTime(),
@@ -463,30 +479,17 @@ public class SessionSyncWorker {
     }
 
     /**
-     * @param hostId the session host — the writer, whose global default resolves the
-     *               {@link ConferencingProviderType#DEFAULT} pointer. Without this the switch below
-     *               would fall through {@code default -> none()} for every default-bound event type,
-     *               and group sessions would quietly lose their join links.
+     * Release any external meeting held for this session. Best-effort: a Zoom outage must not block
+     * removing the calendar event, and the mapping keeps {@code lastError} so the failure is visible
+     * rather than lost.
      */
-    private ConferencingInstruction resolveConferencingInstruction(UUID hostId, EventType eventType) {
-        if (eventType == null) {
-            return ConferencingInstruction.none();
+    private void releaseSessionConferencing(EventSession session) {
+        try {
+            sessionConferencingCoordinator.cancelForSession(session.getId(), session.getHostId());
+        } catch (RuntimeException ex) {
+            log.warn("session_conferencing_release_failed sessionId={} hostId={} message={}",
+                    session.getId(), session.getHostId(), ex.getMessage());
         }
-        ConferencingProviderType providerType = conferencingResolver.resolve(hostId, eventType);
-        if (providerType == null || providerType == ConferencingProviderType.NONE) {
-            return ConferencingInstruction.none();
-        }
-        return switch (providerType) {
-            case GOOGLE_MEET, MICROSOFT_TEAMS -> ConferencingInstruction.requestNativeMeet(providerType);
-            case CUSTOM_URL -> {
-                String customUrl = eventType.getCustomConferenceUrl();
-                if (customUrl == null || customUrl.isBlank()) {
-                    yield ConferencingInstruction.none();
-                }
-                yield ConferencingInstruction.urlEmbedded(providerType, customUrl.trim(), null, null);
-            }
-            default -> ConferencingInstruction.none();
-        };
     }
 
     private static boolean isPermanent(String errorCode) {
