@@ -10,6 +10,7 @@ import io.bunnycal.availability.dto.SlotDto;
 import io.bunnycal.availability.repository.EventTypeRepository;
 import io.bunnycal.booking.AbstractBookingIT;
 import io.bunnycal.booking.dto.PublicBookRequest;
+import io.bunnycal.booking.dto.PublicGuestDetailsRequest;
 import io.bunnycal.booking.dto.PublicRescheduleRequest;
 import io.bunnycal.booking.domain.Booking;
 import io.bunnycal.booking.service.BookingService;
@@ -57,6 +58,49 @@ class PublicRoundRobinBookingIT extends AbstractBookingIT {
                     idempotency_keys, outbox_events, processed_events, calendar_connections,
                     calendar_events, calendar_event_mappings CASCADE
                 """);
+    }
+
+    /**
+     * booking_guests carries a composite FK to bookings(id, host_id). A round-robin booking
+     * belongs to the participant the rotation picked, not the event's owner, so attaching guests
+     * under the owner's id violated that constraint and failed the whole confirm with a 500.
+     * The two ids coincide for the single-host kinds, which is why only round robin broke.
+     */
+    @Test
+    void roundRobinBooking_attachesExtraGuestsToTheAssignedParticipant() {
+        User owner = createUser("owner-g@test.com", "owner-g");
+        User alice = createUser("alice-g@test.com", "alice-g");
+        EventType eventType = createRoundRobinType(owner.getId(), "rr-g");
+
+        setParticipants(eventType.getId(), List.of(alice.getId()));
+        insertRule(alice.getId(), "MONDAY", LocalTime.of(9, 0), LocalTime.of(11, 0));
+        insertCalendarConnection(owner.getId());
+        insertCalendarConnection(alice.getId());
+
+        SlotDto slot = publicBookingService.availability(owner.getUsername(), eventType.getSlug(), TEST_DATE)
+                .slots()
+                .stream()
+                .filter(s -> s.start().equals(slotAt(9, 0)))
+                .findFirst()
+                .orElseThrow();
+
+        var hold = publicBookingService.hold(owner.getUsername(), eventType.getSlug(),
+                new PublicBookRequest(slot.start(), "guest-g@test.com", "Guest G", slot.bookingToken()));
+
+        publicBookingService.updateGuestDetails(owner.getUsername(), eventType.getSlug(), hold.bookingId(),
+                new PublicGuestDetailsRequest("guest-g@test.com", "Guest G", null, null, null,
+                        List.of("extra@test.com")));
+
+        UUID bookingHostId = (UUID) jdbc.queryForMap(
+                "SELECT host_id FROM bookings WHERE id = ?", hold.bookingId()).get("host_id");
+        assertThat(bookingHostId).isEqualTo(alice.getId());
+
+        List<Map<String, Object>> guests = jdbc.queryForList(
+                "SELECT host_id, guest_email FROM booking_guests WHERE booking_id = ?", hold.bookingId());
+        assertThat(guests).hasSize(1);
+        assertThat(guests.get(0).get("guest_email")).isEqualTo("extra@test.com");
+        // The row must name the participant holding the booking, never the event owner.
+        assertThat(guests.get(0).get("host_id")).isEqualTo(alice.getId());
     }
 
     @Test

@@ -1144,7 +1144,13 @@ public class PublicBookingService {
             embedBookingSupport.persistAnswers(bookingId, target.userId(), answerSnapshots);
         }
 
-        int guestCount = persistExtraGuests(bookingId, target.userId(), target.kind(),
+        // booking.getHostId(), not target.userId(): booking_guests carries a composite FK to
+        // bookings(id, host_id), and for ROUND_ROBIN the booking belongs to whichever participant
+        // the rotation landed on rather than the event's owner. Passing the owner made the two
+        // disagree and Postgres rejected the insert, failing the whole confirm with a 500. The two
+        // are the same user for the single-host kinds, which is why this only ever showed up when
+        // a round-robin booking carried an additional guest.
+        int guestCount = persistExtraGuests(bookingId, booking.getHostId(), target.kind(),
                 guestEmail, request.guestEmails());
 
         Instant expiresAt = Instant.now().plus(target.holdDuration());
