@@ -597,6 +597,7 @@ class PublicBookingServiceTest {
                     public String getExternalEventId() { return "evt-1"; }
                     public String getProviderEventUrl() { return "https://example.com/evt-1"; }
                     public String getConferenceUrl() { return "https://meet.example.com/abc"; }
+                    public String getConferenceProvider() { return "GOOGLE_MEET"; }
                     public String getExternalLifecycleState() { return "STABLE"; }
                     public String getExternalLifecycleReason() { return null; }
                     public Boolean getReconcileSuppressed() { return false; }

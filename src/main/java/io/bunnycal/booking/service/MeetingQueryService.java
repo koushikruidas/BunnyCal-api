@@ -78,13 +78,12 @@ public class MeetingQueryService {
                 ? List.<io.bunnycal.embed.public_.BookingQuestionAnswer>of()
                 : bookingQuestionAnswerRepository.findByBookingIdAndHostId(bookingId, hostId);
         var responses = bookingSubmissionFormatter.toResponses(answers);
-        String conferenceUrl = row.getConferenceUrl();
+        // The calendar the event lives on. Kept for the DTO's own `provider` field, which reports
+        // exactly that; the conferencing platform is a separate column and a separate question.
         String provider = row.getProvider();
-        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails = conferenceUrl == null || conferenceUrl.isBlank()
-                ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
-                : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
-                        provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
-                        conferenceUrl, null, null, null, "projection");
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails =
+                io.bunnycal.booking.dto.ConferenceDetailsResponse.fromProjection(
+                        row.getConferenceProvider(), row.getConferenceUrl(), "projection");
         return new BookingDetailResponse(
                 row.getBookingId(),
                 row.getEventTypeId(),
@@ -131,13 +130,12 @@ public class MeetingQueryService {
     }
 
     private MeetingSummaryResponse toDto(BookingRepository.MeetingRow row) {
-        String conferenceUrl = row.getConferenceUrl();
+        // The calendar the event lives on. Kept for the DTO's own `provider` field, which reports
+        // exactly that; the conferencing platform is a separate column and a separate question.
         String provider = row.getProvider();
-        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails = conferenceUrl == null || conferenceUrl.isBlank()
-                ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
-                : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
-                        provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
-                        conferenceUrl, null, null, null, "projection");
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails =
+                io.bunnycal.booking.dto.ConferenceDetailsResponse.fromProjection(
+                        row.getConferenceProvider(), row.getConferenceUrl(), "projection");
         MeetingSummaryResponse response = new MeetingSummaryResponse(
                 row.getBookingId(),
                 row.getEventTypeId(),

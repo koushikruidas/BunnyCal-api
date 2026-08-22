@@ -953,12 +953,20 @@ public class PublicBookingService {
 
         String eventTitle = row.getEventTypeName() != null ? row.getEventTypeName() : target.eventName();
         String conferenceUrl = row.getConferenceUrl();
-        String provider = row.getProvider();
-        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails = conferenceUrl == null || conferenceUrl.isBlank()
-                ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
-                : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
-                        provider == null ? "UNKNOWN" : provider.toUpperCase(java.util.Locale.ROOT),
-                        conferenceUrl, null, null, null, "projection");
+        /*
+         * conference_provider, not the calendar provider. row.getProvider() is the calendar the
+         * event was written to -- "google" -- and answers a different question than which platform
+         * the guest joins on. The two only look interchangeable because a Meet link lives on a
+         * Google calendar; a Zoom meeting on that same calendar makes them disagree.
+         *
+         * A missing URL no longer erases what we know. The platform is recorded when the event is
+         * created and stays true whether or not the link survived, so reporting NONE -- which the
+         * UI reads as an in-person meeting -- turned a missing link into a wrong claim about where
+         * the meeting happens.
+         */
+        io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails =
+                io.bunnycal.booking.dto.ConferenceDetailsResponse.fromProjection(
+                        row.getConferenceProvider(), conferenceUrl, "projection");
         var questionnaireResponses = bookingSubmissionFormatter.toResponses(
                 bookingQuestionAnswerRepository == null
                         ? List.of()
@@ -1015,15 +1023,8 @@ public class PublicBookingService {
                 ? null
                 : firstNonBlank(sessionDetail.getConferenceProvider(), sessionDetail.getProvider());
         io.bunnycal.booking.dto.ConferenceDetailsResponse conferenceDetails =
-                conferenceUrl == null || conferenceUrl.isBlank()
-                        ? io.bunnycal.booking.dto.ConferenceDetailsResponse.none()
-                        : new io.bunnycal.booking.dto.ConferenceDetailsResponse(
-                                conferenceProvider == null ? "UNKNOWN" : conferenceProvider.toUpperCase(java.util.Locale.ROOT),
-                                conferenceUrl,
-                                null,
-                                null,
-                                null,
-                                "session_projection");
+                io.bunnycal.booking.dto.ConferenceDetailsResponse.fromProjection(
+                        conferenceProvider, conferenceUrl, "session_projection");
 
         User host = userRepository.findById(target.userId())
                 .orElseThrow(() -> new CustomException(ErrorCode.RESOURCE_NOT_FOUND, "Host not found."));

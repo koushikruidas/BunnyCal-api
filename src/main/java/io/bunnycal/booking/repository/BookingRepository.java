@@ -61,6 +61,12 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
         String getExternalEventId();
         String getProviderEventUrl();
         String getConferenceUrl();
+        /**
+         * The conferencing platform -- GOOGLE_MEET, MICROSOFT_TEAMS, ZOOM -- as recorded on the
+         * sync job. Distinct from {@link #getProvider()}, which is the calendar the event was
+         * written to and answers a different question.
+         */
+        String getConferenceProvider();
         String getExternalLifecycleState();
         String getExternalLifecycleReason();
         Boolean getReconcileSuppressed();
@@ -636,6 +642,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -701,6 +708,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -780,6 +788,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -847,6 +856,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
