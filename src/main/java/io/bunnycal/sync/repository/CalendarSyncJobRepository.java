@@ -415,10 +415,26 @@ public interface CalendarSyncJobRepository extends JpaRepository<CalendarSyncJob
             """, nativeQuery = true)
     long countDeadLetters();
 
+    /**
+     * Booking jobs due for reconciliation.
+     *
+     * <p>Scoped to {@code BOOKING} because the consumer, {@code BookingSyncReconciler}, observes
+     * through {@code CalendarProviderClient}, whose {@code eventExists} resolves the host by
+     * {@code bookingRepository.findAnyById(internalRefId)}. A {@code SESSION} job's ref id is a
+     * session, never a booking, so that lookup threw 404 -> INVALID_REQUEST -> PERMANENT_FAILURE,
+     * and every group session was marked PROVIDER_STATE_ORPHANED on its first pass through here --
+     * a verdict about our own lookup, not about the provider, and a sticky one: the same predicate
+     * that filters this query then excluded the job from ever being re-examined.
+     *
+     * <p>Sessions are not left unreconciled by this: they sync through SessionSyncWorker and have
+     * their own SESSION-scoped queries throughout this repository. This query was the one place
+     * the two ref types were conflated.
+     */
     @Query(value = """
             SELECT *
             FROM calendar_sync_jobs
             WHERE status = 'SYNCED'
+              AND internal_ref_type = 'BOOKING'
               AND next_retry_at <= NOW()
               AND (last_error IS NULL OR last_error NOT IN (
                   'TERMINAL_EXTERNAL_DELETE',
