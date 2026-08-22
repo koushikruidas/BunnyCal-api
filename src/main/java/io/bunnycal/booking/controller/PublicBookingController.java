@@ -300,7 +300,8 @@ public class PublicBookingController {
                 request.startTime(),
                 normalizedStart,
                 normalizedStart == null ? "null" : normalizedStart.getClass().getSimpleName());
-        PublicRescheduleRequest normalizedRequest = new PublicRescheduleRequest(normalizedStart);
+        PublicRescheduleRequest normalizedRequest =
+                new PublicRescheduleRequest(normalizedStart, request.slotToken());
 
         String route = IdempotencyRoutes.PUBLIC_BOOK_RESCHEDULE;
         String requestHash = RequestHasher.hash(Map.of(

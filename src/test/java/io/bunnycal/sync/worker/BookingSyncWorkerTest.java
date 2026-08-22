@@ -337,6 +337,36 @@ class BookingSyncWorkerTest {
         verify(calendarService).updateEvent(argThat(cmd -> "ext-own".equals(cmd.externalEventId())));
     }
 
+    /**
+     * An update must not wipe the meeting link the create minted. The conferencing instruction
+     * only carries a join URL when we supplied one; for a DEFAULT event the link is the provider's
+     * and reaches us only in updateEvent's response, which CalendarProviderClient drops. Writing
+     * the instruction's empty URL straight to the row left a rescheduled booking reporting no
+     * meeting link while its calendar invite still had one.
+     */
+    @Test
+    void updateKeepsTheConferenceUrlAlreadyOnTheJob() {
+        UUID id = UUID.randomUUID();
+        CalendarSyncJob job = pendingCreateJob(id, 8L, "ext-job");
+        job.setDesiredAction(SyncDesiredAction.UPDATE);
+        job.setConferenceUrl("https://meet.google.com/myv-fkyp-hjm");
+        when(repository.claimPendingBatch(any(), eq(1))).thenReturn(List.of(id));
+        when(repository.findById(id)).thenReturn(Optional.of(job));
+        BookingOwnership ownership = new BookingOwnership();
+        ownership.setOwnershipVersion(1L);
+        ownership.setProjectionProvider(CalendarProviderType.GOOGLE);
+        ownership.setProjectionConnectionId(UUID.randomUUID());
+        ownership.setProviderExternalEventId("ext-own");
+        when(bookingOwnershipService.requireOwnership(job.getInternalRefId())).thenReturn(ownership);
+        when(calendarService.updateEvent(any())).thenReturn("ext-own");
+
+        worker.processPending(1);
+
+        verify(repository).markSyncedWithMetadata(
+                eq(id), eq(8L), eq("ext-own"), any(),
+                eq("https://meet.google.com/myv-fkyp-hjm"), any(), any());
+    }
+
     @Test
     void deleteUsesAuthoritativeOwnershipExternalEventId() {
         UUID id = UUID.randomUUID();
