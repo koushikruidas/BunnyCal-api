@@ -65,6 +65,12 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
          * The conferencing platform -- GOOGLE_MEET, MICROSOFT_TEAMS, ZOOM -- as recorded on the
          * sync job. Distinct from {@link #getProvider()}, which is the calendar the event was
          * written to and answers a different question.
+         *
+         * <p>Falls back to the event type's own setting where the sync recorded none -- a failed
+         * job, an older row -- so a Zoom event does not report itself as having no online meeting.
+         * DEFAULT is excluded from that fallback on purpose: it points at whatever the host's
+         * calendar resolves to and names no platform of its own, so it stays null rather than
+         * being guessed at.
          */
         String getConferenceProvider();
         String getExternalLifecycleState();
@@ -642,7 +648,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
-                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text, NULLIF(NULLIF(et.conferencing_provider, 'DEFAULT'), '')) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -709,7 +715,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
-                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text, NULLIF(NULLIF(et.conferencing_provider, 'DEFAULT'), '')) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -790,7 +796,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
-                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text, NULLIF(NULLIF(et.conferencing_provider, 'DEFAULT'), '')) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'
@@ -859,7 +865,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                 COALESCE(csj.external_event_id, cem.external_event_id) AS externalEventId,
                 COALESCE(csj.provider_event_url, cem.provider_event_url) AS providerEventUrl,
                 COALESCE(NULLIF(csj.conference_url, ''), NULLIF(cem.conference_url, ''), conf.join_url) AS conferenceUrl,
-                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text) AS conferenceProvider,
+                COALESCE(NULLIF(csj.conference_provider, ''), conf.provider::text, NULLIF(NULLIF(et.conferencing_provider, 'DEFAULT'), '')) AS conferenceProvider,
                 CASE
                     WHEN csj.last_error = 'TERMINAL_EXTERNAL_DELETE' THEN 'TERMINAL_EXTERNAL_DELETE'
                     WHEN csj.last_error = 'EXTERNAL_ACTION_REQUIRED' THEN 'EXTERNAL_ACTION_REQUIRED'

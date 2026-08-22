@@ -76,7 +76,82 @@ class MeetingRowQueriesIT extends AbstractBookingIT {
                 assertThat(row.getConferenceProvider()).isEqualTo("GOOGLE_MEET"));
     }
 
+    /**
+     * The platform is reported for every conferencing provider, not just the Google one that
+     * happened to be in local data when this was written. Teams and Zoom travel the identical
+     * path; only the stored value differs.
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "GOOGLE_MEET,https://meet.google.com/abc-defg-hij",
+            "MICROSOFT_TEAMS,https://teams.microsoft.com/l/meetup-join/xyz",
+            "ZOOM,https://zoom.us/j/123456789",
+    })
+    void reportsWhicheverPlatformTheSyncRecorded(String storedProvider, String joinUrl) {
+        User host = createHost();
+        UUID eventTypeId = insertEventType(host.getId(), "DEFAULT");
+        Instant start = Instant.now().plus(3, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MINUTES);
+        UUID bookingId = insertBooking(host.getId(), eventTypeId, start, start.plus(30, ChronoUnit.MINUTES),
+                "CONFIRMED", 0L);
+        insertSyncJob(bookingId, "SYNCED", joinUrl, storedProvider);
+
+        var row = bookingRepository.findManageRowByEventType(bookingId, eventTypeId);
+        assertThat(row).isPresent();
+        assertThat(row.get().getConferenceProvider()).isEqualTo(storedProvider);
+        assertThat(row.get().getConferenceUrl()).isEqualTo(joinUrl);
+    }
+
+    /**
+     * A sync that never recorded a platform -- a failed job, an older row -- falls back to what
+     * the event type asks for, so a Zoom event does not report itself as having no online
+     * meeting. DEFAULT is excluded deliberately: it points at whatever the host's calendar
+     * resolves to and names no platform of its own, so it stays unknown rather than guessed.
+     */
+    @Test
+    void fallsBackToTheEventTypeWhenTheSyncRecordedNoPlatform() {
+        User host = createHost();
+        UUID zoomEvent = insertEventType(host.getId(), "ZOOM");
+        Instant start = Instant.now().plus(4, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MINUTES);
+        UUID zoomBooking = insertBooking(host.getId(), zoomEvent, start, start.plus(30, ChronoUnit.MINUTES),
+                "CONFIRMED", 0L);
+        insertSyncJob(zoomBooking, "FAILED", null, null);
+
+        assertThat(bookingRepository.findManageRowByEventType(zoomBooking, zoomEvent))
+                .get()
+                .extracting(BookingRepository.MeetingRow::getConferenceProvider)
+                .isEqualTo("ZOOM");
+
+        UUID defaultEvent = insertEventType(host.getId(), "DEFAULT");
+        // A different hour: one host cannot hold two bookings over the same window.
+        Instant laterStart = start.plus(2, ChronoUnit.HOURS);
+        UUID defaultBooking = insertBooking(host.getId(), defaultEvent, laterStart,
+                laterStart.plus(30, ChronoUnit.MINUTES), "CONFIRMED", 0L);
+        insertSyncJob(defaultBooking, "FAILED", null, null);
+
+        assertThat(bookingRepository.findManageRowByEventType(defaultBooking, defaultEvent))
+                .get()
+                .extracting(BookingRepository.MeetingRow::getConferenceProvider)
+                .isNull();
+    }
+
+    private void insertSyncJob(UUID bookingId, String status, String conferenceUrl, String conferenceProvider) {
+        jdbc.update("""
+                INSERT INTO calendar_sync_jobs
+                    (id, internal_ref_type, internal_ref_id, provider, desired_action, status,
+                     external_event_id, conference_url, conference_provider,
+                     attempt_count, next_retry_at, version, ownership_version, created_at, updated_at)
+                VALUES (?, 'BOOKING', ?, 'google', 'CREATE', ?, ?, ?, ?,
+                        0, NOW(), 0, 0, NOW(), NOW())
+                """,
+                UUID.randomUUID(), bookingId, status, "ext-" + bookingId, conferenceUrl, conferenceProvider);
+        jdbc.update("UPDATE bookings SET scheduling_provider = 'google' WHERE id = ?", bookingId);
+    }
+
     private UUID insertEventType(UUID userId) {
+        return insertEventType(userId, "DEFAULT");
+    }
+
+    private UUID insertEventType(UUID userId, String conferencingProvider) {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO event_types
@@ -85,10 +160,10 @@ class MeetingRowQueriesIT extends AbstractBookingIT {
                      capacity, published, availability_mode, group_host_notification_mode,
                      created_at, updated_at)
                 VALUES (?, ?, 'Meeting Row Probe', ?, 1800000000000, 0, 0,
-                        1800000000000, 0, 2592000000000000, 'DEFAULT', 'ONE_ON_ONE',
+                        1800000000000, 0, 2592000000000000, ?, 'ONE_ON_ONE',
                         1, TRUE, 'INHERIT', 'SMART_SUMMARY', NOW(), NOW())
                 """,
-                id, userId, "meeting-row-probe-" + id);
+                id, userId, "meeting-row-probe-" + id, conferencingProvider);
         return id;
     }
 }
