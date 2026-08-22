@@ -675,6 +675,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                        j.external_event_id,
                        j.provider_event_url,
                        j.conference_url,
+                       j.conference_provider,
                        j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
@@ -741,6 +742,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                        j.external_event_id,
                        j.provider_event_url,
                        j.conference_url,
+                       j.conference_provider,
                        j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
@@ -821,6 +823,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                        j.external_event_id,
                        j.provider_event_url,
                        j.conference_url,
+                       j.conference_provider,
                        j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
@@ -889,6 +892,7 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                        j.external_event_id,
                        j.provider_event_url,
                        j.conference_url,
+                       j.conference_provider,
                        j.last_error
                 FROM calendar_sync_jobs j
                 WHERE j.internal_ref_type = 'BOOKING'
