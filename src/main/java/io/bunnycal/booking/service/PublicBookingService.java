@@ -1290,10 +1290,6 @@ public class PublicBookingService {
             // For GROUP the path id is a registration id, matching the cancel path.
             return rescheduleGroupRegistration(target, bookingId, request, guestCapabilityToken);
         }
-        if (target.kind() == EventKind.COLLECTIVE) {
-            throw new CustomException(ErrorCode.VALIDATION_ERROR,
-                    "Rescheduling is not supported for collective bookings.");
-        }
         Booking booking = bookingLifecycleService.authorizeGuestReschedule(bookingId, target.eventTypeId(), guestCapabilityToken);
 
         var state = bookingRepository.findStateByIdAndEventTypeId(bookingId, target.eventTypeId())
@@ -1324,6 +1320,15 @@ public class PublicBookingService {
             }
         }
 
+        if (target.kind() == EventKind.COLLECTIVE) {
+            rescheduleCollectiveGuards(target, booking, bookingId, start, end, request.slotToken());
+            // Guarded above against the whole roster; the single-host checks below would only ask
+            // about the owner, which for a collective booking is one attendee out of several.
+            bookingService.updateBooking(bookingId, booking.getHostId(), start, end, state.getVersion());
+            return new PublicBookingStatusResponse(
+                    bookingId, state.getStatus(), start, end, state.getExpiresAt());
+        }
+
         long conflicts = bookingRepository.countConflictsExcludingBooking(booking.getHostId(), bookingId, start, end);
         if (conflicts > 0) {
             throw new CustomException(ErrorCode.SLOT_UNAVAILABLE, "This time slot is no longer available");
@@ -1347,6 +1352,94 @@ public class PublicBookingService {
                 end,
                 state.getExpiresAt()
         );
+    }
+
+    /**
+     * Everything that has to hold before a COLLECTIVE booking may move.
+     *
+     * <p>The slot listing already answers the hard question — {@code getCollectiveSlots} offers a
+     * time only where every participant's availability intersects — so a guest picking from that
+     * grid has, by construction, chosen a time that suits the whole roster. What the listing cannot
+     * promise is that the answer still holds at submit time: someone may have been removed from the
+     * event, lost their calendar, or taken a booking elsewhere in the meantime. These checks close
+     * that window, and mirror {@code CollectiveAssignmentService.createHeldBooking} so a move is
+     * held to exactly the standard the original booking was.
+     */
+    private void rescheduleCollectiveGuards(PublicBookingTargetResolver.ResolvedTarget target,
+                                            Booking booking,
+                                            UUID bookingId,
+                                            Instant start,
+                                            Instant end,
+                                            String slotToken) {
+        if (slotToken == null || slotToken.isBlank()) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "slotToken is required to reschedule a collective booking.");
+        }
+
+        EventType eventType = bookingEventTypeResolver.requireByEventTypeId(target.eventTypeId());
+
+        // The token pins owner, event type and the exact slot, so a guest cannot submit a time the
+        // intersection never offered — the same guarantee the booking path relies on.
+        CollectiveSlotTokenService.DecodedCollectiveToken token = collectiveSlotTokenService.verify(slotToken);
+        if (!target.userId().equals(token.ownerUserId())
+                || !target.eventTypeId().equals(token.eventTypeId())
+                || !start.equals(token.start())
+                || !end.equals(token.end())) {
+            throw new CustomException(ErrorCode.VALIDATION_ERROR,
+                    "Collective slot token does not match the requested slot.");
+        }
+
+        // A roster change between listing and submit invalidates the token: the intersection it
+        // was computed from is no longer the set of people who would attend.
+        List<UUID> currentParticipantIds = collectiveAssignmentService.currentParticipantIds(eventType);
+        collectiveSlotTokenService.validateRosterMatch(token, currentParticipantIds);
+
+        // Whoever is actually on this booking. Read from the assignments rather than the roster so
+        // a participant added since the booking was made is not silently held to a time nobody
+        // asked them about.
+        List<UUID> bookedParticipantIds = bookingAssignmentRepository.findAllByBookingId(bookingId)
+                .stream()
+                .map(BookingAssignment::getParticipantUserId)
+                .distinct()
+                .toList();
+        List<UUID> participantsToCheck = bookedParticipantIds.isEmpty()
+                ? currentParticipantIds
+                : bookedParticipantIds;
+
+        for (UUID participantId : participantsToCheck) {
+            var eligibility = participantEligibilityService.checkForRoundRobin(participantId);
+            if (!eligibility.eligible()) {
+                log.info("collective_reschedule_rejected_participant_ineligible bookingId={} participantId={} reason={}",
+                        bookingId, participantId, eligibility.reason());
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "A participant is no longer available. Please select a new time slot.");
+            }
+            if (!participantEligibilityService.hasActiveCalendar(participantId)) {
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "A participant's calendar is not connected. Please try again later.");
+            }
+
+            // host_id names only the owner, so the plain conflict count cannot see a co-host's
+            // clashing meeting. This one looks at both sides of that.
+            long participantConflicts = bookingRepository
+                    .countParticipantConflictsExcludingBooking(participantId, bookingId, start, end);
+            if (participantConflicts > 0) {
+                log.info("collective_reschedule_rejected_participant_conflict bookingId={} participantId={}",
+                        bookingId, participantId);
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "One of the hosts is no longer free at that time. Please select a new time slot.");
+            }
+
+            if (hasProjectionBusyConflict(participantId, resolveUserTimezone(participantId), start, end)) {
+                log.info("collective_reschedule_rejected_participant_busy bookingId={} participantId={}",
+                        bookingId, participantId);
+                throw new CustomException(ErrorCode.SLOT_UNAVAILABLE,
+                        "One of the hosts is no longer free at that time. Please select a new time slot.");
+            }
+        }
+
+        OpsLoggers.BOOKING.info("collective_reschedule_validated bookingId={} eventTypeId={} participantCount={} start={} end={}",
+                bookingId, target.eventTypeId(), participantsToCheck.size(), start, end);
     }
 
     /**

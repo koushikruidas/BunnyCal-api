@@ -503,6 +503,36 @@ public interface BookingRepository extends JpaRepository<Booking, BookingId> {
                                         @Param("start") Instant start,
                                         @Param("end") Instant end);
 
+    /**
+     * Overlapping bookings for a participant who may not be the host row's owner.
+     *
+     * <p>{@link #countConflictsExcludingBooking} keys on {@code host_id}, which is the whole story
+     * for the single-host kinds. A COLLECTIVE booking instead names every attending host in
+     * booking_assignments and stores only the owner in host_id, so that query cannot see a
+     * co-host's clashing meeting. This one counts a participant's own bookings — as host_id, the
+     * single-host case — together with any collective booking they are assigned to.
+     */
+    @Query(value = """
+            SELECT COUNT(*)
+            FROM bookings b
+            WHERE b.id <> :bookingId
+              AND b.status IN ('PENDING','CONFIRMED')
+              AND b.availability_released_at IS NULL
+              AND b.start_time < :end
+              AND b.end_time > :start
+              AND (
+                    b.host_id = :participantId
+                 OR EXISTS (
+                        SELECT 1 FROM booking_assignments a
+                         WHERE a.booking_id = b.id
+                           AND a.participant_user_id = :participantId)
+              )
+            """, nativeQuery = true)
+    long countParticipantConflictsExcludingBooking(@Param("participantId") UUID participantId,
+                                                   @Param("bookingId") UUID bookingId,
+                                                   @Param("start") Instant start,
+                                                   @Param("end") Instant end);
+
     @Modifying(clearAutomatically = true)
     @Query(value = """
             UPDATE bookings
