@@ -284,6 +284,16 @@ public class BookingSyncWorker {
         ConferencingExecutionResult conferencingResult = resolveConferencingInstructionForUpdate(job);
         ConferencingInstruction instruction = conferencingResult.instruction();
         ConferenceDetails conferenceDetails = ConferenceDetails.fromInstruction(instruction, "conferencing_instruction", Instant.now());
+        /*
+         * An update keeps the link the create already minted. The instruction only carries a join
+         * URL when we supplied one ourselves -- a custom link, or a Zoom meeting we created. For a
+         * DEFAULT event the link belongs to the provider: Google mints the Meet URL on the event,
+         * and updateEvent's response carries it, but CalendarProviderClient.updateEvent returns
+         * only the external id, so it never reaches here. Without this the markSynced below wrote
+         * NULL over a perfectly good URL, and a rescheduled booking lost its meeting link -- the
+         * invite still had one, while the app reported the meeting had none.
+         */
+        conferenceDetails = conferenceDetails.withJoinUrlIfMissing(job.getConferenceUrl(), "existing_projection");
         String externalId = calendarService.updateEvent(
                 new CalendarService.UpdateCalendarEventCommand(
                         job.getInternalRefId(),
